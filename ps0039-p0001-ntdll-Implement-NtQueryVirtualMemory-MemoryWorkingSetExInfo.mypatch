@@ -1,0 +1,205 @@
+From: Andrew Wesie <awesie@gmail.com>
+Subject: [PATCH 1/3] ntdll: Implement NtQueryVirtualMemory(MemoryWorkingSetExInformation).
+Message-Id: <20191218003428.114284-2-awesie@gmail.com>
+Date: Tue, 17 Dec 2019 16:34:26 -0800
+In-Reply-To: <20191218003428.114284-1-awesie@gmail.com>
+References: <20191218003428.114284-1-awesie@gmail.com>
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=45667
+Signed-off-by: Andrew Wesie <awesie@gmail.com>
+---
+ dlls/ntdll/virtual.c | 78 +++++++++++++++++++++++++++++++++++++++++---
+ include/winternl.h   | 21 +++++++++++-
+ 2 files changed, 93 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/ntdll/virtual.c b/dlls/ntdll/virtual.c
+index cb869feff0..fecc2d601d 100644
+--- a/dlls/ntdll/virtual.c
++++ b/dlls/ntdll/virtual.c
+@@ -84,6 +84,7 @@ struct file_view
+ #define VPROT_GUARD      0x10
+ #define VPROT_COMMITTED  0x20
+ #define VPROT_WRITEWATCH 0x40
++#define VPROT_DEFERRED   0x80
+ /* per-mapping protection flags */
+ #define VPROT_SYSTEM     0x0200  /* system view (underlying mmap not under our control) */
+ 
+@@ -319,7 +320,7 @@ static const char *VIRTUAL_GetProtStr( BYTE prot )
+ static int VIRTUAL_GetUnixProt( BYTE vprot )
+ {
+     int prot = 0;
+-    if ((vprot & VPROT_COMMITTED) && !(vprot & VPROT_GUARD))
++    if ((vprot & VPROT_COMMITTED) && !(vprot & (VPROT_GUARD | VPROT_DEFERRED)))
+     {
+         if (vprot & VPROT_READ) prot |= PROT_READ;
+         if (vprot & VPROT_WRITE) prot |= PROT_WRITE | PROT_READ;
+@@ -952,7 +953,7 @@ static BOOL VIRTUAL_SetProt( struct file_view *view, /* [in] Pointer to view */
+  *
+  * Set page protections on a range of pages
+  */
+-static NTSTATUS set_protection( struct file_view *view, void *base, SIZE_T size, ULONG protect )
++static NTSTATUS set_protection( struct file_view *view, void *base, SIZE_T size, ULONG protect, BOOL apply )
+ {
+     unsigned int vprot;
+     NTSTATUS status;
+@@ -968,6 +969,8 @@ static NTSTATUS set_protection( struct file_view *view, void *base, SIZE_T size,
+         if ((view->protect & access) != access) return STATUS_INVALID_PAGE_PROTECTION;
+     }
+ 
++    if (!apply)
++        vprot |= VPROT_DEFERRED;
+     if (!VIRTUAL_SetProt( view, base, size, vprot | VPROT_COMMITTED )) return STATUS_ACCESS_DENIED;
+     return STATUS_SUCCESS;
+ }
+@@ -2109,10 +2112,16 @@ NTSTATUS virtual_handle_fault( LPCVOID addr, DWORD err, BOOL on_signal_stack )
+     vprot = get_page_vprot( page );
+     if (!on_signal_stack && (vprot & VPROT_GUARD))
+     {
+-        set_page_vprot_bits( page, page_size, 0, VPROT_GUARD );
++        set_page_vprot_bits( page, page_size, 0, VPROT_GUARD | VPROT_DEFERRED );
+         mprotect_range( page, page_size, 0, 0 );
+         ret = STATUS_GUARD_PAGE_VIOLATION;
+     }
++    else if (vprot & VPROT_DEFERRED)
++    {
++        set_page_vprot_bits( page, page_size, 0, VPROT_DEFERRED );
++        mprotect_range( page, page_size, 0, 0 );
++        ret = STATUS_SUCCESS;
++    }
+     else if (err & EXCEPTION_WRITE_FAULT)
+     {
+         if (vprot & VPROT_WRITEWATCH)
+@@ -2684,7 +2693,7 @@ NTSTATUS virtual_alloc_aligned( PVOID *ret, unsigned short zero_bits_64, SIZE_T
+     {
+         if (!(view = VIRTUAL_FindView( base, size ))) status = STATUS_NOT_MAPPED_VIEW;
+         else if (view->protect & SEC_FILE) status = STATUS_ALREADY_COMMITTED;
+-        else if (!(status = set_protection( view, base, size, protect )) && (view->protect & SEC_RESERVE))
++        else if (!(status = set_protection( view, base, size, protect, TRUE )) && (view->protect & SEC_RESERVE))
+         {
+             SERVER_START_REQ( add_mapping_committed_range )
+             {
+@@ -2850,7 +2859,7 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH NtProtectVirtualMemory( HANDLE process, PVOID
+         if (get_committed_size( view, base, &vprot ) >= size && (vprot & VPROT_COMMITTED))
+         {
+             old = VIRTUAL_GetWin32Prot( vprot, view->protect );
+-            status = set_protection( view, base, size, new_prot );
++            status = set_protection( view, base, size, new_prot, VIRTUAL_GetUnixProt(vprot) != PROT_NONE );
+         }
+         else status = STATUS_NOT_COMMITTED;
+     }
+@@ -2906,6 +2915,62 @@ static int get_free_mem_state_callback( void *start, size_t size, void *arg )
+     return 1;
+ }
+ 
++static NTSTATUS get_working_set_ex( HANDLE process, LPCVOID addr,
++                                    MEMORY_WORKING_SET_EX_INFORMATION *info,
++                                    SIZE_T len, SIZE_T *res_len )
++{
++    MEMORY_WORKING_SET_EX_INFORMATION *p;
++    char pagemap_path[128];
++    FILE *f;
++    sigset_t sigset;
++
++    if (process != NtCurrentProcess())
++    {
++        FIXME("(process=%p,addr=%p) Unimplemented information class: MemoryWorkingSetExInformation\n", process, addr);
++        return STATUS_INVALID_INFO_CLASS;
++    }
++
++    snprintf(pagemap_path, sizeof(pagemap_path), "/proc/%u/pagemap", getpid());
++    f = fopen(pagemap_path, "rb");
++
++    server_enter_uninterrupted_section( &csVirtual, &sigset );
++    for (p = info; (UINT_PTR)(p + 1) <= (UINT_PTR)info + len; p++)
++    {
++        BYTE vprot;
++        UINT64 pagemap;
++        struct file_view *view;
++
++        memset(&p->VirtualAttributes, 0, sizeof(p->VirtualAttributes));
++        /* If we don't have pagemap information, default to invalid. */
++        if (f == NULL ||
++            fseek(f, ((UINT_PTR)p->VirtualAddress >> 12) * sizeof(pagemap), SEEK_SET) == -1 ||
++            fread(&pagemap, sizeof(pagemap), 1, f) != 1)
++        {
++            continue;
++        }
++
++        if ((view = VIRTUAL_FindView( p->VirtualAddress, 0 )) &&
++            get_committed_size( view, p->VirtualAddress, &vprot ) &&
++            (vprot & VPROT_COMMITTED))
++        {
++            p->VirtualAttributes.Valid = !(vprot & (VPROT_GUARD | VPROT_DEFERRED)) && (vprot & 0x0f) && (pagemap >> 62);
++            p->VirtualAttributes.Shared = (view->protect & (VPROT_SYSTEM | SEC_IMAGE | SEC_FILE | SEC_RESERVE | SEC_COMMIT)) != 0;
++            if (p->VirtualAttributes.Shared && p->VirtualAttributes.Valid)
++                p->VirtualAttributes.ShareCount = 1; /* FIXME */
++            if (p->VirtualAttributes.Valid)
++                p->VirtualAttributes.Win32Protection = VIRTUAL_GetWin32Prot( vprot, view->protect );
++        }
++    }
++    server_leave_uninterrupted_section( &csVirtual, &sigset );
++
++    if (f)
++        fclose(f);
++    if (res_len)
++        *res_len = (UINT_PTR)p - (UINT_PTR)info;
++    return STATUS_SUCCESS;
++}
++
++
+ #define UNIMPLEMENTED_INFO_CLASS(c) \
+     case c: \
+         FIXME("(process=%p,addr=%p) Unimplemented information class: " #c "\n", process, addr); \
+@@ -2933,6 +2998,9 @@ NTSTATUS WINAPI NtQueryVirtualMemory( HANDLE process, LPCVOID addr,
+         UNIMPLEMENTED_INFO_CLASS(MemorySectionName);
+         UNIMPLEMENTED_INFO_CLASS(MemoryBasicVlmInformation);
+ 
++        case MemoryWorkingSetExInformation:
++            return get_working_set_ex( process, addr, buffer, len, res_len );
++
+         default:
+             FIXME("(%p,%p,info_class=%d,%p,%ld,%p) Unknown information class\n", 
+                   process, addr, info_class, buffer, len, res_len);
+diff --git a/include/winternl.h b/include/winternl.h
+index 0122684483..eef42be5b3 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -1049,7 +1049,8 @@ typedef enum _MEMORY_INFORMATION_CLASS {
+     MemoryBasicInformation,
+     MemoryWorkingSetList,
+     MemorySectionName,
+-    MemoryBasicVlmInformation
++    MemoryBasicVlmInformation,
++    MemoryWorkingSetExInformation
+ } MEMORY_INFORMATION_CLASS;
+ 
+ typedef struct _MEMORY_SECTION_NAME
+@@ -1057,6 +1058,24 @@ typedef struct _MEMORY_SECTION_NAME
+     UNICODE_STRING SectionFileName;
+ } MEMORY_SECTION_NAME, *PMEMORY_SECTION_NAME;
+ 
++typedef union _MEMORY_WORKING_SET_EX_BLOCK {
++    ULONG_PTR Flags;
++    struct {
++        ULONG_PTR Valid  :1;
++        ULONG_PTR ShareCount  :3;
++        ULONG_PTR Win32Protection  :11;
++        ULONG_PTR Shared  :1;
++        ULONG_PTR Node  :6;
++        ULONG_PTR Locked  :1;
++        ULONG_PTR LargePage  :1;
++    } DUMMYSTRUCTNAME;
++} MEMORY_WORKING_SET_EX_BLOCK, *PMEMORY_WORKING_SET_EX_BLOCK;
++
++typedef struct _MEMORY_WORKING_SET_EX_INFORMATION {
++    PVOID                       VirtualAddress;
++    MEMORY_WORKING_SET_EX_BLOCK VirtualAttributes;
++} MEMORY_WORKING_SET_EX_INFORMATION, *PMEMORY_WORKING_SET_EX_INFORMATION;
++
+ typedef enum _MUTANT_INFORMATION_CLASS
+ {
+     MutantBasicInformation
+
+-- 
+2.17.1
+

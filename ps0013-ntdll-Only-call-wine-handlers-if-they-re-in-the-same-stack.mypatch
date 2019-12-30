@@ -1,0 +1,53 @@
+From: Derek Lesho <dlesho@codeweavers.com>
+Subject: [PATCH] ntdll: Only call wine handlers if they're in the same stack.
+Message-Id: <20191002154547.878669-1-dlesho@codeweavers.com>
+Date: Wed,  2 Oct 2019 10:45:47 -0500
+
+In Mortal Kombat 11, the game creates its own stack, with an address higher
+than the default wine stack.  Because of this, when we unwind a C++ exception,
+we assume we are inside a wine frame, and we crash trying to unwind to it.
+
+Signed-off-by: Derek Lesho <dlesho@codeweavers.com>
+---
+ dlls/ntdll/signal_x86_64.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/signal_x86_64.c b/dlls/ntdll/signal_x86_64.c
+index 427a4a0e05..8d6f351f4b 100644
+--- a/dlls/ntdll/signal_x86_64.c
++++ b/dlls/ntdll/signal_x86_64.c
+@@ -2427,12 +2427,21 @@ static NTSTATUS call_stack_handlers( EXCEPTION_RECORD *rec, CONTEXT *orig_contex
+     UNWIND_HISTORY_TABLE table;
+     DISPATCHER_CONTEXT dispatch;
+     CONTEXT context;
++    MEMORY_BASIC_INFORMATION wine_frame_stack_info, current_stack_info;
++    int is_teb_frame_in_current_stack = 1;
+     NTSTATUS status;
+ 
+     context = *orig_context;
+     dispatch.TargetIp      = 0;
+     dispatch.ContextRecord = &context;
+     dispatch.HistoryTable  = &table;
++
++    if ( !(NtQueryVirtualMemory(NtCurrentProcess(), teb_frame, MemoryBasicInformation, &wine_frame_stack_info, sizeof(MEMORY_BASIC_INFORMATION), NULL)) &&
++         !(NtQueryVirtualMemory(NtCurrentProcess(), (PVOID)context.Rsp, MemoryBasicInformation, &current_stack_info, sizeof(MEMORY_BASIC_INFORMATION), NULL)))
++    {
++        is_teb_frame_in_current_stack = wine_frame_stack_info.AllocationBase == current_stack_info.AllocationBase;
++    }
++
+     for (;;)
+     {
+         status = virtual_unwind( UNW_FLAG_EHANDLER, &dispatch, &context );
+@@ -2478,7 +2487,7 @@ static NTSTATUS call_stack_handlers( EXCEPTION_RECORD *rec, CONTEXT *orig_contex
+             }
+         }
+         /* hack: call wine handlers registered in the tib list */
+-        else while ((ULONG64)teb_frame < context.Rsp)
++        else if (is_teb_frame_in_current_stack) while ((ULONG64)teb_frame < context.Rsp)
+         {
+             TRACE( "found wine frame %p rsp %lx handler %p\n",
+                     teb_frame, context.Rsp, teb_frame->Handler );
+
+-- 
+2.23.0
+

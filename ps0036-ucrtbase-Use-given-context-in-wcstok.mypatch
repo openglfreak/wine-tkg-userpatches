@@ -1,0 +1,121 @@
+From: Daniel Lehman <dlehman25@gmail.com>
+Subject: [PATCH] ucrtbase: Use given context in wcstok.
+Message-Id: <20191212072303.1982-1-dlehman25@gmail.com>
+Date: Wed, 11 Dec 2019 23:23:03 -0800
+
+Signed-off-by: Daniel Lehman <dlehman25@gmail.com>
+
+---
+breaking change in 2015 for wcstok:
+https://docs.microsoft.com/en-us/cpp/porting/visual-cpp-change-history-2003-2015?redirectedfrom=MSDN&view=vs-2019
+
+compilation will fail if only 2 arguments are provided:
+1>: error C4996:  'wcstok': wcstok has been changed to conform with the ISO C standard, adding an extra context parameter. To use the legacy Microsoft wcstok, define _CRT_NON_CONFORMING_WCSTOK.
+1>C:\Program Files (x86)\Windows Kits\10\Include\10.0.18362.0\ucrt\corecrt_wstring.h(261): message :  see declaration of 'wcstok'
+---
+ dlls/msvcrt/wcs.c            |  9 +++++++++
+ dlls/ucrtbase/tests/string.c | 30 ++++++++++++++++++++++++++++++
+ dlls/ucrtbase/ucrtbase.spec  |  2 +-
+ 3 files changed, 40 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/msvcrt/wcs.c b/dlls/msvcrt/wcs.c
+index 1ae292423c0..a7bfb4ba2db 100644
+--- a/dlls/msvcrt/wcs.c
++++ b/dlls/msvcrt/wcs.c
+@@ -1707,10 +1707,19 @@ MSVCRT_wchar_t * CDECL MSVCRT_wcstok_s( MSVCRT_wchar_t *str, const MSVCRT_wchar_
+ /*********************************************************************
+  *		wcstok  (MSVCRT.@)
+  */
++#if _MSVCR_VER>=140
++MSVCRT_wchar_t * CDECL MSVCRT_wcstok( MSVCRT_wchar_t *str, const MSVCRT_wchar_t *delim, MSVCRT_wchar_t **ctx )
++{
++    if (!ctx)
++        ctx = &msvcrt_get_thread_data()->wcstok_next;
++    return MSVCRT_wcstok_s(str, delim, ctx);
++}
++#else
+ MSVCRT_wchar_t * CDECL MSVCRT_wcstok( MSVCRT_wchar_t *str, const MSVCRT_wchar_t *delim )
+ {
+     return MSVCRT_wcstok_s(str, delim, &msvcrt_get_thread_data()->wcstok_next);
+ }
++#endif
+ 
+ /*********************************************************************
+  *		_wctomb_s_l (MSVCRT.@)
+diff --git a/dlls/ucrtbase/tests/string.c b/dlls/ucrtbase/tests/string.c
+index bfa602c5387..5ef638e44ac 100644
+--- a/dlls/ucrtbase/tests/string.c
++++ b/dlls/ucrtbase/tests/string.c
+@@ -83,6 +83,7 @@ static void (__cdecl *p__free_locale)(_locale_t);
+ static int (__cdecl *p__getmbcp)(void);
+ static int (__cdecl *p__setmbcp)(int);
+ static size_t (__cdecl *p__mbsspn)(const unsigned char*, const unsigned char*);
++static wchar_t* (__cdecl *p_wcstok)(wchar_t*, const wchar_t*, wchar_t**);
+ 
+ static BOOL init(void)
+ {
+@@ -110,6 +111,7 @@ static BOOL init(void)
+     p__getmbcp = (void*)GetProcAddress(module, "_getmbcp");
+     p__setmbcp = (void*)GetProcAddress(module, "_setmbcp");
+     p__mbsspn = (void*)GetProcAddress(module, "_mbsspn");
++    p_wcstok = (void*)GetProcAddress(module, "wcstok");
+     return TRUE;
+ }
+ 
+@@ -390,6 +392,33 @@ static void test_mbsspn( void)
+     p__setmbcp(cp);
+ }
+ 
++static void test_wcstok(void)
++{
++    static const wchar_t *input = L"two words";
++    wchar_t buffer[16];
++    wchar_t *token;
++    wchar_t *next;
++
++    next = NULL;
++    wcscpy(buffer, input);
++    token = p_wcstok(buffer, L" ", &next);
++    ok(!wcscmp(L"two", token), "expected \"two\", got \"%ls\"\n", token);
++    ok(next == token + 4, "expected %p, got %p\n", token + 4, next);
++    token = p_wcstok(NULL, L" ", &next);
++    ok(!wcscmp(L"words", token), "expected \"words\", got \"%ls\"\n", token);
++    ok(next == token + 5, "expected %p, got %p\n", token + 5, next);
++    token = p_wcstok(NULL, L" ", &next);
++    ok(!token, "expected NULL, got %p\n", token);
++
++    wcscpy(buffer, input);
++    token = p_wcstok(buffer, L" ", NULL);
++    ok(!wcscmp(L"two", token), "expected \"two\", got \"%ls\"\n", token);
++    token = p_wcstok(NULL, L" ", NULL);
++    ok(!wcscmp(L"words", token), "expected \"words\", got \"%ls\"\n", token);
++    token = p_wcstok(NULL, L" ", NULL);
++    ok(!token, "expected NULL, got %p\n", token);
++}
++
+ START_TEST(string)
+ {
+     if (!init()) return;
+@@ -399,4 +428,5 @@ START_TEST(string)
+     test___strncnt();
+     test_C_locale();
+     test_mbsspn();
++    test_wcstok();
+ }
+diff --git a/dlls/ucrtbase/ucrtbase.spec b/dlls/ucrtbase/ucrtbase.spec
+index a262cc63459..64102f59cd4 100644
+--- a/dlls/ucrtbase/ucrtbase.spec
++++ b/dlls/ucrtbase/ucrtbase.spec
+@@ -2579,7 +2579,7 @@
+ @ cdecl wcstod(wstr ptr) MSVCRT_wcstod
+ @ cdecl wcstof(ptr ptr) MSVCRT_wcstof
+ @ stub wcstoimax
+-@ cdecl wcstok(wstr wstr) MSVCRT_wcstok
++@ cdecl wcstok(wstr wstr ptr) MSVCRT_wcstok
+ @ cdecl wcstok_s(ptr wstr ptr) MSVCRT_wcstok_s
+ @ cdecl wcstol(wstr ptr long) MSVCRT_wcstol
+ @ stub wcstold
+
+-- 
+2.17.1
+

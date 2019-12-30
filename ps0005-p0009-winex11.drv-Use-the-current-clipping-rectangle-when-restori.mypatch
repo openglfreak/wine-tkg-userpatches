@@ -1,0 +1,37 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH v3 09/10] winex11.drv: Use the current clipping rectangle when restoring grabs.
+Message-Id: <20191007130216.21159-10-rbernon@codeweavers.com>
+Date: Mon,  7 Oct 2019 15:02:15 +0200
+In-Reply-To: <20191007130216.21159-1-rbernon@codeweavers.com>
+References: <20191007130216.21159-1-rbernon@codeweavers.com>
+
+We introduced unnecessary complexity by adding the last_clip_* state,
+we can instead use the ClipCursor state.
+
+This restores the ClipCursor on FocusIn events by sending a
+WM_X11DRV_CLIP_CURSOR message to the foreground window, which will query
+the current clipping rect from the server and apply it.
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/winex11.drv/event.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index d0b92f30153..b41093856e3 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -854,6 +854,9 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
+     if (event->detail == NotifyPointer) return FALSE;
+     if (hwnd == GetDesktopWindow()) return FALSE;
+ 
++    /* ask the foreground window to re-apply the current ClipCursor rect */
++    SendMessageW( GetForegroundWindow(), WM_X11DRV_CLIP_CURSOR, 0, 0 );
++
+     /* ignore wm specific NotifyUngrab / NotifyGrab events w.r.t focus */
+     if (event->mode == NotifyGrab || event->mode == NotifyUngrab) return FALSE;
+ 
+
+-- 
+2.23.0
+

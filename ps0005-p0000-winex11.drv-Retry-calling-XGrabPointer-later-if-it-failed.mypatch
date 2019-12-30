@@ -1,0 +1,36 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH v3 10/10] winex11.drv: Retry calling XGrabPointer later if it failed.
+Message-Id: <20191007130216.21159-11-rbernon@codeweavers.com>
+Date: Mon,  7 Oct 2019 15:02:16 +0200
+In-Reply-To: <20191007130216.21159-1-rbernon@codeweavers.com>
+References: <20191007130216.21159-1-rbernon@codeweavers.com>
+
+Sometimes X11 refuses to grab the cursor. It is not reported to the
+applications, and we don't even expect them to correctly handle these
+situations. Instead, we should retry clipping the cursor later on until
+it succeeds or until the application releases the cursor.
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/winex11.drv/mouse.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 9bc46332f20..2e23248fedf 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -425,6 +425,11 @@ static BOOL grab_clipping_window( const RECT *clip )
+     {
+         disable_xinput2();
+         DestroyWindow( msg_hwnd );
++
++        /* we couldn't grab the cursor yet and we won't get notified when it
++         * is released, so we have to retry again a little bit later */
++        Sleep(100);
++        PostMessageW( GetForegroundWindow(), WM_X11DRV_CLIP_CURSOR, 0, 0 );
+         return FALSE;
+     }
+     clip_rect = *clip;
+--
+2.23.0
+

@@ -1,0 +1,32 @@
+From: Chip Davis <cdavis@codeweavers.com>
+Subject: [PATCH] ntoskrnl.exe: Avoid infinite recursion loading drivers.
+Message-Id: <20191209165632.89645-1-cdavis@codeweavers.com>
+Date: Mon,  9 Dec 2019 10:56:32 -0600
+
+Aside from the fact that both ntoskrnl and hal are already loaded and
+resolved, ntoskrnl and hal have a cyclic dependency on each other.
+This results in infinite recursion attempting to relocate both modules.
+
+Signed-off-by: Chip Davis <cdavis@codeweavers.com>
+---
+ dlls/ntoskrnl.exe/ntoskrnl.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.c b/dlls/ntoskrnl.exe/ntoskrnl.c
+index 4c196bc1c98..3f457461fff 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.c
++++ b/dlls/ntoskrnl.exe/ntoskrnl.c
+@@ -3515,6 +3515,9 @@ static HMODULE load_driver_module( const WCHAR *name )
+             char *name = (char *)module + imports[i].Name;
+             WCHAR buffer[32], *p = buffer;
+ 
++            /* avoid infinite recursion - don't do this for this module (ntoskrnl) or hal.dll */
++            if (!strcmp( name, "ntoskrnl.exe" ) || !strcmp( name, "hal.dll" ))
++                continue;
+             while (p < buffer + 32) if (!(*p++ = *name++)) break;
+             if (p <= buffer + 32) FreeLibrary( load_driver_module( buffer ) );
+         }
+
+-- 
+2.24.0
+

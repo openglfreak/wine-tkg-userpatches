@@ -1,0 +1,97 @@
+From: Chip Davis <cdavis@codeweavers.com>
+Subject: [PATCH v2] msvcrt: Correct return value of ___mb_cur_max_l_func().
+Message-Id: <20191211200848.41395-2-cdavis@codeweavers.com>
+Date: Wed, 11 Dec 2019 14:08:48 -0600
+In-Reply-To: <20191211200848.41395-1-cdavis@codeweavers.com>
+References: <20191211200848.41395-1-cdavis@codeweavers.com>
+
+Signed-off-by: Chip Davis <cdavis@codeweavers.com>
+---
+v2: Fix hang on old Windows.
+
+ dlls/msvcr90/tests/msvcr90.c | 26 ++++++++++++++++++++++++++
+ dlls/msvcrt/mbcs.c           |  4 ++--
+ 2 files changed, 28 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/msvcr90/tests/msvcr90.c b/dlls/msvcr90/tests/msvcr90.c
+index 050699e4857..26a8dd466ec 100644
+--- a/dlls/msvcr90/tests/msvcr90.c
++++ b/dlls/msvcr90/tests/msvcr90.c
+@@ -136,6 +136,9 @@ static int (__cdecl *p__memicmp_l)(const char*, const char*, size_t, _locale_t);
+ static int (__cdecl *p__vsnwprintf)(wchar_t *buffer,size_t count, const wchar_t *format, __ms_va_list valist);
+ static size_t (__cdecl *p___strncnt)(const char *str, size_t count);
+ static int (__cdecl *p_swscanf)(const wchar_t *str, const wchar_t* format, ...);
++static int (__cdecl *p____mb_cur_max_l_func)(_locale_t locale);
++static _locale_t (__cdecl *p__create_locale)(int, const char*);
++static void (__cdecl *p__free_locale)(_locale_t);
+ 
+ /* make sure we use the correct errno */
+ #undef errno
+@@ -407,6 +410,9 @@ static BOOL init(void)
+     SET(p__vsnwprintf, "_vsnwprintf");
+     SET(p___strncnt, "__strncnt");
+     SET(p_swscanf, "swscanf");
++    SET(p____mb_cur_max_l_func, "___mb_cur_max_l_func");
++    SET(p__create_locale, "_create_locale");
++    SET(p__free_locale, "_free_locale");
+ 
+     if (sizeof(void *) == 8)
+     {
+@@ -1938,6 +1944,25 @@ static void test_swscanf(void)
+     ok( ret == (short)WEOF, "ret = %d\n", ret );
+ }
+ 
++static void test____mb_cur_max_l_func(void)
++{
++    int ret;
++    _locale_t l;
++
++    ret = p____mb_cur_max_l_func(NULL);
++    ok( ret == 1, "MB_CUR_MAX_L(NULL) = %d\n", ret );
++
++    l = p__create_locale(LC_ALL, "chinese-traditional");
++    if (!l)
++    {
++        skip("DBCS locale not available\n");
++        return;
++    }
++    ret = p____mb_cur_max_l_func(l);
++    ok( ret == 2, "MB_CUR_MAX_L(cht) = %d\n", ret );
++    p__free_locale(l);
++}
++
+ START_TEST(msvcr90)
+ {
+     if(!init())
+@@ -1977,4 +2002,5 @@ START_TEST(msvcr90)
+ #endif
+     test___strncnt();
+     test_swscanf();
++    test____mb_cur_max_l_func();
+ }
+diff --git a/dlls/msvcrt/mbcs.c b/dlls/msvcrt/mbcs.c
+index a9dbcfff661..39f94b17a36 100644
+--- a/dlls/msvcrt/mbcs.c
++++ b/dlls/msvcrt/mbcs.c
+@@ -184,7 +184,7 @@ int CDECL MSVCRT____mb_cur_max_func(void)
+ /*********************************************************************
+  *		___mb_cur_max_l_func  (MSVCR80.@)
+  */
+-int* CDECL ___mb_cur_max_l_func(MSVCRT__locale_t locale)
++int CDECL ___mb_cur_max_l_func(MSVCRT__locale_t locale)
+ {
+   MSVCRT_pthreadlocinfo locinfo;
+ 
+@@ -193,7 +193,7 @@ int* CDECL ___mb_cur_max_l_func(MSVCRT__locale_t locale)
+   else
+     locinfo = locale->locinfo;
+ 
+-  return &locinfo->mb_cur_max;
++  return locinfo->mb_cur_max;
+ }
+ #endif
+ 
+
+-- 
+2.24.0
+

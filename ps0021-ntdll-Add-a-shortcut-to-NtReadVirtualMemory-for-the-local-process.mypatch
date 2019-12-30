@@ -1,0 +1,66 @@
+From: Martin Storsjo <martin@martin.st>
+Subject: [PATCH] ntdll: Add a shortcut to NtReadVirtualMemory for the local process
+Message-Id: <20191029140412.27318-1-martin@martin.st>
+Date: Tue, 29 Oct 2019 16:04:12 +0200
+
+EnumProcessModules uses ReadProcessMemory (which forwards to
+NtReadVirtualMemory) for reading the tables of a process, even for
+the current process. When running wine within docker,
+NtReadVirtualMemory currently fails unless the SYS_PTRACE capability
+is explicitly added.
+
+LLVM's libunwind uses EnumProcessModules for locating .eh_frame
+sections in all loaded modules when unwinding dwarf exceptions
+(used on i686). As it is used for locating sections within the
+current process, libunwind only calls EnumProcessModules for
+the current process.
+
+Therefore, exception handling in executables with libunwind on i686
+doesn't work when run with wine within docker.
+
+Even for setups where NtReadVirtualMemory is allowed, it is
+significantly slower than just reading the memory directly within
+the process. Currently, handling 10000 thrown exceptions with
+libunwind on i686 takes 24 seconds when run in wine, while it
+runs in around 1.4 seconds with this patch.
+
+Signed-off-by: Martin Storsjo <martin@martin.st>
+---
+ dlls/ntdll/virtual.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/dlls/ntdll/virtual.c b/dlls/ntdll/virtual.c
+index d15b49f6fd..566b5982a7 100644
+--- a/dlls/ntdll/virtual.c
++++ b/dlls/ntdll/virtual.c
+@@ -3521,6 +3521,26 @@ NTSTATUS WINAPI NtReadVirtualMemory( HANDLE process, const void *addr, void *buf
+ 
+     if (virtual_check_buffer_for_write( buffer, size ))
+     {
++        if (process == GetCurrentProcess())
++        {
++            sigset_t sigset;
++
++            server_enter_uninterrupted_section( &csVirtual, &sigset );
++            if (virtual_check_buffer_for_read( addr, size ))
++            {
++                memcpy(buffer, addr, size);
++                status = STATUS_SUCCESS;
++            }
++            else
++            {
++                size = 0;
++                status = STATUS_ACCESS_VIOLATION;
++            }
++            server_leave_uninterrupted_section( &csVirtual, &sigset );
++            if (bytes_read) *bytes_read = size;
++            return status;
++        }
++
+         SERVER_START_REQ( read_process_memory )
+         {
+             req->handle = wine_server_obj_handle( process );
+
+-- 
+2.17.1
+

@@ -1,0 +1,36 @@
+From: Zebediah Figura <z.figura12@gmail.com>
+Subject: [PATCH v2 2/3] ntdll: Handle unaligned SRW locks when using keyed events.
+Message-Id: <20191230231749.52397-2-z.figura12@gmail.com>
+Date: Mon, 30 Dec 2019 17:17:48 -0600
+In-Reply-To: <20191230231749.52397-1-z.figura12@gmail.com>
+References: <20191230231749.52397-1-z.figura12@gmail.com>
+
+Signed-off-by: Zebediah Figura <z.figura12@gmail.com>
+---
+ dlls/ntdll/sync.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/sync.c b/dlls/ntdll/sync.c
+index 302b4cc7e0..efe9af8137 100644
+--- a/dlls/ntdll/sync.c
++++ b/dlls/ntdll/sync.c
+@@ -1978,11 +1978,11 @@ static NTSTATUS fast_release_srw_shared( RTL_SRWLOCK *lock )
+ #define SRWLOCK_RES_SHARED            0x00000001
+ 
+ #ifdef WORDS_BIGENDIAN
+-#define srwlock_key_exclusive(lock)   (&lock->Ptr)
+-#define srwlock_key_shared(lock)      ((void *)((char *)&lock->Ptr + 2))
++#define srwlock_key_exclusive(lock)   ((void *)(((ULONG_PTR)&lock->Ptr + 1) & ~1))
++#define srwlock_key_shared(lock)      ((void *)(((ULONG_PTR)&lock->Ptr + 3) & ~1))
+ #else
+-#define srwlock_key_exclusive(lock)   ((void *)((char *)&lock->Ptr + 2))
+-#define srwlock_key_shared(lock)      (&lock->Ptr)
++#define srwlock_key_exclusive(lock)   ((void *)(((ULONG_PTR)&lock->Ptr + 3) & ~1))
++#define srwlock_key_shared(lock)      ((void *)(((ULONG_PTR)&lock->Ptr + 1) & ~1))
+ #endif
+ 
+ static inline void srwlock_check_invalid( unsigned int val )
+
+-- 
+2.24.1
+

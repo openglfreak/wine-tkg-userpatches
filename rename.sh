@@ -130,7 +130,7 @@ main() (
 
         subject="$(_get_subject "$patch")"
         case "${subject}" in
-            '[PATCH'*)
+            '[PATCH'*|'[RFC PATCH'*)
                 subject_patch="${subject%%\] *}]"
                 subject_commit_msg="${subject#*\] }";;
             *)

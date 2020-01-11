@@ -1,0 +1,126 @@
+From: Jeff Smith <whydoubt@gmail.com>
+Subject: [RFC PATCH 1/9] ntdll/tests: Add tests for iswctype.
+Message-Id: <20200109065349.2549777-1-whydoubt@gmail.com>
+Date: Thu,  9 Jan 2020 00:53:41 -0600
+
+Signed-off-by: Jeff Smith <whydoubt@gmail.com>
+---
+This series essentially supersedes the series starting with
+https://source.winehq.org/patches/data/176232
+
+It no longer contains anything regarding IsCharBlankW, as that is
+associated with a different instance of the wctype table, and this
+series is long enough as-is.
+
+The first three patches are focused on ntdll, while the remainder
+are focused on msvcrt, ucrtbase, etc.
+
+ dlls/ntdll/tests/string.c | 72 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 72 insertions(+)
+
+diff --git a/dlls/ntdll/tests/string.c b/dlls/ntdll/tests/string.c
+index 12027e8899..3b62bde1a7 100644
+--- a/dlls/ntdll/tests/string.c
++++ b/dlls/ntdll/tests/string.c
+@@ -69,6 +69,13 @@ static int      (__cdecl *p__strnicmp)(LPCSTR,LPCSTR,size_t);
+ 
+ static int      (WINAPIV *p_sscanf)(const char *, const char *, ...);
+ 
++static int      (__cdecl *p_iswctype)(int, int);
++static int      (__cdecl *p_iswalpha)(int);
++static int      (__cdecl *p_iswdigit)(int);
++static int      (__cdecl *p_iswlower)(int);
++static int      (__cdecl *p_iswspace)(int);
++static int      (__cdecl *p_iswxdigit)(int);
++
+ static void InitFunctionPtrs(void)
+ {
+     hntdll = LoadLibraryA("ntdll.dll");
+@@ -113,6 +120,13 @@ static void InitFunctionPtrs(void)
+         p__strnicmp = (void *)GetProcAddress(hntdll, "_strnicmp");
+ 
+         p_sscanf = (void *)GetProcAddress(hntdll, "sscanf");
++
++        p_iswctype = (void*)GetProcAddress(hntdll, "iswctype");
++        p_iswalpha = (void*)GetProcAddress(hntdll, "iswalpha");
++        p_iswdigit = (void*)GetProcAddress(hntdll, "iswdigit");
++        p_iswlower = (void*)GetProcAddress(hntdll, "iswlower");
++        p_iswspace = (void*)GetProcAddress(hntdll, "iswspace");
++        p_iswxdigit = (void*)GetProcAddress(hntdll, "iswxdigit");
+     } /* if */
+ }
+ 
+@@ -1501,6 +1515,63 @@ static void test_sscanf(void)
+     ok(d == 0.0, "d = %lf\n", f);
+ }
+ 
++static void test_iswctype(void)
++{
++    unsigned int c, i;
++    unsigned short types = 0;
++    unsigned short base_wctype[65536];
++    static const struct
++    {
++        unsigned int c;
++        unsigned int wctype;
++    }
++    iswctype_tests[] =
++    {
++        { '\t', C1_CNTRL | C1_SPACE | C1_BLANK },
++        { 0xa0, C1_SPACE | C1_BLANK },
++        { 0x85, C1_CNTRL },
++        { 0xad, C1_PUNCT },
++        { 0xaa, C1_PUNCT },
++        { 0xb5, C1_PUNCT },
++        { 0xba, C1_PUNCT },
++        { 0xb2, C1_PUNCT | C1_DIGIT },
++        { 0xb3, C1_PUNCT | C1_DIGIT },
++        { 0xb9, C1_PUNCT | C1_DIGIT },
++    };
++
++    for (c = 0; c <= 0xff; c++)
++    {
++        base_wctype[c] = p_iswctype(c, 0xffff);
++        types |= base_wctype[c];
++    }
++    todo_wine ok(types == 0x1ff, "Unexpected wctype bits present\n");
++
++    for (c = 0x100; c <= 0xffff; c++)
++    {
++        types = p_iswctype(c, 0xffff);
++        todo_wine_if(types != 0) ok(types == 0, "Unexpected iswctype for %#x\n", c);
++        types = p_iswalpha(c);
++        todo_wine_if(types != 0) ok(types == 0, "Unexpected iswalpha for %#x\n", c);
++        types = p_iswdigit(c);
++        todo_wine_if(types != 0) ok(types == 0, "Unexpected iswdigit for %#x\n", c);
++        types = p_iswlower(c);
++        todo_wine_if(types != 0) ok(types == 0, "Unexpected iswlower for %#x\n", c);
++        types = p_iswspace(c);
++        todo_wine_if(types != 0) ok(types == 0, "Unexpected iswspace for %#x\n", c);
++        types = p_iswxdigit(c);
++        todo_wine_if(types != 0) ok(types == 0, "Unexpected iswxdigit for %#x\n", c);
++    }
++
++    for (i = 0; i < ARRAY_SIZE(iswctype_tests); i++)
++    {
++        todo_wine {
++            ok(base_wctype[iswctype_tests[i].c] == iswctype_tests[i].wctype,
++                "Unexpected wctype %#x for char %#x\n",
++                base_wctype[iswctype_tests[i].c], iswctype_tests[i].c);
++        }
++    }
++}
++
+ START_TEST(string)
+ {
+     InitFunctionPtrs();
+@@ -1545,4 +1616,5 @@ START_TEST(string)
+     test_toupper();
+     test__strnicmp();
+     test_sscanf();
++    test_iswctype();
+ }
+
+-- 
+2.23.0
+

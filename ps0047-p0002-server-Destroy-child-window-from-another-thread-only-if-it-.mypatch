@@ -1,0 +1,79 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH v5 2/2] server: Destroy child window from another thread only if it's not running.
+Message-Id: <20200113161143.1117951-2-rbernon@codeweavers.com>
+Date: Mon, 13 Jan 2020 17:11:43 +0100
+In-Reply-To: <20200113161143.1117951-1-rbernon@codeweavers.com>
+References: <20200113161143.1117951-1-rbernon@codeweavers.com>
+
+On thread destroy, a WM_WINE_DESTROYWINDOW is sent to the child windows
+living in other threads. However there's then a race condition between
+these threads peeking for messages and the current thread detaching its
+child windows from their threads and clearing their message queues.
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+
+Notes:
+    v5: Instead of conditionally detaching child windows from the owning
+    thread, which left some dangling references, this checks the child
+    window's thread and state before destroying it. If the owning thread
+    is still running, it will reap its own windows on exit. Otherwise it
+    should be safe to destroy the windows on its behalf.
+
+ dlls/user32/tests/msg.c |  3 +--
+ server/window.c         | 16 ++++++++++++++--
+ 2 files changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
+index 1dd1b5978e7..030fdfaf23b 100644
+--- a/dlls/user32/tests/msg.c
++++ b/dlls/user32/tests/msg.c
+@@ -8593,7 +8593,6 @@ static DWORD CALLBACK create_grand_child_thread( void *param )
+     ok( !ret, "WaitForSingleObject returned %x, error: %u\n", ret, GetLastError() );
+ 
+     while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) DispatchMessageA(&msg);
+-    todo_wine
+     ok( !IsWindow( hchild ), "Child window not destroyed\n" );
+ 
+     return 0;
+@@ -8788,7 +8787,7 @@ static void test_interthread_messages(void)
+     CloseHandle( wnd_event.start_event );
+     CloseHandle( wnd_event.stop_event );
+     flush_events();
+-    ok_sequence(WmExitThreadSeq, "destroy child on thread exit", TRUE);
++    ok_sequence(WmExitThreadSeq, "destroy child on thread exit", FALSE);
+     log_all_parent_messages--;
+     DestroyWindow( wnd_event.hwnd );
+ 
+diff --git a/server/window.c b/server/window.c
+index c9b131cba5d..cd413ba1023 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -1888,9 +1888,21 @@ void destroy_window( struct window *win )
+ 
+     /* destroy all children */
+     while (!list_empty(&win->children))
+-        destroy_window( LIST_ENTRY( list_head(&win->children), struct window, entry ));
++    {
++        struct window *child = LIST_ENTRY( list_head(&win->children), struct window, entry );
++        if (!child->thread || child->thread == win->thread || child->thread->state != RUNNING)
++            destroy_window( child );
++        else
++            list_remove(&child->entry);
++    }
+     while (!list_empty(&win->unlinked))
+-        destroy_window( LIST_ENTRY( list_head(&win->unlinked), struct window, entry ));
++    {
++        struct window *child = LIST_ENTRY( list_head(&win->unlinked), struct window, entry );
++        if (!child->thread || child->thread == win->thread || child->thread->state != RUNNING)
++            destroy_window( child );
++        else
++            list_remove(&child->entry);
++    }
+ 
+     /* reset global window pointers, if the corresponding window is destroyed */
+     if (win == shell_window) shell_window = NULL;
+
+-- 
+2.25.0.rc2
+

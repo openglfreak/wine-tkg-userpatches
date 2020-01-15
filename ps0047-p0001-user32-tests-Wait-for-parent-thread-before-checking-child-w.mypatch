@@ -1,0 +1,167 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH v5 1/2] user32/tests: Wait for parent thread before checking child window.
+Message-Id: <20200113161143.1117951-1-rbernon@codeweavers.com>
+Date: Mon, 13 Jan 2020 17:11:42 +0100
+
+This test is failing from time to time. Making sure the parent thread
+has terminated before continuing triggers the underlying race condition,
+and makes the test to always fail.
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+
+I'm not sure if the fix in next patch is fine for inclusion in 5.0, but
+this first patch should at least make the test to consistently fail.
+
+Notes:
+    * Directly check the window in grand child thread instead of
+      waiting, it should have been destroyed already as we waited
+      for thread completion.
+    * Start the threads before flushing events and cleaning up
+      sequences, it should be the same at the end but it gives more time
+      for children to create their own windows.
+    * Make all the handles live on the main stack, directly wait on the
+      child thread handle from the grand child, instead of an additional
+      event.
+    * Increase some of the remaining timeouts, it still sometimes times
+      out on Windows otherwise.
+    
+    The failure was hard to reproduce. The most reliable way without the
+    sleep added here is to start multiple runs on the testbot, changing
+    locale for each run. The locale change seems to have an impact on
+    the timing and triggers the race condition.
+
+ dlls/user32/tests/msg.c | 61 +++++++++++++++++++++++++----------------
+ 1 file changed, 37 insertions(+), 24 deletions(-)
+
+diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
+index 413f25ccc3a..1dd1b5978e7 100644
+--- a/dlls/user32/tests/msg.c
++++ b/dlls/user32/tests/msg.c
+@@ -8546,6 +8546,8 @@ static void test_paint_messages(void)
+ struct wnd_event
+ {
+     HWND hwnd;
++    HWND child_hwnd;
++    HANDLE child;
+     HANDLE grand_child;
+     HANDLE start_event;
+     HANDLE stop_event;
+@@ -8578,44 +8580,50 @@ static DWORD CALLBACK create_grand_child_thread( void *param )
+     struct wnd_event *wnd_event = param;
+     HWND hchild;
+     MSG msg;
++    DWORD ret;
+ 
+     hchild = CreateWindowExA(0, "TestWindowClass", "Test child",
+-                             WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, wnd_event->hwnd, 0, 0, NULL);
++                             WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, wnd_event->child_hwnd, 0, 0, NULL);
+     ok (hchild != 0, "Failed to create child window\n");
+     flush_events();
+     flush_sequence();
+     SetEvent( wnd_event->start_event );
+ 
+-    for (;;)
+-    {
+-        MsgWaitForMultipleObjects(0, NULL, FALSE, 1000, QS_ALLINPUT);
+-        if (!IsWindow( hchild )) break;  /* will be destroyed when parent thread exits */
+-        while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) DispatchMessageA(&msg);
+-    }
++    ret = WaitForSingleObject( wnd_event->child, 5000 );
++    ok( !ret, "WaitForSingleObject returned %x, error: %u\n", ret, GetLastError() );
++
++    while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) DispatchMessageA(&msg);
++    todo_wine
++    ok( !IsWindow( hchild ), "Child window not destroyed\n" );
++
+     return 0;
+ }
+ 
+ static DWORD CALLBACK create_child_thread( void *param )
+ {
+     struct wnd_event *wnd_event = param;
+-    struct wnd_event child_event;
+     DWORD ret, tid;
+     MSG msg;
+ 
+-    child_event.hwnd = CreateWindowExA(0, "TestWindowClass", "Test child",
+-                             WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, wnd_event->hwnd, 0, 0, NULL);
+-    ok (child_event.hwnd != 0, "Failed to create child window\n");
+-    SetFocus( child_event.hwnd );
++    wnd_event->child_hwnd = CreateWindowExA( 0, "TestWindowClass", "Test child",
++                                             WS_CHILD | WS_VISIBLE, 0, 0, 10, 10,
++                                             wnd_event->hwnd, 0, 0, NULL );
++    ok (wnd_event->child_hwnd != 0, "Failed to create child windows\n");
++    SetFocus( wnd_event->child_hwnd );
++
++    wnd_event->grand_child = CreateThread( NULL, 0, create_grand_child_thread, wnd_event, 0, &tid );
++    ok( wnd_event->grand_child != 0, "CreateThread failed, error %u\n", GetLastError() );
++
+     flush_events();
+     flush_sequence();
+-    child_event.start_event = wnd_event->start_event;
+-    wnd_event->grand_child = CreateThread(NULL, 0, create_grand_child_thread, &child_event, 0, &tid);
+     for (;;)
+     {
+-        DWORD ret = MsgWaitForMultipleObjects(1, &child_event.start_event, FALSE, 1000, QS_SENDMESSAGE);
++        ret = MsgWaitForMultipleObjects(1, &wnd_event->start_event, FALSE, 5000, QS_SENDMESSAGE);
+         if (ret != 1) break;
+         while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) DispatchMessageA(&msg);
+     }
++    ok( !ret, "MsgWaitForMultipleObjects failed %x, error: %u\n", ret, GetLastError() );
++
+     ret = WaitForSingleObject( wnd_event->stop_event, 5000 );
+     ok( !ret, "WaitForSingleObject failed %x\n", ret );
+     return 0;
+@@ -8749,33 +8757,38 @@ static void test_interthread_messages(void)
+     wnd_event.hwnd = CreateWindowExA(0, "TestParentClass", "Test parent", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                               100, 100, 200, 200, 0, 0, 0, NULL);
+     ok (wnd_event.hwnd != 0, "Failed to create parent window\n");
++
++    wnd_event.start_event = CreateEventA( NULL, TRUE, FALSE, NULL );
++    wnd_event.stop_event = CreateEventA( NULL, TRUE, FALSE, NULL );
++
++    wnd_event.child = CreateThread( NULL, 0, create_child_thread, &wnd_event, 0, &tid );
++    ok( wnd_event.child != 0, "CreateThread failed, error %u\n", GetLastError() );
++
+     flush_events();
+     flush_sequence();
+     log_all_parent_messages++;
+-    wnd_event.start_event = CreateEventA( NULL, TRUE, FALSE, NULL );
+-    wnd_event.stop_event = CreateEventA( NULL, TRUE, FALSE, NULL );
+-    hThread = CreateThread( NULL, 0, create_child_thread, &wnd_event, 0, &tid );
+     for (;;)
+     {
+-        ret = MsgWaitForMultipleObjects(1, &wnd_event.start_event, FALSE, 1000, QS_SENDMESSAGE);
++        ret = MsgWaitForMultipleObjects(1, &wnd_event.start_event, FALSE, 5000, QS_SENDMESSAGE);
+         if (ret != 1) break;
+         while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) DispatchMessageA(&msg);
+     }
+     ok( !ret, "MsgWaitForMultipleObjects failed %x\n", ret );
+     /* now wait for the thread without processing messages; this shouldn't deadlock */
+     SetEvent( wnd_event.stop_event );
+-    ret = WaitForSingleObject( hThread, 5000 );
++
++    ret = WaitForSingleObject( wnd_event.child, 5000 );
+     ok( !ret, "WaitForSingleObject failed %x\n", ret );
+-    CloseHandle( hThread );
+ 
+     ret = WaitForSingleObject( wnd_event.grand_child, 5000 );
+-    ok( !ret, "WaitForSingleObject failed %x\n", ret );
+-    CloseHandle( wnd_event.grand_child );
++    ok( !ret, "WaitForSingleObject failed %x, error: %u\n", ret, GetLastError() );
+ 
++    CloseHandle( wnd_event.child );
++    CloseHandle( wnd_event.grand_child );
+     CloseHandle( wnd_event.start_event );
+     CloseHandle( wnd_event.stop_event );
+     flush_events();
+-    ok_sequence(WmExitThreadSeq, "destroy child on thread exit", FALSE);
++    ok_sequence(WmExitThreadSeq, "destroy child on thread exit", TRUE);
+     log_all_parent_messages--;
+     DestroyWindow( wnd_event.hwnd );
+ 
+
+-- 
+2.25.0.rc2
+

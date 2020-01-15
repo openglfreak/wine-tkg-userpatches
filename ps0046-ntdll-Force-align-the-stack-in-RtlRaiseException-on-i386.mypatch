@@ -1,0 +1,49 @@
+From: Chip Davis <cdavis@codeweavers.com>
+Subject: [PATCH v2] ntdll: Force align the stack in RtlRaiseException() on i386.
+Message-Id: <20200111225140.6126-1-cdavis@codeweavers.com>
+Date: Sat, 11 Jan 2020 16:51:40 -0600
+
+This is an assembly function, so we have to do it manually.
+
+Signed-off-by: Chip Davis <cdavis@codeweavers.com>
+---
+
+Notes:
+    v2: Fix saving EAX. Unfortunately, I need a register because of the 'subl'
+        instruction.
+
+ dlls/ntdll/signal_i386.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/signal_i386.c b/dlls/ntdll/signal_i386.c
+index e9dd0de2fc3c..099e10a3ebf2 100644
+--- a/dlls/ntdll/signal_i386.c
++++ b/dlls/ntdll/signal_i386.c
+@@ -2548,14 +2548,22 @@ __ASM_STDCALL_FUNC( RtlRaiseException, 4,
+                     "movl %esp,%ebp\n\t"
+                     __ASM_CFI(".cfi_def_cfa_register %ebp\n\t")
+                     "leal -0x2cc(%esp),%esp\n\t"  /* sizeof(CONTEXT) */
+-                    "pushl %esp\n\t"              /* context */
++                    "andl $-16,%esp\n\t"
++                    "subl $16,%esp\n\t"
++                    "movl %eax,(%esp)\n\t"
++                    "movl %esp,%eax\n\t"
++                    "subl $12,%esp\n\t"           /* stack alignment */
++                    "pushl %eax\n\t"              /* context */
++                    "movl 16(%esp),%eax\n\t"
+                     "call " __ASM_STDCALL("RtlCaptureContext",4) "\n\t"
++                    "addl $12,%esp\n\t"
+                     "movl 4(%ebp),%eax\n\t"       /* return address */
+                     "movl 8(%ebp),%ecx\n\t"       /* rec */
+                     "movl %eax,12(%ecx)\n\t"      /* rec->ExceptionAddress */
+                     "leal 12(%ebp),%eax\n\t"
+                     "movl %eax,0xc4(%esp)\n\t"    /* context->Esp */
+                     "movl %esp,%eax\n\t"
++                    "subl $8,%esp\n\t"            /* stack alignment */
+                     "pushl %eax\n\t"
+                     "pushl %ecx\n\t"
+                     "call " __ASM_NAME("raise_exception_full_context") "\n\t"
+
+-- 
+2.24.0
+

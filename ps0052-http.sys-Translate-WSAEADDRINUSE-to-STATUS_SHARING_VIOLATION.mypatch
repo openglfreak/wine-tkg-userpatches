@@ -1,0 +1,62 @@
+From: Zebediah Figura <z.figura12@gmail.com>
+Subject: [PATCH] http.sys: Translate WSAEADDRINUSE to STATUS_SHARING_VIOLATION.
+Message-Id: <20200115224837.25420-1-z.figura12@gmail.com>
+Date: Wed, 15 Jan 2020 16:48:37 -0600
+
+Signed-off-by: Zebediah Figura <z.figura12@gmail.com>
+---
+ dlls/http.sys/http.c         | 7 ++++++-
+ dlls/httpapi/tests/httpapi.c | 6 ++++--
+ 2 files changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/http.sys/http.c b/dlls/http.sys/http.c
+index 91d81400e65..4259ca618f3 100644
+--- a/dlls/http.sys/http.c
++++ b/dlls/http.sys/http.c
+@@ -1104,10 +1104,15 @@ static NTSTATUS http_add_url(struct request_queue *queue, IRP *irp)
+     addr.sin_addr.S_un.S_addr = INADDR_ANY;
+     if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) == -1)
+     {
+-        ERR("Failed to bind socket, error %u.\n", WSAGetLastError());
+         LeaveCriticalSection(&http_cs);
+         closesocket(s);
+         heap_free(url);
++        if (WSAGetLastError() == WSAEADDRINUSE)
++        {
++            WARN("Address %s is already in use.\n", debugstr_a(params->url));
++            return STATUS_SHARING_VIOLATION;
++        }
++        ERR("Failed to bind socket, error %u.\n", WSAGetLastError());
+         return STATUS_UNSUCCESSFUL;
+     }
+ 
+diff --git a/dlls/httpapi/tests/httpapi.c b/dlls/httpapi/tests/httpapi.c
+index ee585948abd..a52a3f6c344 100644
+--- a/dlls/httpapi/tests/httpapi.c
++++ b/dlls/httpapi/tests/httpapi.c
+@@ -113,8 +113,9 @@ static unsigned short add_url_v1(HANDLE queue)
+     for (port = 50000; port < 51000; ++port)
+     {
+         swprintf(url, ARRAY_SIZE(url), L"http://localhost:%u/", port);
+-        if ((ret = HttpAddUrl(queue, url, NULL)) != ERROR_SHARING_VIOLATION)
++        if (!(ret = HttpAddUrl(queue, url, NULL)))
+             return port;
++        ok(ret == ERROR_SHARING_VIOLATION, "Failed to add %s, error %u.\n", debugstr_w(url), ret);
+     }
+     ok(0, "Failed to add url %s, error %u.\n", debugstr_w(url), ret);
+     return 0;
+@@ -129,8 +130,9 @@ static ULONG add_url_v2(HTTP_URL_GROUP_ID group)
+     for (port = 50010; port < 51000; ++port)
+     {
+         swprintf(url, ARRAY_SIZE(url), L"http://localhost:%u/", port);
+-        if ((ret = pHttpAddUrlToUrlGroup(group, url, 0xdeadbeef, 0)) != ERROR_SHARING_VIOLATION)
++        if (!(ret = pHttpAddUrlToUrlGroup(group, url, 0xdeadbeef, 0)))
+             return port;
++        ok(ret == ERROR_SHARING_VIOLATION, "Failed to add %s, error %u.\n", debugstr_w(url), ret);
+     }
+     ok(0, "Failed to add url %s, error %u.\n", debugstr_w(url), ret);
+     return 0;
+
+-- 
+2.24.1
+

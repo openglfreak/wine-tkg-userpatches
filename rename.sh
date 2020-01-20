@@ -129,21 +129,23 @@ main() (
         file_extension="${patch##*.}"
 
         subject="$(_get_subject "$patch")"
+        formatted_patch_number=
         case "${subject}" in
-            '[PATCH'*|'[RFC PATCH'*)
+            \[*)
                 subject_patch="${subject%%\] *}]"
-                subject_commit_msg="${subject#*\] }";;
+                subject_commit_msg="${subject#*\] }"
+                patch_number="$(_get_patch_number "${subject_patch}")"
+                formatted_patch_number="$(format_number "${patch_number}")"
+                unset patch_number;;
             *)
                 subject_patch=
                 subject_commit_msg="${subject}"
         esac
 
-        patch_number="$(_get_patch_number "${subject_patch}")"
         sanitized_commit_msg="$(printf '%s\n' "${subject_commit_msg}" \
             | _sanitize_commit_msg)"
 
         filename="ps$(format_number "${patchset_number}")"
-        formatted_patch_number="$(format_number "${patch_number}")"
         # shellcheck disable=SC2026
         if [ x''x != x"${formatted_patch_number}"x ]; then
             filename="${filename}-p${formatted_patch_number}"

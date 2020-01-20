@@ -1,0 +1,180 @@
+From: Jeff Smith <whydoubt@gmail.com>
+Subject: [PATCH 2/3] user32: Factor out brush retrieval for buttons.
+Message-Id: <20200119175926.320002-2-whydoubt@gmail.com>
+Date: Sun, 19 Jan 2020 11:59:25 -0600
+In-Reply-To: <20200119175926.320002-1-whydoubt@gmail.com>
+References: <20200119175926.320002-1-whydoubt@gmail.com>
+
+Signed-off-by: Jeff Smith <whydoubt@gmail.com>
+---
+ dlls/user32/button.c | 68 +++++++++++++++-----------------------------
+ 1 file changed, 23 insertions(+), 45 deletions(-)
+
+diff --git a/dlls/user32/button.c b/dlls/user32/button.c
+index 9a011ba266..3c8ec8237b 100644
+--- a/dlls/user32/button.c
++++ b/dlls/user32/button.c
+@@ -178,6 +178,22 @@ static inline WCHAR *get_button_text( HWND hwnd )
+     return buffer;
+ }
+ 
++static HBRUSH BUTTON_BrushSendMessage( HWND hwnd, HDC hDC, UINT message )
++{
++    HBRUSH hBrush;
++    HWND parent;
++
++    parent = GetParent( hwnd );
++    if (!parent)
++        parent = hwnd;
++
++    hBrush = (HBRUSH)SendMessageW( parent, message, (WPARAM)hDC, (LPARAM)hwnd );
++    /* did the app forget to call defwindowproc ? */
++    if (!hBrush)
++        hBrush = (HBRUSH)DefWindowProcW( parent, message, (WPARAM)hDC, (LPARAM)hwnd );
++    return hBrush;
++}
++
+ /***********************************************************************
+  *           ButtonWndProc_common
+  */
+@@ -231,13 +247,7 @@ LRESULT ButtonWndProc_common(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+         {
+             HDC hdc = (HDC)wParam;
+             RECT rc;
+-            HBRUSH hBrush;
+-            HWND parent = GetParent(hWnd);
+-            if (!parent) parent = hWnd;
+-            hBrush = (HBRUSH)SendMessageW(parent, WM_CTLCOLORBTN, (WPARAM)hdc, (LPARAM)hWnd);
+-            if (!hBrush) /* did the app forget to call defwindowproc ? */
+-                hBrush = (HBRUSH)DefWindowProcW(parent, WM_CTLCOLORBTN,
+-                                                (WPARAM)hdc, (LPARAM)hWnd);
++            HBRUSH hBrush = BUTTON_BrushSendMessage( hWnd, hdc, WM_CTLCOLORBTN );
+             GetClientRect(hWnd, &rc);
+             FillRect(hdc, &rc, hBrush);
+         }
+@@ -351,21 +361,14 @@ LRESULT ButtonWndProc_common(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+         if (IsWindowVisible(hWnd))
+         {
+             HDC hdc = GetDC(hWnd);
+-            HBRUSH hbrush;
+             RECT client, rc;
+-            HWND parent = GetParent(hWnd);
+             UINT message = (btn_type == BS_PUSHBUTTON ||
+                             btn_type == BS_DEFPUSHBUTTON ||
+                             btn_type == BS_USERBUTTON ||
+                             btn_type == BS_OWNERDRAW) ?
+                             WM_CTLCOLORBTN : WM_CTLCOLORSTATIC;
+ 
+-            if (!parent) parent = hWnd;
+-            hbrush = (HBRUSH)SendMessageW(parent, message,
+-                                          (WPARAM)hdc, (LPARAM)hWnd);
+-            if (!hbrush) /* did the app forget to call DefWindowProc ? */
+-                hbrush = (HBRUSH)DefWindowProcW(parent, message,
+-                                                (WPARAM)hdc, (LPARAM)hWnd);
++            HBRUSH hbrush = BUTTON_BrushSendMessage( hWnd, hdc, message );
+ 
+             GetClientRect(hWnd, &client);
+             rc = client;
+@@ -739,16 +742,13 @@ static void PB_Paint( HWND hwnd, HDC hDC, UINT action )
+     LONG state = get_button_state( hwnd );
+     LONG style = GetWindowLongW( hwnd, GWL_STYLE );
+     BOOL pushedState = (state & BST_PUSHED);
+-    HWND parent;
+     HRGN hrgn;
+ 
+     GetClientRect( hwnd, &rc );
+ 
+     /* Send WM_CTLCOLOR to allow changing the font (the colors are fixed) */
+     if ((hFont = get_button_font( hwnd ))) SelectObject( hDC, hFont );
+-    parent = GetParent(hwnd);
+-    if (!parent) parent = hwnd;
+-    SendMessageW( parent, WM_CTLCOLORBTN, (WPARAM)hDC, (LPARAM)hwnd );
++    BUTTON_BrushSendMessage( hwnd, hDC, WM_CTLCOLORBTN );
+ 
+     hrgn = set_control_clipping( hDC, &rc );
+ 
+@@ -828,7 +828,6 @@ static void CB_Paint( HWND hwnd, HDC hDC, UINT action )
+     LONG state = get_button_state( hwnd );
+     LONG style = GetWindowLongW( hwnd, GWL_STYLE );
+     LONG ex_style = GetWindowLongW( hwnd, GWL_EXSTYLE );
+-    HWND parent;
+     HRGN hrgn;
+ 
+     if (style & BS_PUSHLIKE)
+@@ -847,13 +846,7 @@ static void CB_Paint( HWND hwnd, HDC hDC, UINT action )
+     GetCharWidthW( hDC, '0', '0', &text_offset );
+     text_offset /= 2;
+ 
+-    parent = GetParent(hwnd);
+-    if (!parent) parent = hwnd;
+-    hBrush = (HBRUSH)SendMessageW(parent, WM_CTLCOLORSTATIC,
+-				  (WPARAM)hDC, (LPARAM)hwnd);
+-    if (!hBrush) /* did the app forget to call defwindowproc ? */
+-        hBrush = (HBRUSH)DefWindowProcW(parent, WM_CTLCOLORSTATIC,
+-					(WPARAM)hDC, (LPARAM)hwnd );
++    hBrush = BUTTON_BrushSendMessage( hwnd, hDC, WM_CTLCOLORSTATIC );
+     hrgn = set_control_clipping( hDC, &client );
+ 
+     if (style & BS_LEFTTEXT || ex_style & WS_EX_RIGHT)
+@@ -982,17 +975,11 @@ static void GB_Paint( HWND hwnd, HDC hDC, UINT action )
+     UINT dtFlags;
+     TEXTMETRICW tm;
+     LONG style = GetWindowLongW( hwnd, GWL_STYLE );
+-    HWND parent;
+     HRGN hrgn;
+ 
+     if ((hFont = get_button_font( hwnd ))) SelectObject( hDC, hFont );
+     /* GroupBox acts like static control, so it sends CTLCOLORSTATIC */
+-    parent = GetParent(hwnd);
+-    if (!parent) parent = hwnd;
+-    hbr = (HBRUSH)SendMessageW(parent, WM_CTLCOLORSTATIC, (WPARAM)hDC, (LPARAM)hwnd);
+-    if (!hbr) /* did the app forget to call defwindowproc ? */
+-        hbr = (HBRUSH)DefWindowProcW(parent, WM_CTLCOLORSTATIC,
+-				     (WPARAM)hDC, (LPARAM)hwnd);
++    hbr = BUTTON_BrushSendMessage( hwnd, hDC, WM_CTLCOLORSTATIC );
+     GetClientRect( hwnd, &rc);
+     rcFrame = rc;
+     hrgn = set_control_clipping( hDC, &rc );
+@@ -1033,18 +1020,12 @@ static void UB_Paint( HWND hwnd, HDC hDC, UINT action )
+     HBRUSH hBrush;
+     HFONT hFont;
+     LONG state = get_button_state( hwnd );
+-    HWND parent;
+ 
+     GetClientRect( hwnd, &rc);
+ 
+     if ((hFont = get_button_font( hwnd ))) SelectObject( hDC, hFont );
+ 
+-    parent = GetParent(hwnd);
+-    if (!parent) parent = hwnd;
+-    hBrush = (HBRUSH)SendMessageW(parent, WM_CTLCOLORBTN, (WPARAM)hDC, (LPARAM)hwnd);
+-    if (!hBrush) /* did the app forget to call defwindowproc ? */
+-        hBrush = (HBRUSH)DefWindowProcW(parent, WM_CTLCOLORBTN,
+-					(WPARAM)hDC, (LPARAM)hwnd);
++    hBrush = BUTTON_BrushSendMessage( hwnd, hDC, WM_CTLCOLORBTN );
+ 
+     FillRect( hDC, &rc, hBrush );
+     if (action == ODA_FOCUS || (state & BST_FOCUS))
+@@ -1076,7 +1057,6 @@ static void OB_Paint( HWND hwnd, HDC hDC, UINT action )
+     LONG state = get_button_state( hwnd );
+     DRAWITEMSTRUCT dis;
+     LONG_PTR id = GetWindowLongPtrW( hwnd, GWLP_ID );
+-    HWND parent;
+     HFONT hFont;
+     HRGN hrgn;
+ 
+@@ -1093,9 +1073,7 @@ static void OB_Paint( HWND hwnd, HDC hDC, UINT action )
+     GetClientRect( hwnd, &dis.rcItem );
+ 
+     if ((hFont = get_button_font( hwnd ))) SelectObject( hDC, hFont );
+-    parent = GetParent(hwnd);
+-    if (!parent) parent = hwnd;
+-    SendMessageW( parent, WM_CTLCOLORBTN, (WPARAM)hDC, (LPARAM)hwnd );
++    BUTTON_BrushSendMessage( hwnd, hDC, WM_CTLCOLORBTN );
+ 
+     hrgn = set_control_clipping( hDC, &dis.rcItem );
+ 
+
+-- 
+2.23.0
+

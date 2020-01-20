@@ -1,0 +1,258 @@
+From: Derek Lesho <dlesho@codeweavers.com>
+Subject: [RFC 2/2] mf: Implement stub MPEG4 ByteStream handler.
+Message-Id: <20200117192557.990039-3-dlesho@codeweavers.com>
+Date: Fri, 17 Jan 2020 13:25:57 -0600
+In-Reply-To: <20200117192557.990039-1-dlesho@codeweavers.com>
+References: <20200117192557.990039-1-dlesho@codeweavers.com>
+
+Signed-off-by: Derek Lesho <dlesho@codeweavers.com>
+---
+ dlls/mf/Makefile.in  |   1 +
+ dlls/mf/main.c       |   2 +
+ dlls/mf/mf.idl       |   7 ++
+ dlls/mf/mf.rgs       |   7 ++
+ dlls/mf/mf_private.h |   4 +-
+ dlls/mf/mpeg4.c      | 149 +++++++++++++++++++++++++++++++++++++++++++
+ 6 files changed, 169 insertions(+), 1 deletion(-)
+ create mode 100644 dlls/mf/mpeg4.c
+
+diff --git a/dlls/mf/Makefile.in b/dlls/mf/Makefile.in
+index 81872b17a5..2412cbaf31 100644
+--- a/dlls/mf/Makefile.in
++++ b/dlls/mf/Makefile.in
+@@ -7,6 +7,7 @@ EXTRADLLFLAGS = -mno-cygwin
+ C_SRCS = \
+ 	handler.c \
+ 	main.c \
++	mpeg4.c \
+ 	samplegrabber.c \
+ 	sar.c \
+ 	session.c \
+diff --git a/dlls/mf/main.c b/dlls/mf/main.c
+index 8cff665c1c..36c74559af 100644
+--- a/dlls/mf/main.c
++++ b/dlls/mf/main.c
+@@ -723,6 +723,7 @@ static HRESULT file_scheme_handler_construct(REFIID riid, void **obj)
+ }
+ 
+ static struct class_factory file_scheme_handler_factory = { { &class_factory_vtbl }, file_scheme_handler_construct };
++static struct class_factory mpeg4_byte_stream_handler_factory = { { &class_factory_vtbl }, mpeg4_stream_handler_construct };
+ 
+ static const struct class_object
+ {
+@@ -732,6 +733,7 @@ static const struct class_object
+ class_objects[] =
+ {
+     { &CLSID_FileSchemeHandler, &file_scheme_handler_factory.IClassFactory_iface },
++    { &CLSID_MPEG4ByteStreamHandler, &mpeg4_byte_stream_handler_factory.IClassFactory_iface },
+ };
+ 
+ /*******************************************************************************
+diff --git a/dlls/mf/mf.idl b/dlls/mf/mf.idl
+index 824c246d30..c673106343 100644
+--- a/dlls/mf/mf.idl
++++ b/dlls/mf/mf.idl
+@@ -24,3 +24,10 @@
+     uuid(477ec299-1421-4bdd-971f-7ccb933f21ad)
+ ]
+ coclass FileSchemeHandler { }
++
++[
++    helpstring("MPEG4 Byte Stream Handler"),
++    threading(both),
++    uuid(271c3902-6095-4c45-a22f-20091816ee9e)
++]
++coclass MPEG4ByteStreamHandler { }
+\ No newline at end of file
+diff --git a/dlls/mf/mf.rgs b/dlls/mf/mf.rgs
+index f127df7632..749f8eef88 100644
+--- a/dlls/mf/mf.rgs
++++ b/dlls/mf/mf.rgs
+@@ -13,6 +13,13 @@ HKLM
+                         val '{477ec299-1421-4bdd-971f-7ccb933f21ad}' = s 'File Scheme Handler'
+                     }
+                 }
++                NoRemove 'ByteStreamHandlers'
++                {
++                    '.mp4'
++                    {
++                        val '{271C3902-6095-4c45-A22F-20091816EE9E}' = s 'MPEG4 Byte Stream Handler'
++                    }
++                }
+             }
+         }
+     }
+diff --git a/dlls/mf/mf_private.h b/dlls/mf/mf_private.h
+index a06962ba79..fbf7113ce9 100644
+--- a/dlls/mf/mf_private.h
++++ b/dlls/mf/mf_private.h
+@@ -77,4 +77,6 @@ HRESULT handler_begin_create_object(struct handler *handler, IMFByteStream *stre
+         IMFAsyncCallback *callback, IUnknown *state);
+ HRESULT handler_end_create_object(struct handler *handler, IMFAsyncResult *result,
+         MF_OBJECT_TYPE *obj_type, IUnknown **object);
+-HRESULT handler_cancel_object_creation(struct handler *handler, IUnknown *cancel_cookie);
+\ No newline at end of file
++HRESULT handler_cancel_object_creation(struct handler *handler, IUnknown *cancel_cookie);
++
++HRESULT mpeg4_stream_handler_construct(REFIID riid, void **obj);
+\ No newline at end of file
+diff --git a/dlls/mf/mpeg4.c b/dlls/mf/mpeg4.c
+new file mode 100644
+index 0000000000..aa422afd44
+--- /dev/null
++++ b/dlls/mf/mpeg4.c
+@@ -0,0 +1,149 @@
++#include <stdarg.h>
++
++#define COBJMACROS
++
++#include "windef.h"
++#include "winbase.h"
++#include "mfidl.h"
++#include "rpcproxy.h"
++
++#include "mf.h"
++
++#include "mfapi.h"
++#include "mferror.h"
++
++#include "mf_private.h"
++
++#include "wine/debug.h"
++#include "wine/heap.h"
++#include "wine/list.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(mfplat);
++
++/* IMFByteStreamHandler */
++
++struct mpeg4_stream_handler
++{
++    IMFByteStreamHandler IMFByteStreamHandler_iface;
++    LONG refcount;
++    struct handler handler;
++};
++
++static struct mpeg4_stream_handler *impl_from_IMFByteStreamHandler(IMFByteStreamHandler *iface)
++{
++    return CONTAINING_RECORD(iface, struct mpeg4_stream_handler, IMFByteStreamHandler_iface);
++}
++
++static HRESULT WINAPI mpeg_stream_handler_QueryInterface(IMFByteStreamHandler *iface, REFIID riid, void **obj)
++{
++    TRACE("%p, %s, %p.\n", iface, debugstr_guid(riid), obj);
++
++    if (IsEqualIID(riid, &IID_IMFByteStreamHandler) ||
++            IsEqualIID(riid, &IID_IUnknown))
++    {
++        *obj = iface;
++        IMFByteStreamHandler_AddRef(iface);
++        return S_OK;
++    }
++
++    WARN("Unsupported %s.\n", debugstr_guid(riid));
++    *obj = NULL;
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI mpeg_stream_handler_AddRef(IMFByteStreamHandler *iface)
++{
++    struct mpeg4_stream_handler *handler = impl_from_IMFByteStreamHandler(iface);
++    ULONG refcount = InterlockedIncrement(&handler->refcount);
++
++    TRACE("%p, refcount %u.\n", handler, refcount);
++
++    return refcount;
++}
++
++static ULONG WINAPI mpeg_stream_handler_Release(IMFByteStreamHandler *iface)
++{
++    struct mpeg4_stream_handler *this = impl_from_IMFByteStreamHandler(iface);
++    ULONG refcount = InterlockedDecrement(&this->refcount);
++
++    TRACE("%p, refcount %u.\n", iface, refcount);
++
++    if (!refcount)
++    {
++        handler_destruct(&this->handler);
++    }
++
++    return refcount;
++}
++
++static HRESULT WINAPI mpeg_stream_handler_BeginCreateObject(IMFByteStreamHandler *iface, IMFByteStream *stream, const WCHAR *url, DWORD flags,
++        IPropertyStore *props, IUnknown **cancel_cookie, IMFAsyncCallback *callback, IUnknown *state)
++{
++    struct mpeg4_stream_handler *this = impl_from_IMFByteStreamHandler(iface);
++
++    TRACE("%p, %s, %#x, %p, %p, %p, %p.\n", iface, debugstr_w(url), flags, props, cancel_cookie, callback, state);
++    return handler_begin_create_object(&this->handler, stream, url, flags, props, cancel_cookie, callback, state);
++}
++
++static HRESULT WINAPI mpeg_stream_handler_EndCreateObject(IMFByteStreamHandler *iface, IMFAsyncResult *result,
++        MF_OBJECT_TYPE *obj_type, IUnknown **object)
++{
++    struct mpeg4_stream_handler *this = impl_from_IMFByteStreamHandler(iface);
++
++    TRACE("%p, %p, %p, %p.\n", iface, result, obj_type, object);
++    return handler_end_create_object(&this->handler, result, obj_type, object);
++}
++
++static HRESULT WINAPI mpeg_stream_handler_CancelObjectCreation(IMFByteStreamHandler *iface, IUnknown *cancel_cookie)
++{
++    struct mpeg4_stream_handler *this = impl_from_IMFByteStreamHandler(iface);
++
++    TRACE("%p, %p.\n", iface, cancel_cookie);
++    return handler_cancel_object_creation(&this->handler, cancel_cookie);
++}
++
++static HRESULT mpeg_stream_handler_GetMaxNumberOfBytesRequiredForResolution(IMFByteStreamHandler *iface, QWORD *bytes)
++{
++    FIXME("stub (%p)\n", bytes);
++    return E_NOTIMPL;
++}
++
++static const IMFByteStreamHandlerVtbl mpeg4_stream_handler_vtbl =
++{
++    mpeg_stream_handler_QueryInterface,
++    mpeg_stream_handler_AddRef,
++    mpeg_stream_handler_Release,
++    mpeg_stream_handler_BeginCreateObject,
++    mpeg_stream_handler_EndCreateObject,
++    mpeg_stream_handler_CancelObjectCreation,
++    mpeg_stream_handler_GetMaxNumberOfBytesRequiredForResolution,
++};
++
++static HRESULT mpeg4_stream_handler_create_object(struct handler *handler, WCHAR *url, IMFByteStream *stream, DWORD flags,
++                                            IPropertyStore *props, IUnknown **out_object, MF_OBJECT_TYPE *out_obj_type)
++{
++    FIXME("stub! (%p %s %p %u %p %p %p)\n", handler, url, stream, flags, props, out_object, out_obj_type);
++    return E_NOTIMPL;
++}
++
++HRESULT mpeg4_stream_handler_construct(REFIID riid, void **obj)
++{
++    struct mpeg4_stream_handler *this;
++    HRESULT hr;
++
++    TRACE("%s, %p.\n", debugstr_guid(riid), obj);
++
++    this = heap_alloc_zero(sizeof(*this));
++    if (!this)
++        return E_OUTOFMEMORY;
++
++    handler_construct(&this->handler, mpeg4_stream_handler_create_object);
++
++    this->IMFByteStreamHandler_iface.lpVtbl = &mpeg4_stream_handler_vtbl;
++    this->refcount = 1;
++
++    hr = IMFByteStreamHandler_QueryInterface(&this->IMFByteStreamHandler_iface, riid, obj);
++    IMFByteStreamHandler_Release(&this->IMFByteStreamHandler_iface);
++
++    return hr;
++}
+\ No newline at end of file
+
+-- 
+2.25.0
+

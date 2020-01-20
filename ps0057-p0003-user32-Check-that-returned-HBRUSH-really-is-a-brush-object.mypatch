@@ -1,0 +1,62 @@
+From: Jeff Smith <whydoubt@gmail.com>
+Subject: [PATCH 3/3] user32: Check that returned HBRUSH really is a brush object.
+Message-Id: <20200119175926.320002-3-whydoubt@gmail.com>
+Date: Sun, 19 Jan 2020 11:59:26 -0600
+In-Reply-To: <20200119175926.320002-1-whydoubt@gmail.com>
+References: <20200119175926.320002-1-whydoubt@gmail.com>
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=14113
+Signed-off-by: Jeff Smith <whydoubt@gmail.com>
+---
+ dlls/user32/button.c         | 2 +-
+ dlls/user32/static.c         | 3 ++-
+ dlls/user32/tests/colormsg.c | 3 ---
+ 3 files changed, 3 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/user32/button.c b/dlls/user32/button.c
+index 3c8ec8237b..1672e1588b 100644
+--- a/dlls/user32/button.c
++++ b/dlls/user32/button.c
+@@ -189,7 +189,7 @@ static HBRUSH BUTTON_BrushSendMessage( HWND hwnd, HDC hDC, UINT message )
+ 
+     hBrush = (HBRUSH)SendMessageW( parent, message, (WPARAM)hDC, (LPARAM)hwnd );
+     /* did the app forget to call defwindowproc ? */
+-    if (!hBrush)
++    if (!hBrush || GetObjectType(hBrush) != OBJ_BRUSH)
+         hBrush = (HBRUSH)DefWindowProcW( parent, message, (WPARAM)hDC, (LPARAM)hwnd );
+     return hBrush;
+ }
+diff --git a/dlls/user32/static.c b/dlls/user32/static.c
+index 1f7c03121c..193d6132d9 100644
+--- a/dlls/user32/static.c
++++ b/dlls/user32/static.c
+@@ -294,7 +294,8 @@ static HBRUSH STATIC_SendWmCtlColorStatic(HWND hwnd, HDC hdc)
+     if (!parent) parent = hwnd;
+     hBrush = (HBRUSH) SendMessageW( parent,
+                     WM_CTLCOLORSTATIC, (WPARAM)hdc, (LPARAM)hwnd );
+-    if (!hBrush) /* did the app forget to call DefWindowProc ? */
++    /* did the app forget to call DefWindowProc ? */
++    if (!hBrush || GetObjectType(hBrush) != OBJ_BRUSH)
+     {
+         /* FIXME: DefWindowProc should return different colors if a
+                   manifest is present */
+diff --git a/dlls/user32/tests/colormsg.c b/dlls/user32/tests/colormsg.c
+index 69566a6545..bfe27ead73 100644
+--- a/dlls/user32/tests/colormsg.c
++++ b/dlls/user32/tests/colormsg.c
+@@ -148,11 +148,8 @@ static void test_style_message(const char *class, int style, LONG inside_x, LONG
+             (tests[i].bkcolor != CLR_INVALID) ? tests[i].bkcolor : RGB(255, 255, 255);
+         ocolor_exp = (tests[i].brushcolor == CLR_INVALID || is_pushbutton || is_simple ||
+                       is_groupbox) ? ocolor0 : tests[i].brushcolor;
+-        todo_wine_if(tests[i].brush != NULL && tests[i].brushcolor == CLR_INVALID && !is_pushbutton)
+         ok(icolor == icolor_exp, "(%s,%#x,%d) Expected color %#x inside text area, got %#x\n",
+                 class, style, i, icolor_exp, icolor);
+-        todo_wine_if(tests[i].brush != NULL && tests[i].brushcolor == CLR_INVALID && !is_pushbutton &&
+-                     !is_simple && !is_groupbox)
+         ok(ocolor == ocolor_exp, "(%s,%#x,%d) Expected color %#x outside text area, got %#x\n",
+                 class, style, i, ocolor_exp, ocolor);
+     }
+
+-- 
+2.23.0
+

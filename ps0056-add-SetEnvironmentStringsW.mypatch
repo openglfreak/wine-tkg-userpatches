@@ -1,0 +1,203 @@
+From: Frank Uhlig <uhlig.frank@gmail.com>
+Subject: [PATCH] add: SetEnvironmentStringsW
+Message-Id: <20200118224503.9377-1-uhlig.frank@gmail.com>
+Date: Sat, 18 Jan 2020 23:45:03 +0100
+
+From: Frank Uhlig <fuulish@users.noreply.github.com>
+
+Signed-off-by: Frank Uhlig <uhlig.frank@gmail.com>
+---
+ ...ms-win-core-processenvironment-l1-1-0.spec |  2 +-
+ ...ms-win-core-processenvironment-l1-2-0.spec |  2 +-
+ dlls/kernel32/kernel32.spec                   |  2 +-
+ dlls/kernel32/tests/environ.c                 | 61 +++++++++++++++++++
+ dlls/kernelbase/kernelbase.spec               |  2 +-
+ dlls/kernelbase/process.c                     | 29 +++++++++
+ include/winbase.h                             |  1 +
+ 7 files changed, 95 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/api-ms-win-core-processenvironment-l1-1-0/api-ms-win-core-processenvironment-l1-1-0.spec b/dlls/api-ms-win-core-processenvironment-l1-1-0/api-ms-win-core-processenvironment-l1-1-0.spec
+index e3698d6efd..7a62b74390 100644
+--- a/dlls/api-ms-win-core-processenvironment-l1-1-0/api-ms-win-core-processenvironment-l1-1-0.spec
++++ b/dlls/api-ms-win-core-processenvironment-l1-1-0/api-ms-win-core-processenvironment-l1-1-0.spec
+@@ -15,7 +15,7 @@
+ @ stdcall SearchPathW(wstr wstr wstr long ptr ptr) kernel32.SearchPathW
+ @ stdcall SetCurrentDirectoryA(str) kernel32.SetCurrentDirectoryA
+ @ stdcall SetCurrentDirectoryW(wstr) kernel32.SetCurrentDirectoryW
+-@ stub SetEnvironmentStringsW
++@ stdcall SetEnvironmentStringsW(ptr) kernel32.SetEnvironmentStringsW
+ @ stdcall SetEnvironmentVariableA(str str) kernel32.SetEnvironmentVariableA
+ @ stdcall SetEnvironmentVariableW(wstr wstr) kernel32.SetEnvironmentVariableW
+ @ stdcall SetStdHandle(long long) kernel32.SetStdHandle
+diff --git a/dlls/api-ms-win-core-processenvironment-l1-2-0/api-ms-win-core-processenvironment-l1-2-0.spec b/dlls/api-ms-win-core-processenvironment-l1-2-0/api-ms-win-core-processenvironment-l1-2-0.spec
+index 2c25ee1a07..c93d221c5e 100644
+--- a/dlls/api-ms-win-core-processenvironment-l1-2-0/api-ms-win-core-processenvironment-l1-2-0.spec
++++ b/dlls/api-ms-win-core-processenvironment-l1-2-0/api-ms-win-core-processenvironment-l1-2-0.spec
+@@ -17,7 +17,7 @@
+ @ stdcall SearchPathW(wstr wstr wstr long ptr ptr) kernel32.SearchPathW
+ @ stdcall SetCurrentDirectoryA(str) kernel32.SetCurrentDirectoryA
+ @ stdcall SetCurrentDirectoryW(wstr) kernel32.SetCurrentDirectoryW
+-@ stub SetEnvironmentStringsW
++@ stdcall SetEnvironmentStringsW(ptr) kernel32.SetEnvironmentStringsW
+ @ stdcall SetEnvironmentVariableA(str str) kernel32.SetEnvironmentVariableA
+ @ stdcall SetEnvironmentVariableW(wstr wstr) kernel32.SetEnvironmentVariableW
+ @ stdcall SetStdHandle(long long) kernel32.SetStdHandle
+diff --git a/dlls/kernel32/kernel32.spec b/dlls/kernel32/kernel32.spec
+index be48ef1694..2b74a4182e 100644
+--- a/dlls/kernel32/kernel32.spec
++++ b/dlls/kernel32/kernel32.spec
+@@ -1387,7 +1387,7 @@
+ # @ stub SetDynamicTimeZoneInformation
+ @ stdcall -import SetEndOfFile(long)
+ # @ stub SetEnvironmentStringsA
+-# @ stub SetEnvironmentStringsW
++@ stdcall -import SetEnvironmentStringsW (ptr)
+ @ stdcall -import SetEnvironmentVariableA(str str)
+ @ stdcall -import SetEnvironmentVariableW(wstr wstr)
+ @ stdcall -import SetErrorMode(long)
+diff --git a/dlls/kernel32/tests/environ.c b/dlls/kernel32/tests/environ.c
+index 44a6a0cff0..44c29fd05f 100644
+--- a/dlls/kernel32/tests/environ.c
++++ b/dlls/kernel32/tests/environ.c
+@@ -579,6 +579,66 @@ static void test_GetEnvironmentStringsW(void)
+     FreeEnvironmentStringsW(env2);
+ }
+ 
++static void test_SetEnvironmentStringsW(void)
++{
++    DWORD buf_len;
++    BOOL ret;
++    DWORD ret_size;
++
++    static WCHAR buf[256];
++
++    static WCHAR name[] = {'N','a','m','e',0};
++    static WCHAR value[] = {'V','a','l','u','e',0};
++    static WCHAR env[] = {'N','a','m','e','=','V','a','l','u','e',0};
++
++    static WCHAR eman[] = {'e','m','a','N',0};
++    static WCHAR eulav[] = {'e','u','l','a','V',0};
++    static WCHAR vne[] = {'e','m','a','N','=','e','u','l','a','V',0};
++
++    static WCHAR var[] = {'V','a','r'};
++    static WCHAR val[] = {'V','a','l'};
++    static WCHAR rav[] = {'r','a','V'};
++    static WCHAR lav[] = {'l','a','V'};
++    static WCHAR mul[] = {'V','a','r','=','V','a','l',' ','r','a','V','=','l','a','V',0};
++
++    static WCHAR empty[] = {'V','a','r','=',0};
++
++    buf_len = sizeof(buf) / 2;
++
++    ret = SetEnvironmentStringsW(env);
++    ok( ret, "Setting environment strings failed" );
++
++    ret_size = GetEnvironmentVariableW(name, buf, buf_len);
++    ok( ((0 != ret_size) && (0 == wcscmp(buf, value))),
++       "Environment String settings resulted in different value");
++
++    ret = SetEnvironmentStringsW(vne);
++    ok( ret, "Setting environment strings failed" );
++
++    ret_size = GetEnvironmentVariableW(eman, buf, buf_len);
++    ok( ((0 != ret_size) && (0 == wcscmp(buf, eulav))),
++       "Environment String settings resulted in different value");
++
++    ret = SetEnvironmentStringsW(mul);
++    ok( ret, "Setting environment strings failed" );
++
++    ret_size = GetEnvironmentVariableW(var, buf, buf_len);
++    ok( ((0 != ret_size) && (0 == wcscmp(buf, val))),
++       "Environment String settings resulted in different value");
++
++    ret_size = GetEnvironmentVariableW(rav, buf, buf_len);
++    ok( ((0 != ret_size) && (0 == wcscmp(buf, lav))),
++       "Environment String settings resulted in different value");
++
++    ret = SetEnvironmentStringsW(empty);
++    ok( ret, "Setting environment strings failed" );
++
++    ret_size = GetEnvironmentVariableW(var, buf, buf_len);
++    ok( (0 == ret_size),
++       "Environment String settings resulted in different value");
++
++}
++
+ START_TEST(environ)
+ {
+     init_functionpointers();
+@@ -591,4 +651,5 @@ START_TEST(environ)
+     test_GetComputerNameExA();
+     test_GetComputerNameExW();
+     test_GetEnvironmentStringsW();
++    test_SetEnvironmentStringsW();
+ }
+diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
+index f36d4d525c..a5e30b938f 100644
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -1422,7 +1422,7 @@
+ @ stdcall SetDefaultDllDirectories(long)
+ # @ stub SetDynamicTimeZoneInformation
+ @ stdcall SetEndOfFile(long)
+-@ stub SetEnvironmentStringsW
++@ stdcall SetEnvironmentStringsW(ptr)
+ @ stdcall SetEnvironmentVariableA(str str)
+ @ stdcall SetEnvironmentVariableW(wstr wstr)
+ @ stdcall SetErrorMode(long)
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index a07dddb1fc..97b59b9548 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -1345,6 +1345,35 @@ BOOL WINAPI DECLSPEC_HOTPATCH SetEnvironmentVariableW( LPCWSTR name, LPCWSTR val
+ }
+ 
+ 
++/***********************************************************************
++ *           SetEnvironmentStringsW   (kernelbase.@)
++ */
++BOOL WINAPI DECLSPEC_HOTPATCH SetEnvironmentStringsW( LPWCH NewEnvironment )
++{
++
++    BOOL rc = FALSE;
++    WCHAR *var, *val;
++    const WCHAR delim[] = {' ','=','\n',0};
++
++    TRACE( "(%s)\n", debugstr_w(NewEnvironment));
++
++    if (NULL == NewEnvironment)
++        return rc;
++
++    var = wcstok(NewEnvironment, delim);
++    val = wcstok(NULL, delim);
++
++    while (var != NULL) {
++        if (FALSE == (rc = SetEnvironmentVariableW(var, val)))
++            break;
++        var = wcstok(NULL, delim);
++        val = wcstok(NULL, delim);
++    }
++
++    return rc;
++}
++
++
+ /***********************************************************************
+  * Process/thread attribute lists
+  ***********************************************************************/
+diff --git a/include/winbase.h b/include/winbase.h
+index 655eb48f0f..0c1aa19b42 100644
+--- a/include/winbase.h
++++ b/include/winbase.h
+@@ -2621,6 +2621,7 @@ WINBASEAPI BOOL        WINAPI SetEndOfFile(HANDLE);
+ WINBASEAPI BOOL        WINAPI SetEnvironmentVariableA(LPCSTR,LPCSTR);
+ WINBASEAPI BOOL        WINAPI SetEnvironmentVariableW(LPCWSTR,LPCWSTR);
+ #define                       SetEnvironmentVariable WINELIB_NAME_AW(SetEnvironmentVariable)
++WINBASEAPI BOOL        WINAPI SetEnvironmentStringsW(LPWCH);
+ WINBASEAPI UINT        WINAPI SetErrorMode(UINT);
+ WINBASEAPI BOOL        WINAPI SetEvent(HANDLE);
+ WINBASEAPI VOID        WINAPI SetFileApisToANSI(void);
+
+-- 
+2.24.1
+

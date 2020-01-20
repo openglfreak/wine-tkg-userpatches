@@ -1,0 +1,49 @@
+From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
+Subject: [PATCH 2/2] winex11.drv: Fix X11DRV_X_to_window_rect to handle windows smaller than the decoration.
+Message-Id: <c39ac2b75ff0b2e621216cfe87268ecfa73888d9.1579523754.git.gabrielopcode@gmail.com>
+Date: Mon, 20 Jan 2020 14:37:13 +0200
+In-Reply-To: <29f6db3abb6d4b74ddc72aee74ebbc6c3b6bd44d.1579523754.git.gabrielopcode@gmail.com>
+References: <29f6db3abb6d4b74ddc72aee74ebbc6c3b6bd44d.1579523754.git.gabrielopcode@gmail.com>
+
+A window can be resized to a smaller size than the decoration (title +
+borders), such as when it is minimized. In such cases it is necessary
+to recompute the minimum bounds, as it is done in the opposite function
+X11DRV_window_to_X_rect, since the real information was lost.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=48490
+Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
+---
+ dlls/winex11.drv/window.c | 16 ++++++++++------
+ 1 file changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 5b35e03..e0c0297 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1206,12 +1206,16 @@ static void X11DRV_window_to_X_rect( struct x11drv_win_data *data, RECT *rect )
+  */
+ void X11DRV_X_to_window_rect( struct x11drv_win_data *data, RECT *rect, int x, int y, int cx, int cy )
+ {
+-    x += data->window_rect.left - data->whole_rect.left;
+-    y += data->window_rect.top - data->whole_rect.top;
+-    cx += (data->window_rect.right - data->window_rect.left) -
+-          (data->whole_rect.right - data->whole_rect.left);
+-    cy += (data->window_rect.bottom - data->window_rect.top) -
+-          (data->whole_rect.bottom - data->whole_rect.top);
++    RECT rc;
++
++    get_decoration_rect( data, &rc );
++
++    x += min( data->window_rect.left - data->whole_rect.left, rc.left );
++    y += min( data->window_rect.top - data->whole_rect.top, rc.top );
++    cx += max( (data->window_rect.right - data->window_rect.left) -
++               (data->whole_rect.right - data->whole_rect.left), rc.right - rc.left );
++    cy += max( (data->window_rect.bottom - data->window_rect.top) -
++               (data->whole_rect.bottom - data->whole_rect.top), rc.bottom - rc.top );
+     SetRect( rect, x, y, x + cx, y + cy );
+ }
+ 
+
+-- 
+2.21.0
+

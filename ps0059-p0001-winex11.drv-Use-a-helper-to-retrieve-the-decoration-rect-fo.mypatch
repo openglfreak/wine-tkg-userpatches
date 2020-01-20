@@ -1,0 +1,68 @@
+From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
+Subject: [PATCH 1/2] winex11.drv: Use a helper to retrieve the decoration rect for managed windows.
+Message-Id: <29f6db3abb6d4b74ddc72aee74ebbc6c3b6bd44d.1579523754.git.gabrielopcode@gmail.com>
+Date: Mon, 20 Jan 2020 14:37:12 +0200
+
+Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
+---
+
+This simplifies the next patch and avoids duplicating code.
+
+ dlls/winex11.drv/window.c | 26 ++++++++++++++++++--------
+ 1 file changed, 18 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 99e4094..5b35e03 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1153,18 +1153,15 @@ void make_window_embedded( struct x11drv_win_data *data )
+ 
+ 
+ /***********************************************************************
+- *		X11DRV_window_to_X_rect
+- *
+- * Convert a rect from client to X window coordinates
++ *     get_decoration_rect
+  */
+-static void X11DRV_window_to_X_rect( struct x11drv_win_data *data, RECT *rect )
++static void get_decoration_rect( struct x11drv_win_data *data, RECT *rect )
+ {
+     DWORD style, ex_style, style_mask = 0, ex_style_mask = 0;
+     unsigned long decor;
+-    RECT rc;
+ 
++    SetRectEmpty( rect );
+     if (!data->managed) return;
+-    if (IsRectEmpty( rect )) return;
+ 
+     style = GetWindowLongW( data->hwnd, GWL_STYLE );
+     ex_style = GetWindowLongW( data->hwnd, GWL_EXSTYLE );
+@@ -1177,9 +1174,22 @@ static void X11DRV_window_to_X_rect( struct x11drv_win_data *data, RECT *rect )
+         ex_style_mask |= WS_EX_DLGMODALFRAME;
+     }
+ 
+-    SetRectEmpty( &rc );
+-    AdjustWindowRectEx( &rc, style & style_mask, FALSE, ex_style & ex_style_mask );
++    AdjustWindowRectEx( rect, style & style_mask, FALSE, ex_style & ex_style_mask );
++}
++
++
++/***********************************************************************
++ *		X11DRV_window_to_X_rect
++ *
++ * Convert a rect from client to X window coordinates
++ */
++static void X11DRV_window_to_X_rect( struct x11drv_win_data *data, RECT *rect )
++{
++    RECT rc;
++
++    if (IsRectEmpty( rect )) return;
+ 
++    get_decoration_rect( data, &rc );
+     rect->left   -= rc.left;
+     rect->right  -= rc.right;
+     rect->top    -= rc.top;
+
+-- 
+2.21.0
+

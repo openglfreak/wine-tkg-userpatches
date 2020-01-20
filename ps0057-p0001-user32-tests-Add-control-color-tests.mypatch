@@ -1,0 +1,241 @@
+From: Jeff Smith <whydoubt@gmail.com>
+Subject: [PATCH 1/3] user32/tests: Add control color tests.
+Message-Id: <20200119175926.320002-1-whydoubt@gmail.com>
+Date: Sun, 19 Jan 2020 11:59:24 -0600
+
+Signed-off-by: Jeff Smith <whydoubt@gmail.com>
+---
+A question I have with this patchset is where this test should go.
+I currently have it as a new test, but I could make it work as part
+of the static test (though my test does cover buttons as well).
+
+ dlls/user32/tests/Makefile.in |   1 +
+ dlls/user32/tests/colormsg.c  | 203 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 204 insertions(+)
+ create mode 100644 dlls/user32/tests/colormsg.c
+
+diff --git a/dlls/user32/tests/Makefile.in b/dlls/user32/tests/Makefile.in
+index dd101d69f3..38f1572cbb 100644
+--- a/dlls/user32/tests/Makefile.in
++++ b/dlls/user32/tests/Makefile.in
+@@ -5,6 +5,7 @@ C_SRCS = \
+ 	broadcast.c \
+ 	class.c \
+ 	clipboard.c \
++	colormsg.c \
+ 	combo.c \
+ 	cursoricon.c \
+ 	dce.c \
+diff --git a/dlls/user32/tests/colormsg.c b/dlls/user32/tests/colormsg.c
+new file mode 100644
+index 0000000000..69566a6545
+--- /dev/null
++++ b/dlls/user32/tests/colormsg.c
+@@ -0,0 +1,203 @@
++/* Unit test suite for control coloring via messages.
++ *
++ * Copyright 2019 Jeff Smith
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdarg.h>
++#include <stdio.h>
++
++#define STRICT
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++
++#include "wine/test.h"
++
++#define CTRL_ID 1995
++
++struct color_values
++{
++    HBRUSH brush;
++    COLORREF brushcolor;
++    COLORREF altbrushcolor;
++    COLORREF pencolor;
++    COLORREF textcolor;
++    COLORREF bkcolor;
++    int bkmode;
++} *color_test = NULL;
++
++UINT msg_expect;
++
++static HWND hMainWnd;
++
++static HWND build_child(const char *class, DWORD style)
++{
++    return CreateWindowA(class, "Test", WS_VISIBLE|WS_CHILD|style, 5, 5, 100, 100, hMainWnd, (HMENU)CTRL_ID, NULL, 0);
++}
++
++static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
++{
++    switch (msg)
++    {
++    case WM_CTLCOLORBTN:
++    case WM_CTLCOLORSTATIC:
++        if (color_test)
++            ok(msg == msg_expect, "Expected message %#x got %#x\n", msg, msg_expect);
++        if (msg == msg_expect && color_test && color_test->brush != (HBRUSH)-1)
++        {
++            HDC hdc = (HDC)wparam;
++            if (color_test->bkmode)
++                SetBkMode(hdc, color_test->bkmode);
++            if (color_test->altbrushcolor != CLR_INVALID)
++                SetDCBrushColor(hdc, color_test->altbrushcolor);
++            if (color_test->pencolor != CLR_INVALID)
++                SetDCPenColor(hdc, color_test->pencolor);
++            if (color_test->textcolor != CLR_INVALID)
++                SetTextColor(hdc, color_test->textcolor);
++            if (color_test->bkcolor != CLR_INVALID)
++                SetBkColor(hdc, color_test->bkcolor);
++            if (color_test->brush == NULL && color_test->brushcolor != CLR_INVALID)
++                color_test->brush = CreateSolidBrush(color_test->brushcolor);
++            return (LRESULT)color_test->brush;
++        }
++    }
++
++    return DefWindowProcA(hwnd, msg, wparam, lparam);
++}
++
++static void test_style_message(const char *class, int style, LONG inside_x, LONG inside_y)
++{
++#define INV CLR_INVALID
++    struct color_values tests[] =
++    {
++        /* WndProc will return NULL */
++        {NULL, INV, INV, INV, INV, INV},
++        /* WndProc will return non-object */
++        {(HBRUSH)(COLOR_HIGHLIGHT+1), INV, INV, INV, INV, INV},
++        /* WndProc will return object */
++        {NULL, RGB(255,0,0), INV, INV, INV, INV},
++        {NULL, RGB(255,0,0), INV, INV, INV, INV, TRANSPARENT},
++        {NULL, RGB(255,0,0), RGB(0,255,0), RGB(0,0,255), RGB(255,255,0),
++            RGB(255,0,255)},
++        {NULL, RGB(255,0,0), RGB(0,255,0), RGB(0,0,255), RGB(255,255,0),
++            RGB(255,0,255), TRANSPARENT},
++    };
++#undef INV
++    COLORREF icolor0, ocolor0;
++    COLORREF icolor_exp, ocolor_exp;
++    POINT ptOutside = {90, 90};
++    HWND hChild;
++    HDC hdc;
++    int i;
++
++    int is_simple = !strcmp(class,"static") && style == SS_SIMPLE;
++    int is_groupbox = !strcmp(class,"button") && style == BS_GROUPBOX;
++    int is_pushbutton = !strcmp(class,"button") &&
++        (style == BS_PUSHBUTTON || style == BS_DEFPUSHBUTTON || style == BS_USERBUTTON);
++
++    hChild = build_child(class, style);
++    SetWindowTextA(hChild, "____");
++    msg_expect = is_pushbutton ? WM_CTLCOLORBTN : WM_CTLCOLORSTATIC;
++
++    /* Get system colors for child window */
++    InvalidateRect(hChild, NULL, FALSE);
++    UpdateWindow(hChild);
++    hdc = GetDC(hChild);
++    icolor0 = GetPixel(hdc, inside_x, inside_y);
++    ocolor0 = GetPixel(hdc, ptOutside.x, ptOutside.y);
++    ReleaseDC(hChild, hdc);
++
++    ocolor_exp = (is_simple || is_groupbox) ? RGB(255, 255, 255) : icolor0;
++    ok(ocolor0 == ocolor_exp, "(%s,%#x) Expected color %#x outside text area, got %#x\n",
++            class, style, ocolor_exp, ocolor0);
++
++    for (i = 0; i < ARRAY_SIZE(tests); i++)
++    {
++        COLORREF icolor, ocolor;
++
++        /* Update child window with default colors */
++        InvalidateRect(hChild, NULL, FALSE);
++        UpdateWindow(hChild);
++
++        /* Update child window to exercise control color message */
++        color_test = &tests[i];
++        InvalidateRect(hChild, NULL, FALSE);
++        UpdateWindow(hChild);
++        color_test = NULL;
++        hdc = GetDC(hChild);
++        icolor = GetPixel(hdc, inside_x, inside_y);
++        ocolor = GetPixel(hdc, ptOutside.x, ptOutside.y);
++        ReleaseDC(hChild, hdc);
++
++        icolor_exp = (tests[i].brushcolor == CLR_INVALID || is_pushbutton) ? icolor0 :
++            (is_simple && tests[i].bkmode == TRANSPARENT) ? icolor0 :
++            (tests[i].bkmode == TRANSPARENT) ? tests[i].brushcolor :
++            (tests[i].bkcolor != CLR_INVALID) ? tests[i].bkcolor : RGB(255, 255, 255);
++        ocolor_exp = (tests[i].brushcolor == CLR_INVALID || is_pushbutton || is_simple ||
++                      is_groupbox) ? ocolor0 : tests[i].brushcolor;
++        todo_wine_if(tests[i].brush != NULL && tests[i].brushcolor == CLR_INVALID && !is_pushbutton)
++        ok(icolor == icolor_exp, "(%s,%#x,%d) Expected color %#x inside text area, got %#x\n",
++                class, style, i, icolor_exp, icolor);
++        todo_wine_if(tests[i].brush != NULL && tests[i].brushcolor == CLR_INVALID && !is_pushbutton &&
++                     !is_simple && !is_groupbox)
++        ok(ocolor == ocolor_exp, "(%s,%#x,%d) Expected color %#x outside text area, got %#x\n",
++                class, style, i, ocolor_exp, ocolor);
++    }
++    DestroyWindow(hChild);
++}
++
++START_TEST(colormsg)
++{
++    static const char szClassName[] = "testclass";
++    WNDCLASSEXA  wndclass;
++
++    wndclass.cbSize         = sizeof(wndclass);
++    wndclass.style          = CS_HREDRAW | CS_VREDRAW;
++    wndclass.lpfnWndProc    = WndProc;
++    wndclass.cbClsExtra     = 0;
++    wndclass.cbWndExtra     = 0;
++    wndclass.hInstance      = GetModuleHandleA(NULL);
++    wndclass.hIcon          = LoadIconA(NULL, (LPCSTR)IDI_APPLICATION);
++    wndclass.hIconSm        = LoadIconA(NULL, (LPCSTR)IDI_APPLICATION);
++    wndclass.hCursor        = LoadCursorA(NULL, (LPCSTR)IDC_ARROW);
++    wndclass.hbrBackground  = GetStockObject(WHITE_BRUSH);
++    wndclass.lpszClassName  = szClassName;
++    wndclass.lpszMenuName   = NULL;
++    RegisterClassExA(&wndclass);
++
++    hMainWnd = CreateWindowA(szClassName, "Test", WS_OVERLAPPEDWINDOW, 0, 0, 500, 500, NULL, NULL, GetModuleHandleA(NULL), NULL);
++    ShowWindow(hMainWnd, SW_SHOW);
++
++    test_style_message("static", SS_SIMPLE, 5, 5);
++    test_style_message("static", SS_LEFT, 5, 5);
++    test_style_message("static", SS_RIGHT, 95, 5);
++    test_style_message("static", SS_CENTER, 50, 5);
++    test_style_message("static", SS_LEFTNOWORDWRAP, 5, 5);
++
++    test_style_message("button", BS_CHECKBOX, 25, 50);
++    test_style_message("button", BS_AUTOCHECKBOX, 25, 50);
++    test_style_message("button", BS_RADIOBUTTON, 25, 50);
++    test_style_message("button", BS_AUTORADIOBUTTON, 25, 50);
++    test_style_message("button", BS_3STATE, 25, 50);
++    test_style_message("button", BS_AUTO3STATE, 25, 50);
++    test_style_message("button", BS_GROUPBOX, 20, 5);
++
++    test_style_message("button", BS_PUSHBUTTON, 50, 50);
++    test_style_message("button", BS_DEFPUSHBUTTON, 50, 50);
++    test_style_message("button", BS_USERBUTTON, 50, 50);
++
++    DestroyWindow(hMainWnd);
++}
+
+-- 
+2.23.0
+

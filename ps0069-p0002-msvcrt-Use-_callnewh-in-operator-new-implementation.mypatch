@@ -1,0 +1,76 @@
+From: Piotr Caban <piotr@codeweavers.com>
+Subject: [PATCH 2/3] msvcrt: Use _callnewh in operator new implementation.
+Message-Id: <dfb70496-4b68-0490-6a95-de583e9c71a2@codeweavers.com>
+Date: Wed, 29 Jan 2020 14:27:29 +0100
+
+Signed-off-by: Piotr Caban <piotr@codeweavers.com>
+---
+  dlls/msvcrt/heap.c | 34 +++++++++++++---------------------
+  1 file changed, 13 insertions(+), 21 deletions(-)
+
+diff --git a/dlls/msvcrt/heap.c b/dlls/msvcrt/heap.c
+index 512adc1e74..52f800e824 100644
+--- a/dlls/msvcrt/heap.c
++++ b/dlls/msvcrt/heap.c
+@@ -125,14 +125,24 @@ static MSVCRT_size_t msvcrt_heap_size(void *ptr)
+     return HeapSize(heap, 0, ptr);
+ }
+ 
++/*********************************************************************
++ *		_callnewh (MSVCRT.@)
++ */
++int CDECL _callnewh(MSVCRT_size_t size)
++{
++  int ret = 0;
++  MSVCRT_new_handler_func handler = MSVCRT_new_handler;
++  if(handler)
++    ret = (*handler)(size) ? 1 : 0;
++  return ret;
++}
++
+ /*********************************************************************
+  *		??2@YAPAXI@Z (MSVCRT.@)
+  */
+ void* CDECL DECLSPEC_HOTPATCH MSVCRT_operator_new(MSVCRT_size_t size)
+ {
+   void *retval;
+-  int freed;
+-  MSVCRT_new_handler_func handler;
+ 
+   do
+   {
+@@ -142,13 +152,7 @@ void* CDECL DECLSPEC_HOTPATCH MSVCRT_operator_new(MSVCRT_size_t size)
+       TRACE("(%ld) returning %p\n", size, retval);
+       return retval;
+     }
+-
+-    handler = MSVCRT_new_handler;
+-    if(handler)
+-      freed = (*handler)(size);
+-    else
+-      freed = 0;
+-  } while(freed);
++  } while(_callnewh(size));
+ 
+   TRACE("(%ld) out of memory\n", size);
+ #if _MSVCR_VER >= 80
+@@ -230,18 +234,6 @@ int CDECL MSVCRT__set_new_mode(int mode)
+   return old_mode;
+ }
+ 
+-/*********************************************************************
+- *		_callnewh (MSVCRT.@)
+- */
+-int CDECL _callnewh(MSVCRT_size_t size)
+-{
+-  int ret = 0;
+-  MSVCRT_new_handler_func handler = MSVCRT_new_handler;
+-  if(handler)
+-    ret = (*handler)(size) ? 1 : 0;
+-  return ret;
+-}
+-
+ /*********************************************************************
+  *		_expand (MSVCRT.@)
+  */
+

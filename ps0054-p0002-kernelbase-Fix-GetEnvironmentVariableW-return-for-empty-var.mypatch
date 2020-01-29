@@ -1,0 +1,75 @@
+From: Vladimir Panteleev <git@vladimir.panteleev.md>
+Subject: [PATCH v4 2/4] kernelbase: Fix GetEnvironmentVariableW return for empty variables.
+Message-Id: <20200124141946.4150435-2-git@vladimir.panteleev.md>
+Date: Fri, 24 Jan 2020 14:19:44 +0000
+In-Reply-To: <20200124141946.4150435-1-git@vladimir.panteleev.md>
+References: <20200124141946.4150435-1-git@vladimir.panteleev.md>
+
+Do the same thing as Vista and up.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=48471
+Signed-off-by: Vladimir Panteleev <git@vladimir.panteleev.md>
+---
+
+Since v3: No changes.
+---
+ dlls/kernel32/tests/environ.c | 20 ++++++++++++++++++++
+ dlls/kernelbase/process.c     |  3 ++-
+ 2 files changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/kernel32/tests/environ.c b/dlls/kernel32/tests/environ.c
+index e65d7af0f2..b2c9a3a4ff 100644
+--- a/dlls/kernel32/tests/environ.c
++++ b/dlls/kernel32/tests/environ.c
+@@ -166,6 +166,16 @@ static void test_GetSetEnvironmentVariableA(void)
+        "%s should be set to \"\" (NT) or removed (Win9x) but ret_size=%d GetLastError=%d and buf=%s\n",
+        name, ret_size, GetLastError(), buf);
+ 
++    SetLastError(0xdeadbeef);
++    ret_size = GetEnvironmentVariableA(name, NULL, 0);
++    ok(ret_size == 1 ||
++       broken(ret_size == 0), /* XP */
++       "should return 1 for empty string but ret_size=%d GetLastError=%d\n",
++       ret_size, GetLastError());
++    ok(GetLastError() == 0xdeadbeef ||
++       broken(GetLastError() == ERROR_MORE_DATA), /* XP */
++       "should not fail with zero size but GetLastError=%d\n", GetLastError());
++
+     /* Test the limits */
+     SetLastError(0xdeadbeef);
+     ret_size = GetEnvironmentVariableA(NULL, NULL, 0);
+@@ -275,6 +285,16 @@ static void test_GetSetEnvironmentVariableW(void)
+        ret_size, GetLastError());
+     ok(lstrcmpW(buf, empty_strW) == 0, "should copy an empty string\n");
+ 
++    SetLastError(0xdeadbeef);
++    ret_size = GetEnvironmentVariableW(name, NULL, 0);
++    ok(ret_size == 1 ||
++       broken(ret_size == 0), /* XP */
++       "should return 1 for empty string but ret_size=%d GetLastError=%d\n",
++       ret_size, GetLastError());
++    ok(GetLastError() == 0xdeadbeef ||
++       broken(GetLastError() == ERROR_MORE_DATA), /* XP */
++       "should not fail with zero size but GetLastError=%d\n", GetLastError());
++
+     /* Test the limits */
+     SetLastError(0xdeadbeef);
+     ret_size = GetEnvironmentVariableW(NULL, NULL, 0);
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index 788f03f220..612b0b2a2f 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -1276,7 +1276,8 @@ DWORD WINAPI DECLSPEC_HOTPATCH GetEnvironmentVariableW( LPCWSTR name, LPWSTR val
+     status = RtlQueryEnvironmentVariable_U( NULL, &us_name, &us_value );
+     len = us_value.Length / sizeof(WCHAR);
+     if (!set_ntstatus( status )) return (status == STATUS_BUFFER_TOO_SMALL) ? len + 1 : 0;
+-    if (size) val[len] = 0;
++    if (!size) return len + 1;
++    val[len] = 0;
+     return len;
+ }
+ 
+
+-- 
+2.25.0
+

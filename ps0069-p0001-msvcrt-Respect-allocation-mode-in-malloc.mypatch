@@ -1,0 +1,38 @@
+From: Piotr Caban <piotr@codeweavers.com>
+Subject: [PATCH 1/3] msvcrt: Respect allocation mode in malloc.
+Message-Id: <4cda0ee9-b6fd-b358-b68c-f8c15fb4ddf5@codeweavers.com>
+Date: Wed, 29 Jan 2020 14:27:25 +0100
+
+Signed-off-by: Piotr Caban <piotr@codeweavers.com>
+---
+  dlls/msvcrt/heap.c | 16 ++++++++++++----
+  1 file changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/msvcrt/heap.c b/dlls/msvcrt/heap.c
+index 0d6aee07f3..512adc1e74 100644
+--- a/dlls/msvcrt/heap.c
++++ b/dlls/msvcrt/heap.c
+@@ -441,10 +441,18 @@ void CDECL _free_base(void* ptr)
+  */
+ void* CDECL MSVCRT_malloc(MSVCRT_size_t size)
+ {
+-  void *ret = msvcrt_heap_alloc(0, size);
+-  if (!ret)
+-      *MSVCRT__errno() = MSVCRT_ENOMEM;
+-  return ret;
++    void *ret;
++
++    do
++    {
++        ret = msvcrt_heap_alloc(0, size);
++        if (ret || !MSVCRT_new_mode)
++            break;
++    } while(_callnewh(size));
++
++    if (!ret)
++        *MSVCRT__errno() = MSVCRT_ENOMEM;
++    return ret;
+ }
+ 
+ #if _MSVCR_VER>=140
+

@@ -1,18 +1,18 @@
 From: Andrew Wesie <awesie@gmail.com>
-Subject: [PATCH 3/3] psapi/tests: Test QueryWorkingSetEx.
-Message-Id: <20191218003428.114284-4-awesie@gmail.com>
-Date: Tue, 17 Dec 2019 16:34:28 -0800
-In-Reply-To: <20191218003428.114284-1-awesie@gmail.com>
-References: <20191218003428.114284-1-awesie@gmail.com>
+Subject: [PATCH v2 4/4] psapi/tests: Test QueryWorkingSetEx.
+Message-Id: <20200124201940.57767-4-awesie@gmail.com>
+Date: Fri, 24 Jan 2020 12:19:40 -0800
+In-Reply-To: <20200124201940.57767-1-awesie@gmail.com>
+References: <20200124201940.57767-1-awesie@gmail.com>
 
 Signed-off-by: Andrew Wesie <awesie@gmail.com>
 ---
- dlls/psapi/tests/psapi_main.c | 84 +++++++++++++++++++++++++++++++++++
- include/psapi.h               | 18 ++++++++
- 2 files changed, 102 insertions(+)
+ dlls/psapi/tests/psapi_main.c | 91 +++++++++++++++++++++++++++++++++++
+ include/psapi.h               | 18 +++++++
+ 2 files changed, 109 insertions(+)
 
 diff --git a/dlls/psapi/tests/psapi_main.c b/dlls/psapi/tests/psapi_main.c
-index 9799d2ffae..fada1043c7 100644
+index 9799d2ffae..0df247e9bf 100644
 --- a/dlls/psapi/tests/psapi_main.c
 +++ b/dlls/psapi/tests/psapi_main.c
 @@ -43,6 +43,7 @@ static NTSTATUS (WINAPI *pNtQueryVirtualMemory)(HANDLE, LPCVOID, ULONG, PVOID, S
@@ -31,12 +31,12 @@ index 9799d2ffae..fada1043c7 100644
      return TRUE;
  }
  
-@@ -791,6 +793,87 @@ free_page:
+@@ -791,6 +793,94 @@ free_page:
      VirtualFree(addr, 0, MEM_RELEASE);
  }
  
 +static void check_QueryWorkingSetEx(PVOID addr, const char *desc, DWORD expected_valid,
-+    BOOL expected_share_count, DWORD expected_protection, DWORD expected_shared)
++    DWORD expected_protection, DWORD expected_shared, BOOL todo, BOOL todo_shared)
 +{
 +    PSAPI_WORKING_SET_EX_INFORMATION info;
 +    BOOL ret;
@@ -45,22 +45,29 @@ index 9799d2ffae..fada1043c7 100644
 +    info.VirtualAddress = addr;
 +    ret = pQueryWorkingSetEx(GetCurrentProcess(), &info, sizeof(info));
 +    ok(ret, "QueryWorkingSetEx failed with %d\n", GetLastError());
++
++    todo_wine_if(todo)
 +    ok(info.VirtualAttributes.Valid == expected_valid, "%s expected Valid=%u but got %u\n",
 +        desc, expected_valid, info.VirtualAttributes.Valid);
-+    if (expected_share_count)
++
++    todo_wine_if(todo)
++    ok(info.VirtualAttributes.Win32Protection == expected_protection, "%s expected Win32Protection=%u but got %u\n",
++        desc, expected_protection, info.VirtualAttributes.Win32Protection);
++
++    ok(info.VirtualAttributes.Node == 0, "%s expected Node=0 but got %u\n",
++        desc, info.VirtualAttributes.Node);
++    ok(info.VirtualAttributes.LargePage == 0, "%s expected LargePage=0 but got %u\n",
++        desc, info.VirtualAttributes.LargePage);
++
++    todo_wine_if(todo_shared)
++    ok(info.VirtualAttributes.Shared == expected_shared || broken(!info.VirtualAttributes.Valid) /* w2003 */,
++        "%s expected Shared=%u but got %u\n", desc, expected_shared, info.VirtualAttributes.Shared);
++    if (info.VirtualAttributes.Valid && info.VirtualAttributes.Shared)
 +        ok(info.VirtualAttributes.ShareCount > 0, "%s expected ShareCount > 0 but got %u\n",
 +            desc, info.VirtualAttributes.ShareCount);
 +    else
 +        ok(info.VirtualAttributes.ShareCount == 0, "%s expected ShareCount == 0 but got %u\n",
 +            desc, info.VirtualAttributes.ShareCount);
-+    ok(info.VirtualAttributes.Win32Protection == expected_protection, "%s expected Win32Protection=%u but got %u\n",
-+        desc, expected_protection, info.VirtualAttributes.Win32Protection);
-+    ok(info.VirtualAttributes.Shared == expected_shared, "%s expected Shared=%u but got %u\n",
-+        desc, expected_shared, info.VirtualAttributes.Shared);
-+    ok(info.VirtualAttributes.Node == 0, "%s expected Node=0 but got %u\n",
-+        desc, info.VirtualAttributes.Node);
-+    ok(info.VirtualAttributes.LargePage == 0, "%s expected LargePage=0 but got %u\n",
-+        desc, info.VirtualAttributes.LargePage);
 +}
 +
 +static void test_QueryWorkingSetEx(void)
@@ -76,50 +83,50 @@ index 9799d2ffae..fada1043c7 100644
 +    }
 +
 +    addr = GetModuleHandleA(NULL);
-+    check_QueryWorkingSetEx(addr, "exe", 1, TRUE, PAGE_READONLY, 1);
++    check_QueryWorkingSetEx(addr, "exe", 1, PAGE_READONLY, 1, FALSE, TRUE);
 +
 +    ret = VirtualProtect(addr, 0x1000, PAGE_NOACCESS, &prot);
 +    ok(ret, "VirtualProtect failed with %d\n", GetLastError());
-+    check_QueryWorkingSetEx(addr, "exe,noaccess", 0, FALSE, 0, 1);
++    check_QueryWorkingSetEx(addr, "exe,noaccess", 0, 0, 1, FALSE, TRUE);
 +
 +    ret = VirtualProtect(addr, 0x1000, prot, &prot);
 +    ok(ret, "VirtualProtect failed with %d\n", GetLastError());
-+    check_QueryWorkingSetEx(addr, "exe,readonly1", 0, FALSE, 0, 1);
++    check_QueryWorkingSetEx(addr, "exe,readonly1", 0, 0, 1, TRUE, TRUE);
 +
 +    *(volatile char *)addr;
 +    ok(ret, "VirtualProtect failed with %d\n", GetLastError());
-+    check_QueryWorkingSetEx(addr, "exe,readonly2", 1, TRUE, PAGE_READONLY, 1);
++    check_QueryWorkingSetEx(addr, "exe,readonly2", 1, PAGE_READONLY, 1, FALSE, TRUE);
 +
 +    addr = VirtualAlloc(NULL, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 +    ok(addr != NULL, "VirtualAlloc failed with %d\n", GetLastError());
-+    check_QueryWorkingSetEx(addr, "valloc", 0, FALSE, 0, 0);
++    check_QueryWorkingSetEx(addr, "valloc", 0, 0, 0, FALSE, FALSE);
 +
 +    *(volatile char *)addr;
-+    check_QueryWorkingSetEx(addr, "valloc,read", 1, FALSE, PAGE_READWRITE, 0);
++    check_QueryWorkingSetEx(addr, "valloc,read", 1, PAGE_READWRITE, 0, FALSE, FALSE);
 +
 +    *(volatile char *)addr = 0x42;
-+    check_QueryWorkingSetEx(addr, "valloc,write", 1, FALSE, PAGE_READWRITE, 0);
++    check_QueryWorkingSetEx(addr, "valloc,write", 1, PAGE_READWRITE, 0, FALSE, FALSE);
 +
 +    ret = VirtualProtect(addr, 0x1000, PAGE_NOACCESS, &prot);
 +    ok(ret, "VirtualProtect failed with %d\n", GetLastError());
-+    check_QueryWorkingSetEx(addr, "valloc,noaccess", 0, FALSE, 0, 0);
++    check_QueryWorkingSetEx(addr, "valloc,noaccess", 0, 0, 0, FALSE, FALSE);
 +
 +    ret = VirtualProtect(addr, 0x1000, prot, &prot);
 +    ok(ret, "VirtualProtect failed with %d\n", GetLastError());
-+    check_QueryWorkingSetEx(addr, "valloc,readwrite1", 0, FALSE, 0, 0);
++    check_QueryWorkingSetEx(addr, "valloc,readwrite1", 0, 0, 0, TRUE, FALSE);
 +
 +    *(volatile char *)addr;
-+    check_QueryWorkingSetEx(addr, "valloc,readwrite2", 1, FALSE, PAGE_READWRITE, 0);
++    check_QueryWorkingSetEx(addr, "valloc,readwrite2", 1, PAGE_READWRITE, 0, FALSE, FALSE);
 +
 +    ret = VirtualFree(addr, 0, MEM_RELEASE);
 +    ok(ret, "VirtualFree failed with %d\n", GetLastError());
-+    check_QueryWorkingSetEx(addr, "valloc,free", 0, FALSE, 0, 0);
++    check_QueryWorkingSetEx(addr, "valloc,free", FALSE, 0, 0, FALSE, FALSE);
 +}
 +
  START_TEST(psapi_main)
  {
      DWORD pid = GetCurrentProcessId();
-@@ -818,6 +901,7 @@ START_TEST(psapi_main)
+@@ -818,6 +908,7 @@ START_TEST(psapi_main)
      test_GetProcessImageFileName();
      test_GetModuleFileNameEx();
      test_GetModuleBaseName();

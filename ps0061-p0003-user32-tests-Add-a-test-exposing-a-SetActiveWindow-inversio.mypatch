@@ -1,0 +1,97 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH v2 3/4] user32/tests: Add a test exposing a SetActiveWindow inversion.
+Message-Id: <20200123133622.1158017-3-rbernon@codeweavers.com>
+Date: Thu, 23 Jan 2020 14:36:21 +0100
+In-Reply-To: <20200123133622.1158017-1-rbernon@codeweavers.com>
+References: <20200123133622.1158017-1-rbernon@codeweavers.com>
+
+When calling SetForegroundWindow for a window in another thread, an
+internal message is posted to the thread's message queue.
+
+If this thread then calls SetForegroundWindow before processing its
+messages it will execute the corresponding set_active_window first,
+but then overwrite the active window later, when processing its internal
+messages.
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/user32/tests/win.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
+index 4184d6104bc..c89f7515eb7 100644
+--- a/dlls/user32/tests/win.c
++++ b/dlls/user32/tests/win.c
+@@ -3266,7 +3266,9 @@ static void test_SetActiveWindow(HWND hwnd)
+ struct create_window_thread_params
+ {
+     HWND window;
++    HWND other_window;
+     HANDLE window_created;
++    HANDLE set_foreground;
+     HANDLE test_finished;
+ };
+ 
+@@ -3275,12 +3277,23 @@ static DWORD WINAPI create_window_thread(void *param)
+     struct create_window_thread_params *p = param;
+     DWORD res;
+     BOOL ret;
++    MSG msg;
+ 
++    p->other_window = CreateWindowA("static", NULL, WS_POPUP | WS_VISIBLE, 0, 0, 0, 0, 0, 0, 0, 0);
+     p->window = CreateWindowA("static", NULL, WS_POPUP | WS_VISIBLE, 0, 0, 0, 0, 0, 0, 0, 0);
+ 
+     ret = SetEvent(p->window_created);
+     ok(ret, "SetEvent failed, last error %#x.\n", GetLastError());
+ 
++    res = WaitForSingleObject(p->set_foreground, INFINITE);
++    ok(res == WAIT_OBJECT_0, "Wait failed (%#x), last error %#x.\n", res, GetLastError());
++
++    SetForegroundWindow(p->other_window);
++    check_active_state(p->other_window, p->other_window, p->other_window);
++    while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) DispatchMessageA(&msg);
++    todo_wine
++    check_active_state(p->other_window, p->other_window, p->other_window);
++
+     res = WaitForSingleObject(p->test_finished, INFINITE);
+     ok(res == WAIT_OBJECT_0, "Wait failed (%#x), last error %#x.\n", res, GetLastError());
+ 
+@@ -3375,6 +3388,8 @@ static void test_SetForegroundWindow(HWND hwnd)
+ 
+     thread_params.window_created = CreateEventW(NULL, FALSE, FALSE, NULL);
+     ok(!!thread_params.window_created, "CreateEvent failed, last error %#x.\n", GetLastError());
++    thread_params.set_foreground = CreateEventW(NULL, FALSE, FALSE, NULL);
++    ok(!!thread_params.set_foreground, "CreateEvent failed, last error %#x.\n", GetLastError());
+     thread_params.test_finished = CreateEventW(NULL, FALSE, FALSE, NULL);
+     ok(!!thread_params.test_finished, "CreateEvent failed, last error %#x.\n", GetLastError());
+     thread = CreateThread(NULL, 0, create_window_thread, &thread_params, 0, &tid);
+@@ -3408,12 +3423,25 @@ static void test_SetForegroundWindow(HWND hwnd)
+     ok(!SetForegroundWindow(hwnd2), "SetForegroundWindow failed\n");
+     check_wnd_state(hwnd, hwnd, hwnd, 0);
+ 
++    SetForegroundWindow(hwnd);
++    check_active_state(hwnd, hwnd, hwnd);
++    SetForegroundWindow(thread_params.window);
++    check_active_state(0, thread_params.window, 0);
++    SetForegroundWindow(hwnd);
++    check_active_state(hwnd, hwnd, hwnd);
++    res = SetEvent(thread_params.set_foreground);
++    ok(res, "SetEvent failed, last error %#x.\n", GetLastError());
++
+     SetEvent(thread_params.test_finished);
+     WaitForSingleObject(thread, INFINITE);
+     CloseHandle(thread_params.test_finished);
++    CloseHandle(thread_params.set_foreground);
+     CloseHandle(thread_params.window_created);
+     CloseHandle(thread);
+     DestroyWindow(hwnd2);
++
++    /* process any pending internal message */
++    PeekMessageA(&msg, 0, 0, 0, 0);
+ }
+ 
+ static WNDPROC old_button_proc;
+
+-- 
+2.25.0
+

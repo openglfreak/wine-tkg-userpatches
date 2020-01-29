@@ -1,0 +1,162 @@
+From: Gijs Vermeulen <gijsvrm@gmail.com>
+Subject: [PATCH v3] setupapi: Handle arch-specific SourceDisks{Names, Files} .inf sections in get_source_info.
+Message-Id: <20200122232441.21194-1-gijsvrm@gmail.com>
+Date: Thu, 23 Jan 2020 00:24:41 +0100
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=48455
+Signed-off-by: Gijs Vermeulen <gijsvrm@gmail.com>
+---
+ dlls/setupapi/query.c            | 57 +++++++++++++++-----------------
+ dlls/setupapi/queue.c            | 13 ++++----
+ dlls/setupapi/setupapi_private.h |  3 ++
+ 3 files changed, 36 insertions(+), 37 deletions(-)
+
+diff --git a/dlls/setupapi/query.c b/dlls/setupapi/query.c
+index 828d8a1145..93e57fbe01 100644
+--- a/dlls/setupapi/query.c
++++ b/dlls/setupapi/query.c
+@@ -34,35 +34,23 @@
+ WINE_DEFAULT_DEBUG_CHANNEL(setupapi);
+ 
+ #ifdef __i386__
+-static const WCHAR source_disks_names_platform[] =
+-    {'S','o','u','r','c','e','D','i','s','k','s','N','a','m','e','s','.','x','8','6',0};
+-static const WCHAR source_disks_files_platform[] =
+-    {'S','o','u','r','c','e','D','i','s','k','s','F','i','l','e','s','.','x','8','6',0};
++static const WCHAR source_disks_names_platform[] = L"SourceDisksNames.x86";
++static const WCHAR source_disks_files_platform[] = L"SourceDisksFiles.x86";
+ #elif defined(__x86_64__)
+-static const WCHAR source_disks_names_platform[] =
+-    {'S','o','u','r','c','e','D','i','s','k','s','N','a','m','e','s','.','a','m','d','6','4',0};
+-static const WCHAR source_disks_files_platform[] =
+-    {'S','o','u','r','c','e','D','i','s','k','s','F','i','l','e','s','.','a','m','d','6','4',0};
++static const WCHAR source_disks_names_platform[] = L"SourceDisksNames.amd64";
++static const WCHAR source_disks_files_platform[] = L"SourceDisksFiles.amd64";
+ #elif defined(__arm__)
+-static const WCHAR source_disks_names_platform[] =
+-    {'S','o','u','r','c','e','D','i','s','k','s','N','a','m','e','s','.','a','r','m',0};
+-static const WCHAR source_disks_files_platform[] =
+-    {'S','o','u','r','c','e','D','i','s','k','s','F','i','l','e','s','.','a','r','m',0};
++static const WCHAR source_disks_names_platform[] = L"SourceDisksNames.arm";
++static const WCHAR source_disks_files_platform[] = L"SourceDisksFiles.arm";
+ #elif defined(__aarch64__)
+-static const WCHAR source_disks_names_platform[] =
+-    {'S','o','u','r','c','e','D','i','s','k','s','N','a','m','e','s','.','a','r','m','6','4',0};
+-static const WCHAR source_disks_files_platform[] =
+-    {'S','o','u','r','c','e','D','i','s','k','s','F','i','l','e','s','.','a','r','m','6','4',0};
++static const WCHAR source_disks_names_platform[] = L"SourceDisksNames.arm64";
++static const WCHAR source_disks_files_platform[] = L"SourceDisksFiles.arm64";
+ #else  /* FIXME: other platforms */
+-static const WCHAR source_disks_names_platform[] =
+-    {'S','o','u','r','c','e','D','i','s','k','s','N','a','m','e','s',0};
+-static const WCHAR source_disks_files_platform[] =
+-    {'S','o','u','r','c','e','D','i','s','k','s','F','i','l','e','s',0};
++static const WCHAR source_disks_names_platform[] = L"SourceDisksNames";
++static const WCHAR source_disks_files_platform[] = L"SourceDisksFiles";
+ #endif
+-static const WCHAR source_disks_names[] =
+-    {'S','o','u','r','c','e','D','i','s','k','s','N','a','m','e','s',0};
+-static const WCHAR source_disks_files[] =
+-    {'S','o','u','r','c','e','D','i','s','k','s','F','i','l','e','s',0};
++static const WCHAR source_disks_names[] = L"SourceDisksNames";
++static const WCHAR source_disks_files[] = L"SourceDisksFiles";
+ 
+ /* fills the PSP_INF_INFORMATION struct fill_info is TRUE
+  * always returns the required size of the information
+@@ -121,6 +109,18 @@ static HINF search_for_inf(LPCVOID InfSpec, DWORD SearchControl)
+     return INVALID_HANDLE_VALUE;
+ }
+ 
++BOOL search_for_source_disks_files( HINF hinf, const WCHAR *filename, INFCONTEXT *ctx )
++{
++    return SetupFindFirstLineW( hinf, source_disks_files_platform, filename, ctx ) ||
++           SetupFindFirstLineW( hinf, source_disks_files, filename, ctx );
++}
++
++BOOL search_for_source_disks_names( HINF hinf, const WCHAR *filename, INFCONTEXT *ctx )
++{
++    return SetupFindFirstLineW( hinf, source_disks_names_platform, filename, ctx ) ||
++           SetupFindFirstLineW( hinf, source_disks_names, filename, ctx );
++}
++
+ /***********************************************************************
+  *      SetupGetInfInformationA    (SETUPAPI.@)
+  *
+@@ -374,8 +374,7 @@ static LPWSTR get_source_id( HINF hinf, PINFCONTEXT context, PCWSTR filename )
+     DWORD size;
+     LPWSTR source_id;
+ 
+-    if (!SetupFindFirstLineW( hinf, source_disks_files_platform, filename, context ) &&
+-        !SetupFindFirstLineW( hinf, source_disks_files, filename, context ))
++    if (!search_for_source_disks_files( hinf, filename, context ))
+         return NULL;
+ 
+     if (!SetupGetStringFieldW( context, 1, NULL, 0, &size ))
+@@ -390,8 +389,7 @@ static LPWSTR get_source_id( HINF hinf, PINFCONTEXT context, PCWSTR filename )
+         return NULL;
+     }
+ 
+-    if (!SetupFindFirstLineW( hinf, source_disks_names_platform, source_id, context ) &&
+-        !SetupFindFirstLineW( hinf, source_disks_names, source_id, context ))
++    if (!search_for_source_disks_names( hinf, source_id, context ))
+     {
+         HeapFree( GetProcessHeap(), 0, source_id );
+         return NULL;
+@@ -503,8 +501,7 @@ BOOL WINAPI SetupGetSourceInfoW( HINF hinf, UINT source_id, UINT info,
+ 
+     swprintf( source_id_str, ARRAY_SIZE(source_id_str), fmt, source_id );
+ 
+-    if (!SetupFindFirstLineW( hinf, source_disks_names_platform, source_id_str, &ctx ) &&
+-        !SetupFindFirstLineW( hinf, source_disks_names, source_id_str, &ctx ))
++    if (!search_for_source_disks_names( hinf, source_id_str, &ctx ))
+         return FALSE;
+ 
+     switch (info)
+diff --git a/dlls/setupapi/queue.c b/dlls/setupapi/queue.c
+index 2d2c833474..29a76f1b8c 100644
+--- a/dlls/setupapi/queue.c
++++ b/dlls/setupapi/queue.c
+@@ -289,21 +289,20 @@ UINT CALLBACK QUEUE_callback_WtoA( void *context, UINT notification,
+ static void get_source_info( HINF hinf, const WCHAR *src_file, SP_FILE_COPY_PARAMS_W *params,
+                              WCHAR *src_root, WCHAR *src_path)
+ {
+-    static const WCHAR SourceDisksNames[] =
+-        {'S','o','u','r','c','e','D','i','s','k','s','N','a','m','e','s',0};
+-    static const WCHAR SourceDisksFiles[] =
+-        {'S','o','u','r','c','e','D','i','s','k','s','F','i','l','e','s',0};
+-
+     INFCONTEXT file_ctx, disk_ctx;
+     INT id, diskid;
+     DWORD len;
+ 
+     /* find the SourceDisksFiles entry */
+-    if (!SetupFindFirstLineW( hinf, SourceDisksFiles, src_file, &file_ctx )) return;
++    if (!search_for_source_disks_files( hinf, src_file, &file_ctx ))
++        return;
++
+     if (!SetupGetIntField( &file_ctx, 1, &diskid )) return;
+ 
+     /* now find the diskid in the SourceDisksNames section */
+-    if (!SetupFindFirstLineW( hinf, SourceDisksNames, NULL, &disk_ctx )) return;
++    if (!search_for_source_disks_names( hinf, NULL, &disk_ctx ))
++        return;
++
+     for (;;)
+     {
+         if (SetupGetIntField( &disk_ctx, 0, &id ) && (id == diskid)) break;
+diff --git a/dlls/setupapi/setupapi_private.h b/dlls/setupapi/setupapi_private.h
+index f4685ab2b4..99ca8aa0c9 100644
+--- a/dlls/setupapi/setupapi_private.h
++++ b/dlls/setupapi/setupapi_private.h
+@@ -111,4 +111,7 @@ extern OSVERSIONINFOW OsVersionInfo DECLSPEC_HIDDEN;
+ extern BOOL create_fake_dll( const WCHAR *name, const WCHAR *source ) DECLSPEC_HIDDEN;
+ extern void cleanup_fake_dlls(void) DECLSPEC_HIDDEN;
+ 
++extern BOOL search_for_source_disks_files( HINF hinf, const WCHAR *filename, INFCONTEXT *ctx ) DECLSPEC_HIDDEN;
++extern BOOL search_for_source_disks_names( HINF hinf, const WCHAR *filename, INFCONTEXT *ctx ) DECLSPEC_HIDDEN;
++
+ #endif /* __SETUPAPI_PRIVATE_H */
+
+-- 
+2.25.0
+

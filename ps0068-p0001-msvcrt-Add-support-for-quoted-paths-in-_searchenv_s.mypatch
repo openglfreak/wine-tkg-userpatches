@@ -1,0 +1,46 @@
+From: Piotr Caban <piotr@codeweavers.com>
+Subject: [PATCH 1/4] msvcrt: Add support for quoted paths in _searchenv_s.
+Message-Id: <96bf3022-b68c-0d06-4685-b39ec5fea90d@codeweavers.com>
+Date: Wed, 29 Jan 2020 13:42:11 +0100
+
+Signed-off-by: Piotr Caban <piotr@codeweavers.com>
+---
+  dlls/msvcrt/dir.c | 21 ++++++++++++++++++---
+  1 file changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/msvcrt/dir.c b/dlls/msvcrt/dir.c
+index d07fcd6c7d..806a2b0c85 100644
+--- a/dlls/msvcrt/dir.c
++++ b/dlls/msvcrt/dir.c
+@@ -1763,12 +1763,27 @@ int CDECL MSVCRT__searchenv_s(const char* file, const char* env, char *buf, MSVC
+   for(; *penv; penv = (*end ? end + 1 : end))
+   {
+     end = penv;
+-    while(*end && *end != ';') end++; /* Find end of next path */
+-    path_len = end - penv;
++    path_len = 0;
++    while(*end && *end != ';' && path_len < MAX_PATH)
++    {
++        if (*end == '"')
++        {
++            end++;
++            while(*end && *end != '"' && path_len < MAX_PATH)
++            {
++                path[path_len++] = *end;
++                end++;
++            }
++            if (*end == '"') end++;
++            continue;
++        }
++
++        path[path_len++] = *end;
++        end++;
++    }
+     if (!path_len || path_len >= MAX_PATH)
+       continue;
+ 
+-    memcpy(path, penv, path_len);
+     if (path[path_len - 1] != '/' && path[path_len - 1] != '\\')
+       path[path_len++] = '\\';
+     if (path_len + fname_len >= MAX_PATH)
+

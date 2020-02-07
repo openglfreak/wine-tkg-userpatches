@@ -1,0 +1,176 @@
+From: Chip Davis <cdavis@codeweavers.com>
+Subject: [PATCH v3 resend 6/8] msvcrt: Share __lc_time_data between threadlocinfo instances.
+Message-Id: <20200204181158.31247-6-cdavis@codeweavers.com>
+Date: Tue,  4 Feb 2020 12:11:56 -0600
+In-Reply-To: <20200204181158.31247-5-cdavis@codeweavers.com>
+References: <20200204181158.31247-1-cdavis@codeweavers.com> <20200204181158.31247-2-cdavis@codeweavers.com> <20200204181158.31247-3-cdavis@codeweavers.com> <20200204181158.31247-4-cdavis@codeweavers.com> <20200204181158.31247-5-cdavis@codeweavers.com>
+
+My testing shows that unk[1] is some sort of refcount. I've updated a
+few places with this knowledge.
+
+Signed-off-by: Chip Davis <cdavis@codeweavers.com>
+---
+v3: Fix a spot I missed.
+---
+ dlls/msvcr90/tests/msvcr90.c |  8 ++++----
+ dlls/msvcrt/locale.c         | 10 ++++++++--
+ dlls/msvcrt/msvcrt.h         |  3 ++-
+ dlls/msvcrt/tests/time.c     |  7 ++++---
+ dlls/ucrtbase/tests/misc.c   |  5 +++--
+ 5 files changed, 21 insertions(+), 12 deletions(-)
+
+diff --git a/dlls/msvcr90/tests/msvcr90.c b/dlls/msvcr90/tests/msvcr90.c
+index 038e16a1d326..18c9c3c15cc3 100644
+--- a/dlls/msvcr90/tests/msvcr90.c
++++ b/dlls/msvcr90/tests/msvcr90.c
+@@ -2078,7 +2078,7 @@ static void test__get_current_locale(void)
+         todo_wine ok(*l->locinfo->lconv_mon_refcount == 3, "refcount = %d\n", *l->locinfo->lconv_mon_refcount);
+ 
+     ok(l->locinfo->lc_time_curr == l2->locinfo->lc_time_curr, "different lc_time_curr pointers\n");
+-    todo_wine ok(l->locinfo->lc_time_curr->unk == 1, "unk = %d\n", l->locinfo->lc_time_curr->unk);
++    ok(l->locinfo->lc_time_curr->unk == 1, "unk = %d\n", l->locinfo->lc_time_curr->unk);
+     todo_wine ok(l->locinfo->lc_time_curr->refcount == 3, "refcount = %d\n", l->locinfo->lc_time_curr->refcount);
+ 
+     p__free_locale(l2);
+@@ -2153,7 +2153,7 @@ static void test__get_current_locale(void)
+         todo_wine ok(*l->locinfo->lconv_mon_refcount == 3, "refcount = %d\n", *l->locinfo->lconv_mon_refcount);
+ 
+     ok(l->locinfo->lc_time_curr == l2->locinfo->lc_time_curr, "different lc_time_curr pointers\n");
+-    todo_wine ok(l->locinfo->lc_time_curr->unk == 1, "unk = %d\n", l->locinfo->lc_time_curr->unk);
++    ok(l->locinfo->lc_time_curr->unk == 1, "unk = %d\n", l->locinfo->lc_time_curr->unk);
+     todo_wine ok(l->locinfo->lc_time_curr->refcount == 3, "refcount = %d\n", l->locinfo->lc_time_curr->refcount);
+ 
+     p__free_locale(l2);
+@@ -2236,7 +2236,7 @@ static void test__get_current_locale(void)
+     ok(!l2->locinfo->lconv_mon_refcount, "nonnull refcount pointer for C locale\n");
+ 
+     ok(l->locinfo->lc_time_curr == l2->locinfo->lc_time_curr, "different lc_time_curr pointers\n");
+-    todo_wine ok(l->locinfo->lc_time_curr->unk == 1, "unk = %d\n", l->locinfo->lc_time_curr->unk);
++    ok(l->locinfo->lc_time_curr->unk == 1, "unk = %d\n", l->locinfo->lc_time_curr->unk);
+     todo_wine ok(l->locinfo->lc_time_curr->refcount == 3, "refcount = %d\n", l->locinfo->lc_time_curr->refcount);
+ 
+     p__free_locale(l2);
+@@ -2318,7 +2318,7 @@ static void test__get_current_locale(void)
+     ok(!l2->locinfo->lconv_mon_refcount, "nonnull refcount pointer for C locale\n");
+ 
+     ok(l->locinfo->lc_time_curr == l2->locinfo->lc_time_curr, "different lc_time_curr pointers\n");
+-    todo_wine ok(l->locinfo->lc_time_curr->unk == 1, "unk = %d\n", l->locinfo->lc_time_curr->unk);
++    ok(l->locinfo->lc_time_curr->unk == 1, "unk = %d\n", l->locinfo->lc_time_curr->unk);
+     todo_wine ok(l->locinfo->lc_time_curr->refcount == 3, "refcount = %d\n", l->locinfo->lc_time_curr->refcount);
+ 
+     p__free_locale(l2);
+diff --git a/dlls/msvcrt/locale.c b/dlls/msvcrt/locale.c
+index cbb30b4c0da0..69748dcca88d 100644
+--- a/dlls/msvcrt/locale.c
++++ b/dlls/msvcrt/locale.c
+@@ -134,7 +134,7 @@ MSVCRT___lc_time_data cloc_time_data =
+ #if _MSVCR_VER < 110
+     MAKELCID(LANG_ENGLISH, SORT_DEFAULT),
+ #endif
+-    {1, 0},
++    1, 0,
+     {{sun, mon, tue, wed, thu, fri, sat,
+       sunday, monday, tuesday, wednesday, thursday, friday, saturday,
+       jan, feb, mar, apr, may, jun, jul, aug, sep, oct, nov, dec,
+@@ -984,7 +984,8 @@ void free_locinfo(MSVCRT_pthreadlocinfo locinfo)
+         MSVCRT_free(locinfo->pcumap);
+     }
+ 
+-    if(locinfo->lc_time_curr != &cloc_time_data)
++    if(!InterlockedDecrement(&locinfo->lc_time_curr->refcount)
++            && locinfo->lc_time_curr != &cloc_time_data)
+         MSVCRT_free(locinfo->lc_time_curr);
+ 
+     MSVCRT_free(locinfo);
+@@ -1125,6 +1126,8 @@ static MSVCRT___lc_time_data* create_time_data(LCID lcid)
+ #else
+     cur->lcid = lcid;
+ #endif
++    cur->unk = 1;
++    cur->refcount = 1;
+ 
+     return cur;
+ }
+@@ -1828,6 +1831,8 @@ static MSVCRT_pthreadlocinfo create_locinfo(int category,
+             free_locinfo(locinfo);
+             return NULL;
+         }
++        locinfo->lc_time_curr = old_locinfo->lc_time_curr;
++        InterlockedIncrement(&locinfo->lc_time_curr->refcount);
+     } else if(lcid[MSVCRT_LC_TIME] && (category==MSVCRT_LC_ALL || category==MSVCRT_LC_TIME)) {
+         if(!update_threadlocinfo_category(lcid[MSVCRT_LC_TIME],
+                     cp[MSVCRT_LC_TIME], locinfo, MSVCRT_LC_TIME)) {
+@@ -1851,6 +1856,7 @@ static MSVCRT_pthreadlocinfo create_locinfo(int category,
+             return NULL;
+         }
+         locinfo->lc_time_curr = &cloc_time_data;
++        InterlockedIncrement(&locinfo->lc_time_curr->refcount);
+     }
+ 
+     return locinfo;
+diff --git a/dlls/msvcrt/msvcrt.h b/dlls/msvcrt/msvcrt.h
+index 244df7d23ccc..e5a22c68ee8b 100644
+--- a/dlls/msvcrt/msvcrt.h
++++ b/dlls/msvcrt/msvcrt.h
+@@ -146,7 +146,8 @@ typedef struct {
+ #if _MSVCR_VER < 110
+     LCID lcid;
+ #endif
+-    int  unk[2];
++    int  unk;
++    int  refcount;
+     union {
+         const MSVCRT_wchar_t *wstr[43];
+         struct {
+diff --git a/dlls/msvcrt/tests/time.c b/dlls/msvcrt/tests/time.c
+index 45ed971ca89a..20212d19bfa5 100644
+--- a/dlls/msvcrt/tests/time.c
++++ b/dlls/msvcrt/tests/time.c
+@@ -47,7 +47,8 @@ typedef struct {
+     const char *date;
+     const char *time;
+     LCID lcid;
+-    int  unk[2];
++    int  unk;
++    int  refcount;
+ } __lc_time_data;
+ 
+ static __time32_t (__cdecl *p_mkgmtime32)(struct tm*);
+@@ -824,8 +825,8 @@ static void test_strftime(void)
+         return;
+     }
+ 
+-    /* TODO: find meaning of unk[0] */
+-    time_data.unk[0] = 1;
++    /* TODO: find meaning of unk */
++    time_data.unk = 1;
+     for (i=0; i<ARRAY_SIZE(tests_td); i++)
+     {
+         time_data.short_date = tests_td[i].short_date;
+diff --git a/dlls/ucrtbase/tests/misc.c b/dlls/ucrtbase/tests/misc.c
+index c9b04b7dd473..280fcc8a829d 100644
+--- a/dlls/ucrtbase/tests/misc.c
++++ b/dlls/ucrtbase/tests/misc.c
+@@ -116,7 +116,8 @@ typedef struct {
+     const char *short_date;
+     const char *date;
+     const char *time;
+-    int  unk[2];
++    int unk;
++    int refcount;
+     const wchar_t *short_wdayW[7];
+     const wchar_t *wdayW[7];
+     const wchar_t *short_monW[12];
+@@ -1154,7 +1155,7 @@ static void test_strftime(void)
+         { "day1", "day2", "day3", "day4", "day5", "day6", "day7" },
+         { "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10", "m11", "m12" },
+         { "mon1", "mon2", "mon3", "mon4", "mon5", "mon6", "mon7", "mon8", "mon9", "mon10", "mon11", "mon12" },
+-        "tam", "tpm", 0, 0, 0, { 1, 0 },
++        "tam", "tpm", 0, 0, 0, 1, 0,
+         { L"D1", L"D2", L"D3", L"D4", L"D5", L"D6", L"D7" },
+         { L"Day1", L"Day2", L"Day3", L"Day4", L"Day5", L"Day6", L"Day7" },
+         { L"M1", L"M2", L"M3", L"M4", L"M5", L"M6", L"M7", L"M8", L"M9", L"M10", L"M11", L"M12" },
+
+-- 
+2.24.0
+

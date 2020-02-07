@@ -1,0 +1,69 @@
+From: "Roman Pišl" <rpisl@seznam.cz>
+Subject: [PATCH] user32: Avoid buffer overflow on long texts in winproc.
+Message-Id: <20200206173357.32190-1-rpisl@seznam.cz>
+Date: Thu,  6 Feb 2020 18:33:57 +0100
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=48559
+
+Signed-off-by: Roman Pišl <rpisl@seznam.cz>
+---
+ dlls/user32/winproc.c | 22 ++++++++++++++++------
+ 1 file changed, 16 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/user32/winproc.c b/dlls/user32/winproc.c
+index 6de650cd1e..14555f5a71 100644
+--- a/dlls/user32/winproc.c
++++ b/dlls/user32/winproc.c
+@@ -517,16 +517,21 @@ LRESULT WINPROC_CallProcAtoW( winproc_callback_t callback, HWND hwnd, UINT msg,
+     case CB_GETLBTEXT:
+         if (lParam && WINPROC_TestLBForStr( hwnd, msg ))
+         {
+-            WCHAR buffer[512];  /* FIXME: fixed sized buffer */
++            WCHAR *ptr, buffer[512];
++            UINT msgGetTextLen = (msg == CB_GETLBTEXT) ? CB_GETLBTEXTLEN : LB_GETTEXTLEN;
++            LRESULT len = 0;
+ 
+-            ret = callback( hwnd, msg, wParam, (LPARAM)buffer, result, arg );
++            callback( hwnd, msgGetTextLen, wParam, 0, &len, arg );
++            if (!(ptr = get_buffer( buffer, sizeof(buffer), (len + 1) * sizeof(WCHAR) ))) break;
++            ret = callback( hwnd, msg, wParam, (LPARAM)ptr, result, arg );
+             if (*result >= 0)
+             {
+                 DWORD len;
+                 RtlUnicodeToMultiByteN( (LPSTR)lParam, ~0u, &len,
+-                                        buffer, (strlenW(buffer) + 1) * sizeof(WCHAR) );
++                                        ptr, (strlenW(ptr) + 1) * sizeof(WCHAR) );
+                 *result = len - 1;
+             }
++            free_buffer( buffer, ptr );
+         }
+         else ret = callback( hwnd, msg, wParam, lParam, result, arg );
+         break;
+@@ -777,15 +782,20 @@ static LRESULT WINPROC_CallProcWtoA( winproc_callback_t callback, HWND hwnd, UIN
+     case CB_GETLBTEXT:
+         if (lParam && WINPROC_TestLBForStr( hwnd, msg ))
+         {
+-            char buffer[512];  /* FIXME: fixed sized buffer */
++            char *ptr, buffer[512];
++            UINT msgGetTextLen = (msg == CB_GETLBTEXT) ? CB_GETLBTEXTLEN : LB_GETTEXTLEN;
++            LRESULT len = 0;
++            callback( hwnd, msgGetTextLen, wParam, 0, &len, arg );
++            if (!(ptr = get_buffer( buffer, sizeof(buffer), len + 1 ))) break;
+ 
+-            ret = callback( hwnd, msg, wParam, (LPARAM)buffer, result, arg );
++            ret = callback( hwnd, msg, wParam, (LPARAM)ptr, result, arg );
+             if (*result >= 0)
+             {
+                 DWORD len;
+-                RtlMultiByteToUnicodeN( (LPWSTR)lParam, ~0u, &len, buffer, strlen(buffer) + 1 );
++                RtlMultiByteToUnicodeN( (LPWSTR)lParam, ~0u, &len, ptr, strlen(ptr) + 1 );
+                 *result = len / sizeof(WCHAR) - 1;
+             }
++            free_buffer( buffer, ptr );
+         }
+         else ret = callback( hwnd, msg, wParam, lParam, result, arg );
+         break;
+
+-- 
+2.20.1
+

@@ -1,0 +1,185 @@
+From: Daniel Lehman <dlehman@esri.com>
+#Subject: [PATCH] crypt32: Implement CryptBinaryToStringW(HEXRAW).
+Message-Id: <BY5PR05MB7124DDCEE374F81D9DCF4253DF1D0@BY5PR05MB7124.namprd05.prod.outlook.com>
+Date: Thu, 6 Feb 2020 22:13:21 +0000
+
+
+From bc8f599052521d99b3c1be4c1e97e0ea697612b1 Mon Sep 17 00:00:00 2001
+From: Daniel Lehman <dlehman@esri.com>
+Date: Fri, 24 Jan 2020 07:05:08 -0800
+Subject: [PATCH] crypt32: Implement CryptBinaryToStringW(HEXRAW).
+
+Signed-off-by: Daniel Lehman <dlehman@esri.com>
+---
+ dlls/crypt32/base64.c       | 46 +++++++++++++++++++++
+ dlls/crypt32/tests/base64.c | 82 ++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 127 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/crypt32/base64.c b/dlls/crypt32/base64.c
+index ac60c6efbdb2..221b452d7ed3 100644
+--- a/dlls/crypt32/base64.c
++++ b/dlls/crypt32/base64.c
+@@ -477,6 +477,49 @@ static BOOL BinaryToBase64W(const BYTE *pbBinary,
+     return ret;
+ }
+ 
++static BOOL BinaryToHexW(const BYTE *bin, DWORD nbin, DWORD flags, LPWSTR str, DWORD *nstr)
++{
++    static const WCHAR hex[] = {'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'};
++    DWORD needed;
++
++    if (flags & CRYPT_STRING_NOCRLF)
++        needed = 0;
++    else if (flags & CRYPT_STRING_NOCR)
++        needed = 1;
++    else
++        needed = 2;
++
++    needed += nbin * 2 + 1;
++    if (needed > *nstr)
++    {
++        SetLastError(ERROR_MORE_DATA);
++        return FALSE;
++    }
++
++    *nstr = needed;
++    if (!str)
++        return TRUE;
++
++    while (nbin--)
++    {
++        *str++ = hex[(*bin >> 4) & 0xf];
++        *str++ = hex[*bin & 0xf];
++        bin++;
++    }
++
++    if (flags & CRYPT_STRING_NOCR)
++        *str++ = '\n';
++    else if (!(flags & CRYPT_STRING_NOCRLF))
++    {
++        *str++ = '\r';
++        *str++ = '\n';
++    }
++
++    *str = 0;
++    *nstr = needed - 1;
++    return TRUE;
++}
++
+ BOOL WINAPI CryptBinaryToStringW(const BYTE *pbBinary,
+  DWORD cbBinary, DWORD dwFlags, LPWSTR pszString, DWORD *pcchString)
+ {
+@@ -507,6 +550,9 @@ BOOL WINAPI CryptBinaryToStringW(const BYTE *pbBinary,
+     case CRYPT_STRING_BASE64X509CRLHEADER:
+         encoder = BinaryToBase64W;
+         break;
++    case CRYPT_STRING_HEXRAW:
++        encoder = BinaryToHexW;
++        break;
+     case CRYPT_STRING_HEX:
+     case CRYPT_STRING_HEXASCII:
+     case CRYPT_STRING_HEXADDR:
+diff --git a/dlls/crypt32/tests/base64.c b/dlls/crypt32/tests/base64.c
+index 31605fe6b998..ac41d5c86d77 100644
+--- a/dlls/crypt32/tests/base64.c
++++ b/dlls/crypt32/tests/base64.c
+@@ -238,7 +238,12 @@ static void encode_compare_base64_W(const BYTE *toEncode, DWORD toEncodeLen, DWO
+ 
+ static void test_CryptBinaryToString(void)
+ {
+-    DWORD strLen, strLen2, i;
++    static const DWORD flags[] = { 0, CRYPT_STRING_NOCR, CRYPT_STRING_NOCRLF };
++    static const WCHAR hexdig[] = L"0123456789abcdef";
++    OSVERSIONINFOA ver = { sizeof(ver) };
++    BYTE input[256 * sizeof(WCHAR)];
++    DWORD strLen, strLen2, i, j;
++    WCHAR *hex, *cmp, *ptr;
+     BOOL ret;
+ 
+     ret = CryptBinaryToStringA(NULL, 0, 0, NULL, NULL);
+@@ -357,6 +362,81 @@ static void test_CryptBinaryToString(void)
+ 
+         heap_free(encodedW);
+     }
++
++    /* winxp and win2k3 are documented as not handling HEXRAW but do not return failure */
++    GetVersionExA(&ver);
++    if (ver.dwMajorVersion <= 5)
++    {
++        win_skip("CryptBinaryToString(HEX) not supported\n");
++        return;
++    }
++
++    for (i = 0; i < sizeof(input) / sizeof(WCHAR); i++)
++        ((WCHAR *)input)[i] = i;
++
++    for (i = 0; i < ARRAY_SIZE(flags); i++)
++    {
++        strLen = ~0;
++        ret = CryptBinaryToStringW(input, sizeof(input), CRYPT_STRING_HEXRAW|flags[i],
++                                   NULL, &strLen);
++        ok(ret, "CryptBinaryToStringW failed: %d\n", GetLastError());
++        if (flags[i] & CRYPT_STRING_NOCRLF)
++            strLen2 = 0;
++        else if (flags[i] & CRYPT_STRING_NOCR)
++            strLen2 = 1;
++        else
++            strLen2 = 2;
++        strLen2 += sizeof(input) * 2 + 1;
++        ok(strLen == strLen2, "Expected length %d, got %d\n", strLen2, strLen);
++
++        hex = heap_alloc(strLen * sizeof(WCHAR));
++        memset(hex, 0xcc, strLen * sizeof(WCHAR));
++        ptr = cmp = heap_alloc(strLen * sizeof(WCHAR));
++        for (j = 0; j < ARRAY_SIZE(input); j++)
++        {
++            *ptr++ = hexdig[(input[j] >> 4) & 0xf];
++            *ptr++ = hexdig[input[j] & 0xf];
++        }
++        if (flags[i] & CRYPT_STRING_NOCR)
++        {
++            *ptr++ = '\n';
++        }
++        else if (!(flags[i] & CRYPT_STRING_NOCRLF))
++        {
++            *ptr++ = '\r';
++            *ptr++ = '\n';
++        }
++        *ptr++ = 0;
++        ret = CryptBinaryToStringW(input, sizeof(input), CRYPT_STRING_HEXRAW|flags[i],
++                                   hex, &strLen);
++        ok(ret, "CryptBinaryToStringW failed: %d\n", GetLastError());
++        strLen2--;
++        ok(strLen == strLen2, "Expected length %d, got %d\n", strLen, strLen2);
++        ok(!memcmp(hex, cmp, strLen * sizeof(WCHAR)), "Unexpected value\n");
++
++        /* adjusts size if buffer too big */
++        strLen *= 2;
++        ret = CryptBinaryToStringW(input, sizeof(input), CRYPT_STRING_HEXRAW|flags[i],
++                                   hex, &strLen);
++        ok(ret, "CryptBinaryToStringW failed: %d\n", GetLastError());
++        ok(strLen == strLen2, "Expected length %d, got %d\n", strLen, strLen2);
++
++        /* no writes if buffer too small */
++        strLen /= 2;
++        strLen2 /= 2;
++        memset(hex, 0xcc, strLen * sizeof(WCHAR));
++        memset(cmp, 0xcc, strLen * sizeof(WCHAR));
++        SetLastError(0xdeadbeef);
++        ret = CryptBinaryToStringW(input, sizeof(input), CRYPT_STRING_HEXRAW|flags[i],
++                                   hex, &strLen);
++        ok(!ret && GetLastError() == ERROR_MORE_DATA,"Expected ERROR_MORE_DATA, got ret=%d le=%u\n",
++           ret, GetLastError());
++        ok(strLen == strLen2, "Expected length %d, got %d\n", strLen, strLen2);
++        ok(!memcmp(hex, cmp, strLen * sizeof(WCHAR)), "Unexpected value\n");
++
++        heap_free(hex);
++        heap_free(cmp);
++    }
+ }
+ 
+ static void decodeAndCompareBase64_A(LPCSTR toDecode, LPCSTR header,
+
+-- 
+2.24.1
+

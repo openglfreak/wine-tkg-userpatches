@@ -1,0 +1,98 @@
+From: Joshua Ashton <joshua@froggi.es>
+#Subject: [PATCH] winebrowser: Avoid recursively calling winebrowser forever
+Message-Id: <17020c9c518.c572348f414541.4167823035402002610@froggi.es>
+Date: Fri, 07 Feb 2020 17:54:19 +0000
+
+
+Signed-off-by: Joshua Ashton <joshua@froggi.es>
+---
+ programs/winebrowser/main.c | 40 +++++++++++++++++++++++++++----------
+ 1 file changed, 29 insertions(+), 11 deletions(-)
+
+From 8ae96efb9e19fec3cd09a8bd7899d65276dae3ac Mon Sep 17 00:00:00 2001
+From: Joshua Ashton <joshua@froggi.es>
+Date: Thu, 6 Feb 2020 18:39:28 +0000
+Subject: [PATCH] winebrowser: Avoid recursively calling winebrowser forever
+
+If the user's default browser application is winebrowser then we go
+into a a state where winebrowser calls winebrowser which calls
+winebrowser... forever.
+
+Sometimes winebrowser is registered as a potential browser and even
+as the default when Wine is installed which makes this a genuine
+issue.
+
+Signed-off-by: Joshua Ashton <joshua@froggi.es>
+---
+ programs/winebrowser/main.c | 40 +++++++++++++++++++++++++++----------
+ 1 file changed, 29 insertions(+), 11 deletions(-)
+
+diff --git a/programs/winebrowser/main.c b/programs/winebrowser/main.c
+index 9cd6812d03..1294ebf54f 100644
+--- a/programs/winebrowser/main.c
++++ b/programs/winebrowser/main.c
+@@ -69,31 +69,49 @@ static char *strdup_unixcp( const WCHAR *str )
+     return ret;
+ }
+ 
++/* forbidden apps that we will test for and never launch 
++ * because they could cause us to create new processes indefinitely */
++static const WCHAR forbidden_apps[] =
++    {'w','i','n','e','b','r','o','w','s','e','r',0,0};
++
+ /* try to launch a unix app from a comma separated string of app names */
+ static int launch_app( const WCHAR *candidates, const WCHAR *argv1 )
+ {
+     char *cmdline;
+     int i, count;
+     char **argv_new;
++    const WCHAR* forbidden_app = forbidden_apps;
+ 
+     if (!(cmdline = strdup_unixcp( argv1 ))) return 1;
+ 
+     while (*candidates)
+     {
+-        WCHAR **args = CommandLineToArgvW( candidates, &count );
++        /* test for forbidden apps */
++        BOOL valid_candidate = TRUE;
++        while (*forbidden_app) {
++            if (strstrW(candidates, forbidden_app))
++                valid_candidate = FALSE;
++
++            forbidden_app += strlenW( forbidden_app ) + 1;  /* grab the next app */
++        }
+ 
+-        if (!(argv_new = HeapAlloc( GetProcessHeap(), 0, (count + 2) * sizeof(*argv_new) ))) break;
+-        for (i = 0; i < count; i++) argv_new[i] = strdup_unixcp( args[i] );
+-        argv_new[count] = cmdline;
+-        argv_new[count + 1] = NULL;
++        if (valid_candidate)
++        {
++            WCHAR **args = CommandLineToArgvW( candidates, &count );
++
++            if (!(argv_new = HeapAlloc( GetProcessHeap(), 0, (count + 2) * sizeof(*argv_new) ))) break;
++            for (i = 0; i < count; i++) argv_new[i] = strdup_unixcp( args[i] );
++            argv_new[count] = cmdline;
++            argv_new[count + 1] = NULL;
+ 
+-        TRACE( "Trying" );
+-        for (i = 0; i <= count; i++) TRACE( " %s", wine_dbgstr_a( argv_new[i] ));
+-        TRACE( "\n" );
++            TRACE( "Trying" );
++            for (i = 0; i <= count; i++) TRACE( " %s", wine_dbgstr_a( argv_new[i] ));
++            TRACE( "\n" );
+ 
+-        _spawnvp( _P_OVERLAY, argv_new[0], (const char **)argv_new );  /* only returns on error */
+-        for (i = 0; i < count; i++) HeapFree( GetProcessHeap(), 0, argv_new[i] );
+-        HeapFree( GetProcessHeap(), 0, argv_new );
++            _spawnvp( _P_OVERLAY, argv_new[0], (const char **)argv_new );  /* only returns on error */
++            for (i = 0; i < count; i++) HeapFree( GetProcessHeap(), 0, argv_new[i] );
++            HeapFree( GetProcessHeap(), 0, argv_new );
++        }
+         candidates += strlenW( candidates ) + 1;  /* grab the next app */
+     }
+     WINE_ERR( "could not find a suitable app to open %s\n", debugstr_w( argv1 ));
+
+-- 
+2.25.0
+

@@ -1,0 +1,55 @@
+From: Zhiyi Zhang <zzhang@codeweavers.com>
+Subject: [PATCH] winex11.drv: Fix incorrect frequency for doublescan and interlaced modes.
+Message-Id: <6eb5592d-1bcd-7522-2814-dda30ed3c09c@codeweavers.com>
+Date: Tue, 4 Feb 2020 15:51:53 +0800
+
+Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
+---
+ dlls/winex11.drv/xrandr.c | 23 +++++++++++++++++++++--
+ 1 file changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winex11.drv/xrandr.c b/dlls/winex11.drv/xrandr.c
+index 930e0282be..454f6f2df2 100644
+--- a/dlls/winex11.drv/xrandr.c
++++ b/dlls/winex11.drv/xrandr.c
+@@ -478,6 +478,26 @@ static XRRCrtcInfo *xrandr12_get_primary_crtc_info( XRRScreenResources *resource
+     return NULL;
+ }
+ 
++static DWORD get_frequency( const XRRModeInfo *mode )
++{
++    if (mode->hTotal && mode->vTotal)
++    {
++        double v_total = mode->vTotal;
++
++        if (mode->modeFlags & RR_DoubleScan)
++            v_total *= 2;
++        if (mode->modeFlags & RR_Interlace)
++            v_total /= 2;
++
++        /* Adding 0.05 instead of 0.5 to round so that common frequencies like
++         * 59.94Hz and 23.976Hz become 59Hz and 24Hz. Using 0.5 would make
++         * 59.94Hz become 60Hz and would make it seem like there are two 60Hz modes */
++        return mode->dotClock / (mode->hTotal * v_total) + 0.05;
++    }
++
++    return 0;
++}
++
+ static int xrandr12_init_modes(void)
+ {
+     unsigned int only_one_resolution = 1, mode_count;
+@@ -536,8 +556,7 @@ static int xrandr12_init_modes(void)
+ 
+             if (mode->id == output_info->modes[i])
+             {
+-                unsigned int dots = mode->hTotal * mode->vTotal;
+-                unsigned int refresh = dots ? (mode->dotClock + dots / 2) / dots : 0;
++                unsigned int refresh = get_frequency(mode);
+ 
+                 TRACE("Adding mode %#lx: %ux%u@%u.\n", mode->id, mode->width, mode->height, refresh);
+                 X11DRV_Settings_AddOneMode( mode->width, mode->height, 0, refresh );
+
+-- 
+2.20.1
+

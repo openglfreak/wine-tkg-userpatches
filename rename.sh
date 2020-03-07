@@ -104,7 +104,7 @@ _get_subject() {
 }
 
 _get_patch_number() {
-    printf '%s\n' "$1" | sed -n -e 's/^.*\([0-9][0-9]*\)\/[0-9][0-9]*.*$/\1/p'
+    printf '%s\n' "$1" | sed -n -e 's/^.*[^0-9]\([0-9][0-9]*\)\/[0-9][0-9]*.*$/\1/p'
 }
 
 _sanitize_commit_msg() {

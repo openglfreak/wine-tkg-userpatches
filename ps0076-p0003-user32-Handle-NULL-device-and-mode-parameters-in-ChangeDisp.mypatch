@@ -1,0 +1,165 @@
+From: Zhiyi Zhang <zzhang@codeweavers.com>
+Subject: [PATCH 3/6] user32: Handle NULL device and mode parameters in ChangeDisplaySettingsExW().
+Message-Id: <3dd6d231-d5b6-a23c-dc10-a8bf7bdf850d@codeweavers.com>
+Date: Tue, 11 Feb 2020 16:09:15 +0800
+
+NULL device and mode means to restore all devices to their registry settings.
+Since all user graphics drivers only support the primary adapter now,
+it's fine to restore only the primary adapter.
+
+Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
+---
+ dlls/user32/sysparams.c     |  3 +++
+ dlls/winemac.drv/display.c  | 35 +++++++++++++++++++++++++++++++++++
+ dlls/winex11.drv/settings.c | 36 ++++++++++++++++++++++++++++++++++++
+ dlls/winex11.drv/x11drv.h   |  1 +
+ 4 files changed, 75 insertions(+)
+
+diff --git a/dlls/user32/sysparams.c b/dlls/user32/sysparams.c
+index c5c98a7ea1..a60e4a2dbd 100644
+--- a/dlls/user32/sysparams.c
++++ b/dlls/user32/sysparams.c
+@@ -3300,6 +3300,9 @@ LONG WINAPI ChangeDisplaySettingsExW( LPCWSTR devname, LPDEVMODEW devmode, HWND
+     TRACE("%s %p %p %#x %p\n", debugstr_w(devname), devmode, hwnd, flags, lparam);
+     TRACE("flags=%s\n", _CDS_flags(flags));
+ 
++    if (!devname && !devmode)
++        return USER_Driver->pChangeDisplaySettingsEx(NULL, NULL, hwnd, flags, lparam);
++
+     if (!devname && devmode)
+     {
+         if (!get_primary_adapter(primary_adapter))
+diff --git a/dlls/winemac.drv/display.c b/dlls/winemac.drv/display.c
+index 4c610c4573..0a05753b8e 100644
+--- a/dlls/winemac.drv/display.c
++++ b/dlls/winemac.drv/display.c
+@@ -745,6 +745,23 @@ void check_retina_status(void)
+     }
+ }
+ 
++static BOOL get_primary_adapter(WCHAR *name)
++{
++    DISPLAY_DEVICEW dd;
++    DWORD i;
++
++    dd.cb = sizeof(dd);
++    for (i = 0; EnumDisplayDevicesW(NULL, i, &dd, 0); ++i)
++    {
++        if (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE)
++        {
++            lstrcpyW(name, dd.DeviceName);
++            return TRUE;
++        }
++    }
++
++    return FALSE;
++}
+ 
+ /***********************************************************************
+  *              ChangeDisplaySettingsEx  (MACDRV.@)
+@@ -753,7 +770,9 @@ void check_retina_status(void)
+ LONG CDECL macdrv_ChangeDisplaySettingsEx(LPCWSTR devname, LPDEVMODEW devmode,
+                                           HWND hwnd, DWORD flags, LPVOID lpvoid)
+ {
++    WCHAR primary_adapter[CCHDEVICENAME];
+     LONG ret = DISP_CHANGE_BADMODE;
++    DEVMODEW default_mode;
+     int bpp;
+     struct macdrv_display *displays;
+     int num_displays;
+@@ -768,6 +787,22 @@ LONG CDECL macdrv_ChangeDisplaySettingsEx(LPCWSTR devname, LPDEVMODEW devmode,
+ 
+     init_original_display_mode();
+ 
++    if (!get_primary_adapter(primary_adapter))
++        return DISP_CHANGE_FAILED;
++
++    if (!devname && !devmode)
++    {
++        default_mode.dmSize = sizeof(default_mode);
++        if (!EnumDisplaySettingsExW(primary_adapter, ENUM_REGISTRY_SETTINGS, &default_mode, 0))
++        {
++            ERR("Default mode not found for %s!\n", wine_dbgstr_w(primary_adapter));
++            return DISP_CHANGE_BADMODE;
++        }
++
++        devname = primary_adapter;
++        devmode = &default_mode;
++    }
++
+     if (macdrv_get_displays(&displays, &num_displays))
+         return DISP_CHANGE_FAILED;
+ 
+diff --git a/dlls/winex11.drv/settings.c b/dlls/winex11.drv/settings.c
+index 24644db620..3e7a5960f0 100644
+--- a/dlls/winex11.drv/settings.c
++++ b/dlls/winex11.drv/settings.c
+@@ -252,6 +252,24 @@ static BOOL write_registry_settings(const DEVMODEW *dm)
+     return ret;
+ }
+ 
++BOOL get_primary_adapter(WCHAR *name)
++{
++    DISPLAY_DEVICEW dd;
++    DWORD i;
++
++    dd.cb = sizeof(dd);
++    for (i = 0; EnumDisplayDevicesW(NULL, i, &dd, 0); ++i)
++    {
++        if (dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE)
++        {
++            lstrcpyW(name, dd.DeviceName);
++            return TRUE;
++        }
++    }
++
++    return FALSE;
++}
++
+ /***********************************************************************
+  *		EnumDisplaySettingsEx  (X11DRV.@)
+  *
+@@ -336,9 +354,27 @@ BOOL CDECL X11DRV_EnumDisplaySettingsEx( LPCWSTR name, DWORD n, LPDEVMODEW devmo
+ LONG CDECL X11DRV_ChangeDisplaySettingsEx( LPCWSTR devname, LPDEVMODEW devmode,
+                                            HWND hwnd, DWORD flags, LPVOID lpvoid )
+ {
++    WCHAR primary_adapter[CCHDEVICENAME];
+     char bpp_buffer[16], freq_buffer[18];
++    DEVMODEW default_mode;
+     DWORD i, mode;
+ 
++    if (!get_primary_adapter(primary_adapter))
++        return DISP_CHANGE_FAILED;
++
++    if (!devname && !devmode)
++    {
++        default_mode.dmSize = sizeof(default_mode);
++        if (!EnumDisplaySettingsExW(primary_adapter, ENUM_REGISTRY_SETTINGS, &default_mode, 0))
++        {
++            ERR("Default mode not found for %s!\n", wine_dbgstr_w(primary_adapter));
++            return DISP_CHANGE_BADMODE;
++        }
++
++        devname = primary_adapter;
++        devmode = &default_mode;
++    }
++
+     mode = ENUM_CURRENT_SETTINGS;
+     for (i = 0; i < dd_mode_count; i++)
+     {
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 98cab8947b..c99985e7e6 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -661,6 +661,7 @@ extern void X11DRV_resize_desktop(unsigned int width, unsigned int height) DECLS
+ extern BOOL is_virtual_desktop(void) DECLSPEC_HIDDEN;
+ extern BOOL is_desktop_fullscreen(void) DECLSPEC_HIDDEN;
+ extern BOOL create_desktop_win_data( Window win ) DECLSPEC_HIDDEN;
++extern BOOL get_primary_adapter(WCHAR *) DECLSPEC_HIDDEN;
+ extern void X11DRV_Settings_AddDepthModes(void) DECLSPEC_HIDDEN;
+ extern void X11DRV_Settings_AddOneMode(unsigned int width, unsigned int height, unsigned int bpp, unsigned int freq) DECLSPEC_HIDDEN;
+ unsigned int X11DRV_Settings_GetModeCount(void) DECLSPEC_HIDDEN;
+
+-- 
+2.20.1
+

@@ -1,0 +1,56 @@
+From: Zebediah Figura <z.figura12@gmail.com>
+Subject: [PATCH v2 4/4] ntdll: Also strip trailing path separators if the initial stat() succeeds.
+Message-Id: <20200214050306.20219-4-z.figura12@gmail.com>
+Date: Thu, 13 Feb 2020 23:03:06 -0600
+In-Reply-To: <20200214050306.20219-1-z.figura12@gmail.com>
+References: <20200214050306.20219-1-z.figura12@gmail.com>
+
+Signed-off-by: Zebediah Figura <z.figura12@gmail.com>
+---
+Based on patch 0002 of this series, this seems like a better solution than the
+relevant Staging patch:
+
+https://raw.githubusercontent.com/wine-staging/wine-staging/master/patches/ntdll-FileDispositionInformation/0003-server-When-combining-root-and-name-make-sure-there-.patch
+
+I know of no application that is helped by this patch.
+
+ dlls/ntdll/directory.c  | 2 ++
+ dlls/ntdll/tests/file.c | 6 +++---
+ 2 files changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/directory.c b/dlls/ntdll/directory.c
+index 7b0627cd3df..84aa40a029c 100644
+--- a/dlls/ntdll/directory.c
++++ b/dlls/ntdll/directory.c
+@@ -2582,6 +2582,8 @@ static NTSTATUS lookup_unix_name( const WCHAR *name, int name_len, char **buffer
+         {
+             if (!stat( unix_name, &st ))
+             {
++                while (IS_SEPARATOR(unix_name[pos + ret]))
++                    unix_name[pos + ret--] = 0;
+                 if (disposition == FILE_CREATE)
+                     return STATUS_OBJECT_NAME_COLLISION;
+                 return STATUS_SUCCESS;
+diff --git a/dlls/ntdll/tests/file.c b/dlls/ntdll/tests/file.c
+index 1f5fb5d1254..e225e180cf5 100644
+--- a/dlls/ntdll/tests/file.c
++++ b/dlls/ntdll/tests/file.c
+@@ -3225,12 +3225,12 @@ static void test_file_name_information(void)
+     status = pNtQueryInformationFile( h, &io, info, sizeof(buffer), FileNameInformation );
+     ok(!status, "Got status %#x.\n", status);
+     ok(!U(io).Status, "Got io.Status %#x.\n", U(io).Status);
+-    todo_wine ok(info->FileNameLength == wcslen( L"\\windows\\system" ) * sizeof(WCHAR),
++    ok(info->FileNameLength == wcslen( L"\\windows\\system" ) * sizeof(WCHAR),
+             "info->FileNameLength is %u\n", info->FileNameLength);
+     ok(info->FileName[info->FileNameLength / sizeof(WCHAR)] == 0xcccc,
+             "info->FileName[len] is %#x, expected 0xcccc.\n", info->FileName[info->FileNameLength / sizeof(WCHAR)]);
+     info->FileName[info->FileNameLength / sizeof(WCHAR)] = '\0';
+-    todo_wine ok(!wcsicmp( info->FileName, L"\\windows\\system" ), "Got file name %s.\n", debugstr_w( info->FileName ));
++    ok(!wcsicmp( info->FileName, L"\\windows\\system" ), "Got file name %s.\n", debugstr_w( info->FileName ));
+     ok(io.Information == FIELD_OFFSET(FILE_NAME_INFORMATION, FileName) + info->FileNameLength,
+             "io.Information is %lu, expected %u.\n",
+             io.Information, FIELD_OFFSET(FILE_NAME_INFORMATION, FileName) + info->FileNameLength);
+
+-- 
+2.25.0
+

@@ -1,0 +1,238 @@
+From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
+Subject: [PATCH] gdi32: Skip edge processing when the area is empty.
+Message-Id: <870053eba41fc5fc37c42fd678f9e60ab6e8cb13.1582034677.git.gabrielopcode@gmail.com>
+Date: Tue, 18 Feb 2020 16:05:45 +0200
+
+Fixes a regression introduced by 9bc6f004ceccf3963584a4f7f4681b5c0578c214,
+which caused the assert to fail under specific circumstances, and break
+some apps.
+
+Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
+---
+
+The patch just indents the code to skip it if nb_points is zero.
+
+ dlls/gdi32/region.c | 181 ++++++++++++++++++++++----------------------
+ 1 file changed, 92 insertions(+), 89 deletions(-)
+
+diff --git a/dlls/gdi32/region.c b/dlls/gdi32/region.c
+index 93238b5..3a3138a 100644
+--- a/dlls/gdi32/region.c
++++ b/dlls/gdi32/region.c
+@@ -2631,79 +2631,28 @@ HRGN create_polypolygon_region( const POINT *Pts, const INT *Count, INT nbpolygo
+     if (!(obj = alloc_region( nb_points / 2 )))
+         goto done;
+ 
+-    if (clip_rect) ET.ymax = min( ET.ymax, clip_rect->bottom );
+-    list_init( &AET );
+-    pSLL = ET.scanlines.next;
+-    if (mode != WINDING) {
+-        /*
+-         *  for each scanline
+-         */
+-        for (y = ET.ymin; y < ET.ymax; y++) {
++    if (nb_points)
++    {
++        if (clip_rect) ET.ymax = min( ET.ymax, clip_rect->bottom );
++        list_init( &AET );
++        pSLL = ET.scanlines.next;
++        if (mode != WINDING) {
+             /*
+-             *  Add a new edge to the active edge table when we
+-             *  get to the next edge.
++             *  for each scanline
+              */
+-            if (pSLL != NULL && y == pSLL->scanline) {
+-                REGION_loadAET(&AET, &pSLL->edgelist);
+-                pSLL = pSLL->next;
+-            }
+-
+-            if (!clip_rect || y >= clip_rect->top)
+-            {
+-                LIST_FOR_EACH_ENTRY( active, &AET, struct edge_table_entry, entry )
+-                {
+-                    if (first)
+-                    {
+-                        obj->rects[obj->numRects].left = active->bres.minor_axis;
+-                        obj->rects[obj->numRects].top = y;
+-                    }
+-                    else if (obj->rects[obj->numRects].left != active->bres.minor_axis)
+-                    {
+-                        obj->rects[obj->numRects].right = active->bres.minor_axis;
+-                        obj->rects[obj->numRects].bottom = y + 1;
+-                        obj->numRects++;
+-                    }
+-                    first = !first;
++            for (y = ET.ymin; y < ET.ymax; y++) {
++                /*
++                 *  Add a new edge to the active edge table when we
++                 *  get to the next edge.
++                 */
++                if (pSLL != NULL && y == pSLL->scanline) {
++                    REGION_loadAET(&AET, &pSLL->edgelist);
++                    pSLL = pSLL->next;
+                 }
+-            }
+-
+-            next_scanline( &AET, y );
+ 
+-            if (obj->numRects)
+-            {
+-                prev_band = REGION_Coalesce( obj, prev_band, cur_band );
+-                cur_band = obj->numRects;
+-            }
+-        }
+-    }
+-    else {
+-        /*
+-         *  for each scanline
+-         */
+-        for (y = ET.ymin; y < ET.ymax; y++) {
+-            /*
+-             *  Add a new edge to the active edge table when we
+-             *  get to the next edge.
+-             */
+-            if (pSLL != NULL && y == pSLL->scanline) {
+-                REGION_loadAET(&AET, &pSLL->edgelist);
+-                REGION_computeWAET( &AET, &WETE );
+-                pSLL = pSLL->next;
+-            }
+-            pWETE = list_head( &WETE );
+-
+-            /*
+-             *  for each active edge
+-             */
+-            if (!clip_rect || y >= clip_rect->top)
+-            {
+-                LIST_FOR_EACH_ENTRY( active, &AET, struct edge_table_entry, entry )
++                if (!clip_rect || y >= clip_rect->top)
+                 {
+-                    /*
+-                     *  add to the buffer only those edges that
+-                     *  are in the Winding active edge table.
+-                     */
+-                    if (pWETE == &active->winding_entry)
++                    LIST_FOR_EACH_ENTRY( active, &AET, struct edge_table_entry, entry )
+                     {
+                         if (first)
+                         {
+@@ -2717,40 +2666,94 @@ HRGN create_polypolygon_region( const POINT *Pts, const INT *Count, INT nbpolygo
+                             obj->numRects++;
+                         }
+                         first = !first;
+-                        pWETE = list_next( &WETE, pWETE );
+                     }
+                 }
+-            }
+ 
++                next_scanline( &AET, y );
++
++                if (obj->numRects)
++                {
++                    prev_band = REGION_Coalesce( obj, prev_band, cur_band );
++                    cur_band = obj->numRects;
++                }
++            }
++        }
++        else {
+             /*
+-             *  recompute the winding active edge table if
+-             *  we just resorted or have exited an edge.
++             *  for each scanline
+              */
+-            if (next_scanline( &AET, y )) REGION_computeWAET( &AET, &WETE );
++            for (y = ET.ymin; y < ET.ymax; y++) {
++                /*
++                 *  Add a new edge to the active edge table when we
++                 *  get to the next edge.
++                 */
++                if (pSLL != NULL && y == pSLL->scanline) {
++                    REGION_loadAET(&AET, &pSLL->edgelist);
++                    REGION_computeWAET( &AET, &WETE );
++                    pSLL = pSLL->next;
++                }
++                pWETE = list_head( &WETE );
+ 
+-            if (obj->numRects)
+-            {
+-                prev_band = REGION_Coalesce( obj, prev_band, cur_band );
+-                cur_band = obj->numRects;
++                /*
++                 *  for each active edge
++                 */
++                if (!clip_rect || y >= clip_rect->top)
++                {
++                    LIST_FOR_EACH_ENTRY( active, &AET, struct edge_table_entry, entry )
++                    {
++                        /*
++                         *  add to the buffer only those edges that
++                         *  are in the Winding active edge table.
++                         */
++                        if (pWETE == &active->winding_entry)
++                        {
++                            if (first)
++                            {
++                                obj->rects[obj->numRects].left = active->bres.minor_axis;
++                                obj->rects[obj->numRects].top = y;
++                            }
++                            else if (obj->rects[obj->numRects].left != active->bres.minor_axis)
++                            {
++                                obj->rects[obj->numRects].right = active->bres.minor_axis;
++                                obj->rects[obj->numRects].bottom = y + 1;
++                                obj->numRects++;
++                            }
++                            first = !first;
++                            pWETE = list_next( &WETE, pWETE );
++                        }
++                    }
++                }
++
++                /*
++                 *  recompute the winding active edge table if
++                 *  we just resorted or have exited an edge.
++                 */
++                if (next_scanline( &AET, y )) REGION_computeWAET( &AET, &WETE );
++
++                if (obj->numRects)
++                {
++                    prev_band = REGION_Coalesce( obj, prev_band, cur_band );
++                    cur_band = obj->numRects;
++                }
+             }
+         }
+-    }
+ 
+-    assert( obj->numRects <= nb_points / 2 );
++        assert( obj->numRects <= nb_points / 2 );
+ 
+-    if (obj->numRects)
+-    {
+-        obj->extents.left = INT_MAX;
+-        obj->extents.right = INT_MIN;
+-        obj->extents.top = obj->rects[0].top;
+-        obj->extents.bottom = obj->rects[obj->numRects-1].bottom;
+-        for (i = 0; i < obj->numRects; i++)
++        if (obj->numRects)
+         {
+-            obj->extents.left = min( obj->extents.left, obj->rects[i].left );
+-            obj->extents.right = max( obj->extents.right, obj->rects[i].right );
++            obj->extents.left = INT_MAX;
++            obj->extents.right = INT_MIN;
++            obj->extents.top = obj->rects[0].top;
++            obj->extents.bottom = obj->rects[obj->numRects-1].bottom;
++            for (i = 0; i < obj->numRects; i++)
++            {
++                obj->extents.left = min( obj->extents.left, obj->rects[i].left );
++                obj->extents.right = max( obj->extents.right, obj->rects[i].right );
++            }
+         }
++        REGION_compact( obj );
+     }
+-    REGION_compact( obj );
+ 
+     if (!(hrgn = alloc_gdi_handle( obj, OBJ_REGION, &region_funcs )))
+         free_region( obj );
+
+-- 
+2.21.0
+

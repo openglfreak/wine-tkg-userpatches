@@ -1,0 +1,134 @@
+From: Piotr Caban <piotr@codeweavers.com>
+Subject: [PATCH 2/6 v2] server: Use correct timeouts in waitable timers.
+Message-Id: <5e356f23-9308-28db-6c7c-205715956a1f@codeweavers.com>
+Date: Fri, 21 Feb 2020 13:43:24 +0100
+
+Signed-off-by: Piotr Caban <piotr@codeweavers.com>
+---
+  dlls/ntdll/sync.c | 11 +++++++++--
+  server/fd.c       |  2 +-
+  server/file.h     |  1 +
+  server/timer.c    | 22 +++++++++++++++-------
+  4 files changed, 26 insertions(+), 10 deletions(-)
+
+diff --git a/dlls/ntdll/sync.c b/dlls/ntdll/sync.c
+index 2b5b6ce44a..4a7b461627 100644
+--- a/dlls/ntdll/sync.c
++++ b/dlls/ntdll/sync.c
+@@ -1025,8 +1025,15 @@ NTSTATUS WINAPI NtQueryTimer(
+         }
+         SERVER_END_REQ;
+ 
+-        /* convert from absolute into relative time */
+-        NtQuerySystemTime(&now);
++        /* convert into relative time */
++        if (basic_info->RemainingTime.QuadPart > 0)
++            NtQuerySystemTime(&now);
++        else
++        {
++            RtlQueryPerformanceCounter(&now);
++            basic_info->RemainingTime.QuadPart = -basic_info->RemainingTime.QuadPart;
++        }
++
+         if (now.QuadPart > basic_info->RemainingTime.QuadPart)
+             basic_info->RemainingTime.QuadPart = 0;
+         else
+diff --git a/server/fd.c b/server/fd.c
+index c2bbfe9a6d..40987625e1 100644
+--- a/server/fd.c
++++ b/server/fd.c
+@@ -372,7 +372,7 @@ struct timeout_user
+ static struct list abs_timeout_list = LIST_INIT(abs_timeout_list); /* sorted absolute timeouts list */
+ static struct list rel_timeout_list = LIST_INIT(rel_timeout_list); /* sorted relative timeouts list */
+ timeout_t current_time;
+-static timeout_t monotonic_time;
++timeout_t monotonic_time;
+ 
+ static inline void set_current_time(void)
+ {
+diff --git a/server/file.h b/server/file.h
+index 4341ad3b04..51734f4f79 100644
+--- a/server/file.h
++++ b/server/file.h
+@@ -129,6 +129,7 @@ static inline struct fd *get_obj_fd( struct object *obj ) { return obj->ops->get
+ 
+ struct timeout_user;
+ extern timeout_t current_time;
++extern timeout_t monotonic_time;
+ 
+ #define TICKS_PER_SEC 10000000
+ 
+diff --git a/server/timer.c b/server/timer.c
+index 9cca85569f..9ab11a4e7d 100644
+--- a/server/timer.c
++++ b/server/timer.c
+@@ -43,7 +43,7 @@ struct timer
+     int                  manual;    /* manual reset */
+     int                  signaled;  /* current signaled state */
+     unsigned int         period;    /* timer period in ms */
+-    timeout_t            when;      /* next expiration */
++    timeout_t            when;      /* next expiration (uses monotonic clock if negative) */
+     struct timeout_user *timeout;   /* timeout user */
+     struct thread       *thread;    /* thread that set the APC function */
+     client_ptr_t         callback;  /* callback APC function */
+@@ -103,6 +103,12 @@ static struct timer *create_timer( struct object *root, const struct unicode_str
+     return timer;
+ }
+ 
++static inline timeout_t when_to_abs_timeout( timeout_t when )
++{
++    if (when > 0) return when;
++    return current_time - monotonic_time - when;
++}
++
+ /* callback on timer expiration */
+ static void timer_callback( void *private )
+ {
+@@ -118,7 +124,7 @@ static void timer_callback( void *private )
+         {
+             data.type       = APC_TIMER;
+             data.timer.func = timer->callback;
+-            data.timer.time = timer->when;
++            data.timer.time = when_to_abs_timeout( timer->when );
+             data.timer.arg  = timer->arg;
+         }
+         else data.type = APC_NONE;  /* wake up only */
+@@ -132,8 +138,9 @@ static void timer_callback( void *private )
+ 
+     if (timer->period)  /* schedule the next expiration */
+     {
+-        timer->when += (timeout_t)timer->period * 10000;
+-        timer->timeout = add_timeout_user( timer->when, timer_callback, timer );
++        if (timer->when > 0) timer->when = -monotonic_time;
++        while(-timer->when <= monotonic_time) timer->when -= (timeout_t)timer->period * 10000;
++        timer->timeout = add_timeout_user( timer->when + monotonic_time, timer_callback, timer );
+     }
+     else timer->timeout = NULL;
+ 
+@@ -171,21 +178,22 @@ static int set_timer( struct timer *timer, timeout_t expire, unsigned int period
+         period = 0;  /* period doesn't make any sense for a manual timer */
+         timer->signaled = 0;
+     }
+-    timer->when     = (expire <= 0) ? current_time - expire : max( expire, current_time );
++    timer->when     = (expire <= 0) ? expire - monotonic_time : max( expire, current_time );
+     timer->period   = period;
+     timer->callback = callback;
+     timer->arg      = arg;
+     if (callback) timer->thread = (struct thread *)grab_object( current );
+-    timer->timeout = add_timeout_user( timer->when, timer_callback, timer );
++    timer->timeout = add_timeout_user( expire, timer_callback, timer );
+     return signaled;
+ }
+ 
+ static void timer_dump( struct object *obj, int verbose )
+ {
+     struct timer *timer = (struct timer *)obj;
++    timeout_t timeout = (timer->when >= 0) ? timer->when : timer->when + monotonic_time;
+     assert( obj->ops == &timer_ops );
+     fprintf( stderr, "Timer manual=%d when=%s period=%u\n",
+-             timer->manual, get_timeout_str(timer->when), timer->period );
++             timer->manual, get_timeout_str(timeout), timer->period );
+ }
+ 
+ static struct object_type *timer_get_type( struct object *obj )
+

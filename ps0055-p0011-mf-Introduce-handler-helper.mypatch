@@ -1,18 +1,21 @@
 From: Derek Lesho <dlesho@codeweavers.com>
-Subject: [RFC 1/2] mf: Move generic handler to code to helper functions.
-Message-Id: <20200117192557.990039-2-dlesho@codeweavers.com>
-Date: Fri, 17 Jan 2020 13:25:56 -0600
-In-Reply-To: <20200117192557.990039-1-dlesho@codeweavers.com>
-References: <20200117192557.990039-1-dlesho@codeweavers.com>
+Subject: [PATCH v2 11/11] mf: Introduce handler helper.
+Message-Id: <20200210223241.4122430-11-dlesho@codeweavers.com>
+Date: Mon, 10 Feb 2020 16:32:41 -0600
+In-Reply-To: <20200210223241.4122430-1-dlesho@codeweavers.com>
+References: <20200210223241.4122430-1-dlesho@codeweavers.com>
 
 Signed-off-by: Derek Lesho <dlesho@codeweavers.com>
 ---
- dlls/mf/Makefile.in  |   1 +
- dlls/mf/handler.c    | 360 +++++++++++++++++++++++++++++++++++++++++
- dlls/mf/main.c       | 369 +++++--------------------------------------
- dlls/mf/mf_private.h |  24 +++
- 4 files changed, 425 insertions(+), 329 deletions(-)
+ dlls/mf/Makefile.in               |   1 +
+ dlls/mf/handler.c                 | 357 ++++++++++++++++++++++++++++
+ dlls/mf/handler.h                 |  29 +++
+ dlls/mf/main.c                    | 370 ++++--------------------------
+ dlls/winegstreamer/Makefile.in    |   3 +-
+ dlls/winegstreamer/media_source.c | 332 ++-------------------------
+ 6 files changed, 443 insertions(+), 649 deletions(-)
  create mode 100644 dlls/mf/handler.c
+ create mode 100644 dlls/mf/handler.h
 
 diff --git a/dlls/mf/Makefile.in b/dlls/mf/Makefile.in
 index d23349c9cf..81872b17a5 100644
@@ -28,10 +31,10 @@ index d23349c9cf..81872b17a5 100644
  	sar.c \
 diff --git a/dlls/mf/handler.c b/dlls/mf/handler.c
 new file mode 100644
-index 0000000000..aac4b0fb72
+index 0000000000..db8783a7cd
 --- /dev/null
 +++ b/dlls/mf/handler.c
-@@ -0,0 +1,360 @@
+@@ -0,0 +1,357 @@
 +#include <stdarg.h>
 +
 +#define COBJMACROS
@@ -39,14 +42,11 @@ index 0000000000..aac4b0fb72
 +#include "windef.h"
 +#include "winbase.h"
 +#include "mfidl.h"
-+#include "rpcproxy.h"
-+
-+#include "mf.h"
 +
 +#include "mfapi.h"
 +#include "mferror.h"
 +
-+#include "mf_private.h"
++#include "handler.h"
 +
 +#include "wine/debug.h"
 +#include "wine/heap.h"
@@ -393,11 +393,55 @@ index 0000000000..aac4b0fb72
 +    DeleteCriticalSection(&handler->cs);
 +}
 \ No newline at end of file
+diff --git a/dlls/mf/handler.h b/dlls/mf/handler.h
+new file mode 100644
+index 0000000000..14b110e1a7
+--- /dev/null
++++ b/dlls/mf/handler.h
+@@ -0,0 +1,29 @@
++#include "windef.h"
++
++#include "mfobjects.h"
++#include "mfapi.h"
++
++#include "wine/list.h"
++
++/* helper sub-object that handles ansyncronous nature of handlers */
++
++struct handler;
++typedef HRESULT (*p_create_object_callback)(struct handler *handler, WCHAR *url, IMFByteStream *stream, DWORD flags, IPropertyStore *props,
++                                            IUnknown **out_object, MF_OBJECT_TYPE *out_obj_type);
++
++struct handler
++{
++    IMFAsyncCallback IMFAsyncCallback_iface;
++    struct list results;
++    CRITICAL_SECTION cs;
++    p_create_object_callback create_object;
++};
++
++void handler_construct(struct handler *handler, p_create_object_callback create_object_callback);
++void handler_destruct(struct handler *handler);
++HRESULT handler_begin_create_object(struct handler *handler, IMFByteStream *stream,
++        const WCHAR *url, DWORD flags, IPropertyStore *props, IUnknown **cancel_cookie,
++        IMFAsyncCallback *callback, IUnknown *state);
++HRESULT handler_end_create_object(struct handler *handler, IMFAsyncResult *result,
++        MF_OBJECT_TYPE *obj_type, IUnknown **object);
++HRESULT handler_cancel_object_creation(struct handler *handler, IUnknown *cancel_cookie);
+\ No newline at end of file
 diff --git a/dlls/mf/main.c b/dlls/mf/main.c
-index 251d59e1c0..8cff665c1c 100644
+index 251d59e1c0..5861560b60 100644
 --- a/dlls/mf/main.c
 +++ b/dlls/mf/main.c
-@@ -547,22 +547,12 @@ static const IClassFactoryVtbl class_factory_vtbl =
+@@ -35,6 +35,7 @@
+ #include "mferror.h"
+ 
+ #include "mf_private.h"
++#include "handler.h"
+ 
+ #include "wine/debug.h"
+ #include "wine/heap.h"
+@@ -547,22 +548,12 @@ static const IClassFactoryVtbl class_factory_vtbl =
      class_factory_LockServer,
  };
  
@@ -414,14 +458,14 @@ index 251d59e1c0..8cff665c1c 100644
      IMFSchemeHandler IMFSchemeHandler_iface;
 -    IMFAsyncCallback IMFAsyncCallback_iface;
      LONG refcount;
-+    struct handler handler;
      IMFSourceResolver *resolver;
 -    struct list results;
 -    CRITICAL_SECTION cs;
++    struct handler handler;
  };
  
  static struct file_scheme_handler *impl_from_IMFSchemeHandler(IMFSchemeHandler *iface)
-@@ -570,11 +560,6 @@ static struct file_scheme_handler *impl_from_IMFSchemeHandler(IMFSchemeHandler *
+@@ -570,11 +561,6 @@ static struct file_scheme_handler *impl_from_IMFSchemeHandler(IMFSchemeHandler *
      return CONTAINING_RECORD(iface, struct file_scheme_handler, IMFSchemeHandler_iface);
  }
  
@@ -433,7 +477,7 @@ index 251d59e1c0..8cff665c1c 100644
  static HRESULT WINAPI file_scheme_handler_QueryInterface(IMFSchemeHandler *iface, REFIID riid, void **obj)
  {
      TRACE("%p, %s, %p.\n", iface, debugstr_guid(riid), obj);
-@@ -604,239 +589,45 @@ static ULONG WINAPI file_scheme_handler_AddRef(IMFSchemeHandler *iface)
+@@ -604,239 +590,45 @@ static ULONG WINAPI file_scheme_handler_AddRef(IMFSchemeHandler *iface)
  
  static ULONG WINAPI file_scheme_handler_Release(IMFSchemeHandler *iface)
  {
@@ -684,7 +728,7 @@ index 251d59e1c0..8cff665c1c 100644
  }
  
  static const IMFSchemeHandlerVtbl file_scheme_handler_vtbl =
-@@ -849,38 +640,6 @@ static const IMFSchemeHandlerVtbl file_scheme_handler_vtbl =
+@@ -849,38 +641,6 @@ static const IMFSchemeHandlerVtbl file_scheme_handler_vtbl =
      file_scheme_handler_CancelObjectCreation,
  };
  
@@ -723,7 +767,7 @@ index 251d59e1c0..8cff665c1c 100644
  static HRESULT file_scheme_handler_get_resolver(struct file_scheme_handler *handler, IMFSourceResolver **resolver)
  {
      HRESULT hr;
-@@ -902,111 +661,63 @@ static HRESULT file_scheme_handler_get_resolver(struct file_scheme_handler *hand
+@@ -902,111 +662,63 @@ static HRESULT file_scheme_handler_get_resolver(struct file_scheme_handler *hand
      return S_OK;
  }
  
@@ -863,46 +907,459 @@ index 251d59e1c0..8cff665c1c 100644
  
      return hr;
  }
-diff --git a/dlls/mf/mf_private.h b/dlls/mf/mf_private.h
-index 0b7d1c65fa..a06962ba79 100644
---- a/dlls/mf/mf_private.h
-+++ b/dlls/mf/mf_private.h
-@@ -19,6 +19,7 @@
- #include "mfidl.h"
+diff --git a/dlls/winegstreamer/Makefile.in b/dlls/winegstreamer/Makefile.in
+index 84916fe649..b00ce2586e 100644
+--- a/dlls/winegstreamer/Makefile.in
++++ b/dlls/winegstreamer/Makefile.in
+@@ -2,13 +2,14 @@ MODULE    = winegstreamer.dll
+ IMPORTS   = strmiids uuid winmm msacm32 msvfw32 ole32 oleaut32 user32 gdi32 advapi32 mfplat mfuuid
+ EXTRAINCL = $(GSTREAMER_CFLAGS)
+ EXTRALIBS = $(GSTREAMER_LIBS) $(PTHREAD_LIBS)
+-PARENTSRC = ../strmbase
++PARENTSRC = ../strmbase ../mf
  
- #include "wine/heap.h"
-+#include "wine/list.h"
+ C_SRCS = \
+ 	dllfunc.c \
+ 	filter.c \
+ 	gst_cbs.c \
+ 	gstdemux.c \
++	handler.c \
+ 	main.c \
+ 	media_source.c \
+ 	mediatype.c \
+diff --git a/dlls/winegstreamer/media_source.c b/dlls/winegstreamer/media_source.c
+index 4e48c100b0..fce267ed3b 100644
+--- a/dlls/winegstreamer/media_source.c
++++ b/dlls/winegstreamer/media_source.c
+@@ -4,6 +4,7 @@
  
- static inline BOOL mf_array_reserve(void **elements, size_t *capacity, size_t count, size_t size)
+ #include "gst_private.h"
+ #include "gst_cbs.h"
++#include "handler.h"
+ 
+ #include <stdarg.h>
+ 
+@@ -1158,22 +1159,12 @@ static HRESULT media_source_constructor(IMFByteStream *bytestream, const char *d
+ 
+ /* IMFByteStreamHandler */
+ 
+-struct container_stream_handler_result
+-{
+-    struct list entry;
+-    IMFAsyncResult *result;
+-    MF_OBJECT_TYPE obj_type;
+-    IUnknown *object;
+-};
+-
+ struct container_stream_handler
  {
-@@ -54,3 +55,26 @@ struct activate_funcs
+     IMFByteStreamHandler IMFByteStreamHandler_iface;
+-    IMFAsyncCallback IMFAsyncCallback_iface;
+     LONG refcount;
+     const char *demuxer_name;
+-    struct list results;
+-    CRITICAL_SECTION cs;
++    struct handler handler;
  };
  
- HRESULT create_activation_object(void *context, const struct activate_funcs *funcs, IMFActivate **ret) DECLSPEC_HIDDEN;
-+
-+/* helper sub-object that handles ansyncronous nature of handlers */
-+
-+struct handler;
-+typedef HRESULT (*p_create_object_callback)(struct handler *handler, WCHAR *url, IMFByteStream *stream, DWORD flags, IPropertyStore *props,
-+                                            IUnknown **out_object, MF_OBJECT_TYPE *out_obj_type);
-+
-+struct handler
-+{
-+    IMFAsyncCallback IMFAsyncCallback_iface;
-+    struct list results;
-+    CRITICAL_SECTION cs;
-+    p_create_object_callback create_object;
-+};
-+
-+void handler_construct(struct handler *handler, p_create_object_callback create_object_callback);
-+void handler_destruct(struct handler *handler);
-+HRESULT handler_begin_create_object(struct handler *handler, IMFByteStream *stream,
-+        const WCHAR *url, DWORD flags, IPropertyStore *props, IUnknown **cancel_cookie,
-+        IMFAsyncCallback *callback, IUnknown *state);
-+HRESULT handler_end_create_object(struct handler *handler, IMFAsyncResult *result,
-+        MF_OBJECT_TYPE *obj_type, IUnknown **object);
-+HRESULT handler_cancel_object_creation(struct handler *handler, IUnknown *cancel_cookie);
-\ No newline at end of file
+ static struct container_stream_handler *impl_from_IMFByteStreamHandler(IMFByteStreamHandler *iface)
+@@ -1181,11 +1172,6 @@ static struct container_stream_handler *impl_from_IMFByteStreamHandler(IMFByteSt
+     return CONTAINING_RECORD(iface, struct container_stream_handler, IMFByteStreamHandler_iface);
+ }
+ 
+-static struct container_stream_handler *impl_from_IMFAsyncCallback(IMFAsyncCallback *iface)
+-{
+-    return CONTAINING_RECORD(iface, struct container_stream_handler, IMFAsyncCallback_iface);
+-}
+-
+ static HRESULT WINAPI container_stream_handler_QueryInterface(IMFByteStreamHandler *iface, REFIID riid, void **obj)
+ {
+     TRACE("%p, %s, %p.\n", iface, debugstr_guid(riid), obj);
+@@ -1215,245 +1201,44 @@ static ULONG WINAPI container_stream_handler_AddRef(IMFByteStreamHandler *iface)
+ 
+ static ULONG WINAPI container_stream_handler_Release(IMFByteStreamHandler *iface)
+ {
+-    struct container_stream_handler *handler = impl_from_IMFByteStreamHandler(iface);
+-    ULONG refcount = InterlockedDecrement(&handler->refcount);
+-    struct container_stream_handler_result *result, *next;
+-
+-    TRACE("%p, refcount %u.\n", iface, refcount);
+-
+-    if (!refcount)
+-    {
+-        LIST_FOR_EACH_ENTRY_SAFE(result, next, &handler->results, struct container_stream_handler_result, entry)
+-        {
+-            list_remove(&result->entry);
+-            IMFAsyncResult_Release(result->result);
+-            if (result->object)
+-                IUnknown_Release(result->object);
+-            heap_free(result);
+-        }
+-        DeleteCriticalSection(&handler->cs);
+-        heap_free(handler);
+-    }
+-
+-    return refcount;
+-}
+-
+-struct create_object_context
+-{
+-    IUnknown IUnknown_iface;
+-    LONG refcount;
+-
+-    IPropertyStore *props;
+-    IMFByteStream *stream;
+-    WCHAR *url;
+-    DWORD flags;
+-};
+-
+-static struct create_object_context *impl_from_IUnknown(IUnknown *iface)
+-{
+-    return CONTAINING_RECORD(iface, struct create_object_context, IUnknown_iface);
+-}
+-
+-static HRESULT WINAPI create_object_context_QueryInterface(IUnknown *iface, REFIID riid, void **obj)
+-{
+-    TRACE("%p, %s, %p.\n", iface, debugstr_guid(riid), obj);
+-
+-    if (IsEqualIID(riid, &IID_IUnknown))
+-    {
+-        *obj = iface;
+-        IUnknown_AddRef(iface);
+-        return S_OK;
+-    }
+-
+-    WARN("Unsupported %s.\n", debugstr_guid(riid));
+-    *obj = NULL;
+-    return E_NOINTERFACE;
+-}
+-
+-static ULONG WINAPI create_object_context_AddRef(IUnknown *iface)
+-{
+-    struct create_object_context *context = impl_from_IUnknown(iface);
+-    ULONG refcount = InterlockedIncrement(&context->refcount);
+-
+-    TRACE("%p, refcount %u.\n", iface, refcount);
+-
+-    return refcount;
+-}
+-
+-static ULONG WINAPI create_object_context_Release(IUnknown *iface)
+-{
+-    struct create_object_context *context = impl_from_IUnknown(iface);
+-    ULONG refcount = InterlockedDecrement(&context->refcount);
++    struct container_stream_handler *this = impl_from_IMFByteStreamHandler(iface);
++    ULONG refcount = InterlockedDecrement(&this->refcount);
+ 
+     TRACE("%p, refcount %u.\n", iface, refcount);
+ 
+     if (!refcount)
+     {
+-        if (context->props)
+-            IPropertyStore_Release(context->props);
+-        if (context->stream)
+-            IMFByteStream_Release(context->stream);
+-        if (context->url)
+-            heap_free(context->url);
+-        heap_free(context);
++        handler_destruct(&this->handler);
++        heap_free(this);
+     }
+ 
+     return refcount;
+ }
+ 
+-static const IUnknownVtbl create_object_context_vtbl =
+-{
+-    create_object_context_QueryInterface,
+-    create_object_context_AddRef,
+-    create_object_context_Release,
+-};
+-
+-static WCHAR *heap_strdupW(const WCHAR *str)
+-{
+-    WCHAR *ret = NULL;
+-
+-    if (str)
+-    {
+-        unsigned int size;
+-
+-        size = (lstrlenW(str) + 1) * sizeof(WCHAR);
+-        ret = heap_alloc(size);
+-        if (ret)
+-            memcpy(ret, str, size);
+-    }
+-
+-    return ret;
+-}
+-
+ static HRESULT WINAPI container_stream_handler_BeginCreateObject(IMFByteStreamHandler *iface, IMFByteStream *stream, const WCHAR *url, DWORD flags,
+         IPropertyStore *props, IUnknown **cancel_cookie, IMFAsyncCallback *callback, IUnknown *state)
+ {
+     struct container_stream_handler *this = impl_from_IMFByteStreamHandler(iface);
+-    struct create_object_context *context;
+-    IMFAsyncResult *caller, *item;
+-    HRESULT hr;
+ 
+     TRACE("%p, %s, %#x, %p, %p, %p, %p.\n", iface, debugstr_w(url), flags, props, cancel_cookie, callback, state);
+-
+-    if (cancel_cookie)
+-        *cancel_cookie = NULL;
+-
+-    if (FAILED(hr = MFCreateAsyncResult(NULL, callback, state, &caller)))
+-        return hr;
+-
+-    context = heap_alloc(sizeof(*context));
+-    if (!context)
+-    {
+-        IMFAsyncResult_Release(caller);
+-        return E_OUTOFMEMORY;
+-    }
+-
+-    context->IUnknown_iface.lpVtbl = &create_object_context_vtbl;
+-    context->refcount = 1;
+-    context->props = props;
+-    if (context->props)
+-        IPropertyStore_AddRef(context->props);
+-    context->flags = flags;
+-    context->stream = stream;
+-    if (context->stream)
+-        IMFByteStream_AddRef(context->stream);
+-    if (url)
+-        context->url = heap_strdupW(url);
+-    if (!context->stream)
+-    {
+-        IMFAsyncResult_Release(caller);
+-        IUnknown_Release(&context->IUnknown_iface);
+-        return E_OUTOFMEMORY;
+-    }
+-
+-    hr = MFCreateAsyncResult(&context->IUnknown_iface, &this->IMFAsyncCallback_iface, (IUnknown *)caller, &item);
+-    IUnknown_Release(&context->IUnknown_iface);
+-    IMFAsyncResult_Release(caller);
+-    if (SUCCEEDED(hr))
+-    {
+-        if (SUCCEEDED(hr = MFPutWorkItemEx(MFASYNC_CALLBACK_QUEUE_IO, item)))
+-        {
+-            if (cancel_cookie)
+-                IMFAsyncResult_GetState(item, cancel_cookie);
+-        }
+-
+-        IMFAsyncResult_Release(item);
+-    }
+-
+-    return hr;
++    return handler_begin_create_object(&this->handler, stream, url, flags, props, cancel_cookie, callback, state);
+ }
+ 
+ static HRESULT WINAPI container_stream_handler_EndCreateObject(IMFByteStreamHandler *iface, IMFAsyncResult *result,
+         MF_OBJECT_TYPE *obj_type, IUnknown **object)
+ {
+     struct container_stream_handler *this = impl_from_IMFByteStreamHandler(iface);
+-    struct container_stream_handler_result *found = NULL, *cur;
+-    HRESULT hr;
+ 
+     TRACE("%p, %p, %p, %p.\n", iface, result, obj_type, object);
+-
+-    EnterCriticalSection(&this->cs);
+-
+-    LIST_FOR_EACH_ENTRY(cur, &this->results, struct container_stream_handler_result, entry)
+-    {
+-        if (result == cur->result)
+-        {
+-            list_remove(&cur->entry);
+-            found = cur;
+-            break;
+-        }
+-    }
+-
+-    LeaveCriticalSection(&this->cs);
+-
+-    if (found)
+-    {
+-        *obj_type = found->obj_type;
+-        *object = found->object;
+-        hr = IMFAsyncResult_GetStatus(found->result);
+-        IMFAsyncResult_Release(found->result);
+-        heap_free(found);
+-    }
+-    else
+-    {
+-        *obj_type = MF_OBJECT_INVALID;
+-        *object = NULL;
+-        hr = MF_E_UNEXPECTED;
+-    }
+-
+-    return hr;
++    return handler_end_create_object(&this->handler, result, obj_type, object);
+ }
+ 
+ static HRESULT WINAPI container_stream_handler_CancelObjectCreation(IMFByteStreamHandler *iface, IUnknown *cancel_cookie)
+ {
+     struct container_stream_handler *this = impl_from_IMFByteStreamHandler(iface);
+-    struct container_stream_handler_result *found = NULL, *cur;
+ 
+     TRACE("%p, %p.\n", iface, cancel_cookie);
+-
+-    EnterCriticalSection(&this->cs);
+-
+-    LIST_FOR_EACH_ENTRY(cur, &this->results, struct container_stream_handler_result, entry)
+-    {
+-        if (cancel_cookie == (IUnknown *)cur->result)
+-        {
+-            list_remove(&cur->entry);
+-            found = cur;
+-            break;
+-        }
+-    }
+-
+-    LeaveCriticalSection(&this->cs);
+-
+-    if (found)
+-    {
+-        IMFAsyncResult_Release(found->result);
+-        if (found->object)
+-            IUnknown_Release(found->object);
+-        heap_free(found);
+-    }
+-
+-    return found ? S_OK : MF_E_UNEXPECTED;
++    return handler_cancel_object_creation(&this->handler, cancel_cookie);
+ }
+ 
+ static HRESULT WINAPI container_stream_handler_GetMaxNumberOfBytesRequiredForResolution(IMFByteStreamHandler *iface, QWORD *bytes)
+@@ -1473,42 +1258,10 @@ static const IMFByteStreamHandlerVtbl container_stream_handler_vtbl =
+     container_stream_handler_GetMaxNumberOfBytesRequiredForResolution,
+ };
+ 
+-static HRESULT WINAPI container_stream_handler_callback_QueryInterface(IMFAsyncCallback *iface, REFIID riid, void **obj)
+-{
+-    if (IsEqualIID(riid, &IID_IMFAsyncCallback) ||
+-            IsEqualIID(riid, &IID_IUnknown))
+-    {
+-        *obj = iface;
+-        IMFAsyncCallback_AddRef(iface);
+-        return S_OK;
+-    }
+-
+-    WARN("Unsupported %s.\n", debugstr_guid(riid));
+-    *obj = NULL;
+-    return E_NOINTERFACE;
+-}
+-
+-static ULONG WINAPI container_stream_handler_callback_AddRef(IMFAsyncCallback *iface)
+-{
+-    struct container_stream_handler *handler = impl_from_IMFAsyncCallback(iface);
+-    return IMFByteStreamHandler_AddRef(&handler->IMFByteStreamHandler_iface);
+-}
+-
+-static ULONG WINAPI container_stream_handler_callback_Release(IMFAsyncCallback *iface)
+-{
+-    struct container_stream_handler *handler = impl_from_IMFAsyncCallback(iface);
+-    return IMFByteStreamHandler_Release(&handler->IMFByteStreamHandler_iface);
+-}
+-
+-static HRESULT WINAPI container_stream_handler_callback_GetParameters(IMFAsyncCallback *iface, DWORD *flags, DWORD *queue)
+-{
+-    return E_NOTIMPL;
+-}
+-
+-static HRESULT container_stream_handler_create_object(struct container_stream_handler *This, WCHAR *url, IMFByteStream *stream, DWORD flags,
++static HRESULT container_stream_handler_create_object(struct handler *handler, WCHAR *url, IMFByteStream *stream, DWORD flags,
+                                             IPropertyStore *props, IUnknown **out_object, MF_OBJECT_TYPE *out_obj_type)
+ {
+-    TRACE("(%p %s %p %u %p %p %p)\n", This, debugstr_w(url), stream, flags, props, out_object, out_obj_type);
++    TRACE("(%p %s %p %u %p %p %p)\n", handler, debugstr_w(url), stream, flags, props, out_object, out_obj_type);
+ 
+     if (!(init_gstreamer()))
+         return E_FAIL;
+@@ -1517,6 +1270,7 @@ static HRESULT container_stream_handler_create_object(struct container_stream_ha
+     {
+         HRESULT hr;
+         struct media_source *new_source;
++        struct container_stream_handler *This = CONTAINING_RECORD(handler, struct container_stream_handler, handler);
+ 
+         if (FAILED(hr = media_source_constructor(stream, This->demuxer_name, &new_source)))
+             return hr;
+@@ -1535,64 +1289,6 @@ static HRESULT container_stream_handler_create_object(struct container_stream_ha
+     }
+ }
+ 
+-static HRESULT WINAPI container_stream_handler_callback_Invoke(IMFAsyncCallback *iface, IMFAsyncResult *result)
+-{
+-    struct container_stream_handler *handler = impl_from_IMFAsyncCallback(iface);
+-    struct container_stream_handler_result *handler_result;
+-    MF_OBJECT_TYPE obj_type = MF_OBJECT_INVALID;
+-    IUnknown *object = NULL, *context_object;
+-    struct create_object_context *context;
+-    IMFAsyncResult *caller;
+-    HRESULT hr;
+-
+-    caller = (IMFAsyncResult *)IMFAsyncResult_GetStateNoAddRef(result);
+-
+-    if (FAILED(hr = IMFAsyncResult_GetObject(result, &context_object)))
+-    {
+-        WARN("Expected context set for callee result.\n");
+-        return hr;
+-    }
+-
+-    context = impl_from_IUnknown(context_object);
+-
+-    hr = container_stream_handler_create_object(handler, context->url, context->stream, context->flags, context->props, &object, &obj_type);
+-
+-    handler_result = heap_alloc(sizeof(*handler_result));
+-    if (handler_result)
+-    {
+-        handler_result->result = caller;
+-        IMFAsyncResult_AddRef(handler_result->result);
+-        handler_result->obj_type = obj_type;
+-        handler_result->object = object;
+-
+-        EnterCriticalSection(&handler->cs);
+-        list_add_tail(&handler->results, &handler_result->entry);
+-        LeaveCriticalSection(&handler->cs);
+-    }
+-    else
+-    {
+-        if (object)
+-            IUnknown_Release(object);
+-        hr = E_OUTOFMEMORY;
+-    }
+-
+-    IUnknown_Release(&context->IUnknown_iface);
+-
+-    IMFAsyncResult_SetStatus(caller, hr);
+-    MFInvokeCallback(caller);
+-
+-    return S_OK;
+-}
+-
+-static const IMFAsyncCallbackVtbl container_stream_handler_callback_vtbl =
+-{
+-    container_stream_handler_callback_QueryInterface,
+-    container_stream_handler_callback_AddRef,
+-    container_stream_handler_callback_Release,
+-    container_stream_handler_callback_GetParameters,
+-    container_stream_handler_callback_Invoke,
+-};
+-
+ HRESULT container_stream_handler_construct(REFIID riid, void **obj, const char *demuxer_name)
+ {
+     struct container_stream_handler *this;
+@@ -1604,12 +1300,10 @@ HRESULT container_stream_handler_construct(REFIID riid, void **obj, const char *
+     if (!this)
+         return E_OUTOFMEMORY;
+ 
+-    list_init(&this->results);
+-    InitializeCriticalSection(&this->cs);
++    handler_construct(&this->handler, container_stream_handler_create_object);
+ 
+     this->demuxer_name = demuxer_name;
+     this->IMFByteStreamHandler_iface.lpVtbl = &container_stream_handler_vtbl;
+-    this->IMFAsyncCallback_iface.lpVtbl = &container_stream_handler_callback_vtbl;
+     this->refcount = 1;
+ 
+     hr = IMFByteStreamHandler_QueryInterface(&this->IMFByteStreamHandler_iface, riid, obj);
 
 -- 
 2.25.0

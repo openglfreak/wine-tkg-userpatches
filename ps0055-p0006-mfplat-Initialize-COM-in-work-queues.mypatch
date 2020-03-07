@@ -1,0 +1,145 @@
+From: Derek Lesho <dlesho@codeweavers.com>
+Subject: [PATCH v2 06/11] mfplat: Initialize COM in work queues.
+Message-Id: <20200210223241.4122430-6-dlesho@codeweavers.com>
+Date: Mon, 10 Feb 2020 16:32:36 -0600
+In-Reply-To: <20200210223241.4122430-1-dlesho@codeweavers.com>
+References: <20200210223241.4122430-1-dlesho@codeweavers.com>
+
+Signed-off-by: Derek Lesho <dlesho@codeweavers.com>
+---
+v2: Use CoInitialize and CoUninitialize instead of TLS.
+---
+ dlls/mfplat/tests/mfplat.c | 86 ++++++++++++++++++++++++++++++++++++++
+ dlls/rtworkq/Makefile.in   |  1 +
+ dlls/rtworkq/queue.c       |  4 ++
+ 3 files changed, 91 insertions(+)
+
+diff --git a/dlls/mfplat/tests/mfplat.c b/dlls/mfplat/tests/mfplat.c
+index c468286362..f056bbda2a 100644
+--- a/dlls/mfplat/tests/mfplat.c
++++ b/dlls/mfplat/tests/mfplat.c
+@@ -2220,6 +2220,91 @@ static void test_allocate_queue(void)
+     ok(hr == S_OK, "Failed to shut down, hr %#x.\n", hr);
+ }
+ 
++static HRESULT WINAPI test_get_com_state_callback_Invoke(IMFAsyncCallback *iface, IMFAsyncResult *result)
++{
++    struct test_callback *callback = impl_from_IMFAsyncCallback(iface);
++    APTTYPE com_type;
++    APTTYPEQUALIFIER qualifier;
++    HRESULT hr;
++
++    hr = CoGetApartmentType(&com_type, &qualifier);
++    ok (SUCCEEDED(hr), "Failed to get apartment type, hr %#x.\n", hr);
++    if (SUCCEEDED(hr))
++    {
++        ok (com_type == APTTYPE_MTA && qualifier == APTTYPEQUALIFIER_NONE,
++            "Unexpected type %u, qualifier %u.\n", com_type, qualifier);
++    }
++
++    SetEvent(callback->event);
++    return S_OK;
++}
++
++static const IMFAsyncCallbackVtbl test_get_com_state_callback_vtbl =
++{
++    testcallback_QueryInterface,
++    testcallback_AddRef,
++    testcallback_Release,
++    testcallback_GetParameters,
++    test_get_com_state_callback_Invoke,
++};
++
++static void test_queue_com_state(void)
++{
++    DWORD standard, multithreaded, window;
++    struct test_callback callback = { { &test_get_com_state_callback_vtbl } };
++    HRESULT hr;
++
++    callback.event = CreateEventA(NULL, TRUE, FALSE, NULL);
++
++    hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
++    ok(hr == S_OK, "Failed to start up, hr %#x.\n", hr);
++
++    for (DWORD i = MFASYNC_CALLBACK_QUEUE_STANDARD; i <= MFASYNC_CALLBACK_QUEUE_MULTITHREADED; i++)
++    {
++        hr = MFPutWorkItem(i, &callback.IMFAsyncCallback_iface, NULL);
++        ok (SUCCEEDED(hr), "Failed to queue work item, hr %#x.\n", hr);
++        WaitForSingleObject(callback.event, INFINITE);
++        ResetEvent(callback.event);
++    }
++
++    hr = MFAllocateWorkQueueEx(MF_STANDARD_WORKQUEUE, &standard);
++    ok(hr == S_OK, "Failed to allocate a queue, hr %#x.\n", hr);
++
++    hr = MFAllocateWorkQueueEx(MF_MULTITHREADED_WORKQUEUE, &multithreaded);
++    ok(hr == S_OK, "Failed to allocate a queue, hr %#x.\n", hr);
++
++    hr = MFAllocateWorkQueueEx(MF_WINDOW_WORKQUEUE, &window);
++    ok(hr == S_OK, "Failed to allocate a queue, hr %#x.\n", hr);
++
++    hr = MFPutWorkItem(standard, &callback.IMFAsyncCallback_iface, NULL);
++    ok (SUCCEEDED(hr), "Failed to queue work item, hr %#x.\n", hr);
++    WaitForSingleObject(callback.event, INFINITE);
++    ResetEvent(callback.event);
++
++    hr = MFPutWorkItem(multithreaded, &callback.IMFAsyncCallback_iface, NULL);
++    ok (SUCCEEDED(hr), "Failed to queue work item, hr %#x.\n", hr);
++    WaitForSingleObject(callback.event, INFINITE);
++    ResetEvent(callback.event);
++
++    hr = MFPutWorkItem(window, &callback.IMFAsyncCallback_iface, NULL);
++    ok (SUCCEEDED(hr), "Failed to queue work item, hr %#x.\n", hr);
++    WaitForSingleObject(callback.event, INFINITE);
++
++    CloseHandle(callback.event);
++
++    hr = MFUnlockWorkQueue(standard);
++    ok(hr == S_OK, "Failed to unlock the queue, hr %#x.\n", hr);
++
++    hr = MFUnlockWorkQueue(multithreaded);
++    ok(hr == S_OK, "Failed to unlock the queue, hr %#x.\n", hr);
++
++    hr = MFUnlockWorkQueue(window);
++    ok(hr == S_OK, "Failed to unlock the queue, hr %#x.\n", hr);
++
++    hr = MFShutdown();
++    ok(hr == S_OK, "Failed to shut down, hr %#x.\n", hr);
++}
++
+ static void test_MFCopyImage(void)
+ {
+     BYTE dest[16], src[16];
+@@ -4135,6 +4220,7 @@ START_TEST(mfplat)
+     test_source_resolver();
+     test_MFCreateAsyncResult();
+     test_allocate_queue();
++    test_queue_com_state();
+     test_MFCopyImage();
+     test_MFCreateCollection();
+     test_MFHeapAlloc();
+diff --git a/dlls/rtworkq/queue.c b/dlls/rtworkq/queue.c
+index a2fb3824c3..a65167789f 100644
+--- a/dlls/rtworkq/queue.c
++++ b/dlls/rtworkq/queue.c
+@@ -333,12 +333,16 @@ static void CALLBACK standard_queue_worker(TP_CALLBACK_INSTANCE *instance, void
+ 
+     TRACE("result object %p.\n", result);
+ 
++    CoInitializeEx(NULL, COINIT_MULTITHREADED);
++
+     /* Submitting from serial queue in reply mode, use different result object acting as receipt token.
+        It's submitted to user callback still, but when invoked, special serial queue callback will be used
+        to ensure correct destination queue. */
+ 
+     IRtwqAsyncCallback_Invoke(result->pCallback, item->reply_result ? item->reply_result : item->result);
+ 
++    CoUninitialize();
++
+     IUnknown_Release(&item->IUnknown_iface);
+ }
+ 
+
+-- 
+2.25.0
+

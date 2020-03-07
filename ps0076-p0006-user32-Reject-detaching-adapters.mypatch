@@ -1,0 +1,129 @@
+From: Zhiyi Zhang <zzhang@codeweavers.com>
+Subject: [PATCH 6/6] user32: Reject detaching adapters.
+Message-Id: <4e6a1faa-0650-5d68-ca2f-333915363801@codeweavers.com>
+Date: Tue, 11 Feb 2020 16:10:10 +0800
+
+It is currently unsupported. This helps later patches so that
+we could introduce settings handlers using a new interface without
+detaching adapter support, making patches smaller.
+
+Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
+---
+ dlls/user32/sysparams.c     | 12 +++++++++++-
+ dlls/winemac.drv/display.c  | 15 +++++++++++++++
+ dlls/winex11.drv/settings.c | 15 +++++++++++++++
+ dlls/winex11.drv/x11drv.h   |  1 +
+ 4 files changed, 42 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/sysparams.c b/dlls/user32/sysparams.c
+index a60e4a2dbd..41afb1beab 100644
+--- a/dlls/user32/sysparams.c
++++ b/dlls/user32/sysparams.c
+@@ -3287,6 +3287,15 @@ static void trace_devmode(const DEVMODEW *devmode)
+     TRACE("\n");
+ }
+ 
++static BOOL is_detached_mode(const DEVMODEW *mode)
++{
++    return mode->dmFields & DM_POSITION &&
++           mode->dmFields & DM_PELSWIDTH &&
++           mode->dmFields & DM_PELSHEIGHT &&
++           mode->dmPelsWidth == 0 &&
++           mode->dmPelsHeight == 0;
++}
++
+ /***********************************************************************
+  *		ChangeDisplaySettingsExW (USER32.@)
+  */
+@@ -3318,7 +3327,8 @@ LONG WINAPI ChangeDisplaySettingsExW( LPCWSTR devname, LPDEVMODEW devmode, HWND
+         if (devmode->dmSize < FIELD_OFFSET(DEVMODEW, dmICMMethod))
+             return DISP_CHANGE_BADMODE;
+ 
+-        if (((devmode->dmFields & DM_BITSPERPEL) && devmode->dmBitsPerPel) ||
++        if (is_detached_mode(devmode) ||
++            ((devmode->dmFields & DM_BITSPERPEL) && devmode->dmBitsPerPel) ||
+             ((devmode->dmFields & DM_PELSWIDTH) && devmode->dmPelsWidth) ||
+             ((devmode->dmFields & DM_PELSHEIGHT) && devmode->dmPelsHeight) ||
+             ((devmode->dmFields & DM_DISPLAYFREQUENCY) && devmode->dmDisplayFrequency))
+diff --git a/dlls/winemac.drv/display.c b/dlls/winemac.drv/display.c
+index 68fab08359..02cd3caa35 100644
+--- a/dlls/winemac.drv/display.c
++++ b/dlls/winemac.drv/display.c
+@@ -763,6 +763,15 @@ static BOOL get_primary_adapter(WCHAR *name)
+     return FALSE;
+ }
+ 
++static BOOL is_detached_mode(const DEVMODEW *mode)
++{
++    return mode->dmFields & DM_POSITION &&
++           mode->dmFields & DM_PELSWIDTH &&
++           mode->dmFields & DM_PELSHEIGHT &&
++           mode->dmPelsWidth == 0 &&
++           mode->dmPelsHeight == 0;
++}
++
+ /***********************************************************************
+  *              ChangeDisplaySettingsEx  (MACDRV.@)
+  *
+@@ -803,6 +812,12 @@ LONG CDECL macdrv_ChangeDisplaySettingsEx(LPCWSTR devname, LPDEVMODEW devmode,
+         devmode = &default_mode;
+     }
+ 
++    if (is_detached_mode(devmode))
++    {
++        FIXME("Detaching adapter is currently unsupported.\n");
++        return DISP_CHANGE_SUCCESSFUL;
++    }
++
+     if (macdrv_get_displays(&displays, &num_displays))
+         return DISP_CHANGE_FAILED;
+ 
+diff --git a/dlls/winex11.drv/settings.c b/dlls/winex11.drv/settings.c
+index e9039022d5..705d271ea7 100644
+--- a/dlls/winex11.drv/settings.c
++++ b/dlls/winex11.drv/settings.c
+@@ -329,6 +329,15 @@ BOOL CDECL X11DRV_EnumDisplaySettingsEx( LPCWSTR name, DWORD n, LPDEVMODEW devmo
+     return FALSE;
+ }
+ 
++BOOL is_detached_mode(const DEVMODEW *mode)
++{
++    return mode->dmFields & DM_POSITION &&
++           mode->dmFields & DM_PELSWIDTH &&
++           mode->dmFields & DM_PELSHEIGHT &&
++           mode->dmPelsWidth == 0 &&
++           mode->dmPelsHeight == 0;
++}
++
+ /***********************************************************************
+  *		ChangeDisplaySettingsEx  (X11DRV.@)
+  *
+@@ -366,6 +375,12 @@ LONG CDECL X11DRV_ChangeDisplaySettingsEx( LPCWSTR devname, LPDEVMODEW devmode,
+         devmode = &default_mode;
+     }
+ 
++    if (is_detached_mode(devmode))
++    {
++        FIXME("Detaching adapter is currently unsupported.\n");
++        return DISP_CHANGE_SUCCESSFUL;
++    }
++
+     mode = ENUM_CURRENT_SETTINGS;
+     for (i = 0; i < dd_mode_count; i++)
+     {
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index c99985e7e6..1e87807d2d 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -660,6 +660,7 @@ extern void X11DRV_init_desktop( Window win, unsigned int width, unsigned int he
+ extern void X11DRV_resize_desktop(unsigned int width, unsigned int height) DECLSPEC_HIDDEN;
+ extern BOOL is_virtual_desktop(void) DECLSPEC_HIDDEN;
+ extern BOOL is_desktop_fullscreen(void) DECLSPEC_HIDDEN;
++extern BOOL is_detached_mode(const DEVMODEW *) DECLSPEC_HIDDEN;
+ extern BOOL create_desktop_win_data( Window win ) DECLSPEC_HIDDEN;
+ extern BOOL get_primary_adapter(WCHAR *) DECLSPEC_HIDDEN;
+ extern void X11DRV_Settings_AddDepthModes(void) DECLSPEC_HIDDEN;
+
+-- 
+2.20.1
+

@@ -1,0 +1,69 @@
+From: Zebediah Figura <z.figura12@gmail.com>
+Subject: [PATCH v2 3/4] ntdll/tests: Add another test for FileNameInformation on a directory.
+Message-Id: <20200214050306.20219-3-z.figura12@gmail.com>
+Date: Thu, 13 Feb 2020 23:03:05 -0600
+In-Reply-To: <20200214050306.20219-1-z.figura12@gmail.com>
+References: <20200214050306.20219-1-z.figura12@gmail.com>
+
+Signed-off-by: Zebediah Figura <z.figura12@gmail.com>
+---
+ dlls/ntdll/tests/file.c | 33 ++++++++++++++++++++++++++++++++-
+ 1 file changed, 32 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/tests/file.c b/dlls/ntdll/tests/file.c
+index 21889870499..1f5fb5d1254 100644
+--- a/dlls/ntdll/tests/file.c
++++ b/dlls/ntdll/tests/file.c
+@@ -3149,9 +3149,11 @@ static void test_file_name_information(void)
+     char buffer[300];
+     FILE_NAME_INFORMATION *info = (FILE_NAME_INFORMATION *)buffer;
+     ULONG old_redir = 1, tmp;
++    OBJECT_ATTRIBUTES attr;
++    UNICODE_STRING string;
+     IO_STATUS_BLOCK io;
+     NTSTATUS status;
+-    HANDLE h;
++    HANDLE root, h;
+ 
+     if (pRtlWow64EnableFsRedirectionEx) pRtlWow64EnableFsRedirectionEx( TRUE, &old_redir );
+     h = CreateFileW( L"C:/windows/system32", GENERIC_READ,
+@@ -3206,6 +3208,35 @@ static void test_file_name_information(void)
+     }
+     else
+         skip("Not running on WoW64, skipping test.\n");
++
++    pRtlInitUnicodeString(&string, L"\\??\\C:\\windows\\");
++    InitializeObjectAttributes(&attr, &string, 0, 0, NULL);
++    status = pNtCreateFile(&root, GENERIC_READ | SYNCHRONIZE, &attr, &io, NULL, 0,
++            FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE, NULL, 0);
++    ok(!status, "Got status %#x.\n", status);
++
++    pRtlInitUnicodeString(&string, L"system\\");
++    attr.RootDirectory = root;
++    status = pNtCreateFile(&h, GENERIC_READ | SYNCHRONIZE, &attr, &io, NULL, 0,
++            FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_DIRECTORY_FILE, NULL, 0);
++    ok(!status, "Got status %#x.\n", status);
++
++    memset( info, 0xcc, sizeof(buffer) );
++    status = pNtQueryInformationFile( h, &io, info, sizeof(buffer), FileNameInformation );
++    ok(!status, "Got status %#x.\n", status);
++    ok(!U(io).Status, "Got io.Status %#x.\n", U(io).Status);
++    todo_wine ok(info->FileNameLength == wcslen( L"\\windows\\system" ) * sizeof(WCHAR),
++            "info->FileNameLength is %u\n", info->FileNameLength);
++    ok(info->FileName[info->FileNameLength / sizeof(WCHAR)] == 0xcccc,
++            "info->FileName[len] is %#x, expected 0xcccc.\n", info->FileName[info->FileNameLength / sizeof(WCHAR)]);
++    info->FileName[info->FileNameLength / sizeof(WCHAR)] = '\0';
++    todo_wine ok(!wcsicmp( info->FileName, L"\\windows\\system" ), "Got file name %s.\n", debugstr_w( info->FileName ));
++    ok(io.Information == FIELD_OFFSET(FILE_NAME_INFORMATION, FileName) + info->FileNameLength,
++            "io.Information is %lu, expected %u.\n",
++            io.Information, FIELD_OFFSET(FILE_NAME_INFORMATION, FileName) + info->FileNameLength);
++
++    pNtClose(h);
++    pNtClose(root);
+ }
+ 
+ static void test_file_all_name_information(void)
+
+-- 
+2.25.0
+

@@ -1,0 +1,67 @@
+From: Zebediah Figura <z.figura12@gmail.com>
+Subject: [PATCH v2 4/6] ntdll: Allow renaming a file to the same name.
+Message-Id: <20200306024717.9912-4-zfigura@codeweavers.com>
+Date: Thu,  5 Mar 2020 20:47:15 -0600
+In-Reply-To: <20200306024717.9912-1-zfigura@codeweavers.com>
+References: <20200306024717.9912-1-zfigura@codeweavers.com>
+
+Signed-off-by: Zebediah Figura <zfigura@codeweavers.com>
+---
+ dlls/ntdll/file.c       | 23 ++++++++++++++++++++++-
+ dlls/ntdll/tests/file.c |  4 ++--
+ 2 files changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/file.c b/dlls/ntdll/file.c
+index 5ecf293820e..86b552dd1fc 100644
+--- a/dlls/ntdll/file.c
++++ b/dlls/ntdll/file.c
+@@ -2780,8 +2780,29 @@ NTSTATUS WINAPI NtSetInformationFile(HANDLE handle, PIO_STATUS_BLOCK io,
+ 
+             if (!info->ReplaceIfExists && io->u.Status == STATUS_SUCCESS)
+             {
++                struct stat st, st2;
++                int fd;
++
++                if ((io->u.Status = server_get_unix_fd( handle, 0, &fd, &needs_close, NULL, NULL )))
++                {
++                    RtlFreeAnsiString( &unix_name );
++                    break;
++                }
++
++                if (fstat( fd, &st ) < 0 || stat( unix_name.Buffer, &st2 ) < 0)
++                {
++                    RtlFreeAnsiString( &unix_name );
++                    io->u.Status = FILE_GetNtStatus();
++                    break;
++                }
++
++                if (st.st_dev == st2.st_dev && st.st_ino == st2.st_ino)
++                    io->u.Status = STATUS_SUCCESS;
++                else
++                    io->u.Status = STATUS_OBJECT_NAME_COLLISION;
++
+                 RtlFreeAnsiString( &unix_name );
+-                io->u.Status = STATUS_OBJECT_NAME_COLLISION;
++                if (needs_close) close( fd );
+                 break;
+             }
+ 
+diff --git a/dlls/ntdll/tests/file.c b/dlls/ntdll/tests/file.c
+index e0d4580ae04..bb4bf9df8ad 100644
+--- a/dlls/ntdll/tests/file.c
++++ b/dlls/ntdll/tests/file.c
+@@ -2123,8 +2123,8 @@ static void test_file_rename_information(void)
+ 
+     U(io).Status = 0xdeadbeef;
+     res = pNtSetInformationFile( handle, &io, fri, sizeof(FILE_RENAME_INFORMATION) + fri->FileNameLength, FileRenameInformation );
+-    todo_wine ok( U(io).Status == STATUS_SUCCESS, "got io status %#x\n", U(io).Status );
+-    todo_wine ok( res == STATUS_SUCCESS, "got status %x\n", res );
++    ok( U(io).Status == STATUS_SUCCESS, "got io status %#x\n", U(io).Status );
++    ok( res == STATUS_SUCCESS, "got status %x\n", res );
+     ok( GetFileAttributesW( oldpath ) != INVALID_FILE_ATTRIBUTES, "file should exist\n" );
+ 
+     CloseHandle( handle );
+
+-- 
+2.25.1
+

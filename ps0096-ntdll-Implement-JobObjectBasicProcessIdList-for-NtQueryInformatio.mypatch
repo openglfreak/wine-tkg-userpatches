@@ -1,0 +1,182 @@
+From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
+Subject: [PATCH] ntdll: Implement JobObjectBasicProcessIdList for NtQueryInformationJobObject.
+Message-Id: <c852cd6dffb42d48838a78ae94d5cf647d379d49.1583416343.git.gabrielopcode@gmail.com>
+Date: Thu,  5 Mar 2020 15:52:25 +0200
+
+Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
+---
+ dlls/kernel32/tests/process.c |  9 ---------
+ dlls/ntdll/sync.c             | 34 +++++++++++++++++++++++++++++++---
+ server/process.c              | 23 +++++++++++++++++++++++
+ server/protocol.def           |  9 +++++++++
+ 4 files changed, 63 insertions(+), 12 deletions(-)
+
+diff --git a/dlls/kernel32/tests/process.c b/dlls/kernel32/tests/process.c
+index b5ed990..6c29db3 100644
+--- a/dlls/kernel32/tests/process.c
++++ b/dlls/kernel32/tests/process.c
+@@ -2606,15 +2606,11 @@ static void test_QueryInformationJobObject(void)
+     pid_list->NumberOfProcessIdsInList  = 42;
+     ret = QueryInformationJobObject(job, JobObjectBasicProcessIdList, pid_list,
+                                     FIELD_OFFSET(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList[1]), &ret_len);
+-    todo_wine
+     ok(!ret, "QueryInformationJobObject expected failure\n");
+-    todo_wine
+     expect_eq_d(ERROR_MORE_DATA, GetLastError());
+     if (ret)
+     {
+-        todo_wine
+         expect_eq_d(42, pid_list->NumberOfAssignedProcesses);
+-        todo_wine
+         expect_eq_d(42, pid_list->NumberOfProcessIdsInList);
+     }
+ 
+@@ -2629,17 +2625,12 @@ static void test_QueryInformationJobObject(void)
+         {
+             ULONG_PTR *list = pid_list->ProcessIdList;
+ 
+-            todo_wine
+             ok(ret_len == FIELD_OFFSET(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList[2]),
+                "QueryInformationJobObject returned ret_len=%u\n", ret_len);
+ 
+-            todo_wine
+             expect_eq_d(2, pid_list->NumberOfAssignedProcesses);
+-            todo_wine
+             expect_eq_d(2, pid_list->NumberOfProcessIdsInList);
+-            todo_wine
+             expect_eq_d(pi[0].dwProcessId, list[0]);
+-            todo_wine
+             expect_eq_d(pi[1].dwProcessId, list[1]);
+         }
+     }
+diff --git a/dlls/ntdll/sync.c b/dlls/ntdll/sync.c
+index 2b5b6ce..4a889eb 100644
+--- a/dlls/ntdll/sync.c
++++ b/dlls/ntdll/sync.c
+@@ -707,6 +709,7 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
+             if (len < sizeof(*accounting))
+                 return STATUS_INFO_LENGTH_MISMATCH;
+ 
++            FIXME( "stub: %p %u %p %u %p\n", handle, class, info, len, ret_len );
+             accounting = (JOBOBJECT_BASIC_ACCOUNTING_INFORMATION *)info;
+             memset(accounting, 0, sizeof(*accounting));
+             if (ret_len) *ret_len = sizeof(*accounting);
+@@ -716,12 +719,34 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
+     case JobObjectBasicProcessIdList:
+         {
+             JOBOBJECT_BASIC_PROCESS_ID_LIST *process;
++            DWORD count, i;
++
+             if (len < sizeof(*process))
+                 return STATUS_INFO_LENGTH_MISMATCH;
+ 
+             process = (JOBOBJECT_BASIC_PROCESS_ID_LIST *)info;
+-            memset(process, 0, sizeof(*process));
+-            if (ret_len) *ret_len = sizeof(*process);
++            count   = len - FIELD_OFFSET(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList);
++            count  /= sizeof(process->ProcessIdList[0]);
++
++            SERVER_START_REQ( query_job_pids )
++            {
++                req->job = wine_server_user_handle(handle);
++                wine_server_set_reply(req, process, count * sizeof(process_id_t));
++                if ((ret = wine_server_call(req)) != STATUS_SUCCESS)
++                    return ret;
++                if (count < reply->count)
++                    return STATUS_MORE_ENTRIES;
++                count = reply->count;
++            }
++            SERVER_END_REQ;
++
++            /* start from the end to not overwrite */
++            for (i = count; i--;)
++                process->ProcessIdList[i] = ((process_id_t*)process)[i];
++            process->NumberOfAssignedProcesses = count;
++            process->NumberOfProcessIdsInList = count;
++
++            if (ret_len) *ret_len = (char*)(&process->ProcessIdList[count]) - (char*)process;
+             return STATUS_SUCCESS;
+         }
+ 
+@@ -731,6 +756,7 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
+             if (len < sizeof(*extended_limit))
+                 return STATUS_INFO_LENGTH_MISMATCH;
+ 
++            FIXME( "stub: %p %u %p %u %p\n", handle, class, info, len, ret_len );
+             extended_limit = (JOBOBJECT_EXTENDED_LIMIT_INFORMATION *)info;
+             memset(extended_limit, 0, sizeof(*extended_limit));
+             if (ret_len) *ret_len = sizeof(*extended_limit);
+@@ -743,6 +769,7 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
+             if (len < sizeof(*basic_limit))
+                 return STATUS_INFO_LENGTH_MISMATCH;
+ 
++            FIXME( "stub: %p %u %p %u %p\n", handle, class, info, len, ret_len );
+             basic_limit = (JOBOBJECT_BASIC_LIMIT_INFORMATION *)info;
+             memset(basic_limit, 0, sizeof(*basic_limit));
+             if (ret_len) *ret_len = sizeof(*basic_limit);
+@@ -750,6 +777,7 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
+         }
+ 
+     default:
++        FIXME( "stub: %p %u %p %u %p\n", handle, class, info, len, ret_len );
+         return STATUS_NOT_IMPLEMENTED;
+     }
+ }
+diff --git a/server/process.c b/server/process.c
+index 73984f3..46a61d0 100644
+--- a/server/process.c
++++ b/server/process.c
+@@ -1715,6 +1715,29 @@ DECL_HANDLER(process_in_job)
+     release_object( process );
+ }
+ 
++/* get a list of the pids associated with the job */
++DECL_HANDLER(query_job_pids)
++{
++    struct job *job = get_job_obj( current->process, req->job, JOB_OBJECT_QUERY );
++    struct process *process;
++    process_id_t *data;
++    data_size_t len;
++
++    if (!job) return;
++
++    reply->count = job->num_processes;
++    len = min( get_reply_max_size(), job->num_processes * sizeof(*data) );
++    if (len && ((data = set_reply_data_size( len ))))
++    {
++        process_id_t *end = data + len;
++        LIST_FOR_EACH_ENTRY( process, &job->process_list, struct process, job_entry )
++        {
++            if (data >= end) break;
++            *data++ = process->id;
++        }
++    }
++}
++
+ /* terminate all processes associated with the job */
+ DECL_HANDLER(terminate_job)
+ {
+diff --git a/server/protocol.def b/server/protocol.def
+index 6c44b2b..8beda28 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -3924,6 +3924,15 @@ struct handle_info
+ @END
+ 
+ 
++/* Query a list of pids associated with the job */
++@REQ(query_job_pids)
++    obj_handle_t job;             /* handle to the job */
++@REPLY
++    data_size_t count;            /* number of processes associated with the job */
++    VARARG(pids,uints);           /* list of pids */
++@END
++
++
+ /* Set limit flags on a job */
+ @REQ(set_job_limits)
+     obj_handle_t handle;          /* handle to the job */
+
+-- 
+2.21.0
+

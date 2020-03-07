@@ -1,0 +1,86 @@
+From: Serge Gautherie <winehq-git_serge_180711@gautherie.fr>
+Subject: [PATCH 1/2] kernelbase: Handle RegGetValue() RRF_SUBKEY_WOW64*KEY flags.
+Message-Id: <20200219041054.2408-1-winehq-git_serge_180711@gautherie.fr>
+Date: Wed, 19 Feb 2020 05:10:54 +0100
+
+Signed-off-by: Serge Gautherie <winehq-git_serge_180711@gautherie.fr>
+---
+ dlls/kernelbase/registry.c | 26 ++++++++++++++++++++++++--
+ include/winreg.h           |  4 +++-
+ 2 files changed, 27 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/kernelbase/registry.c b/dlls/kernelbase/registry.c
+index 137c0ef..b4f540c 100644
+--- a/dlls/kernelbase/registry.c
++++ b/dlls/kernelbase/registry.c
+@@ -1739,13 +1739,24 @@ LSTATUS WINAPI RegGetValueW( HKEY hKey, LPCWSTR pszSubKey, LPCWSTR pszValue,
+ 
+     if (pvData && !pcbData)
+         return ERROR_INVALID_PARAMETER;
++
+     if ((dwFlags & RRF_RT_REG_EXPAND_SZ) && !(dwFlags & RRF_NOEXPAND) &&
+             ((dwFlags & RRF_RT_ANY) != RRF_RT_ANY))
+         return ERROR_INVALID_PARAMETER;
+ 
++    if ((dwFlags & (RRF_SUBKEY_WOW6464KEY | RRF_SUBKEY_WOW6432KEY)) == (RRF_SUBKEY_WOW6464KEY | RRF_SUBKEY_WOW6432KEY))
++        return ERROR_INVALID_PARAMETER;
++
+     if (pszSubKey && pszSubKey[0])
+     {
+-        ret = RegOpenKeyExW(hKey, pszSubKey, 0, KEY_QUERY_VALUE, &hKey);
++        REGSAM samDesired = KEY_QUERY_VALUE;
++
++        if (dwFlags & RRF_SUBKEY_WOW6464KEY)
++            samDesired |= KEY_WOW64_64KEY;
++        else if (dwFlags & RRF_SUBKEY_WOW6432KEY)
++            samDesired |= KEY_WOW64_32KEY;
++
++        ret = RegOpenKeyExW(hKey, pszSubKey, 0, samDesired, &hKey);
+         if (ret != ERROR_SUCCESS) return ret;
+     }
+ 
+@@ -1835,13 +1846,24 @@ LSTATUS WINAPI RegGetValueA( HKEY hKey, LPCSTR pszSubKey, LPCSTR pszValue,
+ 
+     if (pvData && !pcbData)
+         return ERROR_INVALID_PARAMETER;
++
+     if ((dwFlags & RRF_RT_REG_EXPAND_SZ) && !(dwFlags & RRF_NOEXPAND) &&
+             ((dwFlags & RRF_RT_ANY) != RRF_RT_ANY))
+         return ERROR_INVALID_PARAMETER;
+ 
++    if ((dwFlags & (RRF_SUBKEY_WOW6464KEY | RRF_SUBKEY_WOW6432KEY)) == (RRF_SUBKEY_WOW6464KEY | RRF_SUBKEY_WOW6432KEY))
++        return ERROR_INVALID_PARAMETER;
++
+     if (pszSubKey && pszSubKey[0])
+     {
+-        ret = RegOpenKeyExA(hKey, pszSubKey, 0, KEY_QUERY_VALUE, &hKey);
++        REGSAM samDesired = KEY_QUERY_VALUE;
++
++        if (dwFlags & RRF_SUBKEY_WOW6464KEY)
++            samDesired |= KEY_WOW64_64KEY;
++        else if (dwFlags & RRF_SUBKEY_WOW6432KEY)
++            samDesired |= KEY_WOW64_32KEY;
++
++        ret = RegOpenKeyExA(hKey, pszSubKey, 0, samDesired, &hKey);
+         if (ret != ERROR_SUCCESS) return ret;
+     }
+ 
+diff --git a/include/winreg.h b/include/winreg.h
+index c003791..665ea8b 100644
+--- a/include/winreg.h
++++ b/include/winreg.h
+@@ -80,7 +80,9 @@ typedef LONG LSTATUS;
+ #define RRF_RT_REG_QWORD        (1 << 6)
+ #define RRF_RT_DWORD            (RRF_RT_REG_BINARY | RRF_RT_REG_DWORD)
+ #define RRF_RT_QWORD            (RRF_RT_REG_BINARY | RRF_RT_REG_QWORD)
+-#define RRF_RT_ANY              0xffff
++#define RRF_RT_ANY              0x0000ffff
++#define RRF_SUBKEY_WOW6464KEY   (1 << 16)
++#define RRF_SUBKEY_WOW6432KEY   (1 << 17)
+ #define RRF_NOEXPAND            (1 << 28)
+ #define RRF_ZEROONFAILURE       (1 << 29)
+ 
+
+-- 
+2.10.0.windows.1
+

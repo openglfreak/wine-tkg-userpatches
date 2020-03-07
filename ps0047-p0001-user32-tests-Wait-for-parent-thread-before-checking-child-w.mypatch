@@ -1,7 +1,7 @@
 From: "Rémi Bernon" <rbernon@codeweavers.com>
-Subject: [PATCH v5 1/2] user32/tests: Wait for parent thread before checking child window.
-Message-Id: <20200113161143.1117951-1-rbernon@codeweavers.com>
-Date: Mon, 13 Jan 2020 17:11:42 +0100
+Subject: [PATCH resend 1/2] user32/tests: Wait for parent thread before checking child window.
+Message-Id: <20200304145151.1755587-1-rbernon@codeweavers.com>
+Date: Wed,  4 Mar 2020 15:51:50 +0100
 
 This test is failing from time to time. Making sure the parent thread
 has terminated before continuing triggers the underlying race condition,
@@ -9,36 +9,14 @@ and makes the test to always fail.
 
 Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
 ---
-
-I'm not sure if the fix in next patch is fine for inclusion in 5.0, but
-this first patch should at least make the test to consistently fail.
-
-Notes:
-    * Directly check the window in grand child thread instead of
-      waiting, it should have been destroyed already as we waited
-      for thread completion.
-    * Start the threads before flushing events and cleaning up
-      sequences, it should be the same at the end but it gives more time
-      for children to create their own windows.
-    * Make all the handles live on the main stack, directly wait on the
-      child thread handle from the grand child, instead of an additional
-      event.
-    * Increase some of the remaining timeouts, it still sometimes times
-      out on Windows otherwise.
-    
-    The failure was hard to reproduce. The most reliable way without the
-    sleep added here is to start multiple runs on the testbot, changing
-    locale for each run. The locale change seems to have an impact on
-    the timing and triggers the race condition.
-
  dlls/user32/tests/msg.c | 61 +++++++++++++++++++++++++----------------
  1 file changed, 37 insertions(+), 24 deletions(-)
 
 diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
-index 413f25ccc3a..1dd1b5978e7 100644
+index 423157b623d..55b4fe2228b 100644
 --- a/dlls/user32/tests/msg.c
 +++ b/dlls/user32/tests/msg.c
-@@ -8546,6 +8546,8 @@ static void test_paint_messages(void)
+@@ -8539,6 +8539,8 @@ static void test_paint_messages(void)
  struct wnd_event
  {
      HWND hwnd;
@@ -47,7 +25,7 @@ index 413f25ccc3a..1dd1b5978e7 100644
      HANDLE grand_child;
      HANDLE start_event;
      HANDLE stop_event;
-@@ -8578,44 +8580,50 @@ static DWORD CALLBACK create_grand_child_thread( void *param )
+@@ -8571,44 +8573,50 @@ static DWORD CALLBACK create_grand_child_thread( void *param )
      struct wnd_event *wnd_event = param;
      HWND hchild;
      MSG msg;
@@ -113,7 +91,7 @@ index 413f25ccc3a..1dd1b5978e7 100644
      ret = WaitForSingleObject( wnd_event->stop_event, 5000 );
      ok( !ret, "WaitForSingleObject failed %x\n", ret );
      return 0;
-@@ -8749,33 +8757,38 @@ static void test_interthread_messages(void)
+@@ -8742,33 +8750,38 @@ static void test_interthread_messages(void)
      wnd_event.hwnd = CreateWindowExA(0, "TestParentClass", "Test parent", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                                100, 100, 200, 200, 0, 0, 0, NULL);
      ok (wnd_event.hwnd != 0, "Failed to create parent window\n");
@@ -163,5 +141,5 @@ index 413f25ccc3a..1dd1b5978e7 100644
  
 
 -- 
-2.25.0.rc2
+2.25.0
 

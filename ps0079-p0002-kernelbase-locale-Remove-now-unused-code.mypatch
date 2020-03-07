@@ -1,0 +1,151 @@
+From: Fabian Maurer <dark.shadow4@web.de>
+Subject: [PATCH v3 2/2] kernelbase/locale: Remove now unused code
+Message-Id: <20200215192748.382909-2-dark.shadow4@web.de>
+Date: Sat, 15 Feb 2020 20:27:48 +0100
+In-Reply-To: <20200215192748.382909-1-dark.shadow4@web.de>
+References: <20200215192748.382909-1-dark.shadow4@web.de>
+
+Separate commit since git would interleave the
+addition with the removal, making the changes hard to follow
+
+Signed-off-by: Fabian Maurer <dark.shadow4@web.de>
+---
+ dlls/kernelbase/locale.c | 120 ---------------------------------------
+ 1 file changed, 120 deletions(-)
+
+diff --git a/dlls/kernelbase/locale.c b/dlls/kernelbase/locale.c
+index 824bb6da54..c1cd25df75 100644
+--- a/dlls/kernelbase/locale.c
++++ b/dlls/kernelbase/locale.c
+@@ -2224,126 +2224,6 @@ static int map_to_halfwidth( WCHAR c, WCHAR *dst, int dstlen )
+     return 1;
+ }
+
+-
+-/* 32-bit collation element table format:
+- * unicode weight - high 16 bit, diacritic weight - high 8 bit of low 16 bit,
+- * case weight - high 4 bit of low 8 bit.
+- */
+-
+-enum weight { UNICODE_WEIGHT, DIACRITIC_WEIGHT, CASE_WEIGHT };
+-
+-static unsigned int get_weight( WCHAR ch, enum weight type )
+-{
+-    unsigned int ret;
+-
+-    ret = collation_table[collation_table[collation_table[ch >> 8] + ((ch >> 4) & 0x0f)] + (ch & 0xf)];
+-    if (ret == ~0u) return ch;
+-
+-    switch (type)
+-    {
+-    case UNICODE_WEIGHT:   return ret >> 16;
+-    case DIACRITIC_WEIGHT: return (ret >> 8) & 0xff;
+-    case CASE_WEIGHT:      return (ret >> 4) & 0x0f;
+-    default:               return 0;
+-    }
+-}
+-
+-
+-static void inc_str_pos( const WCHAR **str, int *len, unsigned int *dpos, unsigned int *dlen )
+-{
+-    (*dpos)++;
+-    if (*dpos == *dlen)
+-    {
+-        *dpos = *dlen = 0;
+-        (*str)++;
+-        (*len)--;
+-    }
+-}
+-
+-
+-static int compare_weights(int flags, const WCHAR *str1, int len1,
+-                           const WCHAR *str2, int len2, enum weight type )
+-{
+-    unsigned int ce1, ce2, dpos1 = 0, dpos2 = 0, dlen1 = 0, dlen2 = 0;
+-    const WCHAR *dstr1 = NULL, *dstr2 = NULL;
+-
+-    while (len1 > 0 && len2 > 0)
+-    {
+-        if (!dlen1 && !(dstr1 = get_decomposition( *str1, &dlen1 ))) dstr1 = str1;
+-        if (!dlen2 && !(dstr2 = get_decomposition( *str2, &dlen2 ))) dstr2 = str2;
+-
+-        if (flags & NORM_IGNORESYMBOLS)
+-        {
+-            int skip = 0;
+-            /* FIXME: not tested */
+-            if (get_table_entry( wctype_table, dstr1[dpos1] ) & (C1_PUNCT | C1_SPACE))
+-            {
+-                inc_str_pos( &str1, &len1, &dpos1, &dlen1 );
+-                skip = 1;
+-            }
+-            if (get_table_entry( wctype_table, dstr2[dpos2] ) & (C1_PUNCT | C1_SPACE))
+-            {
+-                inc_str_pos( &str2, &len2, &dpos2, &dlen2 );
+-                skip = 1;
+-            }
+-            if (skip) continue;
+-        }
+-
+-       /* hyphen and apostrophe are treated differently depending on
+-        * whether SORT_STRINGSORT specified or not
+-        */
+-        if (type == UNICODE_WEIGHT && !(flags & SORT_STRINGSORT))
+-        {
+-            if (dstr1[dpos1] == '-' || dstr1[dpos1] == '\'')
+-            {
+-                if (dstr2[dpos2] != '-' && dstr2[dpos2] != '\'')
+-                {
+-                    inc_str_pos( &str1, &len1, &dpos1, &dlen1 );
+-                    continue;
+-                }
+-            }
+-            else if (dstr2[dpos2] == '-' || dstr2[dpos2] == '\'')
+-            {
+-                inc_str_pos( &str2, &len2, &dpos2, &dlen2 );
+-                continue;
+-            }
+-        }
+-
+-        ce1 = get_weight( dstr1[dpos1], type );
+-        if (!ce1)
+-        {
+-            inc_str_pos( &str1, &len1, &dpos1, &dlen1 );
+-            continue;
+-        }
+-        ce2 = get_weight( dstr2[dpos2], type );
+-        if (!ce2)
+-        {
+-            inc_str_pos( &str2, &len2, &dpos2, &dlen2 );
+-            continue;
+-        }
+-
+-        if (ce1 - ce2) return ce1 - ce2;
+-
+-        inc_str_pos( &str1, &len1, &dpos1, &dlen1 );
+-        inc_str_pos( &str2, &len2, &dpos2, &dlen2 );
+-    }
+-    while (len1)
+-    {
+-        if (!dlen1 && !(dstr1 = get_decomposition( *str1, &dlen1 ))) dstr1 = str1;
+-        ce1 = get_weight( dstr1[dpos1], type );
+-        if (ce1) break;
+-        inc_str_pos( &str1, &len1, &dpos1, &dlen1 );
+-    }
+-    while (len2)
+-    {
+-        if (!dlen2 && !(dstr2 = get_decomposition( *str2, &dlen2 ))) dstr2 = str2;
+-        ce2 = get_weight( dstr2[dpos2], type );
+-        if (ce2) break;
+-        inc_str_pos( &str2, &len2, &dpos2, &dlen2 );
+-    }
+-    return len1 - len2;
+-}
+-
+ /*
+ Sortkey handler code.
+
+--
+2.25.0
+
+
+

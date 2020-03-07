@@ -1,0 +1,246 @@
+From: Piotr Caban <piotr@codeweavers.com>
+Subject: [PATCH 4/6 v2] server: Use correct timeout in select.
+Message-Id: <6d92a8df-8288-ba27-2dd4-c72916b5eacc@codeweavers.com>
+Date: Fri, 21 Feb 2020 13:43:42 +0100
+
+Signed-off-by: Piotr Caban <piotr@codeweavers.com>
+---
+  dlls/ntdll/server.c | 15 +++++++++++----
+  dlls/ntdll/sync.c   | 15 +++++++++++----
+  server/protocol.def |  1 -
+  server/thread.c     | 38 +++++++++++++++++++-------------------
+  4 files changed, 41 insertions(+), 28 deletions(-)
+
+diff --git a/dlls/ntdll/server.c b/dlls/ntdll/server.c
+index 4facdc08a7..df832f555e 100644
+--- a/dlls/ntdll/server.c
++++ b/dlls/ntdll/server.c
+@@ -600,11 +600,19 @@ unsigned int server_select( const select_op_t *select_op, data_size_t size, UINT
+     obj_handle_t apc_handle = 0;
+     apc_call_t call;
+     apc_result_t result;
+-    timeout_t abs_timeout = timeout ? timeout->QuadPart : TIMEOUT_INFINITE;
++    timeout_t when = timeout ? timeout->QuadPart : TIMEOUT_INFINITE;
+     sigset_t old_set;
+ 
+     memset( &result, 0, sizeof(result) );
+ 
++    if (when < 0)
++    {
++        LARGE_INTEGER now;
++
++        RtlQueryPerformanceCounter(&now);
++        when -= now.QuadPart;
++    }
++
+     do
+     {
+         pthread_sigmask( SIG_BLOCK, &server_block_set, &old_set );
+@@ -615,11 +623,10 @@ unsigned int server_select( const select_op_t *select_op, data_size_t size, UINT
+                 req->flags    = flags;
+                 req->cookie   = wine_server_client_ptr( &cookie );
+                 req->prev_apc = apc_handle;
+-                req->timeout  = abs_timeout;
++                req->timeout  = when;
+                 wine_server_add_data( req, &result, sizeof(result) );
+                 wine_server_add_data( req, select_op, size );
+                 ret = server_call_unlocked( req );
+-                abs_timeout = reply->timeout;
+                 apc_handle  = reply->apc_handle;
+                 call        = reply->call;
+             }
+@@ -639,7 +646,7 @@ unsigned int server_select( const select_op_t *select_op, data_size_t size, UINT
+             invoke_apc( &call, &result );
+             /* if we ran a user apc we have to check once more if additional apcs are queued,
+              * but we don't want to wait */
+-            abs_timeout = 0;
++            when = 0;
+             user_apc = TRUE;
+             size = 0;
+         }
+diff --git a/dlls/ntdll/sync.c b/dlls/ntdll/sync.c
+index 4a7b461627..5d150e6314 100644
+--- a/dlls/ntdll/sync.c
++++ b/dlls/ntdll/sync.c
+@@ -2463,7 +2463,7 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+     obj_handle_t apc_handle = 0;
+     apc_call_t call;
+     apc_result_t result;
+-    timeout_t abs_timeout = timeout ? timeout->QuadPart : TIMEOUT_INFINITE;
++    timeout_t when = timeout ? timeout->QuadPart : TIMEOUT_INFINITE;
+     sigset_t old_set;
+ 
+     if (size != 1 && size != 2 && size != 4 && size != 8)
+@@ -2478,6 +2478,14 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+ 
+     memset( &result, 0, sizeof(result) );
+ 
++    if (when < 0)
++    {
++        LARGE_INTEGER now;
++
++        RtlQueryPerformanceCounter(&now);
++        when -= now.QuadPart;
++    }
++
+     do
+     {
+         RtlEnterCriticalSection( &addr_section );
+@@ -2495,11 +2503,10 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+                 req->flags    = SELECT_INTERRUPTIBLE;
+                 req->cookie   = wine_server_client_ptr( &cookie );
+                 req->prev_apc = apc_handle;
+-                req->timeout  = abs_timeout;
++                req->timeout  = when;
+                 wine_server_add_data( req, &result, sizeof(result) );
+                 wine_server_add_data( req, &select_op, sizeof(select_op.keyed_event) );
+                 ret = server_call_unlocked( req );
+-                abs_timeout = reply->timeout;
+                 apc_handle  = reply->apc_handle;
+                 call        = reply->call;
+             }
+@@ -2517,7 +2524,7 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+             invoke_apc( &call, &result );
+             /* if we ran a user apc we have to check once more if additional apcs are queued,
+              * but we don't want to wait */
+-            abs_timeout = 0;
++            when = 0;
+             user_apc = TRUE;
+         }
+ 
+diff --git a/server/protocol.def b/server/protocol.def
+index 6c44b2b43f..f84e358501 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -1101,7 +1101,6 @@ struct rawinput_device
+     VARARG(result,apc_result); /* result of previous APC */
+     VARARG(data,select_op);    /* operation-specific data */
+ @REPLY
+-    timeout_t    timeout;      /* timeout converted to absolute */
+     apc_call_t   call;         /* APC call arguments */
+     obj_handle_t apc_handle;   /* handle to next APC */
+ @END
+diff --git a/server/thread.c b/server/thread.c
+index edf70c61bd..bb67351be3 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -768,7 +768,8 @@ static int check_wait( struct thread *thread )
+     }
+ 
+     if ((wait->flags & SELECT_ALERTABLE) && !list_empty(&thread->user_apc)) return STATUS_USER_APC;
+-    if (wait->timeout <= current_time) return STATUS_TIMEOUT;
++    if (wait->timeout >= 0 && wait->timeout <= current_time) return STATUS_TIMEOUT;
++    if (wait->timeout < 0 && -wait->timeout <= monotonic_time) return STATUS_TIMEOUT;
+     return -1;
+ }
+ 
+@@ -874,19 +875,17 @@ static int signal_object( obj_handle_t handle )
+ }
+ 
+ /* select on a list of handles */
+-static timeout_t select_on( const select_op_t *select_op, data_size_t op_size, client_ptr_t cookie,
++static void select_on( const select_op_t *select_op, data_size_t op_size, client_ptr_t cookie,
+                             int flags, timeout_t timeout )
+ {
+     int ret;
+     unsigned int count;
+     struct object *object;
+ 
+-    if (timeout <= 0) timeout = current_time - timeout;
+-
+     switch (select_op->op)
+     {
+     case SELECT_NONE:
+-        if (!wait_on( select_op, 0, NULL, flags, timeout )) return timeout;
++        if (!wait_on( select_op, 0, NULL, flags, timeout )) return;
+         break;
+ 
+     case SELECT_WAIT:
+@@ -895,24 +894,24 @@ static timeout_t select_on( const select_op_t *select_op, data_size_t op_size, c
+         if (op_size < offsetof( select_op_t, wait.handles ) || count > MAXIMUM_WAIT_OBJECTS)
+         {
+             set_error( STATUS_INVALID_PARAMETER );
+-            return 0;
++            return;
+         }
+         if (!wait_on_handles( select_op, count, select_op->wait.handles, flags, timeout ))
+-            return timeout;
++            return;
+         break;
+ 
+     case SELECT_SIGNAL_AND_WAIT:
+         if (!wait_on_handles( select_op, 1, &select_op->signal_and_wait.wait, flags, timeout ))
+-            return timeout;
++            return;
+         if (select_op->signal_and_wait.signal)
+         {
+             if (!signal_object( select_op->signal_and_wait.signal ))
+             {
+                 end_wait( current, get_error() );
+-                return timeout;
++                return;
+             }
+             /* check if we woke ourselves up */
+-            if (!current->wait) return timeout;
++            if (!current->wait) return;
+         }
+         break;
+ 
+@@ -920,38 +919,39 @@ static timeout_t select_on( const select_op_t *select_op, data_size_t op_size, c
+     case SELECT_KEYED_EVENT_RELEASE:
+         object = (struct object *)get_keyed_event_obj( current->process, select_op->keyed_event.handle,
+                          select_op->op == SELECT_KEYED_EVENT_WAIT ? KEYEDEVENT_WAIT : KEYEDEVENT_WAKE );
+-        if (!object) return timeout;
++        if (!object) return;
+         ret = wait_on( select_op, 1, &object, flags, timeout );
+         release_object( object );
+-        if (!ret) return timeout;
++        if (!ret) return;
+         current->wait->key = select_op->keyed_event.key;
+         break;
+ 
+     default:
+         set_error( STATUS_INVALID_PARAMETER );
+-        return 0;
++        return;
+     }
+ 
+     if ((ret = check_wait( current )) != -1)
+     {
+         /* condition is already satisfied */
+         set_error( end_wait( current, ret ));
+-        return timeout;
++        return;
+     }
+ 
+     /* now we need to wait */
+     if (current->wait->timeout != TIMEOUT_INFINITE)
+     {
+-        if (!(current->wait->user = add_timeout_user( current->wait->timeout,
+-                                                      thread_timeout, current->wait )))
++        timeout_t timeout = current->wait->timeout;
++        if (timeout <= -monotonic_time) timeout += monotonic_time;
++        else if (timeout < 0) timeout = 0;
++        if (!(current->wait->user = add_timeout_user( timeout, thread_timeout, current->wait )))
+         {
+             end_wait( current, get_error() );
+-            return timeout;
++            return;
+         }
+     }
+     current->wait->cookie = cookie;
+     set_error( STATUS_PENDING );
+-    return timeout;
+ }
+ 
+ /* attempt to wake threads sleeping on the object wait queue */
+@@ -1576,7 +1576,7 @@ DECL_HANDLER(select)
+         release_object( apc );
+     }
+ 
+-    reply->timeout = select_on( &select_op, op_size, req->cookie, req->flags, req->timeout );
++    select_on( &select_op, op_size, req->cookie, req->flags, req->timeout );
+ 
+     while (get_error() == STATUS_USER_APC)
+     {
+

@@ -1,0 +1,120 @@
+From: Derek Lesho <dlesho@codeweavers.com>
+Subject: [PATCH v2 09/11] winegstreamer: Add mp4 media source using qtdemux.
+Message-Id: <20200210223241.4122430-9-dlesho@codeweavers.com>
+Date: Mon, 10 Feb 2020 16:32:39 -0600
+In-Reply-To: <20200210223241.4122430-1-dlesho@codeweavers.com>
+References: <20200210223241.4122430-1-dlesho@codeweavers.com>
+
+Signed-off-by: Derek Lesho <dlesho@codeweavers.com>
+---
+ dlls/mf/mf.rgs                | 11 +++++++++++
+ dlls/mfplat/tests/mfplat.c    | 36 ++++++++++-------------------------
+ dlls/winegstreamer/mfplat.c   |  9 ++++++++-
+ dlls/winegstreamer/mfplat.idl |  7 +++++++
+ include/mfidl.idl             |  1 +
+ 5 files changed, 37 insertions(+), 27 deletions(-)
+
+diff --git a/dlls/mf/mf.rgs b/dlls/mf/mf.rgs
+index f127df7632..11fb106b4f 100644
+--- a/dlls/mf/mf.rgs
++++ b/dlls/mf/mf.rgs
+@@ -13,6 +13,17 @@ HKLM
+                         val '{477ec299-1421-4bdd-971f-7ccb933f21ad}' = s 'File Scheme Handler'
+                     }
+                 }
++                NoRemove 'ByteStreamHandlers'
++                {
++                    '.mp4'
++                    {
++                        val '{271C3902-6095-4c45-A22F-20091816EE9E}' = s 'MPEG4 Byte Stream Handler'
++                    }
++                    'video/mp4'
++                    {
++                        val '{271C3902-6095-4c45-A22F-20091816EE9E}' = s 'MPEG4 Byte Stream Handler'
++                    }
++                }
+             }
+         }
+     }
+diff --git a/dlls/mfplat/tests/mfplat.c b/dlls/mfplat/tests/mfplat.c
+index f056bbda2a..e08486bce1 100644
+--- a/dlls/mfplat/tests/mfplat.c
++++ b/dlls/mfplat/tests/mfplat.c
+@@ -513,7 +513,6 @@ static void test_source_resolver(void)
+     IMFStreamDescriptor_Release(sd);
+ 
+     hr = IMFMediaTypeHandler_GetMajorType(handler, &guid);
+-todo_wine
+     ok(hr == S_OK, "Failed to get stream major type, hr %#x.\n", hr);
+     if (FAILED(hr))
+         goto skip_source_tests;
+diff --git a/dlls/winegstreamer/mfplat.c b/dlls/winegstreamer/mfplat.c
+index 0a25cad48f..53aa0bc8f1 100644
+--- a/dlls/winegstreamer/mfplat.c
++++ b/dlls/winegstreamer/mfplat.c
+@@ -21,13 +21,14 @@
+ 
+ #include "gst_private.h"
+ 
++#include "gst_private.h"
++
+ #include <stdarg.h>
+ 
+ #define COBJMACROS
+ #define NONAMELESSUNION
+ 
+ #include "mfapi.h"
+-#include "mfidl.h"
+ 
+ #include "wine/debug.h"
+ #include "wine/heap.h"
+@@ -407,6 +408,11 @@ failed:
+     return hr;
+ }
+ 
++static HRESULT mp4_stream_handler_create(REFIID riid, void **ret)
++{
++    return container_stream_handler_construct(riid, ret, "qtdemux");
++}
++
+ static const struct class_object
+ {
+     const GUID *clsid;
+@@ -415,6 +421,7 @@ static const struct class_object
+ class_objects[] =
+ {
+     { &CLSID_VideoProcessorMFT, &video_processor_create },
++    { &CLSID_MPEG4ByteStreamHandler, &mp4_stream_handler_create },
+ };
+ 
+ HRESULT mfplat_get_class_object(REFCLSID rclsid, REFIID riid, void **obj)
+diff --git a/dlls/winegstreamer/mfplat.idl b/dlls/winegstreamer/mfplat.idl
+index 05a75bdb8e..947b47f435 100644
+--- a/dlls/winegstreamer/mfplat.idl
++++ b/dlls/winegstreamer/mfplat.idl
+@@ -24,3 +24,10 @@
+ 
+ ]
+ coclass VideoProcessorMFT { }
++
++[
++    helpstring("MP4 Byte Stream Handler"),
++    threading(both),
++    uuid(271c3902-6095-4c45-a22f-20091816ee9e)
++]
++coclass MPEG4ByteStreamHandler { }
+\ No newline at end of file
+diff --git a/include/mfidl.idl b/include/mfidl.idl
+index da43399828..4c94c5d03e 100644
+--- a/include/mfidl.idl
++++ b/include/mfidl.idl
+@@ -910,3 +910,4 @@ cpp_quote("EXTERN_GUID(MF_SESSION_APPROX_EVENT_OCCURRENCE_TIME, 0x190e852f, 0x62
+ cpp_quote("EXTERN_GUID(MF_PMP_SERVER_CONTEXT, 0x2f00c910, 0xd2cf, 0x4278, 0x8b, 0x6a, 0xd0, 0x77, 0xfa, 0xc3, 0xa2, 0x5f);")
+ 
+ cpp_quote("EXTERN_GUID(CLSID_VideoProcessorMFT, 0x88753b26, 0x5b24, 0x49bd, 0xb2, 0xe7, 0xc, 0x44, 0x5c, 0x78, 0xc9, 0x82);")
++cpp_quote("EXTERN_GUID(CLSID_MPEG4ByteStreamHandler, 0x271c3902, 0x6095, 0x4c45, 0xa2, 0x2f, 0x20, 0x09, 0x18, 0x16, 0xee, 0x9e);")
+\ No newline at end of file
+
+-- 
+2.25.0
+

@@ -1,0 +1,217 @@
+From: Fabian Maurer <dark.shadow4@web.de>
+Subject: [PATCH v4 2/2] find.exe: Implement file searching
+Message-Id: <20200218173025.35211-2-dark.shadow4@web.de>
+Date: Tue, 18 Feb 2020 18:30:25 +0100
+In-Reply-To: <20200218173025.35211-1-dark.shadow4@web.de>
+References: <20200218173025.35211-1-dark.shadow4@web.de>
+
+Signed-off-by: Fabian Maurer <dark.shadow4@web.de>
+---
+v2: Add error check
+v3: Simplify error check
+v4: Fix error check
+---
+ programs/find/find.c       | 65 ++++++++++++++++++++++++++++++++------
+ programs/find/find.rc      |  1 +
+ programs/find/resources.h  |  1 +
+ programs/find/tests/find.c | 19 -----------
+ 4 files changed, 58 insertions(+), 28 deletions(-)
+
+diff --git a/programs/find/find.c b/programs/find/find.c
+index 34ca2801eb..a29fa63074 100644
+--- a/programs/find/find.c
++++ b/programs/find/find.c
+@@ -147,7 +147,9 @@ int __cdecl wmain(int argc, WCHAR *argv[])
+     WCHAR *tofind = NULL;
+     int i;
+     int exitcode;
+-    HANDLE input;
++    int file_paths_len = 0;
++    int file_paths_max = 1;
++    WCHAR** file_paths = heap_alloc(sizeof(WCHAR*));
+
+     TRACE("running find:");
+     for (i = 0; i < argc; i++)
+@@ -156,8 +158,6 @@ int __cdecl wmain(int argc, WCHAR *argv[])
+     }
+     TRACE("\n");
+
+-    input = GetStdHandle(STD_INPUT_HANDLE);
+-
+     for (i = 1; i < argc; i++)
+     {
+         if (argv[i][0] == '/')
+@@ -171,8 +171,12 @@ int __cdecl wmain(int argc, WCHAR *argv[])
+         }
+         else
+         {
+-            FIXME("Searching files not supported yet\n");
+-            return 1000;
++            if (file_paths_len >= file_paths_max)
++            {
++                file_paths_max *= 2;
++                file_paths = heap_realloc(file_paths, sizeof(WCHAR*) * file_paths_max);
++            }
++            file_paths[file_paths_len++] = argv[i];
+         }
+     }
+
+@@ -183,13 +187,56 @@ int __cdecl wmain(int argc, WCHAR *argv[])
+     }
+
+     exitcode = 1;
+-    while ((line = read_line_from_handle(input)) != NULL)
++
++    if (file_paths_len > 0)
+     {
+-        if (run_find_for_line(line, tofind))
+-            exitcode = 0;
++        for (i = 0; i < file_paths_len; i++)
++        {
++            HANDLE input;
++            WCHAR file_path_upper[MAX_PATH];
++
++            wcscpy(file_path_upper, file_paths[i]);
++            CharUpperW(file_path_upper);
++
++            input = CreateFileW(file_paths[i], GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
++
++            if (input == INVALID_HANDLE_VALUE)
++            {
++                WCHAR buffer_message[64];
++                WCHAR message[300];
++
++                LoadStringW(GetModuleHandleW(NULL), IDS_FILE_NOT_FOUND, buffer_message, ARRAY_SIZE(buffer_message));
++
++                wsprintfW(message, buffer_message, file_path_upper);
++                write_to_stdout(message);
++                continue;
++            }
+
+-        heap_free(line);
++            write_to_stdout(L"\r\n---------- ");
++            write_to_stdout(file_path_upper);
++            write_to_stdout(L"\r\n");
++            while ((line = read_line_from_handle(input)) != NULL)
++            {
++                if (run_find_for_line(line, tofind))
++                    exitcode = 0;
++
++                heap_free(line);
++            }
++            CloseHandle(input);
++        }
++    }
++    else
++    {
++        HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
++        while ((line = read_line_from_handle(input)) != NULL)
++        {
++            if (run_find_for_line(line, tofind))
++                exitcode = 0;
++
++            heap_free(line);
++        }
+     }
+
++    heap_free(file_paths);
+     return exitcode;
+ }
+diff --git a/programs/find/find.rc b/programs/find/find.rc
+index 8c358c8677..b7376b6d11 100644
+--- a/programs/find/find.rc
++++ b/programs/find/find.rc
+@@ -22,4 +22,5 @@ STRINGTABLE
+ {
+     IDS_INVALID_PARAMETER "FIND: Parameter format not correct\r\n"
+     IDS_INVALID_SWITCH    "FIND: Invalid switch\r\n"
++    IDS_FILE_NOT_FOUND    "File not found - %s\r\n"
+ }
+diff --git a/programs/find/resources.h b/programs/find/resources.h
+index 2ebe197b7d..bdcc2802b5 100644
+--- a/programs/find/resources.h
++++ b/programs/find/resources.h
+@@ -23,5 +23,6 @@
+
+ #define IDS_INVALID_PARAMETER 1000
+ #define IDS_INVALID_SWITCH    1001
++#define IDS_FILE_NOT_FOUND    1002
+
+ #endif  /* __WINE_FIND_RESOURCES_H */
+diff --git a/programs/find/tests/find.c b/programs/find/tests/find.c
+index a15b5d2966..d50dcdd36a 100644
+--- a/programs/find/tests/find.c
++++ b/programs/find/tests/find.c
+@@ -305,7 +305,6 @@ static void run_find_file_multi(void)
+         "File not found - %s\r\n",
+         path_temp_file1, path_temp_file2, path_temp_file3);
+
+-    todo_wine
+     run_find_stdin_(commandline_new, (BYTE*)"", 0, (BYTE*)out_expected, strlen(out_expected), 0, __FILE__, __LINE__);
+
+     CloseHandle(handle_file);
+@@ -322,7 +321,6 @@ static void test_errors(void)
+     todo_wine /* Quotes are not properly passed into wine yet */
+     run_find_stdin_str("\"test", "", "FIND: Parameter format not correct\r\n", 2);
+     run_find_stdin_str("\"test\" /XYZ", "", "FIND: Invalid switch\r\n", 2);
+-    todo_wine
+     run_find_stdin_str("\"test\" C:\\doesnotexist.dat", "", "File not found - C:\\DOESNOTEXIST.DAT\r\n", 1);
+ }
+
+@@ -398,19 +396,12 @@ static void test_unicode_support_stdin(void)
+
+ static void test_file_search(void)
+ {
+-    todo_wine
+     run_find_file_str("\"\"", "test", "", 1);
+-    todo_wine
+     run_find_file_str("\"test\"", "", "", 1);
+-    todo_wine
+     run_find_file_str("\"test\"", "test",  "test\r\n", 0);
+-    todo_wine
+     run_find_file_str("\"test\"", "test2", "test2\r\n", 0);
+-    todo_wine
+     run_find_file_str("\"test\"", "test\r2", "test\r2\r\n", 0);
+-    todo_wine
+     run_find_file_str("\"test2\"", "test",  "", 1);
+-    todo_wine
+     run_find_file_str("\"test\"", "test\nother\ntest2\ntest3", "test\r\ntest2\r\ntest3\r\n", 0);
+ }
+
+@@ -419,31 +410,21 @@ static void test_unicode_support_file(void)
+     /* Test unicode support on files */
+
+     /* Test UTF-8 BOM */
+-    todo_wine
+     run_find_file_unicode(str_en_utf8_nobom, str_en_utf8_nobom, 0);
+-    todo_wine
+     run_find_file_unicode(str_en_utf8_bom, str_en_utf8_bom,  0);
+
+     /* Test russian characters */
+-    todo_wine
+     run_find_file_unicode(str_rus_utf8_bom, str_rus_utf8_bom, 0);
+-    todo_wine
+     run_find_file_unicode(str_rus_utf8_nobom, str_rus_utf8_nobom, 0);
+
+     /* Test japanese characters */
+-    todo_wine
+     run_find_file_unicode(str_jap_utf8_nobom, str_jap_utf8_nobom, 0);
+-    todo_wine
+     run_find_file_unicode(str_jap_utf8_bom, str_jap_utf8_bom, 0);
+-    todo_wine
+     run_find_file_unicode(str_jap_shiftjis, str_jap_shiftjis, 0);
+
+     /* Test unsupported encodings */
+-    todo_wine
+     run_find_file_unicode(str_jap_utf16le_nobom, str_empty, 1);
+-    todo_wine
+     run_find_file_unicode(str_jap_utf16be_bom,   str_empty, 1);
+-    todo_wine
+     run_find_file_unicode(str_jap_utf16be_nobom, str_empty, 1);
+
+     /* Test utf16le */
+--
+2.25.1
+
+
+

@@ -1,0 +1,100 @@
+From: Serge Gautherie <winehq-git_serge_180711@gautherie.fr>
+Subject: [PATCH 1/2] ntdll/tests: Create a test for RtlGetNtProductType().
+Message-Id: <20200228111049.3328-1-winehq-git_serge_180711@gautherie.fr>
+Date: Fri, 28 Feb 2020 12:10:49 +0100
+
+Signed-off-by: Serge Gautherie <winehq-git_serge_180711@gautherie.fr>
+---
+ dlls/ntdll/tests/rtl.c | 49 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 49 insertions(+)
+
+diff --git a/dlls/ntdll/tests/rtl.c b/dlls/ntdll/tests/rtl.c
+index 445f353..e39e1df 100644
+--- a/dlls/ntdll/tests/rtl.c
++++ b/dlls/ntdll/tests/rtl.c
+@@ -27,6 +27,12 @@
+ #include "in6addr.h"
+ #include "inaddr.h"
+ 
++/* See test_RtlGetNtProductType(), where it does not actually help */
++/* #define TEST_WITH_SEH */
++#ifdef TEST_WITH_SEH
++#include "wine/exception.h"
++#endif
++
+ #ifndef __WINE_WINTERNL_H
+ 
+ typedef struct _RTL_HANDLE
+@@ -112,6 +118,7 @@ static NTSTATUS  (WINAPI *pRtlMakeSelfRelativeSD)(PSECURITY_DESCRIPTOR,PSECURITY
+ static NTSTATUS  (WINAPI *pRtlAbsoluteToSelfRelativeSD)(PSECURITY_DESCRIPTOR,PSECURITY_DESCRIPTOR,PULONG);
+ static NTSTATUS  (WINAPI *pLdrRegisterDllNotification)(ULONG, PLDR_DLL_NOTIFICATION_FUNCTION, void *, void **);
+ static NTSTATUS  (WINAPI *pLdrUnregisterDllNotification)(void *);
++static BOOLEAN   (WINAPI *pRtlGetNtProductType)(LPDWORD);
+ 
+ static HMODULE hkernel32 = 0;
+ static BOOL      (WINAPI *pIsWow64Process)(HANDLE, PBOOL);
+@@ -183,6 +190,7 @@ static void InitFunctionPtrs(void)
+         pRtlAbsoluteToSelfRelativeSD = (void *)GetProcAddress(hntdll, "RtlAbsoluteToSelfRelativeSD");
+         pLdrRegisterDllNotification = (void *)GetProcAddress(hntdll, "LdrRegisterDllNotification");
+         pLdrUnregisterDllNotification = (void *)GetProcAddress(hntdll, "LdrUnregisterDllNotification");
++        pRtlGetNtProductType = (void *)GetProcAddress(hntdll, "RtlGetNtProductType");
+     }
+     hkernel32 = LoadLibraryA("kernel32.dll");
+     ok(hkernel32 != 0, "LoadLibrary failed\n");
+@@ -3673,6 +3681,46 @@ static void test_LdrRegisterDllNotification(void)
+     pLdrUnregisterDllNotification(cookie);
+ }
+ 
++static void test_RtlGetNtProductType(void)
++{
++    DWORD type;
++
++    if (!pRtlGetNtProductType)
++    {
++        win_skip("RtlGetNtProductType is not available\n");
++        return;
++    }
++
++    /* NULL is not a special value for this function */
++#ifdef TEST_WITH_SEH
++    /* With SEH, address is different, but it still crashes on Windows:
++     * 'rtl: unhandled exception c0000005 at 00000001'
++     */
++    __TRY
++    {
++        BOOLEAN ret;
++
++        ret = pRtlGetNtProductType(NULL);
++
++        if (ret)
++            ok(FALSE, "RtlGetNtProductType(NULL) succeeded\n");
++        else
++            ok(FALSE, "RtlGetNtProductType(NULL) did not crash\n");
++    }
++    __EXCEPT(EXCEPTION_EXECUTE_HANDLER)
++    {
++        /* As expected */
++        ok(TRUE, "\n");
++    }
++    __ENDTRY
++#endif
++
++    type = 0xdeadbeef;
++    ok(pRtlGetNtProductType(&type), "RtlGetNtProductType failed\n");
++    ok(type >= VER_NT_WORKSTATION && type <= VER_NT_SERVER, "unknown type %u\n", type);
++    trace("NtProductType: %u\n", type);
++}
++
+ START_TEST(rtl)
+ {
+     InitFunctionPtrs();
+@@ -3713,4 +3761,5 @@ START_TEST(rtl)
+     test_LdrEnumerateLoadedModules();
+     test_RtlMakeSelfRelativeSD();
+     test_LdrRegisterDllNotification();
++    test_RtlGetNtProductType();
+ }
+
+-- 
+2.10.0.windows.1
+

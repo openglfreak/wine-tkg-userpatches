@@ -15,7 +15,7 @@ sanitize() {
         return 1
     fi
 
-    sed -e 's/[^-_0-9A-Za-z\.][^-_0-9A-Za-z\.]*/-/g'
+    sed -e 's/[^-_0-9A-Za-z.][^-_0-9A-Za-z.]*/-/g'
 }
 
 # description:
@@ -123,7 +123,7 @@ main() (
         fi
 
         patchset_number="${patch#ps[0-9][0-9][0-9][0-9]}"
-        patchset_number="${patch%$patchset_number}"
+        patchset_number="${patch%"$patchset_number"}"
         patchset_number="${patchset_number#ps}"
 
         file_extension="${patch##*.}"

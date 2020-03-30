@@ -1,0 +1,137 @@
+From: Serge Gautherie <winehq-git_serge_180711@gautherie.fr>
+Subject: [PATCH] localui: Fix and improve some parameters of XcvDataW() calls.
+Message-Id: <20200303155247.2528-1-winehq-git_serge_180711@gautherie.fr>
+Date: Tue,  3 Mar 2020 16:52:47 +0100
+
+Signed-off-by: Serge Gautherie <winehq-git_serge_180711@gautherie.fr>
+---
+Follow up to a59d6387b6734cf0acb187e9c178d7c540751cae.
+---
+ dlls/localui/localui.c | 24 ++++++++++--------------
+ 1 file changed, 10 insertions(+), 14 deletions(-)
+
+diff --git a/dlls/localui/localui.c b/dlls/localui/localui.c
+index ab8f5c9..04a3b20 100644
+--- a/dlls/localui/localui.c
++++ b/dlls/localui/localui.c
+@@ -107,7 +107,6 @@ static BOOL dlg_configure_com(HANDLE hXcv, HWND hWnd, PCWSTR pPortName)
+     COMMCONFIG cfg;
+     LPWSTR shortname;
+     DWORD status;
+-    DWORD dummy;
+     DWORD len;
+     BOOL  res;
+ 
+@@ -119,12 +118,11 @@ static BOOL dlg_configure_com(HANDLE hXcv, HWND hWnd, PCWSTR pPortName)
+         shortname[len-1] = '\0';
+ 
+         /* get current settings */
+-        len = FIELD_OFFSET(COMMCONFIG, wcProviderData[1]);
+         status = ERROR_SUCCESS;
+         res = XcvDataW( hXcv, cmd_GetDefaultCommConfigW,
+                         (PBYTE) shortname,
+                         (lstrlenW(shortname) +1) * sizeof(WCHAR),
+-                        (PBYTE) &cfg, len, &len, &status);
++                        (PBYTE) &cfg, sizeof(cfg), &len, &status);
+ 
+         if (res && (status == ERROR_SUCCESS)) {
+             /* display the Dialog */
+@@ -133,8 +131,8 @@ static BOOL dlg_configure_com(HANDLE hXcv, HWND hWnd, PCWSTR pPortName)
+                 status = ERROR_SUCCESS;
+                 /* set new settings */
+                 res = XcvDataW(hXcv, cmd_SetDefaultCommConfigW,
+-                               (PBYTE) &cfg, len,
+-                               (PBYTE) &dummy, 0, &len, &status);
++                               (PBYTE) &cfg, sizeof(cfg),
++                               NULL, 0, &len, &status);
+             }
+         }
+         HeapFree(GetProcessHeap(), 0, shortname);
+@@ -267,7 +265,6 @@ static INT_PTR CALLBACK dlgproc_addport(HWND hwnd, UINT msg, WPARAM wparam, LPAR
+ {
+     addportui_t * data;
+     DWORD   status;
+-    DWORD   dummy;
+     DWORD   len;
+     DWORD   res;
+ 
+@@ -294,7 +291,7 @@ static INT_PTR CALLBACK dlgproc_addport(HWND hwnd, UINT msg, WPARAM wparam, LPAR
+             status = ERROR_SUCCESS;
+             res = XcvDataW( data->hXcv, cmd_PortIsValidW, (PBYTE) data->portname,
+                             (lstrlenW(data->portname) + 1) * sizeof(WCHAR),
+-                            (PBYTE) &dummy, 0, &len, &status);
++                            NULL, 0, &len, &status);
+ 
+             TRACE("got %u with status %u\n", res, status);
+             if (res && (status == ERROR_SUCCESS)) {
+@@ -342,7 +339,6 @@ static INT_PTR CALLBACK dlgproc_lptconfig(HWND hwnd, UINT msg, WPARAM wparam, LP
+     lptconfig_t * data;
+     WCHAR   bufferW[16];
+     DWORD   status;
+-    DWORD   dummy;
+     DWORD   len;
+     DWORD   res;
+ 
+@@ -357,7 +353,7 @@ static INT_PTR CALLBACK dlgproc_lptconfig(HWND hwnd, UINT msg, WPARAM wparam, LP
+         data->value = 45;
+         status = ERROR_SUCCESS;
+         res = XcvDataW( data->hXcv, cmd_GetTransmissionRetryTimeoutW,
+-                        (PBYTE) &dummy, 0,
++                        NULL, 0,
+                         (PBYTE) &data->value, sizeof(data->value), &len, &status);
+ 
+         TRACE("got %u with status %u\n", res, status);
+@@ -380,10 +376,11 @@ static INT_PTR CALLBACK dlgproc_lptconfig(HWND hwnd, UINT msg, WPARAM wparam, LP
+             /* native localui.dll use the same limits */
+             if ((res > 0) && (res < 1000000) && status) {
+                 swprintf(bufferW, ARRAY_SIZE(bufferW), fmt_uW, res);
++                status = ERROR_SUCCESS;
+                 res = XcvDataW( data->hXcv, cmd_ConfigureLPTPortCommandOKW,
+                         (PBYTE) bufferW,
+                         (lstrlenW(bufferW) +1) * sizeof(WCHAR),
+-                        (PBYTE) &dummy, 0, &len, &status);
++                        NULL, 0, &len, &status);
+ 
+                 TRACE("got %u with status %u\n", res, status);
+                 EndDialog(hwnd, TRUE);
+@@ -501,7 +498,6 @@ static BOOL WINAPI localui_AddPortUI(PCWSTR pName, HWND hWnd, PCWSTR pMonitorNam
+     addportui_t data;
+     HANDLE  hXcv;
+     DWORD   needed;
+-    DWORD   dummy;
+     DWORD   status;
+     DWORD   res = FALSE;
+ 
+@@ -520,9 +516,10 @@ static BOOL WINAPI localui_AddPortUI(PCWSTR pName, HWND hWnd, PCWSTR pMonitorNam
+         if (ppPortName) *ppPortName = NULL;
+ 
+         if (res) {
++            status = ERROR_SUCCESS;
+             res = XcvDataW(hXcv, cmd_AddPortW, (PBYTE) data.portname,
+                             (lstrlenW(data.portname)+1) * sizeof(WCHAR),
+-                            (PBYTE) &dummy, 0, &needed, &status);
++                            NULL, 0, &needed, &status);
+ 
+             TRACE("got %u with status %u\n", res, status);
+             if (res && (status == ERROR_SUCCESS) && ppPortName) {
+@@ -620,7 +617,6 @@ static BOOL WINAPI localui_ConfigurePortUI(PCWSTR pName, HWND hWnd, PCWSTR pPort
+ static BOOL WINAPI localui_DeletePortUI(PCWSTR pName, HWND hWnd, PCWSTR pPortName)
+ {
+     HANDLE  hXcv;
+-    DWORD   dummy;
+     DWORD   needed;
+     DWORD   status;
+ 
+@@ -635,7 +631,7 @@ static BOOL WINAPI localui_DeletePortUI(PCWSTR pName, HWND hWnd, PCWSTR pPortNam
+         /* native localui tests here for LPT / COM - Ports and failed with
+            ERROR_NOT_SUPPORTED. */
+         if (XcvDataW(hXcv, cmd_DeletePortW, (LPBYTE) pPortName,
+-            (lstrlenW(pPortName)+1) * sizeof(WCHAR), (LPBYTE) &dummy, 0, &needed, &status)) {
++            (lstrlenW(pPortName) + 1) * sizeof(WCHAR), NULL, 0, &needed, &status)) {
+ 
+             ClosePrinter(hXcv);
+             if (status != ERROR_SUCCESS) SetLastError(status);
+
+-- 
+2.10.0.windows.1
+

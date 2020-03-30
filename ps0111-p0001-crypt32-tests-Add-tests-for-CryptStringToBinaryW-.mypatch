@@ -1,0 +1,236 @@
+From: Aaro Altonen <a.altonen@hotmail.com>
+Subject: [PATCH v2 1/2] crypt32/tests: Add tests for CryptStringToBinaryW()
+Message-Id: <VI1PR0502MB297334D74C7056749B3561CDF3F70@VI1PR0502MB2973.eurprd05.prod.outlook.com>
+Date: Wed, 18 Mar 2020 08:06:41 +0200
+
+Add tests for CRYPT_STRING_HEX format
+
+Signed-off-by: Aaro Altonen <a.altonen@hotmail.com>
+---
+v2:
+- Fix one test case to be actually invalid as claimed
+- Change parameter type for one test
+- Add test cases where the upper byte of a wchar has invalid data
+(thanks Nikolay)
+---
+ dlls/crypt32/tests/base64.c | 201 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 201 insertions(+)
+
+diff --git a/dlls/crypt32/tests/base64.c b/dlls/crypt32/tests/base64.c
+index 7b9f4c1077..845b5b28f3 100644
+--- a/dlls/crypt32/tests/base64.c
++++ b/dlls/crypt32/tests/base64.c
+@@ -783,8 +783,209 @@ static void testStringToBinaryA(void)
+     }
+ }
+ 
++static void testStringToBinaryW(void)
++{
++    BOOL ret;
++    DWORD skip_ = 0;
++    DWORD flags = 0;
++    DWORD data_len;
++    WCHAR *input;
++    BYTE out[256];
++    BYTE expected[256];
++    const WCHAR *cinput;
++    WCHAR winput1[] = { 0xff42, 0x0042, 0xff45, 0xff45, 0x0046, 0xff46, 0 };
++    WCHAR winput2[] = { 0x4242, 0x4242, 0x4545, 0x4545, 0x4646, 0x4646, 0 };
++    WCHAR winput3[] = { 0xfe42, 0xfe42, 0xfe45, 0xfe45, 0xfe46, 0xfe46, 0 };
++
++    /* invalid parameteres -> 87 */
++    SetLastError(0xdeadbeef);
++    ret = CryptStringToBinaryW(NULL, 0, 0, NULL, NULL, NULL, NULL);
++    ok(!ret, "Got %u, expected zero\n", ret);
++    ok(GetLastError() == ERROR_INVALID_PARAMETER, "Got %u, expected 87\n", GetLastError());
++
++    /* otherwise valid parameters but invalid data_len -> 87 */
++    SetLastError(0xdeadbeef);
++    cinput = L"213c73796d6c696e6b3efffe";
++    ret = CryptStringToBinaryW(cinput, 24, CRYPT_STRING_HEX, NULL, NULL, NULL, NULL);
++    ok(!ret, "Got %u, expected zero\n", ret);
++    ok(GetLastError() == ERROR_INVALID_PARAMETER, "Got %d, expected 87\n", GetLastError());
++
++    /* uneven amount of data -> 13 */
++    SetLastError(0xdeadbeef);
++    input = strdupAtoW("111");
++    data_len = 0xdeadbeef;
++    ret = CryptStringToBinaryW(input, 0, CRYPT_STRING_HEX, NULL, &data_len, &skip_, &flags);
++    ok(!ret, "Got %u, expected zero\n", ret);
++    todo_wine ok(GetLastError() == ERROR_INVALID_DATA, "Got %d, expected 13\n", GetLastError());
++    todo_wine ok(data_len == 0, "Got %u, expected 0\n", data_len);
++    heap_free(input);
++
++    /* length is uneven -> 13 */
++    SetLastError(0xdeadbeef);
++    input = strdupAtoW("1111");
++    data_len = 0xdeadbeef;
++    ret = CryptStringToBinaryW(input, 3, CRYPT_STRING_HEX, NULL, &data_len, &skip_, &flags);
++    ok(!ret, "Got %u, expected zero\n", ret);
++    todo_wine ok(GetLastError() == ERROR_INVALID_DATA, "Got %d, expected 13\n", GetLastError());
++    todo_wine ok(data_len == 0, "Got %u, expected 0\n", data_len);
++    heap_free(input);
++
++    /* invalid 0x prefix -> 13 */
++    SetLastError(0xdeadbeef);
++    input = strdupAtoW("0x213c73796d6c696e6b3efffe");
++    data_len = 0xdeadbeef;
++    ret = CryptStringToBinaryW(input, 0, CRYPT_STRING_HEX, NULL, &data_len, &skip_, &flags);
++    ok(!ret, "Got %u, expected zero\n", ret);
++    todo_wine ok(GetLastError() == ERROR_INVALID_DATA, "Got %d, expected 13\n", GetLastError());
++    todo_wine ok(data_len == 0, "Got %u, expected 0\n", data_len);
++    heap_free(input);
++
++    /* invalid characters -> 13 */
++    SetLastError(0xdeadbeef);
++    input = strdupAtoW("abchhh");
++    data_len = 0xdeadbeef;
++    ret = CryptStringToBinaryW(input, 0, CRYPT_STRING_HEX, NULL, &data_len, NULL, NULL);
++    ok(!ret, "Got %u, expected zero\n", ret);
++    todo_wine ok(GetLastError() == ERROR_INVALID_DATA, "Got %d, expected 13\n", GetLastError());
++    todo_wine ok(data_len == 0, "Got %u, expected 0\n", data_len);
++    heap_free(input);
++
++    /* insufficient buffer -> 234 */
++    SetLastError(0xdeadbeef);
++    data_len = 4;
++    memset(out, 0, sizeof(out));
++    expected[0] = 0x21;
++    expected[1] = 0x3c;
++    expected[2] = 0x73;
++    expected[3] = 0x79;
++    input = strdupAtoW("213c73796d6c696e6b3efffe");
++    ret = CryptStringToBinaryW(input, 24, CRYPT_STRING_HEX, out, &data_len, &skip_, &flags);
++    ok(!ret, "Got %u, expected zero\n", ret);
++    todo_wine ok(GetLastError() == ERROR_MORE_DATA, "Got %d, expected 234\n", GetLastError());
++    ok(data_len == 4, "Got %u, expected 4\n", data_len);
++    todo_wine ok(!memcmp(out, expected, 4), "Invalid output from CryptStringToBinaryW()!\n");
++    heap_free(input);
++
++    /* valid data */
++    SetLastError(0xdeadbeef);
++    input = strdupAtoW("213c73796d6c696e6b3efffe");
++    data_len = 0xdeadbeef;
++    ret = CryptStringToBinaryW(input, 24, CRYPT_STRING_HEX, NULL, &data_len, &skip_, &flags);
++    todo_wine ok(ret, "Got %u, expected one\n", ret);
++    todo_wine ok(GetLastError() == 0xdeadbeef, "Got %x, expected 0xdeadbeef\n", GetLastError());
++    todo_wine ok(data_len == 12, "Got %u, expected 12\n", data_len);
++    heap_free(input);
++
++    /* valid data with white spaces  */
++    SetLastError(0xdeadbeef);
++    input = strdupAtoW("21 3c\t\t \r\n 73 796d6c \t69\t");
++    data_len = 0xdeadbeef;
++    SetLastError(0xdeadbeef);
++    ret = CryptStringToBinaryW(input, 25, CRYPT_STRING_HEX, NULL, &data_len, &skip_, &flags);
++    todo_wine ok(ret, "Got %u, expected one\n", ret);
++    todo_wine ok(GetLastError() == 0xdeadbeef, "Got %d, expected 0xdeadbeef\n", GetLastError());
++    todo_wine ok(data_len == 7, "Got %u, expected 7\n", data_len);
++    heap_free(input);
++
++    /* valid data with white spaces but spacing breaks the valid data into invalid chunks */
++    SetLastError(0xdeadbeef);
++    input = strdupAtoW("21 3 c");
++    data_len = 0xdeadbeef;
++    ret = CryptStringToBinaryW(input, 0, CRYPT_STRING_HEX, NULL, &data_len, &skip_, &flags);
++    ok(!ret, "Got %u, expected zero\n", ret);
++    todo_wine ok(GetLastError() == ERROR_INVALID_DATA, "Got %d, expected 13\n", GetLastError());
++    todo_wine ok(data_len == 0, "Got %u, expected 0\n", data_len);
++    heap_free(input);
++
++    /* if "input" contains both valid and invalid data and "out" is valid, "out" shall contain all valid bytes
++     * until an invalid sequence is reached */
++    SetLastError(0xdeadbeef);
++    data_len = 4;
++    memset(out, 0, sizeof(out));
++    input = strdupAtoW("21 3 c ff");
++    ret = CryptStringToBinaryW(input, 0, CRYPT_STRING_HEX, out, &data_len, &skip_, &flags);
++    ok(!ret, "Got %u, expected zero\n", ret);
++    todo_wine ok(GetLastError() == ERROR_INVALID_DATA, "Got %d, expected 13\n", GetLastError());
++    ok(data_len == 4, "Got %u, expected 4\n", data_len);
++    heap_free(input);
++
++    /* valid data */
++    SetLastError(0xdeadbeef);
++    expected[0]  = 0x21; expected[1]  = 0x3c; expected[2]  = 0x73;
++    expected[3]  = 0x79; expected[4]  = 0x6d; expected[5]  = 0x6c;
++    expected[6]  = 0x69; expected[7]  = 0x6e; expected[8]  = 0x6b;
++    expected[9]  = 0x3e; expected[10] = 0xff; expected[11] = 0xfe;
++    input = strdupAtoW("213c73796d6c696e6b3efffe");
++    data_len = 256;
++    ret = CryptStringToBinaryW(input, 24, CRYPT_STRING_HEX, out, &data_len, &skip_, &flags);
++    todo_wine ok(ret, "Got %u, expected one\n", ret);
++    todo_wine ok(GetLastError() == 0xdeadbeef, "Got %x, expected 0xdeadbeef\n", GetLastError());
++    todo_wine ok(data_len == 12, "Got %u, expected 12\n", data_len);
++    todo_wine ok(!memcmp(out, expected, 12), "Invalid output from CryptStringToBinaryW()!\n");
++    heap_free(input);
++
++    /* invalid data but length small enough that it's never detected */
++    SetLastError(0xdeadbeef);
++    input = strdupAtoW("abcdefhhh");
++    data_len = 0xdeadbeef;
++    ret = CryptStringToBinaryW(input, 4, CRYPT_STRING_HEX, NULL, &data_len, NULL, NULL);
++    todo_wine ok(ret, "Got %u, expected one\n", ret);
++    todo_wine ok(GetLastError() == 0xdeadbeef, "Got %x, expected 0xdeadbeef\n", GetLastError());
++    todo_wine ok(data_len == 2, "Got %u, expected 2\n", data_len);
++    heap_free(input);
++
++    /* invalid data but length small enough that it's never detected, with whitespaces */
++    SetLastError(0xdeadbeef);
++    memset(out, 0, sizeof(out));
++    input = strdupAtoW("\t\t21 fe f f f");
++    data_len = 256;
++    ret = CryptStringToBinaryW(input, 5, CRYPT_STRING_HEX, out, &data_len, &skip_, &flags);
++    todo_wine ok(ret, "Got %u, expected one\n", ret);
++    todo_wine ok(GetLastError() == 0xdeadbeef, "Got %x, expected 0xdeadbeef\n", GetLastError());
++    todo_wine ok(data_len == 1, "Got %u, expected 1\n", data_len);
++    heap_free(input);
++
++    SetLastError(0xdeadbeef);
++    data_len = 0xdeadbeef;
++    ret = CryptStringToBinaryW(winput1, 6, CRYPT_STRING_HEX, NULL, &data_len, NULL, NULL);
++    todo_wine ok(ret || broken(!ret), "Got %u, expected one\n", ret);
++    todo_wine ok(GetLastError() == 0xdeadbeef || broken(GetLastError() == 122),
++            "Got %d, expected 13\n", GetLastError());
++    todo_wine ok(data_len == 3 || broken(data_len == 0xdeadbeef), "Got %u, expected 3\n", data_len);
++
++    SetLastError(0xdeadbeef);
++    data_len = 0xdeadbeef;
++    ret = CryptStringToBinaryW(winput2, 6, CRYPT_STRING_HEX, NULL, &data_len, NULL, NULL);
++    ok(!ret, "Got %u, expected zero\n", ret);
++    todo_wine ok(GetLastError() == ERROR_INVALID_DATA, "Got %d, expected 13\n", GetLastError());
++    todo_wine ok(data_len == 0, "Got %u, expected 0\n", data_len);
++
++    SetLastError(0xdeadbeef);
++    data_len = 0xdeadbeef;
++    ret = CryptStringToBinaryW(winput3, 6, CRYPT_STRING_HEX, NULL, &data_len, NULL, NULL);
++    ok(!ret, "Got %u, expected zero\n", ret);
++    todo_wine ok(GetLastError() == ERROR_INVALID_DATA || broken(GetLastError() == 122),
++            "Got %d, expected 13\n", GetLastError());
++    todo_wine ok(data_len == 0 || broken(data_len == 0xdeadbeef), "Got %u, expected 0\n", data_len);
++
++    /* valid data but parse only the first 6 bytes (12 chars) */
++    SetLastError(0xdeadbeef);
++    memset(out, 0, sizeof(out));
++    expected[0]  = 0x21; expected[1]  = 0x3c; expected[2]  = 0x73;
++    expected[3]  = 0x79; expected[4]  = 0x6d; expected[5]  = 0x6c;
++    input = strdupAtoW("213c73796d6c696e6b3efffe");
++    data_len = 256;
++    ret = CryptStringToBinaryW(input, 12, CRYPT_STRING_HEX, out, &data_len, &skip_, &flags);
++    todo_wine ok(ret, "Got %u, expected one\n", ret);
++    todo_wine ok(GetLastError() == 0xdeadbeef, "Got %x, expected 0xdeadbeef\n", GetLastError());
++    todo_wine ok(data_len == 6, "Got %u, expected 6\n", data_len);
++    todo_wine ok(!memcmp(out, expected, 6), "Invalid output from CryptStringToBinaryW()!\n");
++    heap_free(input);
++}
++
+ START_TEST(base64)
+ {
+     test_CryptBinaryToString();
+     testStringToBinaryA();
++    testStringToBinaryW();
+ }
+
+-- 
+2.25.1
+

@@ -1,0 +1,72 @@
+From: Jactry Zeng <jzeng@codeweavers.com>
+Subject: [PATCH rebase 4/4] gdi32: Load Wine builtin TrueType fonts from %WINDIR%\fonts first.
+Message-Id: <907e5436-2909-4fd9-5110-77411cf4485f@codeweavers.com>
+Date: Tue, 10 Mar 2020 21:22:21 +0800
+
+Signed-off-by: Jactry Zeng <jzeng@codeweavers.com>
+---
+ dlls/gdi32/freetype.c | 26 ++++++++++++++++++--------
+ 1 file changed, 18 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/gdi32/freetype.c b/dlls/gdi32/freetype.c
+index 72e6f35fc1..ef80bdd9c0 100644
+--- a/dlls/gdi32/freetype.c
++++ b/dlls/gdi32/freetype.c
+@@ -3093,6 +3093,20 @@ static void load_font_from_fonts_dir(const WCHAR *filename, DWORD flags)
+ 
+ static void load_system_fonts(void)
+ {
++    static const WCHAR marlett_ttf[] = {'m','a','r','l','e','t','t','.','t','t','f',0};
++    static const WCHAR symbol_ttf[] = {'s','y','m','b','o','l','.','t','t','f',0};
++    static const WCHAR tahoma_ttf[] = {'t','a','h','o','m','a','.','t','t','f',0};
++    static const WCHAR tahomabd_ttf[] = {'t','a','h','o','m','a','b','d','.','t','t','f',0};
++    static const WCHAR wingding_ttf[] = {'w','i','n','g','d','i','n','g','.','t','t','f',0};
++    static const WCHAR *builtin_fonts[] =
++    {
++        marlett_ttf,
++        symbol_ttf,
++        tahoma_ttf,
++        tahomabd_ttf,
++        wingding_ttf
++    };
++    int i;
+     HKEY hkey;
+     WCHAR data[MAX_PATH];
+     const WCHAR * const *value;
+@@ -3107,6 +3121,9 @@ static void load_system_fonts(void)
+         }
+         RegCloseKey(hkey);
+     }
++
++    for (i = 0; i < ARRAY_SIZE(builtin_fonts); i++)
++        load_font_from_fonts_dir(builtin_fonts[i], ADDFONT_ADD_TO_CACHE);
+ }
+ 
+ static WCHAR *get_full_path_name(const WCHAR *name)
+@@ -4247,7 +4264,7 @@ static void init_font_list(void)
+ 
+     delete_external_font_keys();
+ 
+-    /* load the system bitmap fonts */
++    /* load the system bitmap fonts and other builtin fonts */
+     load_system_fonts();
+ 
+     /* load in the fonts from %WINDOWSDIR%\\Fonts first of all */
+@@ -4259,13 +4276,6 @@ static void init_font_list(void)
+         HeapFree(GetProcessHeap(), 0, unixname);
+     }
+ 
+-    /* load the wine fonts */
+-    if ((unixname = get_font_dir()))
+-    {
+-        ReadFontDir(unixname, TRUE);
+-        HeapFree(GetProcessHeap(), 0, unixname);
+-    }
+-
+     /* now look under HKLM\Software\Microsoft\Windows[ NT]\CurrentVersion\Fonts
+        for any fonts not installed in %WINDOWSDIR%\Fonts.  They will have their
+        full path as the entry.  Also look for any .fon fonts, since ReadFontDir
+
+-- 
+2.15.2 (Apple Git-101.1)
+

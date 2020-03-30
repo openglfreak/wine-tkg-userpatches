@@ -1,0 +1,79 @@
+From: "Roman Pišl" <rpisl@seznam.cz>
+Subject: [PATCH 3/4] server: Added get_console_process_list implementation.
+Message-Id: <20200317132854.32299-3-rpisl@seznam.cz>
+Date: Tue, 17 Mar 2020 14:28:53 +0100
+In-Reply-To: <20200317132854.32299-1-rpisl@seznam.cz>
+References: <20200317132854.32299-1-rpisl@seznam.cz>
+
+Signed-off-by: Roman Pišl <rpisl@seznam.cz>
+---
+ server/console.c | 45 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 45 insertions(+)
+
+diff --git a/server/console.c b/server/console.c
+index c3b235d022..877c29237b 100644
+--- a/server/console.c
++++ b/server/console.c
+@@ -606,6 +606,25 @@ static void propagate_console_signal( struct console_input *console,
+     enum_processes(propagate_console_signal_cb, &csi);
+ }
+ 
++struct console_process_list
++{
++    DWORD* processes;
++    DWORD size;
++    DWORD count;
++};
++
++static int console_process_list_cb(struct process *process, void *user)
++{
++    if (process->console == current->process->console)
++    {
++        struct console_process_list* cpl = (struct console_process_list*)user;
++        if (cpl->count < cpl->size) cpl->processes[cpl->count] = process->id;
++        cpl->count++;
++    }
++
++    return 0;
++}
++
+ static int get_console_mode( obj_handle_t handle )
+ {
+     struct object *obj;
+@@ -1617,6 +1636,32 @@ error:
+     release_object( process );
+ }
+ 
++/* Get console process list */
++DECL_HANDLER(get_console_process_list)
++{
++    struct console_process_list cpl;
++    cpl.count = 0;
++    cpl.size = req->count;
++    cpl.processes = NULL;
++    reply->total = 0;
++
++    if (cpl.size > 0)
++    {
++        cpl.processes = malloc(cpl.count * sizeof(DWORD));
++        if (!cpl.processes) return;
++    }
++
++    enum_processes(console_process_list_cb, &cpl);
++
++    if (cpl.count > 0 && cpl.count <= req->count)
++    {
++        set_reply_data( cpl.processes, cpl.count * sizeof(DWORD) );
++    }
++
++    if (cpl.processes) free(cpl.processes);
++    reply->total = cpl.count;
++}
++
+ /* set info about a console input */
+ DECL_HANDLER(set_console_input_info)
+ {
+
+-- 
+2.20.1
+

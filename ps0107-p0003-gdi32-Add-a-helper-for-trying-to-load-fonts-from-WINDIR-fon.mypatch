@@ -1,0 +1,109 @@
+From: Jactry Zeng <jzeng@codeweavers.com>
+Subject: [PATCH rebase 3/4] gdi32: Add a helper for trying to load fonts from %WINDIR%\fonts first.
+Message-Id: <a6f283a6-8a1e-897a-97a7-400be0fe43fa@codeweavers.com>
+Date: Tue, 10 Mar 2020 21:22:11 +0800
+
+Signed-off-by: Jactry Zeng <jzeng@codeweavers.com>
+---
+ dlls/gdi32/freetype.c | 52 +++++++++++++++++++++------------------------------
+ 1 file changed, 21 insertions(+), 31 deletions(-)
+
+diff --git a/dlls/gdi32/freetype.c b/dlls/gdi32/freetype.c
+index 3ed093701d..72e6f35fc1 100644
+--- a/dlls/gdi32/freetype.c
++++ b/dlls/gdi32/freetype.c
+@@ -3049,7 +3049,7 @@ static char *get_data_dir_path( LPCWSTR file )
+     return unix_name;
+ }
+ 
+-static BOOL load_font_from_data_dir(LPCWSTR file)
++static BOOL load_font_from_data_dir(LPCWSTR file, DWORD flags)
+ {
+     BOOL ret = FALSE;
+     char *unix_name = get_data_dir_path( file );
+@@ -3057,7 +3057,7 @@ static BOOL load_font_from_data_dir(LPCWSTR file)
+     if (unix_name)
+     {
+         EnterCriticalSection( &freetype_cs );
+-        ret = AddFontToList(unix_name, NULL, 0, ADDFONT_ALLOW_BITMAP | ADDFONT_ADD_TO_CACHE);
++        ret = AddFontToList(unix_name, NULL, 0, flags);
+         LeaveCriticalSection( &freetype_cs );
+         HeapFree(GetProcessHeap(), 0, unix_name);
+     }
+@@ -3076,32 +3076,34 @@ static char *get_winfonts_dir_path(LPCWSTR file)
+     return wine_get_unix_file_name( windowsdir );
+ }
+ 
++static void load_font_from_fonts_dir(const WCHAR *filename, DWORD flags)
++{
++    BOOL added = FALSE;
++    char *unixname;
++
++    unixname = get_winfonts_dir_path(filename);
++    if (unixname)
++    {
++        added = AddFontToList(unixname, NULL, 0, flags);
++        HeapFree(GetProcessHeap(), 0, unixname);
++    }
++    if (!added)
++        load_font_from_data_dir(filename, flags);
++}
++
+ static void load_system_fonts(void)
+ {
+     HKEY hkey;
+-    WCHAR data[MAX_PATH], windowsdir[MAX_PATH], pathW[MAX_PATH];
++    WCHAR data[MAX_PATH];
+     const WCHAR * const *value;
+     DWORD dlen, type;
+-    static const WCHAR fmtW[] = {'%','s','\\','%','s','\0'};
+-    char *unixname;
+ 
+     if(RegOpenKeyW(HKEY_CURRENT_CONFIG, system_fonts_reg_key, &hkey) == ERROR_SUCCESS) {
+-        GetWindowsDirectoryW(windowsdir, ARRAY_SIZE(windowsdir));
+-        strcatW(windowsdir, fontsW);
+         for(value = SystemFontValues; *value; value++) { 
+             dlen = sizeof(data);
+             if(RegQueryValueExW(hkey, *value, 0, &type, (void*)data, &dlen) == ERROR_SUCCESS &&
+-               type == REG_SZ) {
+-                BOOL added = FALSE;
+-
+-                sprintfW(pathW, fmtW, windowsdir, data);
+-                if((unixname = wine_get_unix_file_name(pathW))) {
+-                    added = AddFontToList(unixname, NULL, 0, ADDFONT_ALLOW_BITMAP | ADDFONT_ADD_TO_CACHE);
+-                    HeapFree(GetProcessHeap(), 0, unixname);
+-                }
+-                if (!added)
+-                    load_font_from_data_dir(data);
+-            }
++               type == REG_SZ)
++                load_font_from_fonts_dir(data, ADDFONT_ALLOW_BITMAP | ADDFONT_ADD_TO_CACHE);
+         }
+         RegCloseKey(hkey);
+     }
+@@ -4295,20 +4297,8 @@ static void init_font_list(void)
+                     }
+                 }
+                 else if(dlen / 2 >= 6 && !strcmpiW(data + dlen / 2 - 5, dot_fonW))
+-                {
+-                    WCHAR pathW[MAX_PATH];
+-                    static const WCHAR fmtW[] = {'%','s','\\','%','s','\0'};
+-                    BOOL added = FALSE;
++                    load_font_from_fonts_dir(data, ADDFONT_ALLOW_BITMAP | ADDFONT_ADD_TO_CACHE);
+ 
+-                    sprintfW(pathW, fmtW, windowsdir, data);
+-                    if((unixname = wine_get_unix_file_name(pathW)))
+-                    {
+-                        added = AddFontToList(unixname, NULL, 0, ADDFONT_ALLOW_BITMAP | ADDFONT_ADD_TO_CACHE);
+-                        HeapFree(GetProcessHeap(), 0, unixname);
+-                    }
+-                    if (!added)
+-                        load_font_from_data_dir(data);
+-                }
+                 /* reset dlen and vlen */
+                 dlen = datalen;
+                 vlen = valuelen;
+
+-- 
+2.15.2 (Apple Git-101.1)
+

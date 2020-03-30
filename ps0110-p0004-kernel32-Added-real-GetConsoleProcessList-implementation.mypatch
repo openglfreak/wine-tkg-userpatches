@@ -1,0 +1,84 @@
+From: "Roman Pišl" <rpisl@seznam.cz>
+Subject: [PATCH 4/4] kernel32: Added real GetConsoleProcessList implementation.
+Message-Id: <20200317132854.32299-4-rpisl@seznam.cz>
+Date: Tue, 17 Mar 2020 14:28:54 +0100
+In-Reply-To: <20200317132854.32299-1-rpisl@seznam.cz>
+References: <20200317132854.32299-1-rpisl@seznam.cz>
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=48760
+Signed-off-by: Roman Pišl <rpisl@seznam.cz>
+---
+ dlls/kernel32/console.c       | 16 ++++++++++++++--
+ dlls/kernel32/tests/console.c |  5 -----
+ 2 files changed, 14 insertions(+), 7 deletions(-)
+
+diff --git a/dlls/kernel32/console.c b/dlls/kernel32/console.c
+index 472d513990..27b22b5850 100644
+--- a/dlls/kernel32/console.c
++++ b/dlls/kernel32/console.c
+@@ -1493,7 +1493,8 @@ DWORD WINAPI GetConsoleAliasW(LPWSTR lpSource, LPWSTR lpTargetBuffer,
+  */
+ DWORD WINAPI GetConsoleProcessList(LPDWORD processlist, DWORD processcount)
+ {
+-    FIXME("(%p,%d): stub\n", processlist, processcount);
++    DWORD ret = 0;
++    TRACE("(%p,%d)\n", processlist, processcount);
+ 
+     if (!processlist || processcount < 1)
+     {
+@@ -1501,7 +1502,18 @@ DWORD WINAPI GetConsoleProcessList(LPDWORD processlist, DWORD processcount)
+         return 0;
+     }
+ 
+-    return 0;
++    SERVER_START_REQ(get_console_process_list)
++    {
++        req->count = processcount;
++        wine_server_set_reply( req, processlist, processcount * sizeof(DWORD) );
++        if (!wine_server_call_err( req ))
++        {
++            ret = reply->total;
++        }
++    }
++    SERVER_END_REQ;
++
++    return ret;
+ }
+ 
+ BOOL CONSOLE_Init(RTL_USER_PROCESS_PARAMETERS *params)
+diff --git a/dlls/kernel32/tests/console.c b/dlls/kernel32/tests/console.c
+index 901dc3aa71..d011f3e372 100644
+--- a/dlls/kernel32/tests/console.c
++++ b/dlls/kernel32/tests/console.c
+@@ -1054,7 +1054,6 @@ static void test_GetConsoleProcessList(void)
+ 
+     SetLastError(0xdeadbeef);
+     ret = pGetConsoleProcessList(list, 1);
+-    todo_wine
+     ok(ret == 1, "Expected 1, got %d\n", ret);
+ 
+     HeapFree(GetProcessHeap(), 0, list);
+@@ -1063,7 +1062,6 @@ static void test_GetConsoleProcessList(void)
+ 
+     SetLastError(0xdeadbeef);
+     ret = pGetConsoleProcessList(list, ret);
+-    todo_wine
+     ok(ret == 1, "Expected 1, got %d\n", ret);
+ 
+     if (ret == 1)
+@@ -3238,11 +3236,8 @@ static void test_AttachConsole_child(DWORD console_pid)
+         DWORD pid = GetCurrentProcessId();
+         SetLastError(0xdeadbeef);
+         len = pGetConsoleProcessList(list, 2);
+-        todo_wine
+         ok(len == 2, "Expected 2, got %d\n", len);
+-        todo_wine
+         ok(list[0] == console_pid || list[1] == console_pid, "Parent PID not in list\n");
+-        todo_wine
+         ok(list[0] == pid || list[1] == pid, "PID not in list\n");
+     }
+ 
+
+-- 
+2.20.1
+

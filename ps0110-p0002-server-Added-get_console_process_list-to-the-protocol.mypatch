@@ -1,0 +1,175 @@
+From: "Roman Pišl" <rpisl@seznam.cz>
+Subject: [PATCH 2/4] server: Added get_console_process_list to the protocol.
+Message-Id: <20200317132854.32299-2-rpisl@seznam.cz>
+Date: Tue, 17 Mar 2020 14:28:52 +0100
+In-Reply-To: <20200317132854.32299-1-rpisl@seznam.cz>
+References: <20200317132854.32299-1-rpisl@seznam.cz>
+
+Signed-off-by: Roman Pišl <rpisl@seznam.cz>
+---
+ include/wine/server_protocol.h | 20 +++++++++++++++++++-
+ server/protocol.def            |  9 +++++++++
+ server/request.h               |  6 ++++++
+ server/trace.c                 | 14 ++++++++++++++
+ 4 files changed, 48 insertions(+), 1 deletion(-)
+
+diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
+index af4507b5d1..564b2fbe8c 100644
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -1921,6 +1921,21 @@ struct attach_console_reply
+ 
+ 
+ 
++struct get_console_process_list_request
++{
++    struct request_header __header;
++    data_size_t count;
++};
++struct get_console_process_list_reply
++{
++    struct reply_header __header;
++    data_size_t total;
++    /* VARARG(data,uints); */
++    char __pad_12[4];
++};
++
++
++
+ struct get_console_wait_event_request
+ {
+     struct request_header __header;
+@@ -5867,6 +5882,7 @@ enum request
+     REQ_get_console_renderer_events,
+     REQ_open_console,
+     REQ_attach_console,
++    REQ_get_console_process_list,
+     REQ_get_console_wait_event,
+     REQ_get_console_mode,
+     REQ_set_console_mode,
+@@ -6171,6 +6187,7 @@ union generic_request
+     struct get_console_renderer_events_request get_console_renderer_events_request;
+     struct open_console_request open_console_request;
+     struct attach_console_request attach_console_request;
++    struct get_console_process_list_request get_console_process_list_request;
+     struct get_console_wait_event_request get_console_wait_event_request;
+     struct get_console_mode_request get_console_mode_request;
+     struct set_console_mode_request set_console_mode_request;
+@@ -6473,6 +6490,7 @@ union generic_reply
+     struct get_console_renderer_events_reply get_console_renderer_events_reply;
+     struct open_console_reply open_console_reply;
+     struct attach_console_reply attach_console_reply;
++    struct get_console_process_list_reply get_console_process_list_reply;
+     struct get_console_wait_event_reply get_console_wait_event_reply;
+     struct get_console_mode_reply get_console_mode_reply;
+     struct set_console_mode_reply set_console_mode_reply;
+@@ -6724,7 +6742,7 @@ union generic_reply
+ 
+ /* ### protocol_version begin ### */
+ 
+-#define SERVER_PROTOCOL_VERSION 598
++#define SERVER_PROTOCOL_VERSION 599
+ 
+ /* ### protocol_version end ### */
+ 
+diff --git a/server/protocol.def b/server/protocol.def
+index 722993e59c..7174b64660 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -1531,6 +1531,15 @@ struct console_renderer_event
+ @END
+ 
+ 
++/* Get console process list */
++@REQ(get_console_process_list)
++    data_size_t count;          /* maximum number of processes in list */
++@REPLY
++    data_size_t total;
++    VARARG(data,uints);         /* PIDs attached to the console */
++@END
++
++
+ /* Get the input queue wait event */
+ @REQ(get_console_wait_event)
+     obj_handle_t handle;        /* handle to the console */
+diff --git a/server/request.h b/server/request.h
+index a5472dd1c2..8501d10284 100644
+--- a/server/request.h
++++ b/server/request.h
+@@ -179,6 +179,7 @@ DECL_HANDLER(free_console);
+ DECL_HANDLER(get_console_renderer_events);
+ DECL_HANDLER(open_console);
+ DECL_HANDLER(attach_console);
++DECL_HANDLER(get_console_process_list);
+ DECL_HANDLER(get_console_wait_event);
+ DECL_HANDLER(get_console_mode);
+ DECL_HANDLER(set_console_mode);
+@@ -482,6 +483,7 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
+     (req_handler)req_get_console_renderer_events,
+     (req_handler)req_open_console,
+     (req_handler)req_attach_console,
++    (req_handler)req_get_console_process_list,
+     (req_handler)req_get_console_wait_event,
+     (req_handler)req_get_console_mode,
+     (req_handler)req_set_console_mode,
+@@ -1145,6 +1147,10 @@ C_ASSERT( FIELD_OFFSET(struct attach_console_reply, std_in) == 8 );
+ C_ASSERT( FIELD_OFFSET(struct attach_console_reply, std_out) == 12 );
+ C_ASSERT( FIELD_OFFSET(struct attach_console_reply, std_err) == 16 );
+ C_ASSERT( sizeof(struct attach_console_reply) == 24 );
++C_ASSERT( FIELD_OFFSET(struct get_console_process_list_request, count) == 12 );
++C_ASSERT( sizeof(struct get_console_process_list_request) == 16 );
++C_ASSERT( FIELD_OFFSET(struct get_console_process_list_reply, total) == 8 );
++C_ASSERT( sizeof(struct get_console_process_list_reply) == 16 );
+ C_ASSERT( FIELD_OFFSET(struct get_console_wait_event_request, handle) == 12 );
+ C_ASSERT( sizeof(struct get_console_wait_event_request) == 16 );
+ C_ASSERT( FIELD_OFFSET(struct get_console_wait_event_reply, event) == 8 );
+diff --git a/server/trace.c b/server/trace.c
+index 95db31b4cb..cf999b7e70 100644
+--- a/server/trace.c
++++ b/server/trace.c
+@@ -2030,6 +2030,17 @@ static void dump_attach_console_reply( const struct attach_console_reply *req )
+     fprintf( stderr, ", std_err=%04x", req->std_err );
+ }
+ 
++static void dump_get_console_process_list_request( const struct get_console_process_list_request *req )
++{
++    fprintf( stderr, " count=%u", req->count );
++}
++
++static void dump_get_console_process_list_reply( const struct get_console_process_list_reply *req )
++{
++    fprintf( stderr, " total=%u", req->total );
++    dump_varargs_uints( ", data=", cur_size );
++}
++
+ static void dump_get_console_wait_event_request( const struct get_console_wait_event_request *req )
+ {
+     fprintf( stderr, " handle=%04x", req->handle );
+@@ -4676,6 +4687,7 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
+     (dump_func)dump_get_console_renderer_events_request,
+     (dump_func)dump_open_console_request,
+     (dump_func)dump_attach_console_request,
++    (dump_func)dump_get_console_process_list_request,
+     (dump_func)dump_get_console_wait_event_request,
+     (dump_func)dump_get_console_mode_request,
+     (dump_func)dump_set_console_mode_request,
+@@ -4976,6 +4988,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
+     (dump_func)dump_get_console_renderer_events_reply,
+     (dump_func)dump_open_console_reply,
+     (dump_func)dump_attach_console_reply,
++    (dump_func)dump_get_console_process_list_reply,
+     (dump_func)dump_get_console_wait_event_reply,
+     (dump_func)dump_get_console_mode_reply,
+     NULL,
+@@ -5276,6 +5289,7 @@ static const char * const req_names[REQ_NB_REQUESTS] = {
+     "get_console_renderer_events",
+     "open_console",
+     "attach_console",
++    "get_console_process_list",
+     "get_console_wait_event",
+     "get_console_mode",
+     "set_console_mode",
+
+-- 
+2.20.1
+

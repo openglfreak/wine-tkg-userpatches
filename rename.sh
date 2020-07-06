@@ -96,6 +96,18 @@ yn() (
     done
 )
 
+_print_help() {
+    cat <<EOF
+Usage: ${0##*/} [option]...
+
+Options:
+  -y, --yes     Answer yes to all questions
+  -n, --no      Answer no to all questions
+  -d, --dry-run Perform a dry run, no files will be renamed
+  -h, --help    Display this help text and exit
+EOF
+}
+
 _get_subject() {
     sed -n -e '/^Subject: /,/^\([^ ]\|$\)/p' -- ${1+"$1"} | \
     sed -n -e '1s/^Subject: //;1,/^\([^ ]\|$\)/p' | \
@@ -112,6 +124,20 @@ _sanitize_commit_msg() {
 }
 
 main() (
+    answer=
+    dry_run=false
+    for arg; do
+        case "${arg}" in
+            -h|--help) _print_help; return 0;;
+            -y|--yes) answer=y;;
+            -n|--no) answer=n;;
+            -d|--dry-run) dry_run=true;;
+            *)
+                printf 'Error: Unknown parameter: %s\n' "${arg}" >&2
+                return 1
+        esac
+    done
+
     for patch in ps[0-9][0-9][0-9][0-9]-*; do
         case "${patch}" in ps999[0-9]-*)
             continue
@@ -155,9 +181,12 @@ main() (
         filename="${filename}.${file_extension}"
 
         if [ x"${patch}"x != x"${filename}"x ]; then
-            if yn "Rename ${patch} to ${filename}?"; then
+            # shellcheck disable=SC1011,SC2026
+            if [ x'n'x != x"${answer}"x ] && {
+                [ x'y'x = x"${answer}"x ] || yn "Rename ${patch} to ${filename}?"
+            }; then
                 printf 'Renaming %s\n' "${patch}"
-                mv -- "${patch}" "${filename}"
+                [ x'false'x != x"${dry_run}"x ] || mv -- "${patch}" "${filename}"
             else
                 printf 'Skipping %s\n' "${patch}"
             fi
@@ -165,4 +194,4 @@ main() (
     done
 )
 
-main
+main ${1+"$@"}

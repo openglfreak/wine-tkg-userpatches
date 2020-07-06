@@ -1,0 +1,115 @@
+From 798da781402269afe30ee01df1466173e9930bc3 Mon Sep 17 00:00:00 2001
+From: Richard Yao <ryao@gentoo.org>
+Date: Sun, 5 Jul 2020 13:52:29 -0400
+Subject: [PATCH 1/2] ntdll: Use fewer atomics in SRW locks
+
+fast_RtlAcquireSRWLockExclusive did two atomics on uncontended locks
+when only one was needed.
+
+fast_RtlTryAcquireSRWLockExclusive and fast_RtlTryAcquireSRWLockShared
+both did an unnecessary atomic when a lock could not be taken. They also
+could unnecessarily spin somewhat under contention, which used even more
+atomics. This is unnecesary because these functions should fail fast.
+fast_RtlTryAcquireSRWLockShared still can spin somewhat under
+contention, but only when there are others attempting to grab a shared
+lock. One might be tempted to do an atomic addition to avoid the loop,
+but this would introduce a regression by virtue of failing to handle the
+real scenario where the lock is taken exclusively between reads due to
+system scheduler/interrupt delay.
+
+These micro-optimizations should save at least a hundred cycles per
+function invocation under the stated scenarios.
+
+Signed-off-by: Richard Yao <ryao@gentoo.org>
+Reviewed-by: Chris Robinson <chris.kcat@gmail.com>
+---
+ dlls/ntdll/sync.c | 41 ++++++++++++++++++-----------------------
+ 1 file changed, 18 insertions(+), 23 deletions(-)
+
+diff --git a/dlls/ntdll/sync.c b/dlls/ntdll/sync.c
+index 5080caef526..4adbe281eae 100644
+--- a/dlls/ntdll/sync.c
++++ b/dlls/ntdll/sync.c
+@@ -1811,32 +1811,23 @@ DWORD WINAPI RtlRunOnceExecuteOnce( RTL_RUN_ONCE *once, PRTL_RUN_ONCE_INIT_FN func,
+ NTSTATUS CDECL fast_try_acquire_srw_exclusive( RTL_SRWLOCK *lock )
+ {
+     int old, new, *futex;
+-    NTSTATUS ret;
+ 
+     if (!use_futexes()) return STATUS_NOT_IMPLEMENTED;
+ 
+     if (!(futex = get_futex( &lock->Ptr )))
+         return STATUS_NOT_IMPLEMENTED;
+ 
+-    do
+-    {
+-        old = *futex;
++    old = *futex;
+ 
+-        if (!(old & SRWLOCK_FUTEX_EXCLUSIVE_LOCK_BIT)
+-                && !(old & SRWLOCK_FUTEX_SHARED_OWNERS_MASK))
+-        {
+-            /* Not locked exclusive or shared. We can try to grab it. */
+-            new = old | SRWLOCK_FUTEX_EXCLUSIVE_LOCK_BIT;
+-            ret = STATUS_SUCCESS;
+-        }
+-        else
+-        {
+-            new = old;
+-            ret = STATUS_TIMEOUT;
+-        }
+-    } while (InterlockedCompareExchange( futex, new, old ) != old);
++    /* We can only lock when no bits are set */
++    if (0 == old)
++    {
++        new = SRWLOCK_FUTEX_EXCLUSIVE_LOCK_BIT;
++        if (InterlockedCompareExchange( futex, new, old ) == old)
++            return STATUS_SUCCESS;
++    }
+ 
+-    return ret;
++    return STATUS_TIMEOUT;
+ }
+ 
+ NTSTATUS CDECL fast_acquire_srw_exclusive( RTL_SRWLOCK *lock )
+@@ -1849,6 +1840,13 @@ NTSTATUS CDECL fast_acquire_srw_exclusive( RTL_SRWLOCK *lock )
+     if (!(futex = get_futex( &lock->Ptr )))
+         return STATUS_NOT_IMPLEMENTED;
+ 
++    old = *futex;
++    if (0 == old) {
++        new = SRWLOCK_FUTEX_EXCLUSIVE_LOCK_BIT;
++        if (InterlockedCompareExchange( futex, new, old ) == old)
++		return STATUS_SUCCESS;
++    }
++
+     /* Atomically increment the exclusive waiter count. */
+     do
+     {
+@@ -1891,7 +1889,6 @@ NTSTATUS CDECL fast_try_acquire_srw_shared( RTL_SRWLOCK *lock )
+ NTSTATUS CDECL fast_try_acquire_srw_shared( RTL_SRWLOCK *lock )
+ {
+     int new, old, *futex;
+-    NTSTATUS ret;
+ 
+     if (!use_futexes()) return STATUS_NOT_IMPLEMENTED;
+ 
+@@ -1909,16 +1906,14 @@ NTSTATUS CDECL fast_try_acquire_srw_shared( RTL_SRWLOCK *lock )
+              * grab it. */
+             new = old + SRWLOCK_FUTEX_SHARED_OWNERS_INC;
+             assert(new & SRWLOCK_FUTEX_SHARED_OWNERS_MASK);
+-            ret = STATUS_SUCCESS;
+         }
+         else
+         {
+-            new = old;
+-            ret = STATUS_TIMEOUT;
++            return STATUS_TIMEOUT;
+         }
+     } while (InterlockedCompareExchange( futex, new, old ) != old);
+ 
+-    return ret;
++    return STATUS_SUCCESS;
+ }
+ 
+ NTSTATUS CDECL fast_acquire_srw_shared( RTL_SRWLOCK *lock )

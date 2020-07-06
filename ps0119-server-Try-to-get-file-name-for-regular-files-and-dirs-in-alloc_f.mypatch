@@ -1,0 +1,217 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH] server: Try to get file name for regular files and dirs in alloc_file_handle().
+Message-Id: <20200514200512.559994-1-pgofman@codeweavers.com>
+Date: Thu, 14 May 2020 23:05:12 +0300
+
+Std handles can be set from Unix fds in ntdll:init_user_process_params().
+The resulting handles may refer to regular files but without unix_name
+set in server struct fd. As a result, GetFileType() returns FILE_TYPE_DISK
+but NtQueryInformationFile() fails through server_get_unix_name().
+
+Fixes crash on start in Unity of Command II (failure is from python38.dll).
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/ntdll/tests/file.c | 12 +++++++++
+ server/fd.c             | 17 +++++++++---
+ server/file.c           | 60 ++++++++++++++++++++++++++++++++++++++---
+ server/file.h           |  4 ++-
+ server/mapping.c        |  2 +-
+ 5 files changed, 86 insertions(+), 9 deletions(-)
+
+diff --git a/dlls/ntdll/tests/file.c b/dlls/ntdll/tests/file.c
+index 31c18454f0..78a6ac2ee5 100644
+--- a/dlls/ntdll/tests/file.c
++++ b/dlls/ntdll/tests/file.c
+@@ -1406,6 +1406,7 @@ static void test_file_all_information(void)
+       FILE_ALL_INFORMATION fai;
+       WCHAR buf[256];
+     } fai_buf;
++    DWORD file_type;
+     HANDLE h;
+     int res;
+     int attrib_mask = FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_NORMAL;
+@@ -1463,6 +1464,17 @@ static void test_file_all_information(void)
+     todo_wine ok ( (fai_buf.fai.BasicInformation.FileAttributes & attrib_mask) == FILE_ATTRIBUTE_NORMAL, "attribute %x not FILE_ATTRIBUTE_NORMAL\n", fai_buf.fai.BasicInformation.FileAttributes );
+ 
+     CloseHandle( h );
++
++    h = GetStdHandle(STD_OUTPUT_HANDLE);
++    if ((file_type = GetFileType(h)) == FILE_TYPE_DISK)
++    {
++        res = pNtQueryInformationFile(h, &io, &fai_buf.fai, sizeof fai_buf, FileAllInformation);
++        ok ( res == STATUS_SUCCESS, "can't get attributes, res %x\n", res);
++    }
++    else
++    {
++        skip("Skipping test for stdout file type %#x.\n", file_type);
++    }
+ }
+ 
+ static void delete_object( WCHAR *path )
+diff --git a/server/fd.c b/server/fd.c
+index 39fb419f25..5f38128a48 100644
+--- a/server/fd.c
++++ b/server/fd.c
+@@ -1945,10 +1945,10 @@ error:
+     return NULL;
+ }
+ 
+-/* create an fd for an anonymous file */
++/* create an fd for an unix fd */
+ /* if the function fails the unix fd is closed */
+-struct fd *create_anonymous_fd( const struct fd_ops *fd_user_ops, int unix_fd, struct object *user,
+-                                unsigned int options )
++struct fd *create_fd_from_unix_fd( const struct fd_ops *fd_user_ops, int unix_fd, struct object *user,
++                                unsigned int options, const char *unix_name )
+ {
+     struct fd *fd = alloc_fd_object();
+ 
+@@ -1957,12 +1957,23 @@ struct fd *create_anonymous_fd( const struct fd_ops *fd_user_ops, int unix_fd, s
+         set_fd_user( fd, fd_user_ops, user );
+         fd->unix_fd = unix_fd;
+         fd->options = options;
++        if (unix_name)
++            fd->unix_name = strdup( unix_name );
++
+         return fd;
+     }
+     close( unix_fd );
+     return NULL;
+ }
+ 
++/* create an fd for an anonymous file */
++/* if the function fails the unix fd is closed */
++struct fd *create_anonymous_fd( const struct fd_ops *fd_user_ops, int unix_fd, struct object *user,
++                                unsigned int options )
++{
++    return create_fd_from_unix_fd( fd_user_ops, unix_fd, user, options, NULL );
++}
++
+ /* retrieve the object that is using an fd */
+ void *get_fd_user( struct fd *fd )
+ {
+diff --git a/server/file.c b/server/file.c
+index bce202138e..f43373b085 100644
+--- a/server/file.c
++++ b/server/file.c
+@@ -118,7 +118,7 @@ static const struct fd_ops file_fd_ops =
+ 
+ /* create a file from a file descriptor */
+ /* if the function fails the fd is closed */
+-struct file *create_file_for_fd( int fd, unsigned int access, unsigned int sharing )
++struct file *create_file_for_fd( int fd, unsigned int access, unsigned int sharing, int needs_name )
+ {
+     struct file *file;
+     struct stat st;
+@@ -139,8 +139,60 @@ struct file *create_file_for_fd( int fd, unsigned int access, unsigned int shari
+     file->mode = st.st_mode;
+     file->access = default_fd_map_access( &file->obj, access );
+     list_init( &file->kernel_object );
+-    if (!(file->fd = create_anonymous_fd( &file_fd_ops, fd, &file->obj,
+-                                          FILE_SYNCHRONOUS_IO_NONALERT )))
++
++#if defined(linux)
++    if (needs_name && (S_ISREG(file->mode) || S_ISDIR(file->mode)))
++    {
++        char *file_name = NULL;
++        char link[35];
++        ssize_t ret, current_size = MAX_PATH + 1;
++
++        sprintf( link, "/proc/self/fd/%u", fd );
++
++        while (1)
++        {
++            if (!(file_name = malloc( current_size )))
++            {
++                set_error( STATUS_NO_MEMORY );
++                break;
++            }
++
++            if ((ret = readlink( link, file_name, current_size )) < 0)
++            {
++                file_set_error();
++                free(file_name);
++                file_name = NULL;
++                break;
++            }
++
++            if (ret < current_size)
++            {
++                file_name[ret] = 0;
++                break;
++            }
++
++            current_size *= 2;
++            free(file_name);
++        }
++
++        if (!file_name)
++        {
++            release_object( file );
++            close( fd );
++            return NULL;
++        }
++        file->fd = create_fd_from_unix_fd( &file_fd_ops, fd, &file->obj,
++                                        FILE_SYNCHRONOUS_IO_NONALERT, file_name );
++        free(file_name);
++    }
++    else
++#endif
++    {
++        file->fd = create_anonymous_fd( &file_fd_ops, fd, &file->obj,
++                                                  FILE_SYNCHRONOUS_IO_NONALERT );
++    }
++
++    if (!file->fd)
+     {
+         release_object( file );
+         return NULL;
+@@ -758,7 +810,7 @@ DECL_HANDLER(alloc_file_handle)
+         set_error( STATUS_INVALID_HANDLE );
+         return;
+     }
+-    if ((file = create_file_for_fd( fd, req->access, FILE_SHARE_READ | FILE_SHARE_WRITE )))
++    if ((file = create_file_for_fd( fd, req->access, FILE_SHARE_READ | FILE_SHARE_WRITE, 1 )))
+     {
+         reply->handle = alloc_handle( current->process, file, req->access, req->attributes );
+         release_object( file );
+diff --git a/server/file.h b/server/file.h
+index 4c454de4d4..69ec1634d2 100644
+--- a/server/file.h
++++ b/server/file.h
+@@ -82,6 +82,8 @@ extern struct fd *open_fd( struct fd *root, const char *name, int flags, mode_t
+                            unsigned int access, unsigned int sharing, unsigned int options );
+ extern struct fd *create_anonymous_fd( const struct fd_ops *fd_user_ops,
+                                        int unix_fd, struct object *user, unsigned int options );
++extern struct fd *create_fd_from_unix_fd( const struct fd_ops *fd_user_ops,
++                int unix_fd, struct object *user, unsigned int options, const char *unix_name );
+ extern struct fd *dup_fd_object( struct fd *orig, unsigned int access, unsigned int sharing,
+                                  unsigned int options );
+ extern struct fd *get_fd_object_for_mapping( struct fd *fd, unsigned int access, unsigned int sharing );
+@@ -156,7 +158,7 @@ extern const char *get_timeout_str( timeout_t timeout );
+ extern struct file *get_file_obj( struct process *process, obj_handle_t handle,
+                                   unsigned int access );
+ extern int get_file_unix_fd( struct file *file );
+-extern struct file *create_file_for_fd( int fd, unsigned int access, unsigned int sharing );
++extern struct file *create_file_for_fd( int fd, unsigned int access, unsigned int sharing, int needs_name );
+ extern struct file *create_file_for_fd_obj( struct fd *fd, unsigned int access, unsigned int sharing );
+ extern void file_set_error(void);
+ extern struct object_type *file_get_type( struct object *obj );
+diff --git a/server/mapping.c b/server/mapping.c
+index 6970c86ffc..e833d51750 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -481,7 +481,7 @@ static int build_shared_mapping( struct mapping *mapping, int fd,
+     /* create a temp file for the mapping */
+ 
+     if ((shared_fd = create_temp_file( total_size )) == -1) return 0;
+-    if (!(file = create_file_for_fd( shared_fd, FILE_GENERIC_READ|FILE_GENERIC_WRITE, 0 ))) return 0;
++    if (!(file = create_file_for_fd( shared_fd, FILE_GENERIC_READ|FILE_GENERIC_WRITE, 0, 0 ))) return 0;
+ 
+     if (!(buffer = malloc( max_size ))) goto error;
+ 
+
+-- 
+2.26.2
+

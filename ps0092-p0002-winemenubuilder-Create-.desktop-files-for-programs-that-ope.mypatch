@@ -1,9 +1,9 @@
 From: Alex Henrie <alexhenrie24@gmail.com>
-Subject: [PATCH 2/2] winemenubuilder: Create .desktop files for programs that open URIs
-Message-Id: <20200302065127.240173-2-alexhenrie24@gmail.com>
-Date: Sun,  1 Mar 2020 23:51:07 -0700
-In-Reply-To: <20200302065127.240173-1-alexhenrie24@gmail.com>
-References: <20200302065127.240173-1-alexhenrie24@gmail.com>
+Subject: [PATCH resend 2/2] winemenubuilder: Create .desktop files for programs that open URIs
+Message-Id: <20200402045939.123780-2-alexhenrie24@gmail.com>
+Date: Wed,  1 Apr 2020 22:59:19 -0600
+In-Reply-To: <20200402045939.123780-1-alexhenrie24@gmail.com>
+References: <20200402045939.123780-1-alexhenrie24@gmail.com>
 
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=22904
 Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
@@ -13,7 +13,7 @@ Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
  2 files changed, 129 insertions(+), 99 deletions(-)
 
 diff --git a/loader/wine.inf.in b/loader/wine.inf.in
-index e963b4e0f3..bd5763ace1 100644
+index efe3db735f..cc7d2ea4db 100644
 --- a/loader/wine.inf.in
 +++ b/loader/wine.inf.in
 @@ -510,6 +510,10 @@ HKCU,Software\Wine\FileOpenBlacklist\.txt,"notepad",,"%11%\notepad.exe %1"
@@ -81,7 +81,7 @@ index 6f1dd7c571..a793b49f6b 100644
  
      if (RegOpenKeyExW(HKEY_CURRENT_USER, blacklist_key_path, 0, KEY_QUERY_VALUE, &blacklist_key) != ERROR_SUCCESS)
          return FALSE;
-@@ -2523,15 +2526,15 @@ static const char* get_special_mime_type(LPCWSTR extension)
+@@ -2523,17 +2526,17 @@ static const char* get_special_mime_type(LPCWSTR extension)
      return NULL;
  }
  
@@ -92,6 +92,8 @@ index 6f1dd7c571..a793b49f6b 100644
  {
      BOOL ret = FALSE;
      FILE *desktop;
+     const char *prefix = getenv("WINEPREFIX");
+     const char *home = getenv("HOME");
  
 -    WINE_TRACE("writing association for file type %s, friendlyAppName=%s, MIME type %s, progID=%s, icon=%s to file %s\n",
 -               wine_dbgstr_a(dot_extension), wine_dbgstr_a(friendlyAppName), wine_dbgstr_a(mimeType),
@@ -100,13 +102,19 @@ index 6f1dd7c571..a793b49f6b 100644
                 wine_dbgstr_a(progId), wine_dbgstr_a(openWithIcon), wine_dbgstr_a(desktopPath));
  
      desktop = fopen(desktopPath, "w");
-@@ -2544,8 +2547,11 @@ static BOOL write_freedesktop_association_entry(const char *desktopPath, const c
+@@ -2541,12 +2544,16 @@ static BOOL write_freedesktop_association_entry(const char *desktopPath, const c
          fprintf(desktop, "Type=Application\n");
          fprintf(desktop, "Name=%s\n", friendlyAppName);
          fprintf(desktop, "MimeType=%s;\n", mimeType);
--        fprintf(desktop, "Exec=env WINEPREFIX=\"%s\" %s start /ProgIDOpen %s %%f\n",
--                wine_get_config_dir(), wine_path, progId);
-+        fprintf(desktop, "Exec=env WINEPREFIX=\"%s\" %s start", wine_get_config_dir(), wine_path);
+         if (prefix)
+-            fprintf(desktop, "Exec=env WINEPREFIX=\"%s\" %s start /ProgIDOpen %s %%f\n", prefix, wine_path, progId);
++            fprintf(desktop, "Exec=env WINEPREFIX=\"%s\" %s start", prefix, wine_path);
+         else if (home)
+-            fprintf(desktop, "Exec=env WINEPREFIX=\"%s/.wine\" %s start /ProgIDOpen %s %%f\n", home, wine_path, progId);
++            fprintf(desktop, "Exec=env WINEPREFIX=\"%s/.wine\" %s start", home, wine_path);
+         else
+-            fprintf(desktop, "Exec=%s start /ProgIDOpen %s %%f\n", wine_path, progId);
++            fprintf(desktop, "Exec=%s start", wine_path);
 +        if (progId) /* file association */
 +            fprintf(desktop, " /ProgIDOpen %s %%f\n", progId);
 +        else /* protocol association */
@@ -149,14 +157,14 @@ index 6f1dd7c571..a793b49f6b 100644
              size *= 2;
          } while (ret == ERROR_MORE_DATA);
  
--        if (ret == ERROR_SUCCESS && extensionW[0] == '.' && !is_hard_blacklisted(extensionW))
+-        if (ret == ERROR_SUCCESS && extensionW[0] == '.' && !is_extension_banned(extensionW))
 +        if (ret == ERROR_SUCCESS && winTypeW[0] != '.')
 +        {
 +            if (RegGetValueW(HKEY_CLASSES_ROOT, winTypeW, UrlProtocolW, RRF_RT_ANY, NULL, NULL, NULL) == ERROR_SUCCESS)
 +                is_protocol_type = TRUE;
 +        }
 +
-+        if (ret == ERROR_SUCCESS && (is_protocol_type || (winTypeW[0] == '.' && !is_hard_blacklisted(winTypeW))))
++        if (ret == ERROR_SUCCESS && (is_protocol_type || (winTypeW[0] == '.' && !is_extension_banned(winTypeW))))
          {
 -            char *extensionA = NULL;
 +            char *winTypeA = NULL;
@@ -410,5 +418,5 @@ index 6f1dd7c571..a793b49f6b 100644
      }
 
 -- 
-2.25.1
+2.26.0
 

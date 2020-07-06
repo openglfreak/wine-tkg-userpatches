@@ -1,0 +1,52 @@
+From: Akihiro Sagawa <sagawa.aki@gmail.com>
+Subject: [PATCH 2/4] kernelbase: Implement FILE_FLAG_SEQUENTIAL_SCAN.
+Message-Id: <20191212223841.1061.375B48EC@gmail.com>
+Date: Thu, 12 Dec 2019 22:39:37 +0900
+
+Signed-off-by: Akihiro Sagawa <sagawa.aki@gmail.com>
+---
+ dlls/kernel32/tests/file.c | 16 ++++++++++++++++
+ dlls/kernelbase/file.c     |  2 ++
+ 2 files changed, 18 insertions(+)
+
+diff --git a/dlls/kernel32/tests/file.c b/dlls/kernel32/tests/file.c
+index 5bd1682..6a33457 100644
+--- a/dlls/kernel32/tests/file.c
++++ b/dlls/kernel32/tests/file.c
+@@ -1293,6 +1293,22 @@ static void test_CreateFileA(void)
+ 
+     CloseHandle(hFile);
+ 
++    SetLastError(0xdeadbeef);
++    hFile = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, NULL,
++                        OPEN_ALWAYS, FILE_FLAG_RANDOM_ACCESS | FILE_FLAG_SEQUENTIAL_SCAN, 0);
++    ok(hFile != INVALID_HANDLE_VALUE && GetLastError() == ERROR_ALREADY_EXISTS,
++       "hFile %p, last error %u\n", hFile, GetLastError());
++
++    CloseHandle(hFile);
++
++    SetLastError(0xdeadbeef);
++    hFile = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, NULL,
++                        OPEN_ALWAYS, FILE_FLAG_SEQUENTIAL_SCAN, 0);
++    ok(hFile != INVALID_HANDLE_VALUE && GetLastError() == ERROR_ALREADY_EXISTS,
++       "hFile %p, last error %u\n", hFile, GetLastError());
++
++    CloseHandle(hFile);
++
+     ret = DeleteFileA(filename);
+     ok(ret, "DeleteFileA: error %d\n", GetLastError());
+ 
+diff --git a/dlls/kernelbase/file.c b/dlls/kernelbase/file.c
+index 59ddcd9..fd1b476 100644
+--- a/dlls/kernelbase/file.c
++++ b/dlls/kernelbase/file.c
+@@ -538,6 +538,8 @@ HANDLE WINAPI DECLSPEC_HOTPATCH CreateFileW( LPCWSTR filename, DWORD access, DWO
+         options |= FILE_SYNCHRONOUS_IO_NONALERT;
+     if (attributes & FILE_FLAG_RANDOM_ACCESS)
+         options |= FILE_RANDOM_ACCESS;
++    if (attributes & FILE_FLAG_SEQUENTIAL_SCAN)
++        options |= FILE_SEQUENTIAL_ONLY;
+     if (attributes & FILE_FLAG_WRITE_THROUGH)
+         options |= FILE_WRITE_THROUGH;
+     attributes &= FILE_ATTRIBUTE_VALID_FLAGS;
+

@@ -34,7 +34,7 @@ new file mode 100644
 index 0000000000..db8783a7cd
 --- /dev/null
 +++ b/dlls/mf/handler.c
-@@ -0,0 +1,357 @@
+@@ -0,0 +1,360 @@
 +#include <stdarg.h>
 +
 +#define COBJMACROS
@@ -287,17 +287,20 @@ index 0000000000..db8783a7cd
 +
 +    hr = MFCreateAsyncResult(&context->IUnknown_iface, &handler->IMFAsyncCallback_iface, (IUnknown *)caller, &item);
 +    IUnknown_Release(&context->IUnknown_iface);
-+    IMFAsyncResult_Release(caller);
 +    if (SUCCEEDED(hr))
 +    {
 +        if (SUCCEEDED(hr = MFPutWorkItemEx(MFASYNC_CALLBACK_QUEUE_IO, item)))
 +        {
 +            if (cancel_cookie)
-+                IMFAsyncResult_GetState(item, cancel_cookie);
++            {
++                *cancel_cookie = (IUnknown *)caller;
++                IUnknown_AddRef(*cancel_cookie);
++            }
 +        }
 +
 +        IMFAsyncResult_Release(item);
 +    }
++    IMFAsyncResult_Release(caller);
 +
 +    return hr;
 +}
@@ -477,7 +480,7 @@ index 251d59e1c0..5861560b60 100644
  static HRESULT WINAPI file_scheme_handler_QueryInterface(IMFSchemeHandler *iface, REFIID riid, void **obj)
  {
      TRACE("%p, %s, %p.\n", iface, debugstr_guid(riid), obj);
-@@ -604,239 +590,45 @@ static ULONG WINAPI file_scheme_handler_AddRef(IMFSchemeHandler *iface)
+@@ -604,242 +590,45 @@ static ULONG WINAPI file_scheme_handler_AddRef(IMFSchemeHandler *iface)
  
  static ULONG WINAPI file_scheme_handler_Release(IMFSchemeHandler *iface)
  {
@@ -634,17 +637,20 @@ index 251d59e1c0..5861560b60 100644
 -
 -    hr = MFCreateAsyncResult(&context->IUnknown_iface, &handler->IMFAsyncCallback_iface, (IUnknown *)caller, &item);
 -    IUnknown_Release(&context->IUnknown_iface);
--    IMFAsyncResult_Release(caller);
 -    if (SUCCEEDED(hr))
 -    {
 -        if (SUCCEEDED(hr = MFPutWorkItemEx(MFASYNC_CALLBACK_QUEUE_IO, item)))
 -        {
 -            if (cancel_cookie)
--                IMFAsyncResult_GetState(item, cancel_cookie);
+-            {
+-                *cancel_cookie = (IUnknown *)caller;
+-                IUnknown_AddRef(*cancel_cookie);
+-            }
 -        }
 -
 -        IMFAsyncResult_Release(item);
 -    }
+-    IMFAsyncResult_Release(caller);
 -
 -    return hr;
 +    return handler_begin_create_object(&this->handler, NULL, url, flags, props, cancel_cookie, callback, state);

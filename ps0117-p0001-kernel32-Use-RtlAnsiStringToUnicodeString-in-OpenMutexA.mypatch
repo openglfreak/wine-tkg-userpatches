@@ -1,0 +1,44 @@
+From: Akihiro Sagawa <sagawa.aki@gmail.com>
+Subject: [PATCH v2 1/2] kernel32: Use RtlAnsiStringToUnicodeString() in OpenMutexA.
+Message-Id: <20200520214344.8845.375B48EC@gmail.com>
+Date: Wed, 20 May 2020 21:47:07 +0900
+
+
+v2: No updates for kernel32/sync.c. Just remove a test part.
+
+This commit makes consistent with the commit 2db497e89e8e4a37a8bd569b8691b9b87ae63606,
+which introduces RtlAnsiStringToUnicodeString() into CreateMutexA().
+
+Signed-off-by: Akihiro Sagawa <sagawa.aki@gmail.com>
+---
+ dlls/kernel32/sync.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/kernel32/sync.c b/dlls/kernel32/sync.c
+index 7a7a37b4a2..16e3a260b9 100644
+--- a/dlls/kernel32/sync.c
++++ b/dlls/kernel32/sync.c
+@@ -195,16 +195,19 @@ void WINAPI UninitializeCriticalSection( CRITICAL_SECTION *crit )
+  */
+ HANDLE WINAPI DECLSPEC_HOTPATCH OpenMutexA( DWORD access, BOOL inherit, LPCSTR name )
+ {
+-    WCHAR buffer[MAX_PATH];
++    ANSI_STRING nameA;
++    NTSTATUS status;
+ 
+     if (!name) return OpenMutexW( access, inherit, NULL );
+ 
+-    if (!MultiByteToWideChar( CP_ACP, 0, name, -1, buffer, MAX_PATH ))
++    RtlInitAnsiString( &nameA, name );
++    status = RtlAnsiStringToUnicodeString( &NtCurrentTeb()->StaticUnicodeString, &nameA, FALSE );
++    if (status != STATUS_SUCCESS)
+     {
+         SetLastError( ERROR_FILENAME_EXCED_RANGE );
+         return 0;
+     }
+-    return OpenMutexW( access, inherit, buffer );
++    return OpenMutexW( access, inherit, NtCurrentTeb()->StaticUnicodeString.Buffer );
+ }
+ 
+ 
+

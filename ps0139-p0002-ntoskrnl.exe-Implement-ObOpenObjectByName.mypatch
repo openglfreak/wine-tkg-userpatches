@@ -1,0 +1,73 @@
+From: Derek Lesho <dlesho@codeweavers.com>
+Subject: [PATCH v2 2/5] ntoskrnl.exe: Implement ObOpenObjectByName.
+Message-Id: <20200716151711.101295-2-dlesho@codeweavers.com>
+Date: Thu, 16 Jul 2020 10:17:08 -0500
+In-Reply-To: <20200716151711.101295-1-dlesho@codeweavers.com>
+References: <20200716151711.101295-1-dlesho@codeweavers.com>
+
+Signed-off-by: Derek Lesho <dlesho@codeweavers.com>
+---
+ dlls/ntoskrnl.exe/ntoskrnl.c        | 32 +++++++++++++++++++++++++++++
+ dlls/ntoskrnl.exe/ntoskrnl.exe.spec |  2 +-
+ 2 files changed, 33 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.c b/dlls/ntoskrnl.exe/ntoskrnl.c
+index 7fb01464816..5f0d035c65d 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.c
++++ b/dlls/ntoskrnl.exe/ntoskrnl.c
+@@ -2811,6 +2811,38 @@ NTSTATUS WINAPI ObReferenceObjectByName( UNICODE_STRING *ObjectName,
+ }
+ 
+ 
++/********************************************************************
++ *           ObOpenObjectByName   (NTOSKRNL.EXE.@)
++ */
++NTSTATUS WINAPI ObOpenObjectByName(POBJECT_ATTRIBUTES attr, POBJECT_TYPE type,
++                                   KPROCESSOR_MODE mode, ACCESS_STATE *access_state,
++                                   ACCESS_MASK access, PVOID ctx, HANDLE *handle)
++{
++    NTSTATUS status;
++    void *object;
++
++    TRACE( "attr(%p %s %x) %p %u %p %u %p %p\n", attr->RootDirectory, debugstr_us(attr->ObjectName),
++                                                 attr->Attributes, type, mode, access_state, access, ctx, handle );
++
++    if (mode != KernelMode)
++    {
++        FIXME( "UserMode access not implemented\n" );
++        return STATUS_NOT_IMPLEMENTED;
++    }
++
++    if (attr->RootDirectory) FIXME( "RootDirectory unhandled\n" );
++
++    status = ObReferenceObjectByName(attr->ObjectName, attr->Attributes, access_state, access, type, mode, ctx, &object );
++    if (status != STATUS_SUCCESS)
++        return status;
++
++    status = ObOpenObjectByPointer(object, attr->Attributes, access_state, access, type, mode, handle);
++
++    ObDereferenceObject(object);
++    return status;
++}
++
++
+ /***********************************************************************
+  *           ObReferenceObjectByPointer   (NTOSKRNL.EXE.@)
+  */
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
+index 6acdec5dc5a..34fde20f8a4 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
++++ b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
+@@ -835,7 +835,7 @@
+ @ stub ObInsertObject
+ @ stub ObLogSecurityDescriptor
+ @ stub ObMakeTemporaryObject
+-@ stub ObOpenObjectByName
++@ stdcall ObOpenObjectByName(ptr ptr long ptr long ptr ptr)
+ @ stdcall ObOpenObjectByPointer(ptr long ptr long ptr long ptr)
+ @ stdcall ObQueryNameString(ptr ptr long ptr)
+ @ stub ObQueryObjectAuditingByHandle
+
+-- 
+2.27.0
+

@@ -1,0 +1,115 @@
+From: Derek Lesho <dlesho@codeweavers.com>
+Subject: [PATCH v2 3/5] ntoskrnl.exe: Implement KeReadStateEvent.
+Message-Id: <20200716151711.101295-3-dlesho@codeweavers.com>
+Date: Thu, 16 Jul 2020 10:17:09 -0500
+In-Reply-To: <20200716151711.101295-1-dlesho@codeweavers.com>
+References: <20200716151711.101295-1-dlesho@codeweavers.com>
+
+Signed-off-by: Derek Lesho <dlesho@codeweavers.com>
+---
+v2:
+  - Added tests.
+  - Added header definition.
+---
+ dlls/ntoskrnl.exe/ntoskrnl.exe.spec |  2 +-
+ dlls/ntoskrnl.exe/sync.c            | 22 ++++++++++++++++++++++
+ dlls/ntoskrnl.exe/tests/driver.c    | 11 +++++++++++
+ include/ddk/wdm.h                   |  1 +
+ 4 files changed, 35 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
+index 34fde20f8a4..b2d7d8b9640 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
++++ b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
+@@ -599,7 +599,7 @@
+ @ stdcall KeQueryTickCount(ptr)
+ @ stdcall KeQueryTimeIncrement()
+ @ stub KeRaiseUserException
+-@ stub KeReadStateEvent
++@ stdcall KeReadStateEvent(ptr)
+ @ stub KeReadStateMutant
+ @ stub KeReadStateMutex
+ @ stub KeReadStateQueue
+diff --git a/dlls/ntoskrnl.exe/sync.c b/dlls/ntoskrnl.exe/sync.c
+index 5e06ab2f2b6..7f19ce7571b 100644
+--- a/dlls/ntoskrnl.exe/sync.c
++++ b/dlls/ntoskrnl.exe/sync.c
+@@ -311,6 +311,28 @@ void WINAPI KeClearEvent( PRKEVENT event )
+     KeResetEvent( event );
+ }
+ 
++/***********************************************************************
++ *           KeReadStateEvent (NTOSKRNL.EXE.@)
++ */
++LONG WINAPI KeReadStateEvent( PRKEVENT event )
++{
++    HANDLE handle;
++
++    TRACE("event %p.\n", event);
++
++    if (event->Header.WaitListHead.Blink == INVALID_HANDLE_VALUE)
++    {
++        if (!(ObOpenObjectByPointer( event, OBJ_KERNEL_HANDLE, NULL, EVENT_QUERY_STATE, NULL, KernelMode, &handle )))
++        {
++            EVENT_BASIC_INFORMATION event_info;
++            if (!(NtQueryEvent( handle, EventBasicInformation, &event_info, sizeof(event_info), NULL)))
++                event->Header.SignalState = event_info.EventState;
++            NtClose( handle );
++        }
++    }
++    return event->Header.SignalState;
++}
++
+ /***********************************************************************
+  *           KeInitializeSemaphore   (NTOSKRNL.EXE.@)
+  */
+diff --git a/dlls/ntoskrnl.exe/tests/driver.c b/dlls/ntoskrnl.exe/tests/driver.c
+index bb5bbeb4fa5..d1503f824ef 100644
+--- a/dlls/ntoskrnl.exe/tests/driver.c
++++ b/dlls/ntoskrnl.exe/tests/driver.c
+@@ -447,8 +447,14 @@ static void test_sync(void)
+     ret = wait_single(&manual_event, 0);
+     ok(ret == STATUS_TIMEOUT, "got %#x\n", ret);
+ 
++    ret = KeReadStateEvent(&manual_event);
++    ok(ret == 0, "got %d\n", ret);
++
+     KeSetEvent(&manual_event, 0, FALSE);
+ 
++    ret = KeReadStateEvent(&manual_event);
++    ok(ret == 1, "got %d\n", ret);
++
+     ret = wait_single(&manual_event, 0);
+     ok(ret == 0, "got %#x\n", ret);
+ 
+@@ -541,9 +547,14 @@ static void test_sync(void)
+     ret = ObReferenceObjectByHandle(handle, SYNCHRONIZE, *pExEventObjectType, KernelMode, (void **)&event, NULL);
+     ok(!ret, "ObReferenceObjectByHandle failed: %#x\n", ret);
+ 
++
+     ret = wait_single(event, 0);
+     ok(ret == 0, "got %#x\n", ret);
++    ret = KeReadStateEvent(event);
++    ok(ret == 1, "got %d\n", ret);
+     KeResetEvent(event);
++    ret = KeReadStateEvent(event);
++    ok(ret == 0, "got %d\n", ret);
+     ret = wait_single(event, 0);
+     ok(ret == STATUS_TIMEOUT, "got %#x\n", ret);
+     ret = wait_single_handle(handle, 0);
+diff --git a/include/ddk/wdm.h b/include/ddk/wdm.h
+index 59af860708b..176b432644a 100644
+--- a/include/ddk/wdm.h
++++ b/include/ddk/wdm.h
+@@ -1759,6 +1759,7 @@ KAFFINITY WINAPI KeQueryActiveProcessors(void);
+ void      WINAPI KeQuerySystemTime(LARGE_INTEGER*);
+ void      WINAPI KeQueryTickCount(LARGE_INTEGER*);
+ ULONG     WINAPI KeQueryTimeIncrement(void);
++LONG      WINAPI KeReadStateEvent(PRKEVENT);
+ void    FASTCALL KeReleaseInStackQueuedSpinLockFromDpcLevel(KLOCK_QUEUE_HANDLE*);
+ LONG      WINAPI KeReleaseMutex(PRKMUTEX,BOOLEAN);
+ LONG      WINAPI KeReleaseSemaphore(PRKSEMAPHORE,KPRIORITY,LONG,BOOLEAN);
+
+-- 
+2.27.0
+

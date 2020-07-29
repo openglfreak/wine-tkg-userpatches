@@ -1,0 +1,103 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH 1/5] gdi32: Use explicit CDECL in gdi_image_bits.
+Message-Id: <20200706193725.2547917-1-rbernon@codeweavers.com>
+Date: Mon,  6 Jul 2020 21:37:21 +0200
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/gdi32/bitblt.c       | 2 +-
+ dlls/gdi32/dibdrv/dc.c    | 2 +-
+ dlls/gdi32/gdi_private.h  | 2 +-
+ dlls/wineps.drv/bitmap.c  | 2 +-
+ dlls/winex11.drv/bitblt.c | 4 ++--
+ include/wine/gdi_driver.h | 2 +-
+ 6 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/dlls/gdi32/bitblt.c b/dlls/gdi32/bitblt.c
+index d46d7bada49..f3b866057eb 100644
+--- a/dlls/gdi32/bitblt.c
++++ b/dlls/gdi32/bitblt.c
+@@ -163,7 +163,7 @@ static BOOL get_vis_rectangles( DC *dc_dst, struct bitblt_coords *dst,
+     return intersect_vis_rectangles( dst, src );
+ }
+ 
+-void free_heap_bits( struct gdi_image_bits *bits )
++void CDECL free_heap_bits( struct gdi_image_bits *bits )
+ {
+     HeapFree( GetProcessHeap(), 0, bits->ptr );
+ }
+diff --git a/dlls/gdi32/dibdrv/dc.c b/dlls/gdi32/dibdrv/dc.c
+index f818aa02286..727f3837e33 100644
+--- a/dlls/gdi32/dibdrv/dc.c
++++ b/dlls/gdi32/dibdrv/dc.c
+@@ -565,7 +565,7 @@ static inline void unlock_surface( struct windrv_physdev *dev )
+     if (GetTickCount() - dev->start_ticks > FLUSH_PERIOD) dev->surface->funcs->flush( dev->surface );
+ }
+ 
+-static void unlock_bits_surface( struct gdi_image_bits *bits )
++static void CDECL unlock_bits_surface( struct gdi_image_bits *bits )
+ {
+     struct window_surface *surface = bits->param;
+     surface->funcs->unlock( surface );
+diff --git a/dlls/gdi32/gdi_private.h b/dlls/gdi32/gdi_private.h
+index 6b2502c4586..4bb46619666 100644
+--- a/dlls/gdi32/gdi_private.h
++++ b/dlls/gdi32/gdi_private.h
+@@ -620,7 +620,7 @@ static inline void copy_bitmapinfo( BITMAPINFO *dst, const BITMAPINFO *src )
+     memcpy( dst, src, get_dib_info_size( src, DIB_RGB_COLORS ));
+ }
+ 
+-extern void free_heap_bits( struct gdi_image_bits *bits ) DECLSPEC_HIDDEN;
++extern void CDECL free_heap_bits( struct gdi_image_bits *bits ) DECLSPEC_HIDDEN;
+ 
+ extern HMODULE gdi32_module DECLSPEC_HIDDEN;
+ 
+diff --git a/dlls/wineps.drv/bitmap.c b/dlls/wineps.drv/bitmap.c
+index 1a98f162702..bafc86e9a24 100644
+--- a/dlls/wineps.drv/bitmap.c
++++ b/dlls/wineps.drv/bitmap.c
+@@ -148,7 +148,7 @@ static inline DWORD max_ascii85_size(DWORD size)
+     return (size + 3) / 4 * 5;
+ }
+ 
+-static void free_heap_bits( struct gdi_image_bits *bits )
++static void CDECL free_heap_bits( struct gdi_image_bits *bits )
+ {
+     HeapFree( GetProcessHeap(), 0, bits->ptr );
+ }
+diff --git a/dlls/winex11.drv/bitblt.c b/dlls/winex11.drv/bitblt.c
+index b530ba7ba62..46e52612a21 100644
+--- a/dlls/winex11.drv/bitblt.c
++++ b/dlls/winex11.drv/bitblt.c
+@@ -914,12 +914,12 @@ BOOL CDECL X11DRV_StretchBlt( PHYSDEV dst_dev, struct bitblt_coords *dst,
+ }
+ 
+ 
+-static void free_heap_bits( struct gdi_image_bits *bits )
++static void CDECL free_heap_bits( struct gdi_image_bits *bits )
+ {
+     HeapFree( GetProcessHeap(), 0, bits->ptr );
+ }
+ 
+-static void free_ximage_bits( struct gdi_image_bits *bits )
++static void CDECL free_ximage_bits( struct gdi_image_bits *bits )
+ {
+     XFree( bits->ptr );
+ }
+diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
+index 971618e19ac..0bd169c653b 100644
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -54,7 +54,7 @@ struct gdi_image_bits
+ {
+     void   *ptr;       /* pointer to the bits */
+     BOOL    is_copy;   /* whether this is a copy of the bits that can be modified */
+-    void  (*free)(struct gdi_image_bits *);  /* callback for freeing the bits */
++    void  (CDECL *free)(struct gdi_image_bits *);  /* callback for freeing the bits */
+     void   *param;     /* extra parameter for callback private use */
+ };
+ 
+
+-- 
+2.27.0
+

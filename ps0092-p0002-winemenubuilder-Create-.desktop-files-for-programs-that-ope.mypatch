@@ -1,9 +1,9 @@
 From: Alex Henrie <alexhenrie24@gmail.com>
-Subject: [PATCH v3 2/2] winemenubuilder: Create .desktop files for programs that open URIs
-Message-Id: <20200706043042.200374-3-alexhenrie24@gmail.com>
-Date: Sun,  5 Jul 2020 22:30:22 -0600
-In-Reply-To: <20200706043042.200374-1-alexhenrie24@gmail.com>
-References: <20200706043042.200374-1-alexhenrie24@gmail.com>
+Subject: [PATCH v4 2/2] winemenubuilder: Create .desktop files for programs that open URIs
+Message-Id: <20200707041958.428249-3-alexhenrie24@gmail.com>
+Date: Mon,  6 Jul 2020 22:19:38 -0600
+In-Reply-To: <20200707041958.428249-1-alexhenrie24@gmail.com>
+References: <20200707041958.428249-1-alexhenrie24@gmail.com>
 
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=22904
 Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
@@ -13,22 +13,22 @@ Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
  2 files changed, 131 insertions(+), 101 deletions(-)
 
 diff --git a/loader/wine.inf.in b/loader/wine.inf.in
-index 62178f581d..738239eee0 100644
+index 2c36a598c2..e4ef836c38 100644
 --- a/loader/wine.inf.in
 +++ b/loader/wine.inf.in
-@@ -510,6 +510,10 @@ HKCU,Software\Wine\FileOpenExclusions\.txt,"notepad",,"%11%\notepad.exe %1"
- HKCU,Software\Wine\FileOpenExclusions\.url,"ieframe",,"rundll32.exe ieframe.dll,OpenURL %l"
- HKCU,Software\Wine\FileOpenExclusions\.wri,"wordpad",,"""%16422%\Windows NT\Accessories\wordpad.exe"" %1"
- HKCU,Software\Wine\FileOpenExclusions\.xml,"winebrowser",,"""%11%\winebrowser.exe"" -nohome"
-+HKCU,Software\Wine\FileOpenExclusions\ftp,"winebrowser",,"""%11%\winebrowser.exe"" -nohome"
-+HKCU,Software\Wine\FileOpenExclusions\http,"winebrowser",,"""%11%\winebrowser.exe"" -nohome"
-+HKCU,Software\Wine\FileOpenExclusions\https,"winebrowser",,"""%11%\winebrowser.exe"" -nohome"
-+HKCU,Software\Wine\FileOpenExclusions\mailto,"winebrowser",,"%11%\winebrowser %1"
+@@ -510,6 +510,10 @@ HKCU,Software\Wine\FileOpenNoIntegration\.txt,"notepad",,"%11%\notepad.exe %1"
+ HKCU,Software\Wine\FileOpenNoIntegration\.url,"ieframe",,"rundll32.exe ieframe.dll,OpenURL %l"
+ HKCU,Software\Wine\FileOpenNoIntegration\.wri,"wordpad",,"""%16422%\Windows NT\Accessories\wordpad.exe"" %1"
+ HKCU,Software\Wine\FileOpenNoIntegration\.xml,"winebrowser",,"""%11%\winebrowser.exe"" -nohome"
++HKCU,Software\Wine\FileOpenNoIntegration\ftp,"winebrowser",,"""%11%\winebrowser.exe"" -nohome"
++HKCU,Software\Wine\FileOpenNoIntegration\http,"winebrowser",,"""%11%\winebrowser.exe"" -nohome"
++HKCU,Software\Wine\FileOpenNoIntegration\https,"winebrowser",,"""%11%\winebrowser.exe"" -nohome"
++HKCU,Software\Wine\FileOpenNoIntegration\mailto,"winebrowser",,"%11%\winebrowser %1"
  
  [ContentIndex]
  HKLM,System\CurrentControlSet\Control\ContentIndex\Language\Neutral,"WBreakerClass",,"{369647e0-17b0-11ce-9950-00aa004bbb1f}"
 diff --git a/programs/winemenubuilder/winemenubuilder.c b/programs/winemenubuilder/winemenubuilder.c
-index ff7b51d4c9..19f3be3ca5 100644
+index 55a8864a90..edae94b497 100644
 --- a/programs/winemenubuilder/winemenubuilder.c
 +++ b/programs/winemenubuilder/winemenubuilder.c
 @@ -2258,10 +2258,13 @@ static BOOL has_association_changed(LPCWSTR extensionW, LPCSTR mimeType, LPCWSTR
@@ -65,21 +65,21 @@ index ff7b51d4c9..19f3be3ca5 100644
 -static BOOL on_exclude_list(const WCHAR *extension, const WCHAR *command)
 +static BOOL on_exclude_list(const WCHAR *win_type, const WCHAR *command)
  {
-     static const WCHAR FileOpenExclusionsW[] = {
+     static const WCHAR FileOpenNoIntegrationW[] = {
          'S','o','f','t','w','a','r','e','\\',
 @@ -2497,11 +2500,11 @@ static BOOL on_exclude_list(const WCHAR *extension, const WCHAR *command)
      DWORD len = ARRAY_SIZE(program_name);
      DWORD i = 0;
  
--    if (ARRAY_SIZE(FileOpenExclusionsW) + lstrlenW(extension) > ARRAY_SIZE(naughty_list_key_path))
-+    if (ARRAY_SIZE(FileOpenExclusionsW) + lstrlenW(win_type) > ARRAY_SIZE(naughty_list_key_path))
+-    if (ARRAY_SIZE(FileOpenNoIntegrationW) + lstrlenW(extension) > ARRAY_SIZE(key_path))
++    if (ARRAY_SIZE(FileOpenNoIntegrationW) + lstrlenW(win_type) > ARRAY_SIZE(key_path))
          return FALSE;
  
-     lstrcpyW(naughty_list_key_path, FileOpenExclusionsW);
--    lstrcatW(naughty_list_key_path, extension);
-+    lstrcatW(naughty_list_key_path, win_type);
+     lstrcpyW(key_path, FileOpenNoIntegrationW);
+-    lstrcatW(key_path, extension);
++    lstrcatW(key_path, win_type);
  
-     if (RegOpenKeyExW(HKEY_CURRENT_USER, naughty_list_key_path, 0, KEY_QUERY_VALUE, &naughty_list_key) != ERROR_SUCCESS)
+     if (RegOpenKeyExW(HKEY_CURRENT_USER, key_path, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
          return FALSE;
 @@ -2530,7 +2533,7 @@ static const char* get_special_mime_type(LPCWSTR extension)
      return NULL;
@@ -101,8 +101,7 @@ index ff7b51d4c9..19f3be3ca5 100644
                 wine_dbgstr_a(progId), wine_dbgstr_a(openWithIcon), wine_dbgstr_a(desktopPath));
  
      desktop = fopen(desktopPath, "w");
-@@ -2541,12 +2544,16 @@ static BOOL write_freedesktop_association_entry(const char *desktopPath, const c
-         fprintf(desktop, "Type=Application\n");
+@@ -2551,11 +2554,15 @@ static BOOL write_freedesktop_association_entry(const char *desktopPath, const c
          fprintf(desktop, "Name=%s\n", friendlyAppName);
          fprintf(desktop, "MimeType=%s;\n", mimeType);
          if (prefix)

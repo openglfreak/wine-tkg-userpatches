@@ -1,0 +1,486 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH 4/5] gdi32: Build with msvcrt.
+Message-Id: <20200706193725.2547917-4-rbernon@codeweavers.com>
+Date: Mon,  6 Jul 2020 21:37:24 +0200
+In-Reply-To: <20200706193725.2547917-1-rbernon@codeweavers.com>
+References: <20200706193725.2547917-1-rbernon@codeweavers.com>
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/gdi32/Makefile.in         |  1 +
+ dlls/gdi32/bidi.c              |  2 --
+ dlls/gdi32/bitblt.c            |  2 --
+ dlls/gdi32/brush.c             |  2 --
+ dlls/gdi32/dc.c                |  8 +++-----
+ dlls/gdi32/dib.c               |  2 --
+ dlls/gdi32/dibdrv/graphics.c   |  7 +++----
+ dlls/gdi32/dibdrv/opengl.c     |  3 ---
+ dlls/gdi32/driver.c            | 24 ++++++++++--------------
+ dlls/gdi32/enhmetafile.c       |  3 ---
+ dlls/gdi32/enhmfdrv/graphics.c |  3 ---
+ dlls/gdi32/font.c              | 12 ++++--------
+ dlls/gdi32/gdiobj.c            |  2 --
+ dlls/gdi32/icm.c               |  3 ---
+ dlls/gdi32/metafile.c          |  2 --
+ dlls/gdi32/opengl.c            |  3 ---
+ dlls/gdi32/painting.c          |  3 ---
+ dlls/gdi32/path.c              |  3 ---
+ dlls/gdi32/pen.c               |  2 --
+ dlls/gdi32/vulkan.c            |  3 ---
+ 20 files changed, 21 insertions(+), 69 deletions(-)
+
+diff --git a/dlls/gdi32/Makefile.in b/dlls/gdi32/Makefile.in
+index 54506255657..4a85aa7b8ff 100644
+--- a/dlls/gdi32/Makefile.in
++++ b/dlls/gdi32/Makefile.in
+@@ -3,6 +3,7 @@ MODULE    = gdi32.dll
+ IMPORTLIB = gdi32
+ IMPORTS   = advapi32 winefreetype
+ DELAYIMPORTS = user32 setupapi
++EXTRADLLFLAGS = -mno-cygwin
+ 
+ C_SRCS = \
+ 	bidi.c \
+diff --git a/dlls/gdi32/bidi.c b/dlls/gdi32/bidi.c
+index 1b2dca774c7..18971026395 100644
+--- a/dlls/gdi32/bidi.c
++++ b/dlls/gdi32/bidi.c
+@@ -41,8 +41,6 @@
+  * has been modified.
+  */
+ 
+-#include "config.h"
+-
+ #include <stdarg.h>
+ #include "windef.h"
+ #include "winbase.h"
+diff --git a/dlls/gdi32/bitblt.c b/dlls/gdi32/bitblt.c
+index f3b866057eb..c32dc32db5a 100644
+--- a/dlls/gdi32/bitblt.c
++++ b/dlls/gdi32/bitblt.c
+@@ -18,8 +18,6 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
+-#include "config.h"
+-
+ #include <stdarg.h>
+ #include <limits.h>
+ #include <math.h>
+diff --git a/dlls/gdi32/brush.c b/dlls/gdi32/brush.c
+index 7d13649305d..517f8c17e22 100644
+--- a/dlls/gdi32/brush.c
++++ b/dlls/gdi32/brush.c
+@@ -18,8 +18,6 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
+-#include "config.h"
+-
+ #include <stdarg.h>
+ #include <string.h>
+ 
+diff --git a/dlls/gdi32/dc.c b/dlls/gdi32/dc.c
+index c24b96e2750..74da1fe5661 100644
+--- a/dlls/gdi32/dc.c
++++ b/dlls/gdi32/dc.c
+@@ -18,8 +18,6 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
+-#include "config.h"
+-
+ #include <assert.h>
+ #include <stdarg.h>
+ #include <stdlib.h>
+@@ -28,10 +26,10 @@
+ #include "winbase.h"
+ #include "wingdi.h"
+ #include "winreg.h"
++#include "winnls.h"
+ #include "winternl.h"
+ #include "winerror.h"
+ #include "gdi_private.h"
+-#include "wine/unicode.h"
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(dc);
+@@ -642,7 +640,7 @@ HDC WINAPI CreateDCW( LPCWSTR driver, LPCWSTR device, LPCWSTR output,
+             ERR( "no device found for %s\n", debugstr_w(device) );
+             return 0;
+         }
+-        strcpyW(buf, driver);
++        wcscpy(buf, driver);
+     }
+ 
+     if (!(funcs = DRIVER_load_driver( buf )))
+@@ -702,7 +700,7 @@ HDC WINAPI CreateDCA( LPCSTR driver, LPCSTR device, LPCSTR output,
+     if (initData)
+     {
+         /* don't convert initData for DISPLAY driver, it's not used */
+-        if (!driverW.Buffer || strcmpiW( driverW.Buffer, displayW ))
++        if (!driverW.Buffer || wcsicmp( driverW.Buffer, displayW ))
+             initDataW = GdiConvertToDevmodeW(initData);
+     }
+ 
+diff --git a/dlls/gdi32/dib.c b/dlls/gdi32/dib.c
+index 3d267ba89c9..10a7a957973 100644
+--- a/dlls/gdi32/dib.c
++++ b/dlls/gdi32/dib.c
+@@ -59,8 +59,6 @@
+     Search for "Bitmap Structures" in MSDN
+ */
+ 
+-#include "config.h"
+-
+ #include <stdarg.h>
+ #include <stdlib.h>
+ #include <string.h>
+diff --git a/dlls/gdi32/dibdrv/graphics.c b/dlls/gdi32/dibdrv/graphics.c
+index ad2b01d23cf..150ce0f1268 100644
+--- a/dlls/gdi32/dibdrv/graphics.c
++++ b/dlls/gdi32/dibdrv/graphics.c
+@@ -22,7 +22,6 @@
+ #include "gdi_private.h"
+ #include "dibdrv.h"
+ 
+-#include "wine/unicode.h"
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(dib);
+@@ -535,9 +534,9 @@ static DWORD font_cache_hash( struct cached_font *font )
+         two_chars = *ptr;
+         pwc = (WCHAR *)&two_chars;
+         if (!*pwc) break;
+-        *pwc = toupperW(*pwc);
++        *pwc = towupper(*pwc);
+         pwc++;
+-        *pwc = toupperW(*pwc);
++        *pwc = towupper(*pwc);
+         hash ^= two_chars;
+         if (!*pwc) break;
+     }
+@@ -550,7 +549,7 @@ static int font_cache_cmp( const struct cached_font *p1, const struct cached_fon
+     if (!ret) ret = p1->aa_flags - p2->aa_flags;
+     if (!ret) ret = memcmp( &p1->xform, &p2->xform, sizeof(p1->xform) );
+     if (!ret) ret = memcmp( &p1->lf, &p2->lf, FIELD_OFFSET( LOGFONTW, lfFaceName ));
+-    if (!ret) ret = strcmpiW( p1->lf.lfFaceName, p2->lf.lfFaceName );
++    if (!ret) ret = wcsicmp( p1->lf.lfFaceName, p2->lf.lfFaceName );
+     return ret;
+ }
+ 
+diff --git a/dlls/gdi32/dibdrv/opengl.c b/dlls/gdi32/dibdrv/opengl.c
+index 5242e646e58..490693459c5 100644
+--- a/dlls/gdi32/dibdrv/opengl.c
++++ b/dlls/gdi32/dibdrv/opengl.c
+@@ -18,9 +18,6 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
+-#include "config.h"
+-#include "wine/port.h"
+-
+ #include "gdi_private.h"
+ #include "dibdrv.h"
+ 
+diff --git a/dlls/gdi32/driver.c b/dlls/gdi32/driver.c
+index 4b53b23e790..c5a7ab62bc9 100644
+--- a/dlls/gdi32/driver.c
++++ b/dlls/gdi32/driver.c
+@@ -19,9 +19,6 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
+-#include "config.h"
+-#include "wine/port.h"
+-
+ #include <assert.h>
+ #include <stdarg.h>
+ #include <string.h>
+@@ -42,7 +39,6 @@
+ #include "ddk/d3dkmthk.h"
+ 
+ #include "gdi_private.h"
+-#include "wine/unicode.h"
+ #include "wine/list.h"
+ #include "wine/debug.h"
+ #include "wine/heap.h"
+@@ -148,17 +144,17 @@ static BOOL is_display_device( LPCWSTR name )
+     static const WCHAR display_deviceW[] = {'\\','\\','.','\\','D','I','S','P','L','A','Y'};
+     const WCHAR *p = name;
+ 
+-    if (strncmpiW( name, display_deviceW, sizeof(display_deviceW) / sizeof(WCHAR) ))
++    if (wcsncmp( name, display_deviceW, sizeof(display_deviceW) / sizeof(WCHAR) ))
+         return FALSE;
+ 
+     p += sizeof(display_deviceW) / sizeof(WCHAR);
+ 
+-    if (!isdigitW( *p++ ))
++    if (!iswdigit( *p++ ))
+         return FALSE;
+ 
+     for (; *p; p++)
+     {
+-        if (!isdigitW( *p ))
++        if (!iswdigit( *p ))
+             return FALSE;
+     }
+ 
+@@ -190,7 +186,7 @@ const struct gdi_dc_funcs *DRIVER_load_driver( LPCWSTR name )
+     static const WCHAR displayW[] = { 'd','i','s','p','l','a','y',0 };
+ 
+     /* display driver is a special case */
+-    if (!strcmpiW( name, displayW ) || is_display_device( name )) return get_display_driver();
++    if (!wcsicmp( name, displayW ) || is_display_device( name )) return get_display_driver();
+ 
+     if ((module = GetModuleHandleW( name )))
+     {
+@@ -544,7 +540,7 @@ static INT CDECL nulldrv_GetTextFace( PHYSDEV dev, INT size, LPWSTR name )
+ 
+     if (GetObjectW( dc->hFont, sizeof(font), &font ))
+     {
+-        ret = strlenW( font.lfFaceName ) + 1;
++        ret = wcslen( font.lfFaceName ) + 1;
+         if (name)
+         {
+             lstrcpynW( name, font.lfFaceName, size );
+@@ -943,7 +939,7 @@ BOOL DRIVER_GetDriverName( LPCWSTR device, LPWSTR driver, DWORD size )
+     WCHAR *p;
+ 
+     /* display is a special case */
+-    if (!strcmpiW( device, displayW ) ||
++    if (!wcsicmp( device, displayW ) ||
+         is_display_device( device ))
+     {
+         lstrcpynW( driver, displayW, size );
+@@ -955,7 +951,7 @@ BOOL DRIVER_GetDriverName( LPCWSTR device, LPWSTR driver, DWORD size )
+         WARN("Unable to find %s in [devices] section of win.ini\n", debugstr_w(device));
+         return FALSE;
+     }
+-    p = strchrW(driver, ',');
++    p = wcschr(driver, ',');
+     if(!p)
+     {
+         WARN("%s entry in [devices] section of win.ini is malformed.\n", debugstr_w(device));
+@@ -1396,10 +1392,10 @@ NTSTATUS WINAPI D3DKMTOpenAdapterFromGdiDisplayName( D3DKMT_OPENADAPTERFROMGDIDI
+         return STATUS_UNSUCCESSFUL;
+ 
+     TRACE("DeviceName: %s\n", wine_dbgstr_w( desc->DeviceName ));
+-    if (strncmpiW( desc->DeviceName, displayW, ARRAY_SIZE(displayW) ))
++    if (wcsncmp( desc->DeviceName, displayW, ARRAY_SIZE(displayW) ))
+         return STATUS_UNSUCCESSFUL;
+ 
+-    index = strtolW( desc->DeviceName + ARRAY_SIZE(displayW), &end, 10 ) - 1;
++    index = wcstol( desc->DeviceName + ARRAY_SIZE(displayW), &end, 10 ) - 1;
+     if (*end)
+         return STATUS_UNSUCCESSFUL;
+ 
+@@ -1411,7 +1407,7 @@ NTSTATUS WINAPI D3DKMTOpenAdapterFromGdiDisplayName( D3DKMT_OPENADAPTERFROMGDIDI
+     mutex = get_display_device_init_mutex();
+ 
+     size = sizeof( bufferW );
+-    sprintfW( key_nameW, video_value_fmtW, index );
++    swprintf( key_nameW, MAX_PATH, video_value_fmtW, index );
+     if (RegGetValueW( HKEY_LOCAL_MACHINE, video_keyW, key_nameW, RRF_RT_REG_SZ, NULL, bufferW, &size ))
+         goto done;
+ 
+diff --git a/dlls/gdi32/enhmetafile.c b/dlls/gdi32/enhmetafile.c
+index fc3389ff23f..e4107682fb1 100644
+--- a/dlls/gdi32/enhmetafile.c
++++ b/dlls/gdi32/enhmetafile.c
+@@ -31,9 +31,6 @@
+  *
+  */
+ 
+-#include "config.h"
+-#include "wine/port.h"
+-
+ #include <stdarg.h>
+ #include <stdlib.h>
+ #include <string.h>
+diff --git a/dlls/gdi32/enhmfdrv/graphics.c b/dlls/gdi32/enhmfdrv/graphics.c
+index ed4254096a4..148030cea3b 100644
+--- a/dlls/gdi32/enhmfdrv/graphics.c
++++ b/dlls/gdi32/enhmfdrv/graphics.c
+@@ -18,9 +18,6 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
+-#include "config.h"
+-#include "wine/port.h"
+-
+ #include <stdarg.h>
+ #include <stdlib.h>
+ #include <string.h>
+diff --git a/dlls/gdi32/font.c b/dlls/gdi32/font.c
+index 8788426a2c2..3777267e90c 100644
+--- a/dlls/gdi32/font.c
++++ b/dlls/gdi32/font.c
+@@ -20,9 +20,6 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
+-#include "config.h"
+-#include "wine/port.h"
+-
+ #include <limits.h>
+ #include <stdarg.h>
+ #include <stdlib.h>
+@@ -37,7 +34,6 @@
+ #include "gdi_private.h"
+ #include "wine/exception.h"
+ #include "wine/heap.h"
+-#include "wine/unicode.h"
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(font);
+@@ -272,7 +268,7 @@ static DWORD get_key_value( HKEY key, const WCHAR *name, DWORD *value )
+     if (!err)
+     {
+         if (type == REG_DWORD) memcpy( value, buf, sizeof(*value) );
+-        else *value = atoiW( buf );
++        else *value = _wtoi( buf );
+     }
+     return err;
+ }
+@@ -656,17 +652,17 @@ static DWORD get_associated_charset_info(void)
+ 
+         data_len = sizeof(dataW);
+         if (!RegQueryValueExW(hkey, ansiW, NULL, &type, (LPBYTE)dataW, &data_len) &&
+-            type == REG_SZ && !strcmpiW(dataW, yesW))
++            type == REG_SZ && !wcsicmp(dataW, yesW))
+             associated_charset |= ASSOC_CHARSET_ANSI;
+ 
+         data_len = sizeof(dataW);
+         if (!RegQueryValueExW(hkey, oemW, NULL, &type, (LPBYTE)dataW, &data_len) &&
+-            type == REG_SZ && !strcmpiW(dataW, yesW))
++            type == REG_SZ && !wcsicmp(dataW, yesW))
+             associated_charset |= ASSOC_CHARSET_OEM;
+ 
+         data_len = sizeof(dataW);
+         if (!RegQueryValueExW(hkey, symbolW, NULL, &type, (LPBYTE)dataW, &data_len) &&
+-            type == REG_SZ && !strcmpiW(dataW, yesW))
++            type == REG_SZ && !wcsicmp(dataW, yesW))
+             associated_charset |= ASSOC_CHARSET_SYMBOL;
+ 
+         RegCloseKey(hkey);
+diff --git a/dlls/gdi32/gdiobj.c b/dlls/gdi32/gdiobj.c
+index 083a5045692..e204079baf7 100644
+--- a/dlls/gdi32/gdiobj.c
++++ b/dlls/gdi32/gdiobj.c
+@@ -18,8 +18,6 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
+-#include "config.h"
+-
+ #include <assert.h>
+ #include <stdlib.h>
+ #include <stdarg.h>
+diff --git a/dlls/gdi32/icm.c b/dlls/gdi32/icm.c
+index 9d0e2f61aaa..d0a42a55531 100644
+--- a/dlls/gdi32/icm.c
++++ b/dlls/gdi32/icm.c
+@@ -19,8 +19,6 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
+-#include "config.h"
+-
+ #include <stdarg.h>
+ #include <string.h>
+ 
+@@ -33,7 +31,6 @@
+ #include "gdi_private.h"
+ 
+ #include "wine/debug.h"
+-#include "wine/unicode.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(icm);
+ 
+diff --git a/dlls/gdi32/metafile.c b/dlls/gdi32/metafile.c
+index 28ad53cf57b..1c831ef83ef 100644
+--- a/dlls/gdi32/metafile.c
++++ b/dlls/gdi32/metafile.c
+@@ -45,8 +45,6 @@
+  * HDMD - 14/4/1999
+  */
+ 
+-#include "config.h"
+-
+ #include <stdarg.h>
+ #include <string.h>
+ #include <fcntl.h>
+diff --git a/dlls/gdi32/opengl.c b/dlls/gdi32/opengl.c
+index 578737994ab..57cdf8dd26b 100644
+--- a/dlls/gdi32/opengl.c
++++ b/dlls/gdi32/opengl.c
+@@ -20,9 +20,6 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
+-#include "config.h"
+-#include "wine/port.h"
+-
+ #include <stdarg.h>
+ #include <string.h>
+ #include <stdlib.h>
+diff --git a/dlls/gdi32/painting.c b/dlls/gdi32/painting.c
+index 81937b8bbb4..96f4a1ede64 100644
+--- a/dlls/gdi32/painting.c
++++ b/dlls/gdi32/painting.c
+@@ -20,9 +20,6 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
+-#include "config.h"
+-#include "wine/port.h"
+-
+ #include <stdarg.h>
+ #include <string.h>
+ #include <stdlib.h>
+diff --git a/dlls/gdi32/path.c b/dlls/gdi32/path.c
+index 8ecf9bf8e69..ea412610b7f 100644
+--- a/dlls/gdi32/path.c
++++ b/dlls/gdi32/path.c
+@@ -21,9 +21,6 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
+-#include "config.h"
+-#include "wine/port.h"
+-
+ #include <assert.h>
+ #include <math.h>
+ #include <stdarg.h>
+diff --git a/dlls/gdi32/pen.c b/dlls/gdi32/pen.c
+index fa789e4cf91..fbac882a9c7 100644
+--- a/dlls/gdi32/pen.c
++++ b/dlls/gdi32/pen.c
+@@ -18,8 +18,6 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
+-#include "config.h"
+-
+ #include <stdarg.h>
+ #include <stdlib.h>
+ #include <string.h>
+diff --git a/dlls/gdi32/vulkan.c b/dlls/gdi32/vulkan.c
+index 16548a51a55..25ac7b65d25 100644
+--- a/dlls/gdi32/vulkan.c
++++ b/dlls/gdi32/vulkan.c
+@@ -18,9 +18,6 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
+-#include "config.h"
+-#include "wine/port.h"
+-
+ #include "gdi_private.h"
+ 
+ /***********************************************************************
+
+-- 
+2.27.0
+

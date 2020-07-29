@@ -1,0 +1,85 @@
+From: Puetz Kevin A <PuetzKevinA@JohnDeere.com>
+Subject: [PATCH 5/5] include: Fix conflicting definitions of NULL, wchar_t, wint_t, wctype_t.
+Message-Id: <DM6PR05MB68580B68A906AD01FBC121B4B57C0@DM6PR05MB6858.namprd05.prod.outlook.com>
+Date: Fri, 17 Jul 2020 01:12:14 +0000
+
+When <basetyps.h> defines wchar_t, it must obey -f(no-)short-wchar
+by referring to __WCHAR_TYPE__ which may not be `unsigned short`.
+Similarly, windef.h defining NULL may need to use GCC's __null.
+Otherwise one-definition-rule problems arise depending on whether
+wine or libc headers are included first.
+
+Implementing these by deferring to the C89-specified libc headers,
+(or msvcrt's versions with -mno-cygwin) ensures matching definitions.
+
+Signed-off-by: Kevin Puetz <PuetzKevinA@JohnDeere.com>
+---
+ include/basetyps.h |  8 +++++---
+ include/tchar.h    |  9 +--------
+ include/windef.h   | 11 +++++++----
+ 3 files changed, 13 insertions(+), 15 deletions(-)
+
+diff --git a/include/basetyps.h b/include/basetyps.h
+index b0dd5d77f4..e6243d5a59 100644
+--- a/include/basetyps.h
++++ b/include/basetyps.h
+@@ -91,9 +91,11 @@ typedef unsigned long error_status_t;
+ #endif
+ 
+ #ifndef _WCHAR_T_DEFINED
+-#ifndef __cplusplus
+-typedef unsigned short wchar_t;
+-#endif
++# ifndef __cplusplus
++#  define __need_wchar_t // tells GCC's stddef.h to only define wchar_t
++#  include <stddef.h>
++#  undef __need_wchar_t
++# endif
+ #define _WCHAR_T_DEFINED
+ #endif
+ 
+diff --git a/include/tchar.h b/include/tchar.h
+index 6c9035c219..0049ea7e7a 100644
+--- a/include/tchar.h
++++ b/include/tchar.h
+@@ -232,14 +232,7 @@ extern "C" {
+ #endif /* tchar mappings */
+ 
+ #ifdef _UNICODE
+-#if !defined(_WINT_T_DEFINED) && !defined(__WINT_TYPE__)
+-typedef unsigned short wint_t;
+-#endif
+-
+-#ifndef _WCTYPE_T_DEFINED
+-typedef unsigned short wctype_t;
+-#define _WCTYPE_T_DEFINED
+-#endif
++#include <wchar.h>
+ 
+ #ifndef __TCHAR_DEFINED
+ #if defined(WINE_UNICODE_NATIVE)
+diff --git a/include/windef.h b/include/windef.h
+index 521c3ab451..e26ffe6ff4 100644
+--- a/include/windef.h
++++ b/include/windef.h
+@@ -206,11 +206,14 @@ extern "C" {
+ 
+ /* Misc. constants. */
+ 
+-#undef NULL
+-#ifdef __cplusplus
+-#define NULL  0
+-#else
++#ifndef NULL
++#ifdef RC_INVOKED
+ #define NULL  ((void*)0)
++#else
++#define __need_NULL // tells GCC's stddef.h to only define NULL
++#include <stddef.h>
++#undef __need_NULL
++#endif
+ #endif
+ 
+ #ifdef FALSE
+
+

@@ -1,0 +1,94 @@
+From: "Jiajin Cui" <cuijiajin@uniontech.com>
+#Subject: [PATCH v6 1/4] user32/tests: Add test to check message for child window call SetWindowPos with TOPMOST/TOP/NOTOPMOST.
+Message-Id: <2020070211352492287010@uniontech.com>
+Date: Thu, 2 Jul 2020 11:35:25 +0800
+
+From 3c0f14f417e9678275466ed34cedde2364895476 Mon Sep 17 00:00:00 2001
+From: Jiajin Cui <cuijiajin@uniontech.com>
+Date: Wed, 1 Jul 2020 17:50:13 +0800
+Subject: [PATCH v6 1/4] user32/tests: Add test to check message for child
+ window call SetWindowPos with TOPMOST/TOP/NOTOPMOST.
+
+The child window should't send any messages when it calls the SetWindowPos with HWND_TOPMOST or HWND_NOTOPMOST.
+
+Signed-off-by: Jiajin Cui <cuijiajin@uniontech.com>
+---
+ dlls/user32/tests/msg.c | 52 ++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 51 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
+index 51091e3408..3a4382eb26 100644
+--- a/dlls/user32/tests/msg.c
++++ b/dlls/user32/tests/msg.c
+@@ -5724,9 +5724,34 @@ static const struct message WmFrameChanged_move[] = {
+     { 0 }
+ };
+ 
++static const struct message WmCreateChildtopmostSeq[] = {
++    { HCBT_CREATEWND, hook },
++    { WM_NCCREATE, sent },
++    { WM_NCCALCSIZE, sent|wparam, 0 },
++    { WM_CREATE, sent },
++    { 0x0093, sent|defwinproc|optional },
++    { 0x0094, sent|defwinproc|optional },
++    { EVENT_OBJECT_REORDER, winevent_hook|wparam|lparam, 0, 0 },
++    { WM_SIZE, sent },
++    { EVENT_OBJECT_CREATE, winevent_hook|wparam|lparam, 0, 0 },
++    { WM_MOVE, sent },
++    { WM_PARENTNOTIFY, sent },
++    { 0 }
++};
++
++static const struct message WmChildTOPMOSTZOrder[] = {
++    { 0 }
++};
++
++static const struct message WmChildZOrder[] = {
++    { WM_WINDOWPOSCHANGING, sent|wparam|lparam, SWP_NOSIZE|SWP_NOMOVE, 0 },
++    { WM_CHILDACTIVATE, sent|wparam|lparam, 0, 0 },
++    { 0 }
++};
++
+ static void test_setwindowpos(void)
+ {
+-    HWND hwnd;
++    HWND hwnd, hwnd_A;
+     RECT rc;
+     LRESULT res;
+     const INT X = 50;
+@@ -5771,6 +5796,31 @@ static void test_setwindowpos(void)
+     expect(sysX, rc.right);
+     expect(winY, rc.bottom);
+ 
++    hwnd_A = CreateWindowExA(WS_EX_TOPMOST, "TestWindowClass", NULL,
++                             WS_CHILD,
++                             10, 10, 20, 20,
++                             hwnd, 0, GetModuleHandleA(NULL), NULL);
++    ok_sequence(WmCreateChildtopmostSeq, "CreateChildWindow", FALSE);
++    ok(hwnd_A != NULL, "Failed to create child witch WS_EX_TOPMOST\n");
++    todo_wine ok(GetWindowLongA(hwnd_A, GWL_EXSTYLE) & WS_EX_TOPMOST, "%p: expected topmost\n", hwnd_A);
++
++    /* repeat */
++    flush_events();
++    flush_sequence();
++
++    res = SetWindowPos(hwnd_A, HWND_TOPMOST, 5, 5, 10, 10, SWP_NOACTIVATE | SWP_SHOWWINDOW );
++    ok_sequence(WmChildTOPMOSTZOrder, "Z-Order", TRUE);
++    ok(res == TRUE, "SetWindowPos expected TRUE, got %ld\n", res);
++
++    res = SetWindowPos(hwnd_A, HWND_TOP, 0,0,0,0, SWP_NOSIZE|SWP_NOMOVE);
++    ok_sequence(WmChildZOrder, "Z-Order", FALSE);
++    ok(res == TRUE, "SetWindowPos expected TRUE, got %ld\n", res);
++
++    res = SetWindowPos(hwnd_A, HWND_NOTOPMOST, 0,0,0,0, SWP_NOSIZE|SWP_NOMOVE);
++    ok_sequence(WmChildTOPMOSTZOrder, "Z-Order", TRUE);
++    ok(res == TRUE, "SetWindowPos expected TRUE, got %ld\n", res);
++
++    DestroyWindow(hwnd_A);
+     DestroyWindow(hwnd);
+ }
+ 
+
+-- 
+2.20.1
+

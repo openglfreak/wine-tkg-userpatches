@@ -1,0 +1,71 @@
+From: Mark Harmstone <mark@harmstone.com>
+Subject: [PATCH] winecfg: Pass correct font family through to font chooser.
+Message-Id: <20200627144914.3802-1-mark@harmstone.com>
+Date: Sat, 27 Jun 2020 15:49:14 +0100
+
+GetSystemMetrics returns the "full name" of the font, which
+is not necessarily what appears in the font picker, causing
+it to default to the first entry in the list.
+
+See for example the family "Renner*", which calls its Regular
+version "Renner* Book".
+
+Signed-off-by: Mark Harmstone <mark@harmstone.com>
+---
+ programs/winecfg/theme.c | 27 +++++++++++++++++++++++++--
+ 1 file changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/programs/winecfg/theme.c b/programs/winecfg/theme.c
+index b38b2ff26d..1f004c7e0e 100644
+--- a/programs/winecfg/theme.c
++++ b/programs/winecfg/theme.c
+@@ -1151,20 +1151,43 @@ static void on_draw_item(HWND hDlg, WPARAM wParam, LPARAM lParam)
+     }
+ }
+ 
++static INT CALLBACK fontname_proc(const LOGFONTW *lf, const TEXTMETRICW *ntm, DWORD type, LPARAM lparam)
++{
++    LOGFONTW *orig_lf = (LOGFONTW *)lparam;
++
++    memcpy(orig_lf->lfFaceName, lf->lfFaceName, sizeof(lf->lfFaceName));
++
++    return 0;
++}
++
+ static void on_select_font(HWND hDlg)
+ {
+     CHOOSEFONTW cf;
++    LOGFONTW lf;
++    HDC hdc;
++
+     int index = SendDlgItemMessageW(hDlg, IDC_SYSPARAM_COMBO, CB_GETCURSEL, 0, 0);
+     index = SendDlgItemMessageW(hDlg, IDC_SYSPARAM_COMBO, CB_GETITEMDATA, index, 0);
+ 
++    memcpy(&lf, &metrics[index].lf, sizeof(LOGFONTW));
++
++    /* GetSystemMetrics returns the "full name" of the font - run it through
++     * EnumFontFamiliesExW in order to get the family name, which is what
++     * appears in the font chooser list. */
++    hdc = GetDC(hDlg);
++    EnumFontFamiliesExW(hdc, &lf, fontname_proc, (LPARAM)&lf, 0);
++    ReleaseDC(hDlg, hdc);
++
+     ZeroMemory(&cf, sizeof(cf));
+     cf.lStructSize = sizeof(CHOOSEFONTW);
+     cf.hwndOwner = hDlg;
+-    cf.lpLogFont = &(metrics[index].lf);
++    cf.lpLogFont = &lf;
+     cf.Flags = CF_SCREENFONTS | CF_INITTOLOGFONTSTRUCT | CF_NOSCRIPTSEL | CF_NOVERTFONTS;
+ 
+-    if (ChooseFontW(&cf))
++    if (ChooseFontW(&cf)) {
++        memcpy(&(metrics[index].lf), &lf, sizeof(LOGFONTW));
+         SendMessageW(GetParent(hDlg), PSM_CHANGED, 0, 0);
++    }
+ }
+ 
+ static void init_mime_types(HWND hDlg)
+
+-- 
+2.26.2
+

@@ -1,0 +1,40 @@
+From: Serge Gautherie <winehq-git_serge_180711@gautherie.fr>
+Subject: [PATCH 1/4] msi: Properly check GetTokenInformation() return values.
+Message-Id: <20200719081827.10144-1-winehq-git_serge_180711@gautherie.fr>
+Date: Sun, 19 Jul 2020 10:18:27 +0200
+
+Signed-off-by: Serge Gautherie <winehq-git_serge_180711@gautherie.fr>
+---
+ dlls/msi/registry.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/msi/registry.c b/dlls/msi/registry.c
+index 4d439d0..f4a4286 100644
+--- a/dlls/msi/registry.c
++++ b/dlls/msi/registry.c
+@@ -426,13 +426,19 @@ static WCHAR *get_user_sid(void)
+     }
+     if (!GetTokenInformation( token, TokenUser, user, size, &size ))
+     {
++        DWORD le = GetLastError();
+         msi_free( user );
+-        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || !(user = msi_alloc( size )))
++        if (le != ERROR_INSUFFICIENT_BUFFER || !(user = msi_alloc( size )))
+         {
+             CloseHandle( token );
+             return NULL;
+         }
+-        GetTokenInformation( token, TokenUser, user, size, &size );
++        if (!GetTokenInformation( token, TokenUser, user, size, &size ))
++        {
++            msi_free( user );
++            CloseHandle( token );
++            return NULL;
++        }
+     }
+     CloseHandle( token );
+     if (!ConvertSidToStringSidW( user->User.Sid, &ret ))
+
+-- 
+2.10.0.windows.1
+

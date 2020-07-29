@@ -1,0 +1,82 @@
+From: Alex Henrie <alexhenrie24@gmail.com>
+Subject: [PATCH] iphlpapi: Reimplement toIPAddressString on top of RtlIpv4AddressToStringA
+Message-Id: <20200707042116.428526-1-alexhenrie24@gmail.com>
+Date: Mon,  6 Jul 2020 22:21:16 -0600
+
+Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
+---
+There's no need to reinvent the wheel here; RtlIpv4AddressToStringA
+avoids the need for strcpy and is guaranteed to do nothing if the
+pointer to the output string is null.
+---
+ dlls/iphlpapi/ifenum.c | 20 --------------------
+ dlls/iphlpapi/ifenum.h |  9 ++++++---
+ 2 files changed, 6 insertions(+), 23 deletions(-)
+
+diff --git a/dlls/iphlpapi/ifenum.c b/dlls/iphlpapi/ifenum.c
+index c3abdf0e53..288e04db7b 100644
+--- a/dlls/iphlpapi/ifenum.c
++++ b/dlls/iphlpapi/ifenum.c
+@@ -35,14 +35,6 @@
+ #include <sys/socket.h>
+ #endif
+ 
+-#ifdef HAVE_NETINET_IN_H
+-#include <netinet/in.h>
+-#endif
+-
+-#ifdef HAVE_ARPA_INET_H
+-#include <arpa/inet.h>
+-#endif
+-
+ #ifdef HAVE_NET_IF_H
+ #include <net/if.h>
+ #endif
+@@ -1106,15 +1098,3 @@ ULONG v6addressesFromIndex(IF_INDEX index, SOCKET_ADDRESS **addrs, ULONG *num_ad
+ }
+ 
+ #endif
+-
+-char *toIPAddressString(unsigned int addr, char string[16])
+-{
+-  if (string) {
+-    struct in_addr iAddr;
+-
+-    iAddr.s_addr = addr;
+-    /* extra-anal, just to make auditors happy */
+-    lstrcpynA(string, inet_ntoa(iAddr), 16);
+-  }
+-  return string;
+-}
+diff --git a/dlls/iphlpapi/ifenum.h b/dlls/iphlpapi/ifenum.h
+index c6bf957575..d75d4c0796 100644
+--- a/dlls/iphlpapi/ifenum.h
++++ b/dlls/iphlpapi/ifenum.h
+@@ -40,6 +40,7 @@
+ #define USE_WS_PREFIX
+ #include "iprtrmib.h"
+ #include "winsock2.h"
++#include "ip2string.h"
+ 
+ #define MAX_INTERFACE_PHYSADDR    8
+ #define MAX_INTERFACE_DESCRIPTION 256
+@@ -109,10 +110,12 @@ DWORD getIPAddrTable(PMIB_IPADDRTABLE *ppIpAddrTable, HANDLE heap, DWORD flags)
+ ULONG v6addressesFromIndex(IF_INDEX index, SOCKET_ADDRESS **addrs, ULONG *num_addrs,
+  SOCKET_ADDRESS **masks) DECLSPEC_HIDDEN;
+ 
+-/* Converts the network-order bytes in addr to a printable string.  Returns
+- * string.
++/* Converts the network-order bytes in addr to a printable string.
+  */
+-char *toIPAddressString(unsigned int addr, char string[16]) DECLSPEC_HIDDEN;
++static inline void toIPAddressString(ULONG addr, char string[16])
++{
++  RtlIpv4AddressToStringA((IN_ADDR *)&addr, string);
++}
+ 
+ DWORD getInterfaceMtuByName(const char *name, PDWORD mtu) DECLSPEC_HIDDEN;
+ DWORD getInterfaceStatusByName(const char *name, INTERNAL_IF_OPER_STATUS *status) DECLSPEC_HIDDEN;
+
+-- 
+2.27.0
+

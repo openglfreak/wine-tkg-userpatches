@@ -1,0 +1,61 @@
+From: Robin Ebert <ebertrobin2002@gmail.com>
+Subject: [PATCH v2] server: Derive protocol in create_socket if not given
+Message-Id: <20200718221733.32241-1-ebertrobin2002@gmail.com>
+Date: Sun, 19 Jul 2020 00:17:33 +0200
+
+The protocol entry of a sock structure should not be 0 if either SOCK_STREAM or SOCK_DGRAM are used
+because this leads to an invalid behaviour of
+ws2_32's WS_getsockopt(..., SOL_SOCKET, SO_PROTOCOL_INFOW, ..., ...)
+
+Signed-off-by: Robin Ebert <ebertrobin2002@gmail.com>
+---
+ server/sock.c | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/server/sock.c b/server/sock.c
+index 1a53ce4..c37624b 100644
+--- a/server/sock.c
++++ b/server/sock.c
+@@ -38,6 +38,9 @@
+ #ifdef HAVE_SYS_SOCKET_H
+ # include <sys/socket.h>
+ #endif
++#ifdef HAVE_NETINET_IN_H
++# include <netinet/in.h>
++#endif
+ #ifdef HAVE_SYS_IOCTL_H
+ #include <sys/ioctl.h>
+ #endif
+@@ -659,6 +662,7 @@ static struct object *create_socket( int family, int type, int protocol, unsigne
+ {
+     struct sock *sock;
+     int sockfd;
++    int proto, protolen;
+ 
+     if ((sockfd = init_sockfd( family, type, protocol )) == -1)
+         return NULL;
+@@ -676,7 +680,19 @@ static struct object *create_socket( int family, int type, int protocol, unsigne
+     init_sock( sock );
+     sock->state  = (type != SOCK_STREAM) ? (FD_READ|FD_WRITE) : 0;
+     sock->flags  = flags;
+-    sock->proto  = protocol;
++    if(!protocol)
++    {
++        /* if protocol is 0 get it from the kernel */
++        protolen = sizeof(int);
++        if(getsockopt(sockfd, SOL_SOCKET, SO_PROTOCOL, &proto, &protolen))
++        {
++            release_object( sock );
++            return NULL;
++        }
++        sock->proto = proto;
++    }
++    else
++        sock->proto  = protocol;
+     sock->type   = type;
+     sock->family = family;
+ 
+
+-- 
+2.20.1
+

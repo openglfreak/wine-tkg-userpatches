@@ -116,66 +116,11 @@ index 1be4dcb129c..5b215728ad4 100644
  {
      char mem[100];
 @@ -4167,4 +4194,5 @@ START_TEST(string)
-     test_strstr();
      test_iswdigit();
      test_wcscmp();
+     test___STRINGTOLD();
 +    test_iswctype();
  }
-diff --git a/dlls/msvcrt/wcs.c b/dlls/msvcrt/wcs.c
-index 1ae292423c0..e54e2bb8d1f 100644
---- a/dlls/msvcrt/wcs.c
-+++ b/dlls/msvcrt/wcs.c
-@@ -1845,6 +1845,27 @@ MSVCRT_size_t CDECL MSVCRT_wcrtomb( char *dst, MSVCRT_wchar_t ch, MSVCRT_mbstate
-     return MSVCRT_wctomb(dst, ch);
- }
- 
-+/*********************************************************************
-+ *		_iswctype_l (MSVCRT.@)
-+ */
-+int CDECL MSVCRT__iswctype_l(MSVCRT_wchar_t wc, MSVCRT_wctype_t type, MSVCRT__locale_t locale)
-+{
-+    int ret = (get_char_typeW(wc) & 0xffff) & type;
-+
-+#if _MSVCR_VER >= 140
-+    if (wc == '\t' || wc == 0x00a0) ret &= ~MSVCRT__BLANK;
-+#endif
-+    return ret;
-+}
-+
-+/*********************************************************************
-+ *		iswctype (MSVCRT.@)
-+ */
-+int CDECL MSVCRT_iswctype(MSVCRT_wchar_t wc, MSVCRT_wctype_t type)
-+{
-+    return MSVCRT__iswctype_l( wc, type, NULL );
-+}
-+
- /*********************************************************************
-  *		iswalnum (MSVCRT.@)
-  */
-@@ -1972,22 +1993,6 @@ int CDECL MSVCRT__iswxdigit_l( MSVCRT_wchar_t wc, MSVCRT__locale_t locale )
-     return isxdigitW( wc );
- }
- 
--/*********************************************************************
-- *		_iswctype_l (MSVCRT.@)
-- */
--INT CDECL MSVCRT__iswctype_l( MSVCRT_wchar_t wc, MSVCRT_wctype_t type, MSVCRT__locale_t locale )
--{
--    return (get_char_typeW(wc) & 0xffff) & type;
--}
--
--/*********************************************************************
-- *		iswctype    (MSVCRT.@)
-- */
--INT CDECL MSVCRT_iswctype( MSVCRT_wchar_t wc, MSVCRT_wctype_t type )
--{
--    return (get_char_typeW(wc) & 0xfff) & type;
--}
--
- /*********************************************************************
-  *		_iswblank_l (MSVCRT.@)
-  */
 diff --git a/dlls/ucrtbase/tests/misc.c b/dlls/ucrtbase/tests/misc.c
 index f637997a0d1..c9b04b7dd47 100644
 --- a/dlls/ucrtbase/tests/misc.c
@@ -188,26 +133,7 @@ index f637997a0d1..c9b04b7dd47 100644
  #include "wine/test.h"
  
  #define DEFINE_EXPECT(func) \
-@@ -518,21 +519,46 @@ static void test_isblank(void)
-     for(c = 0; c <= 0xffff; c++) {
-         if(c == '\t' || c == ' ' || c == 0x3000 || c == 0xfeff) {
-             if(c == '\t')
--                todo_wine ok(!_iswctype_l(c, _BLANK, NULL), "tab shouldn't be blank\n");
-+                ok(!_iswctype_l(c, _BLANK, NULL), "tab shouldn't be blank\n");
-             else
-                 ok(_iswctype_l(c, _BLANK, NULL), "%d should be blank\n", c);
-             ok(iswblank(c), "%d should be blank\n", c);
-             ok(_iswblank_l(c, NULL), "%d should be blank\n", c);
-         } else {
--            todo_wine_if(c == 0xa0) {
--                ok(!_iswctype_l(c, _BLANK, NULL), "%d shouldn't be blank\n", c);
--                ok(!iswblank(c), "%d shouldn't be blank\n", c);
--                ok(!_iswblank_l(c, NULL), "%d shouldn't be blank\n", c);
--            }
-+            ok(!_iswctype_l(c, _BLANK, NULL), "%d shouldn't be blank\n", c);
-+            ok(!iswblank(c), "%d shouldn't be blank\n", c);
-+            ok(!_iswblank_l(c, NULL), "%d shouldn't be blank\n", c);
-         }
+@@ -518,6 +519,33 @@ static void test_isblank(void)
      }
  }
  

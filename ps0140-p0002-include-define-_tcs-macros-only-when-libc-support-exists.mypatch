@@ -1,0 +1,48 @@
+From: Puetz Kevin A <PuetzKevinA@JohnDeere.com>
+Subject: [PATCH 2/5] include: define _tcs* macros only when libc support exists.
+Message-Id: <DM6PR05MB6858D713BE9F8620CA650F39B57C0@DM6PR05MB6858.namprd05.prod.outlook.com>
+Date: Fri, 17 Jul 2020 01:10:04 +0000
+
+When winegcc is using an underlying POSIX libc (rather than -mno-cygwin)
+it will only have `char` and `wchar_t` functions. If _TCHAR is neither of
+these there may be no suitable function to alias _tcs* to.
+
+Signed-off-by: Kevin Puetz <PuetzKevinA@JohnDeere.com>
+---
+ include/tchar.h | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/include/tchar.h b/include/tchar.h
+index 56f876bf84..33db74c7ee 100644
+--- a/include/tchar.h
++++ b/include/tchar.h
+@@ -37,9 +37,15 @@ extern "C" {
+ #define _strninc(str,n)         (((char*)(str))+(n))
+ #define _strspnp(s1,s2)         (*((s1)+=strspn((s1),(s2))) ? (s1) : NULL)
+ 
++#if defined(__MSVCRT__) || defined(_MSC_VER) || (defined(WINE_UNICODE_NATIVE) && defined(_UNICODE)) || !(defined(_UNICODE) || defined(_MBCS))
+ 
+ /*****************************************************************************
+  * tchar mappings
++ *
++ * These can only be defined when libc in use will have functions accepting _TCHAR, i.e.
++ * -mno-cygwin / __MSVCRT__ or __MSC_VER
++ * -fshort-wchar / WINE_UNICODE_NATIVE and _UNICODE (_TCHAR == WCHAR == wchar_t, so the libc wcs* functions are UTF-16)
++ * _TCHAR == `char` without _MBCS
+  */
+ #ifndef _UNICODE
+ #  ifndef _MBCS
+@@ -223,6 +229,8 @@ extern "C" {
+ #define _vtprintf     WINE_tchar_routine(vprintf,         vprintf,     vwprintf)
+ #define _TEOF         WINE_tchar_routine(EOF,             EOF,         WEOF)
+ 
++#endif /* tchar mappings */
++
+ #define __T(x) __TEXT(x)
+ #define _T(x) __T(x)
+ #define _TEXT(x) __T(x)
+
+-- 
+2.27.0.windows.1
+
+

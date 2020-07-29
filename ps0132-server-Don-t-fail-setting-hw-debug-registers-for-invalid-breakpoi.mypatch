@@ -1,0 +1,130 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH] server: Don't fail setting hw debug registers for invalid breakpoint addresses on x64.
+Message-Id: <20200703133606.1022143-1-pgofman@codeweavers.com>
+Date: Fri,  3 Jul 2020 16:36:06 +0300
+
+Fixes hardware breakpoints for some debuggers.
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/ntdll/tests/exception.c | 50 +++++++++++++++++++++++++++++++-----
+ server/ptrace.c              | 21 ++++++++++++---
+ 2 files changed, 61 insertions(+), 10 deletions(-)
+
+diff --git a/dlls/ntdll/tests/exception.c b/dlls/ntdll/tests/exception.c
+index 95d25375f77..f98c5bdae07 100644
+--- a/dlls/ntdll/tests/exception.c
++++ b/dlls/ntdll/tests/exception.c
+@@ -161,6 +161,8 @@ static int       (CDECL *p_setjmp)(_JUMP_BUFFER*);
+ static int      my_argc;
+ static char**   my_argv;
+ 
++static const BOOL is_win64 = sizeof(void *) == 8;
++
+ #ifdef __i386__
+ 
+ #ifndef __WINE_WINTRNL_H
+@@ -2807,9 +2809,10 @@ static void test_debug_registers(void)
+         { 0x42424240, 0, 0x126bb070, 0x0badbad0, 0, 0xffff0115 },
+         { 0x42424242, 0, 0x100f0fe7, 0x0abebabe, 0, 0x115 },
+     };
++    BOOL is_native_win32 = !is_win64 && !is_wow64;
+     NTSTATUS status;
+-    CONTEXT ctx;
+     HANDLE thread;
++    CONTEXT ctx;
+     int i;
+ 
+     for (i = 0; i < ARRAY_SIZE(tests); i++)
+@@ -2841,15 +2844,50 @@ static void test_debug_registers(void)
+ 
+     memset(&ctx, 0, sizeof(ctx));
+     ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+-    ctx.Dr0 = 0xffffffff;
+-    ctx.Dr1 = 0xffffffff;
+-    ctx.Dr2 = 0xffffffff;
+-    ctx.Dr3 = 0xffffffff;
++    ctx.Dr0 = 0x11111111;
++    ctx.Dr1 = 0x22222222;
++    ctx.Dr2 = 0x33333333;
++    ctx.Dr3 = 0x44444444;
+     ctx.Dr6 = 0xffffffff;
+-    ctx.Dr7 = 0x00000400;
++    ctx.Dr7 = 0x00000001;
+     status = pNtSetContextThread(GetCurrentThread(), &ctx);
+     ok(status == STATUS_SUCCESS, "NtSetContextThread failed with %x\n", status);
+ 
++    memset(&ctx, 0, sizeof(ctx));
++    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
++    ctx.Dr0 = (ULONG_PTR)~0;
++    ctx.Dr1 = 0xf2222222;
++    ctx.Dr2 = 0xf3333333;
++    ctx.Dr3 = 0xf4444444;
++    ctx.Dr6 = 0xffffffff;
++    ctx.Dr7 = 0x00000001;
++    status = pNtSetContextThread(GetCurrentThread(), &ctx);
++    ok(status == STATUS_SUCCESS, "NtSetContextThread failed with %x\n", status);
++
++    memset(&ctx, 0, sizeof(ctx));
++    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
++    status = pNtGetContextThread(GetCurrentThread(), &ctx);
++    ok(status == STATUS_SUCCESS, "NtGetContextThread failed with %x\n", status);
++
++    todo_wine_if(is_native_win32)
++    ok(!ctx.Dr0 || (is_wow64 && ctx.Dr0 == ~0u),
++            "expected 0, got %lx\n", (DWORD_PTR)ctx.Dr0);
++
++    todo_wine_if(is_native_win32)
++    ok((!is_native_win32 && ctx.Dr1 == 0xf2222222) || (is_native_win32 && !ctx.Dr1),
++            "expected 0xf2222222, got %lx\n", (DWORD_PTR)ctx.Dr1);
++
++    todo_wine_if(is_native_win32)
++    ok((!is_native_win32 && ctx.Dr2 == 0xf3333333) || (is_native_win32 && !ctx.Dr2),
++            "expected 0xf3333333, got %lx\n", (DWORD_PTR)ctx.Dr2);
++
++    todo_wine_if(is_native_win32)
++    ok((!is_native_win32 && ctx.Dr3 == 0xf4444444) || (is_native_win32 && !ctx.Dr3),
++            "expected 0xf4444444, got %lx\n", (DWORD_PTR)ctx.Dr3);
++
++    memset(&ctx, 0, sizeof(ctx));
++    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
++
+     thread = CreateThread(NULL, 0, register_check_thread, NULL, CREATE_SUSPENDED, NULL);
+     ok(thread != INVALID_HANDLE_VALUE, "CreateThread failed with %d\n", GetLastError());
+ 
+diff --git a/server/ptrace.c b/server/ptrace.c
+index 49347791d8c..985559e1f39 100644
+--- a/server/ptrace.c
++++ b/server/ptrace.c
+@@ -648,10 +648,23 @@ void set_thread_context( struct thread *thread, const context_t *context, unsign
+         break;
+     case CPU_x86_64:
+         if (ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(7), context->debug.x86_64_regs.dr7 & 0xffff0000 ) == -1) goto error;
+-        if (ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(0), context->debug.x86_64_regs.dr0 ) == -1) goto error;
+-        if (ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(1), context->debug.x86_64_regs.dr1 ) == -1) goto error;
+-        if (ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(2), context->debug.x86_64_regs.dr2 ) == -1) goto error;
+-        if (ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(3), context->debug.x86_64_regs.dr3 ) == -1) goto error;
++
++        if (ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(0), context->debug.x86_64_regs.dr0 ) == -1
++                && (errno != EINVAL || ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(0), 0 ) == -1))
++            goto error;
++
++        if (ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(1), context->debug.x86_64_regs.dr1 ) == -1
++                && (errno != EINVAL || ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(1), 0 ) == -1))
++            goto error;
++
++        if (ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(2), context->debug.x86_64_regs.dr2 ) == -1
++                && (errno != EINVAL || ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(2), 0 ) == -1))
++            goto error;
++
++        if (ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(3), context->debug.x86_64_regs.dr3 ) == -1
++                && (errno != EINVAL || ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(3), 0 ) == -1))
++            goto error;
++
+         if (ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(6), context->debug.x86_64_regs.dr6 ) == -1) goto error;
+         ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(7), context->debug.x86_64_regs.dr7 | 0x55 );
+         if (ptrace( PTRACE_POKEUSER, pid, DR_OFFSET(7), context->debug.x86_64_regs.dr7 ) == -1) goto error;
+
+-- 
+2.26.2
+

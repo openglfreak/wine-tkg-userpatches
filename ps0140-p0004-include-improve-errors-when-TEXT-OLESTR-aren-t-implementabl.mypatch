@@ -1,0 +1,72 @@
+From: Puetz Kevin A <PuetzKevinA@JohnDeere.com>
+Subject: [PATCH 4/5] include: improve errors when TEXT()/OLESTR() aren't implementable.
+Message-Id: <DM6PR05MB68585AA3CFB600D2B42F0300B57C0@DM6PR05MB6858.namprd05.prod.outlook.com>
+Date: Fri, 17 Jul 2020 01:11:52 +0000
+
+With WINE_UNICODE_NATIVE is set, literals can use L"".
+With WINE_UNICODE_CHAR16 is set, literals can use u"".
+
+Otherwise (TCHAR/_TCHAR/OLECHAR == WCHAR == unsigned short)
+there is no suitable string literal syntax.
+
+Rather than generating an expression of the wrong type (char16_t *),
+these macros now expand to invalid syntax, i.e. prefix"..." which
+will fail to compile. But prefix should appear in the error message,
+and a descriptive identifier that one can easily search for in the
+headers to see which definitions are available that would work.
+
+Signed-off-by: Kevin Puetz <PuetzKevinA@JohnDeere.com>
+---
+ include/tchar.h    | 2 ++
+ include/winnt.rh   | 5 ++++-
+ include/wtypes.idl | 4 +++-
+ 3 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/include/tchar.h b/include/tchar.h
+index 519a9f1002..6c9035c219 100644
+--- a/include/tchar.h
++++ b/include/tchar.h
+@@ -253,6 +253,8 @@ typedef char16_t      _TCHAR;
+ #define __T(x) u##x
+ #else
+ typedef unsigned short _TCHAR;
++/* no compiler support for TEXT() in _UNICODE mode, consider -fshort-wchar or -DWINE_UNICODE_CHAR16 */
++# define __T(string) _TEXT_no_compiler_utf16_literal##string
+ #endif
+ typedef _TCHAR        _TUCHAR;
+ typedef _TCHAR        _TSCHAR;
+diff --git a/include/winnt.rh b/include/winnt.rh
+index 786a38f326..bcc780b2ab 100644
+--- a/include/winnt.rh
++++ b/include/winnt.rh
+@@ -28,8 +28,11 @@
+ #  define __TEXT(string) string
+ # elif defined(WINE_UNICODE_NATIVE)
+ #  define __TEXT(string) L##string
+-# else
++# elif defined(WINE_UNICODE_CHAR16)
+ #  define __TEXT(string) u##string
++# else
++   /* no compiler support for TEXT() in UNICODE mode, consider -fshort-wchar or -DWINE_UNICODE_CHAR16 */
++#  define __TEXT(string) TEXT_no_compiler_utf16_literal##string
+ # endif
+ # define TEXT(string) __TEXT(string)
+ #endif
+diff --git a/include/wtypes.idl b/include/wtypes.idl
+index a6682212b5..9d9b73d62d 100644
+--- a/include/wtypes.idl
++++ b/include/wtypes.idl
+@@ -289,8 +289,10 @@ typedef [string] const OLECHAR *LPCOLESTR;
+ cpp_quote("#ifndef __WINESRC__")
+ cpp_quote("# ifdef WINE_UNICODE_NATIVE")
+ cpp_quote("#  define OLESTR(str) L##str")
+-cpp_quote("# else")
++cpp_quote("# elif defined(WINE_UNICODE_CHAR16)")
+ cpp_quote("#  define OLESTR(str) u##str")
++cpp_quote("# else")
++cpp_quote("#  define OLESTR(str) OLESTR_no_compiler_utf16_literal##str")
+ cpp_quote("# endif")
+ cpp_quote("#endif")
+ 
+
+

@@ -1,0 +1,105 @@
+From: Derek Lesho <dlesho@codeweavers.com>
+Subject: [PATCH v2 1/5] ntoskrnl.exe: Store current thread object at right offset from GS.
+Message-Id: <20200716151711.101295-1-dlesho@codeweavers.com>
+Date: Thu, 16 Jul 2020 10:17:07 -0500
+
+In kernel mode, GS base is not set to a TEB, but fortunately the offset
+for the current thread object, which EasyAntiCheat.sys relies on,
+doesn't conflict with anything in the TEB.
+
+Signed-off-by: Derek Lesho <dlesho@codeweavers.com>
+---
+v2: Add comment explaining position.
+---
+ dlls/ntoskrnl.exe/ntoskrnl.c | 37 +++++++++++++++++++++++++++++++-----
+ 1 file changed, 32 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.c b/dlls/ntoskrnl.exe/ntoskrnl.c
+index d407cffee69..7fb01464816 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.c
++++ b/dlls/ntoskrnl.exe/ntoskrnl.c
+@@ -870,7 +870,7 @@ NTSTATUS CDECL wine_ntoskrnl_main_loop( HANDLE stop_event )
+ 
+     for (;;)
+     {
+-        NtCurrentTeb()->Reserved5[1] = NULL;
++        NtCurrentTeb()->SystemReserved1[15] = NULL;
+         if (!context.in_buff && !(context.in_buff = HeapAlloc( GetProcessHeap(), 0, context.in_size )))
+         {
+             ERR( "failed to allocate buffer\n" );
+@@ -891,7 +891,7 @@ NTSTATUS CDECL wine_ntoskrnl_main_loop( HANDLE stop_event )
+                 context.params  = reply->params;
+                 context.in_size = reply->in_size;
+                 client_tid = reply->client_tid;
+-                NtCurrentTeb()->Reserved5[1] = wine_server_get_ptr( reply->client_thread );
++                NtCurrentTeb()->SystemReserved1[15] = wine_server_get_ptr( reply->client_thread );
+             }
+             else
+             {
+@@ -2339,7 +2339,7 @@ POBJECT_TYPE PsThreadType = &thread_type;
+  */
+ PRKTHREAD WINAPI KeGetCurrentThread(void)
+ {
+-    struct _KTHREAD *thread = NtCurrentTeb()->Reserved5[1];
++    struct _KTHREAD *thread = NtCurrentTeb()->SystemReserved1[15];
+ 
+     if (!thread)
+     {
+@@ -2352,7 +2352,11 @@ PRKTHREAD WINAPI KeGetCurrentThread(void)
+         kernel_object_from_handle( handle, PsThreadType, (void**)&thread );
+         if (handle != GetCurrentThread()) NtClose( handle );
+ 
+-        NtCurrentTeb()->Reserved5[1] = thread;
++        /* In kernel mode, GS base is not set to a TEB, but fortunately the offset
++           for the current thread object, which EasyAntiCheat.sys relies on,
++           doesn't conflict with anything in the TEB. */
++
++        NtCurrentTeb()->SystemReserved1[15] = thread;
+     }
+ 
+     return thread;
+@@ -2881,6 +2885,22 @@ DEVICE_OBJECT* WINAPI IoGetAttachedDeviceReference( DEVICE_OBJECT *device )
+ }
+ 
+ 
++struct system_thread_ctx
++{
++    PKSTART_ROUTINE start;
++    PVOID context;
++};
++
++static void WINAPI init_system_thread(PVOID context)
++{
++    struct system_thread_ctx info = *(struct system_thread_ctx *)context;
++    HeapFree( GetProcessHeap(), 0, context );
++
++    NtCurrentTeb()->SystemReserved1[15] = KeGetCurrentThread();
++
++    info.start(info.context);
++}
++
+ /***********************************************************************
+  *           PsCreateSystemThread   (NTOSKRNL.EXE.@)
+  */
+@@ -2889,9 +2909,16 @@ NTSTATUS WINAPI PsCreateSystemThread(PHANDLE ThreadHandle, ULONG DesiredAccess,
+ 			             HANDLE ProcessHandle, PCLIENT_ID ClientId,
+                                      PKSTART_ROUTINE StartRoutine, PVOID StartContext)
+ {
++    struct system_thread_ctx *info;
++
+     if (!ProcessHandle) ProcessHandle = GetCurrentProcess();
++
++    info = HeapAlloc( GetProcessHeap(), 0, sizeof(*info) );
++    info->start = StartRoutine;
++    info->context = StartContext;
++
+     return RtlCreateUserThread(ProcessHandle, 0, FALSE, 0, 0,
+-                               0, StartRoutine, StartContext,
++                               0, init_system_thread, info,
+                                ThreadHandle, ClientId);
+ }
+ 
+
+-- 
+2.27.0
+

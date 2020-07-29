@@ -1,0 +1,59 @@
+From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
+Subject: [PATCH v3 3/4] ntdll: Allow NtQueryVolumeInformationFile to query volume information from the mountmgr.
+Message-Id: <CAEU2+voqGirXP1KzXsYqL=iXsmvx=D51su8YWr_=RagvqTcteg@mail.gmail.com>
+Date: Thu, 23 Jul 2020 07:48:59 -0600
+
+This patch allows NtQueryVolumeInformationFile to pass
+FileFsVolumeInformation and FileFsAttributeInformation requests to the
+mountmgr.  These requests currently do not work for NT device paths,
+which results in a bunch of duplication in kernelbase.
+
+Best,
+Erich
+
+From 7c089f544bb951a6771b1133fed39b763556a1f4 Mon Sep 17 00:00:00 2001
+From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
+Date: Fri, 12 Jun 2020 14:53:43 -0600
+#Subject: ntdll: Allow NtQueryVolumeInformationFile to query volume information
+# from the mountmgr.
+
+Signed-off-by: Erich E. Hoover <erich.e.hoover@gmail.com>
+---
+ dlls/ntdll/file.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/dlls/ntdll/file.c b/dlls/ntdll/file.c
+index 8356e082899..9286d33a344 100644
+--- a/dlls/ntdll/file.c
++++ b/dlls/ntdll/file.c
+@@ -6185,15 +6185,26 @@ NTSTATUS WINAPI NtQueryVolumeInformationFile( HANDLE handle, IO_STATUS_BLOCK *io
+     io->u.Status = server_get_unix_fd( handle, 0, &fd, &needs_close, NULL, NULL );
+     if (io->u.Status == STATUS_BAD_DEVICE_TYPE)
+     {
++        struct async_irp *async;
++        HANDLE wait_handle;
++
++        if (!(async = (struct async_irp *)alloc_fileio( sizeof(*async), irp_completion, handle )))
++            return STATUS_NO_MEMORY;
++        async->buffer  = buffer;
++        async->size    = length;
++
+         SERVER_START_REQ( get_volume_info )
+         {
++            req->async = server_async( handle, &async->io, NULL, NULL, NULL, io );
+             req->handle = wine_server_obj_handle( handle );
+             req->info_class = info_class;
+             wine_server_set_reply( req, buffer, length );
+             io->u.Status = wine_server_call( req );
+             if (!io->u.Status) io->Information = wine_server_reply_size( reply );
++            wait_handle = wine_server_ptr_handle( reply->wait );
+         }
+         SERVER_END_REQ;
++        if (wait_handle) io->u.Status = wait_async( wait_handle, TRUE, io );
+         return io->u.Status;
+     }
+     else if (io->u.Status) return io->u.Status;
+
+-- 
+2.17.1
+

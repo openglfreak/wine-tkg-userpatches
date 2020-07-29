@@ -1,0 +1,111 @@
+From: Jefferson Carpenter <jefferson@aoeu2code.com>
+#Subject: [PATCH] ntdll: Initialize StatusWord and TagWord in i386 init_thread_context.
+Message-Id: <c9aff6be-304a-1dfb-b189-27befe42f6c2@aoeu2code.com>
+Date: Fri, 3 Jul 2020 06:38:39 +0000
+
+This does not resolve the bug, but moves toward resolving it.
+
+I have not been able to get a consistent read on what to initialize the 
+remaining members to.
+
+Thanks,
+Jefferson
+
+From 9a98ce3e59a325ae7baaf8745f9ef2844f616099 Mon Sep 17 00:00:00 2001
+From: Jefferson Carpenter <jeffersoncarpenter2@gmail.com>
+Date: Fri, 3 Jul 2020 08:36:14 +0000
+Subject: [PATCH] ntdll: Initialize StatusWord and TagWord in i386
+ init_thread_context.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=49495
+Signed-off-by: Jefferson Carpenter <jeffersoncarpenter2@gmail.com>
+---
+ dlls/kernel32/tests/process.c | 40 +++++++++++++++++++++++++++++++++--
+ dlls/ntdll/signal_i386.c |  4 ++++
+ 2 files changed, 42 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/kernel32/tests/process.c b/dlls/kernel32/tests/process.c
+index eaa5da2e95..0a47f53ce9 100644
+--- a/dlls/kernel32/tests/process.c
++++ b/dlls/kernel32/tests/process.c
+@@ -62,6 +62,34 @@
+           wine_dbgstr_w(expected), wine_dbgstr_w(value)); \
+     } while (0)
+ 
++#ifndef __x86_64__
++typedef struct DECLSPEC_ALIGN(16) _M128A
++{
++    ULONGLONG Low;
++    LONGLONG High;
++} M128A;
++
++typedef struct
++{
++    WORD ControlWord;
++    WORD StatusWord;
++    BYTE TagWord;
++    BYTE Reserved1;
++    WORD ErrorOpcode;
++    DWORD ErrorOffset;
++    WORD ErrorSelector;
++    WORD Reserved2;
++    DWORD DataOffset;
++    WORD DataSelector;
++    WORD Reserved3;
++    DWORD MxCsr;
++    DWORD MxCsr_Mask;
++    M128A FloatRegisters[8];
++    M128A XmmRegisters[16];
++    BYTE Reserved4[96];
++} XMM_SAVE_AREA32;
++#endif
++
+ static HINSTANCE hkernel32, hntdll;
+ static void   (WINAPI *pGetNativeSystemInfo)(LPSYSTEM_INFO);
+ static BOOL   (WINAPI *pGetSystemRegistryQuota)(PDWORD, PDWORD);
+@@ -3214,7 +3242,11 @@ static void test_SuspendProcessNewThread(void)
+         "esp is not at top of stack page or properly aligned: %08x\n", ctx.Esp );
+     ok( (ctx.EFlags & ~2) == 0x200, "wrong flags %08x\n", ctx.EFlags );
+     ok( (WORD)ctx.FloatSave.ControlWord == 0x27f, "wrong control %08x\n", ctx.FloatSave.ControlWord );
+-    ok( *(WORD *)ctx.ExtendedRegisters == 0x27f, "wrong control %08x\n", *(WORD *)ctx.ExtendedRegisters );
++    ok( (WORD)ctx.FloatSave.StatusWord == 0, "wrong status %08x\n", ctx.FloatSave.StatusWord );
++    ok( (WORD)ctx.FloatSave.TagWord == 0xffff, "wrong tag %08x\n", ctx.FloatSave.TagWord );
++    ok( ((XMM_SAVE_AREA32 *)ctx.ExtendedRegisters)->ControlWord == 0x27f, "wrong control %08x\n", ((XMM_SAVE_AREA32 *)ctx.ExtendedRegisters)->ControlWord );
++    ok( ((XMM_SAVE_AREA32 *)ctx.ExtendedRegisters)->StatusWord == 0, "wrong status %08x\n", ((XMM_SAVE_AREA32 *)ctx.ExtendedRegisters)->StatusWord );
++    ok( ((XMM_SAVE_AREA32 *)ctx.ExtendedRegisters)->TagWord == 0, "wrong tag %08x\n", ((XMM_SAVE_AREA32 *)ctx.ExtendedRegisters)->TagWord );
+ #endif
+ 
+     ResumeThread( thread_handle );
+@@ -3379,7 +3411,11 @@ static void test_SuspendProcessState(void)
+         "esp is not at top of stack page or properly aligned: %08x\n", ctx.Esp );
+     ok( (ctx.EFlags & ~2) == 0x200, "wrong flags %08x\n", ctx.EFlags );
+     ok( (WORD)ctx.FloatSave.ControlWord == 0x27f, "wrong control %08x\n", ctx.FloatSave.ControlWord );
+-    ok( *(WORD *)ctx.ExtendedRegisters == 0x27f, "wrong control %08x\n", *(WORD *)ctx.ExtendedRegisters );
++    ok( (WORD)ctx.FloatSave.StatusWord == 0, "wrong status %08x\n", ctx.FloatSave.StatusWord );
++    ok( (WORD)ctx.FloatSave.TagWord == 0xffff, "wrong tag %08x\n", ctx.FloatSave.TagWord );
++    ok( ((XMM_SAVE_AREA32 *)ctx.ExtendedRegisters)->ControlWord == 0x27f, "wrong control %08x\n", ((XMM_SAVE_AREA32 *)ctx.ExtendedRegisters)->ControlWord );
++    ok( ((XMM_SAVE_AREA32 *)ctx.ExtendedRegisters)->StatusWord == 0, "wrong status %08x\n", ((XMM_SAVE_AREA32 *)ctx.ExtendedRegisters)->StatusWord );
++    ok( ((XMM_SAVE_AREA32 *)ctx.ExtendedRegisters)->TagWord == 0, "wrong tag %08x\n", ((XMM_SAVE_AREA32 *)ctx.ExtendedRegisters)->TagWord );
+     entry_ptr = (void *)ctx.Eax;
+     peb_ptr = (void *)ctx.Ebx;
+ 
+diff --git a/dlls/ntdll/signal_i386.c b/dlls/ntdll/signal_i386.c
+index ea9bfbeb3b..c1f7cfe3f6 100644
+--- a/dlls/ntdll/signal_i386.c
++++ b/dlls/ntdll/signal_i386.c
+@@ -2270,7 +2270,11 @@ static void init_thread_context( CONTEXT *context, LPTHREAD_START_ROUTINE entry,
+     context->Esp    = (DWORD)NtCurrentTeb()->Tib.StackBase - 16;
+     context->Eip    = (DWORD)relay;
+     context->FloatSave.ControlWord = 0x27f;
++    context->FloatSave.StatusWord  = 0;
++    context->FloatSave.TagWord     = 0xffff;
+     ((XMM_SAVE_AREA32 *)context->ExtendedRegisters)->ControlWord = 0x27f;
++    ((XMM_SAVE_AREA32 *)context->ExtendedRegisters)->StatusWord  = 0;
++    ((XMM_SAVE_AREA32 *)context->ExtendedRegisters)->TagWord     = 0;
+     ((XMM_SAVE_AREA32 *)context->ExtendedRegisters)->MxCsr = 0x1f80;
+ }
+ 
+
+-- 
+2.26.2
+

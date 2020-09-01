@@ -1,0 +1,126 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH] ntdll: Report newer vector processor features on x86 / x64.
+Message-Id: <20200817154836.1373385-1-pgofman@codeweavers.com>
+Date: Mon, 17 Aug 2020 18:48:36 +0300
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/ntdll/nt.c              | 14 +++++++++++++-
+ dlls/ntdll/thread.c          |  5 +++++
+ include/winnt.h              |  6 ++++++
+ include/winternl.h           |  6 ++++++
+ 4 files changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/nt.c b/dlls/ntdll/nt.c
+index 3148f23df36..9d82a6774c6 100644
+--- a/dlls/ntdll/nt.c
++++ b/dlls/ntdll/nt.c
+@@ -190,6 +190,7 @@ __ASM_GLOBAL_FUNC( do_cpuid,
+                    "pushl %ebx\n\t"
+                    "movl 12(%esp),%eax\n\t"
+                    "movl 16(%esp),%esi\n\t"
++                   "xorl %ecx,%ecx\n\t"
+                    "cpuid\n\t"
+                    "movl %eax,(%esi)\n\t"
+                    "movl %ebx,4(%esi)\n\t"
+@@ -202,6 +203,7 @@ __ASM_GLOBAL_FUNC( do_cpuid,
+ __ASM_GLOBAL_FUNC( do_cpuid,
+                    "pushq %rbx\n\t"
+                    "movl %edi,%eax\n\t"
++                   "xorl %ecx,%ecx\n\t"
+                    "cpuid\n\t"
+                    "movl %eax,(%rsi)\n\t"
+                    "movl %ebx,4(%rsi)\n\t"
+@@ -277,7 +279,7 @@ static inline BOOL have_sse_daz_mode(void)
+ 
+ static void get_cpuinfo( SYSTEM_CPU_INFORMATION *info )
+ {
+-    unsigned int regs[4], regs2[4];
++    unsigned int regs[4], regs2[4], regs3[4];
+ 
+ #if defined(__i386__)
+     info->Architecture = PROCESSOR_ARCHITECTURE_INTEL;
+@@ -310,12 +312,22 @@ static void get_cpuinfo( SYSTEM_CPU_INFORMATION *info )
+         if(regs2[3] & (1 << 25)) info->FeatureSet |= CPU_FEATURE_SSE;
+         if(regs2[3] & (1 << 26)) info->FeatureSet |= CPU_FEATURE_SSE2;
+         if(regs2[2] & (1 << 0 )) info->FeatureSet |= CPU_FEATURE_SSE3;
++        if(regs2[2] & (1 << 9 )) info->FeatureSet |= CPU_FEATURE_SSSE3;
+         if(regs2[2] & (1 << 13)) info->FeatureSet |= CPU_FEATURE_CX128;
++        if(regs2[2] & (1 << 19)) info->FeatureSet |= CPU_FEATURE_SSE41;
++        if(regs2[2] & (1 << 20)) info->FeatureSet |= CPU_FEATURE_SSE42;
+         if(regs2[2] & (1 << 27)) info->FeatureSet |= CPU_FEATURE_XSAVE;
++        if(regs2[2] & (1 << 28)) info->FeatureSet |= CPU_FEATURE_AVX;
+ 
+         if((regs2[3] & (1 << 26)) && (regs2[3] & (1 << 24)) && have_sse_daz_mode()) /* has SSE2 and FXSAVE/FXRSTOR */
+             info->FeatureSet |= CPU_FEATURE_DAZ;
+ 
++        if (regs[0] >= 0x00000007)
++        {
++            do_cpuid( 0x00000007, regs3 ); /* get extended features */
++            if (regs3[1] & (1 << 5)) info->FeatureSet |= CPU_FEATURE_AVX2;
++        }
++
+         if (regs[1] == AUTH && regs[3] == ENTI && regs[2] == CAMD)
+         {
+             info->Level = (regs2[0] >> 8) & 0xf; /* family */
+diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+index 21be0f55fb0..902f6af042e 100644
+--- a/dlls/ntdll/thread.c
++++ b/dlls/ntdll/thread.c
+@@ -248,6 +248,7 @@ static void create_user_shared_data(void)
+         features[PF_PAE_ENABLED]                          = !!(sci.FeatureSet & CPU_FEATURE_PAE);
+         features[PF_XMMI64_INSTRUCTIONS_AVAILABLE]        = !!(sci.FeatureSet & CPU_FEATURE_SSE2);
+         features[PF_SSE3_INSTRUCTIONS_AVAILABLE]          = !!(sci.FeatureSet & CPU_FEATURE_SSE3);
++        features[PF_SSSE3_INSTRUCTIONS_AVAILABLE]         = !!(sci.FeatureSet & CPU_FEATURE_SSSE3);
+         features[PF_XSAVE_ENABLED]                        = !!(sci.FeatureSet & CPU_FEATURE_XSAVE);
+         features[PF_COMPARE_EXCHANGE128]                  = !!(sci.FeatureSet & CPU_FEATURE_CX128);
+         features[PF_SSE_DAZ_MODE_AVAILABLE]               = !!(sci.FeatureSet & CPU_FEATURE_DAZ);
+@@ -256,6 +257,10 @@ static void create_user_shared_data(void)
+         features[PF_VIRT_FIRMWARE_ENABLED]                = !!(sci.FeatureSet & CPU_FEATURE_VIRT);
+         features[PF_RDWRFSGSBASE_AVAILABLE]               = !!(sci.FeatureSet & CPU_FEATURE_RDFS);
+         features[PF_FASTFAIL_AVAILABLE]                   = TRUE;
++        features[PF_SSE4_1_INSTRUCTIONS_AVAILABLE]        = !!(sci.FeatureSet & CPU_FEATURE_SSE41);
++        features[PF_SSE4_2_INSTRUCTIONS_AVAILABLE]        = !!(sci.FeatureSet & CPU_FEATURE_SSE42);
++        features[PF_AVX_INSTRUCTIONS_AVAILABLE]           = !!(sci.FeatureSet & CPU_FEATURE_AVX);
++        features[PF_AVX2_INSTRUCTIONS_AVAILABLE]          = !!(sci.FeatureSet & CPU_FEATURE_AVX2);
+         break;
+     case PROCESSOR_ARCHITECTURE_ARM:
+         features[PF_ARM_VFP_32_REGISTERS_AVAILABLE]       = !!(sci.FeatureSet & CPU_FEATURE_ARM_VFP_32);
+diff --git a/include/winnt.h b/include/winnt.h
+index 6aef97595dd..ac89ebc5ef7 100644
+--- a/include/winnt.h
++++ b/include/winnt.h
+@@ -928,6 +928,12 @@ typedef enum _HEAP_INFORMATION_CLASS {
+ #define PF_RDPID_INSTRUCTION_AVAILABLE          33
+ #define PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE 34
+ #define PF_MONITORX_INSTRUCTION_AVAILABLE       35
++#define PF_SSSE3_INSTRUCTIONS_AVAILABLE         36
++#define PF_SSE4_1_INSTRUCTIONS_AVAILABLE        37
++#define PF_SSE4_2_INSTRUCTIONS_AVAILABLE        38
++#define PF_AVX_INSTRUCTIONS_AVAILABLE           39
++#define PF_AVX2_INSTRUCTIONS_AVAILABLE          40
++#define PF_AVX512F_INSTRUCTIONS_AVAILABLE       41
+ 
+ 
+ /* Execution state flags */
+diff --git a/include/winternl.h b/include/winternl.h
+index 8efdaf31193..6c809193977 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -1681,6 +1681,12 @@ typedef struct _SYSTEM_CPU_INFORMATION {
+ #define CPU_FEATURE_NX     0x20000000   /* Data execution prevention */
+ 
+ /* FIXME: following values are made up, actual flags are unknown */
++#define CPU_FEATURE_SSSE3         0x00008000   /* SSSE3 instructions */
++#define CPU_FEATURE_SSE41         0x01000000   /* SSE41 instructions */
++#define CPU_FEATURE_SSE42         0x02000000   /* SSE42 instructions */
++#define CPU_FEATURE_AVX           0x40000000   /* AVX instructions */
++#define CPU_FEATURE_AVX2          0x80000000   /* AVX2 instructions */
++
+ #define CPU_FEATURE_PAE           0x00200000
+ #define CPU_FEATURE_DAZ           0x00400000
+ #define CPU_FEATURE_ARM_VFP_32    0x00000001
+
+-- 
+2.26.2
+

@@ -64,34 +64,14 @@ index 463d3d5a71..0598d5c1d2 100644
 
      wfx->wFormatTag = WAVE_FORMAT_EXTENSIBLE;
      wfx->cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
-@@ -1635,6 +1626,19 @@ static HRESULT WINAPI AudioClient_Initialize(IAudioClient *iface,
-     period = pulse_def_period[This->dataflow == eCapture];
-     if (duration < 3 * period)
-         duration = 3 * period;
-+
-+    const char *duration_env = getenv("STAGING_AUDIO_DURATION");
-+    if(duration_env) {
-+        int val = atoi(duration_env);
-+        duration = val;
-+    }
-+        printf("Staging audio duration set to %d.\n", duration);
-+    const char *period_env = getenv("STAGING_AUDIO_PERIOD");
-+    if(period_env) {
-+        int val = atoi(period_env);
-+        period = val;
-+    }
-+        printf("Staging audio period set to %d.\n", period);
-
-     This->period_bytes = pa_frame_size(&This->ss) * MulDiv(period, This->ss.rate, 10000000);
-
-diff --git a/dlls/winepulse.drv/mmdevdrv.c b/dlls/winepulse.drv/mmdevdrv.c
-index 4377017..f55608e 100644
---- a/dlls/winepulse.drv/mmdevdrv.c
-+++ b/dlls/winepulse.drv/mmdevdrv.c
-@@ -1458,6 +1458,30 @@ static HRESULT pulse_stream_connect(ACImpl *This, UINT32 period_bytes) {
-     attr.tlength = period_bytes * 3;
-     attr.maxlength = This->bufsize_frames * pa_frame_size(&This->ss);
-     attr.prebuf = pa_frame_size(&This->ss);
+@@ -1458,10 +1458,30 @@ static HRESULT pulse_stream_connect(ACImpl *This, UINT32 period_bytes) {
+     pa_stream_set_moved_callback(This->stream, pulse_attr_update, This);
+ 
+     /* PulseAudio will fill in correct values */
+-    attr.minreq = attr.fragsize = period_bytes;
+-    attr.tlength = period_bytes * 3;
+-    attr.maxlength = This->bufsize_frames * pa_frame_size(&This->ss);
+-    attr.prebuf = pa_frame_size(&This->ss);
 +
 +    attr.maxlength = -1;
 +    if (getenv("DEFAULT_MINREQ")) {
@@ -117,5 +97,24 @@ index 4377017..f55608e 100644
 +        attr.prebuf = -1;
 +    }
      dump_attr(&attr);
-
+ 
      /* If device name is given use exactly the specified device */
+@@ -1635,6 +1626,19 @@ static HRESULT WINAPI AudioClient_Initialize(IAudioClient *iface,
+     period = pulse_def_period[This->dataflow == eCapture];
+     if (duration < 3 * period)
+         duration = 3 * period;
++
++    const char *duration_env = getenv("STAGING_AUDIO_DURATION");
++    if(duration_env) {
++        int val = atoi(duration_env);
++        duration = val;
++        printf("Staging audio duration set to %d.\n", duration);
++    }
++    const char *period_env = getenv("STAGING_AUDIO_PERIOD");
++    if(period_env) {
++        int val = atoi(period_env);
++        period = val;
++        printf("Staging audio period set to %d.\n", period);
++    }
+
+     This->period_bytes = pa_frame_size(&This->ss) * MulDiv(period, This->ss.rate, 10000000);

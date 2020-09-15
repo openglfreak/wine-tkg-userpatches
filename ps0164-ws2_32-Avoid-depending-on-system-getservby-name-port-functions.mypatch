@@ -1,0 +1,908 @@
+From: Alex Henrie <alexhenrie24@gmail.com>
+Subject: [PATCH resend] ws2_32: Avoid depending on system getservby(name|port) functions
+Message-Id: <20200911043245.63599-1-alexhenrie24@gmail.com>
+Date: Thu, 10 Sep 2020 22:32:45 -0600
+
+Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
+---
+These functions are incredibly slow on Windows. To avoid timeouts, I had
+to put the tests in protocol.c rather than the crowded sock.c.
+---
+ configure.ac                 |   1 -
+ dlls/ws2_32/socket.c         | 339 ++++++++++++++++++++++++---------
+ dlls/ws2_32/tests/protocol.c | 359 +++++++++++++++++++++++++++++++++++
+ dlls/ws2_32/tests/sock.c     |  66 -------
+ 4 files changed, 609 insertions(+), 156 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index 123dea0f5f1..0204c8ffd53 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -2237,7 +2237,6 @@ AC_CHECK_FUNCS(\
+ 	getaddrinfo \
+ 	getnameinfo \
+ 	getnetbyname \
+-	getservbyport \
+ )
+ 
+ dnl Check for clock_gettime which may be in -lrt
+diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
+index b7a570043cd..01e14dd9661 100644
+--- a/dlls/ws2_32/socket.c
++++ b/dlls/ws2_32/socket.c
+@@ -649,7 +649,7 @@ static FARPROC blocking_hook = (FARPROC)WSA_DefaultBlockingHook;
+ static struct WS_hostent *WS_create_he(char *name, int aliases, int aliases_size, int addresses, int address_length);
+ static struct WS_hostent *WS_dup_he(const struct hostent* p_he);
+ static struct WS_protoent *WS_create_pe( const char *name, char **aliases, int prot );
+-static struct WS_servent *WS_dup_se(const struct servent* p_se);
++static struct WS_servent *WS_create_se( const char *name, char **aliases, int port, const char *proto );
+ static int ws_protocol_info(SOCKET s, int unicode, WSAPROTOCOL_INFOW *buffer, int *size);
+ 
+ int WSAIOCTL_GetInterfaceCount(void);
+@@ -1488,20 +1488,6 @@ static int convert_sockopt(INT *level, INT *optname)
+ 
+ /* ----------------------------------- Per-thread info (or per-process?) */
+ 
+-static char *strdup_lower(const char *str)
+-{
+-    int i;
+-    char *ret = HeapAlloc( GetProcessHeap(), 0, strlen(str) + 1 );
+-
+-    if (ret)
+-    {
+-        for (i = 0; str[i]; i++) ret[i] = tolower(str[i]);
+-        ret[i] = 0;
+-    }
+-    else SetLastError(WSAENOBUFS);
+-    return ret;
+-}
+-
+ /* Utility: get the SO_RCVTIMEO or SO_SNDTIMEO socket option
+  * from an fd and return the value converted to milli seconds
+  * or 0 if there is an infinite time out */
+@@ -6560,41 +6546,258 @@ struct WS_protoent* WINAPI WS_getprotobynumber(int number)
+ }
+ 
+ 
++static const struct
++{
++    unsigned short port;
++    const char *names[3];
++    const char *protos[2];
++}
++services[] =
++{
++    {     7, {"echo"}, {"tcp", "udp"} },
++    {     9, {"discard", "sink"}, {"tcp", "udp"} },
++    {    11, {"systat", "users"}, {"tcp", "udp"} },
++    {    13, {"daytime"}, {"tcp", "udp"} },
++    {    17, {"qotd", "quote"}, {"tcp", "udp"} },
++    {    19, {"chargen", "ttytst"}, {"tcp", "udp"} },
++    {    20, {"ftp-data"}, {"tcp"} },
++    {    21, {"ftp"}, {"tcp"} },
++    {    22, {"ssh"}, {"tcp"} },
++    {    23, {"telnet"}, {"tcp"} },
++    {    25, {"smtp", "mail"}, {"tcp"} },
++    {    37, {"time", "timserver"}, {"tcp", "udp"} },
++    {    39, {"rlp", "resource"}, {"udp"} },
++    {    42, {"nameserver", "name"}, {"tcp", "udp"} },
++    {    43, {"nicname", "whois"}, {"tcp"} },
++    {    53, {"domain"}, {"tcp", "udp"} },
++    {    67, {"bootps", "dhcps"}, {"udp"} },
++    {    68, {"bootpc", "dhcpc"}, {"udp"} },
++    {    69, {"tftp"}, {"udp"} },
++    {    70, {"gopher"}, {"tcp"} },
++    {    79, {"finger"}, {"tcp"} },
++    {    80, {"http", "www"}, {"tcp"} },
++    {    81, {"hosts2-ns"}, {"tcp", "udp"} },
++    {    88, {"kerberos", "krb5"}, {"tcp", "udp"} },
++    {   101, {"hostname", "hostnames"}, {"tcp"} },
++    {   102, {"iso-tsap"}, {"tcp"} },
++    {   107, {"rtelnet"}, {"tcp"} },
++    {   109, {"pop2", "postoffice"}, {"tcp"} },
++    {   110, {"pop3"}, {"tcp"} },
++    {   111, {"sunrpc", "rpcbind"}, {"tcp", "udp"} },
++    {   113, {"auth", "ident"}, {"tcp"} },
++    {   117, {"uucp-path"}, {"tcp"} },
++    {   118, {"sqlserv"}, {"tcp"} },
++    {   119, {"nntp", "usenet"}, {"tcp"} },
++    {   123, {"ntp"}, {"udp"} },
++    {   135, {"epmap", "loc-srv"}, {"tcp", "udp"} },
++    {   137, {"netbios-ns", "nbname"}, {"tcp", "udp"} },
++    {   138, {"netbios-dgm", "nbdatagram"}, {"udp"} },
++    {   139, {"netbios-ssn", "nbsession"}, {"tcp"} },
++    {   143, {"imap", "imap4"}, {"tcp"} },
++    {   150, {"sql-net"}, {"tcp"} },
++    {   156, {"sqlsrv"}, {"tcp"} },
++    {   158, {"pcmail-srv"}, {"tcp"} },
++    {   161, {"snmp"}, {"udp"} },
++    {   162, {"snmptrap", "snmp-trap"}, {"udp"} },
++    {   170, {"print-srv"}, {"tcp"} },
++    {   179, {"bgp"}, {"tcp"} },
++    {   194, {"irc"}, {"tcp"} },
++    {   213, {"ipx"}, {"udp"} },
++    {   322, {"rtsps"}, {"tcp", "udp"} },
++    {   349, {"mftp"}, {"tcp", "udp"} },
++    {   389, {"ldap"}, {"tcp"} },
++    {   443, {"https", "MCom"}, {"tcp", "udp"} },
++    {   445, {"microsoft-ds"}, {"tcp", "udp"} },
++    {   464, {"kpasswd"}, {"tcp", "udp"} },
++    {   500, {"isakmp", "ike"}, {"udp"} },
++    {   507, {"crs"}, {"tcp", "udp"} },
++    {   512, {"exec"}, {"tcp"} },
++    {   512, {"biff", "comsat"}, {"udp", "tcp"} },
++    {   513, {"login"}, {"tcp"} },
++    {   513, {"who", "whod"}, {"udp", "tcp"} },
++    {   514, {"cmd", "shell"}, {"tcp"} },
++    {   514, {"syslog"}, {"udp", "tcp"} },
++    {   515, {"printer", "spooler"}, {"tcp"} },
++    {   517, {"talk"}, {"udp"} },
++    {   518, {"ntalk"}, {"udp"} },
++    {   520, {"efs"}, {"tcp"} },
++    {   520, {"router", "route"}, {"udp", "tcp"} },
++    {   522, {"ulp"}, {"tcp", "udp"} },
++    {   525, {"timed", "timeserver"}, {"udp"} },
++    {   526, {"tempo", "newdate"}, {"tcp"} },
++    {   529, {"irc-serv"}, {"tcp", "udp"} },
++    {   530, {"courier", "rpc"}, {"tcp"} },
++    {   531, {"conference", "chat"}, {"tcp"} },
++    {   532, {"netnews", "readnews"}, {"tcp"} },
++    {   533, {"netwall"}, {"udp"} },
++    {   540, {"uucp", "uucpd"}, {"tcp"} },
++    {   543, {"klogin"}, {"tcp"} },
++    {   544, {"kshell", "krcmd"}, {"tcp"} },
++    {   546, {"dhcpv6-client"}, {"tcp", "udp"} },
++    {   547, {"dhcpv6-server"}, {"tcp", "udp"} },
++    {   548, {"afpovertcp"}, {"tcp", "udp"} },
++    {   550, {"new-rwho", "new-who"}, {"udp"} },
++    {   554, {"rtsp"}, {"tcp", "udp"} },
++    {   556, {"remotefs", "rfs"}, {"tcp"} },
++    {   560, {"rmonitor", "rmonitord"}, {"udp"} },
++    {   561, {"monitor"}, {"udp"} },
++    {   563, {"nntps", "snntp"}, {"tcp", "udp"} },
++    {   565, {"whoami"}, {"tcp", "udp"} },
++    {   568, {"ms-shuttle"}, {"tcp", "udp"} },
++    {   569, {"ms-rome"}, {"tcp", "udp"} },
++    {   593, {"http-rpc-epmap"}, {"tcp", "udp"} },
++    {   612, {"hmmp-ind"}, {"tcp", "udp"} },
++    {   613, {"hmmp-op"}, {"tcp", "udp"} },
++    {   636, {"ldaps", "sldap"}, {"tcp"} },
++    {   666, {"doom"}, {"tcp", "udp"} },
++    {   691, {"msexch-routing"}, {"tcp", "udp"} },
++    {   749, {"kerberos-adm"}, {"tcp", "udp"} },
++    {   750, {"kerberos-iv"}, {"udp"} },
++    {   800, {"mdbs_daemon"}, {"tcp", "udp"} },
++    {   989, {"ftps-data"}, {"tcp"} },
++    {   990, {"ftps"}, {"tcp"} },
++    {   992, {"telnets"}, {"tcp"} },
++    {   993, {"imaps"}, {"tcp"} },
++    {   994, {"ircs"}, {"tcp"} },
++    {   995, {"pop3s", "spop3"}, {"tcp", "udp"} },
++    {  1034, {"activesync"}, {"tcp"} },
++    {  1109, {"kpop"}, {"tcp"} },
++    {  1110, {"nfsd-status"}, {"tcp"} },
++    {  1110, {"nfsd-keepalive"}, {"udp"} },
++    {  1155, {"nfa"}, {"tcp", "udp"} },
++    {  1167, {"phone"}, {"udp"} },
++    {  1270, {"opsmgr"}, {"tcp", "udp"} },
++    {  1433, {"ms-sql-s"}, {"tcp", "udp"} },
++    {  1434, {"ms-sql-m"}, {"tcp", "udp"} },
++    {  1477, {"ms-sna-server"}, {"tcp", "udp"} },
++    {  1478, {"ms-sna-base"}, {"tcp", "udp"} },
++    {  1512, {"wins"}, {"tcp", "udp"} },
++    {  1524, {"ingreslock", "ingres"}, {"tcp"} },
++    {  1607, {"stt"}, {"tcp", "udp"} },
++    {  1701, {"l2tp"}, {"udp"} },
++    {  1711, {"pptconference"}, {"tcp", "udp"} },
++    {  1723, {"pptp"}, {"tcp"} },
++    {  1731, {"msiccp"}, {"tcp", "udp"} },
++    {  1745, {"remote-winsock"}, {"tcp", "udp"} },
++    {  1755, {"ms-streaming"}, {"tcp", "udp"} },
++    {  1801, {"msmq"}, {"tcp", "udp"} },
++    {  1812, {"radius"}, {"udp"} },
++    {  1813, {"radacct"}, {"udp"} },
++    {  1863, {"msnp"}, {"tcp", "udp"} },
++    {  1900, {"ssdp"}, {"tcp", "udp"} },
++    {  1944, {"close-combat"}, {"tcp", "udp"} },
++    {  2049, {"nfsd", "nfs"}, {"udp"} },
++    {  2053, {"knetd"}, {"tcp"} },
++    {  2106, {"mzap"}, {"tcp", "udp"} },
++    {  2177, {"qwave"}, {"tcp", "udp"} },
++    {  2234, {"directplay"}, {"tcp", "udp"} },
++    {  2382, {"ms-olap3"}, {"tcp", "udp"} },
++    {  2383, {"ms-olap4"}, {"tcp", "udp"} },
++    {  2393, {"ms-olap1"}, {"tcp", "udp"} },
++    {  2394, {"ms-olap2"}, {"tcp", "udp"} },
++    {  2460, {"ms-theater"}, {"tcp", "udp"} },
++    {  2504, {"wlbs"}, {"tcp", "udp"} },
++    {  2525, {"ms-v-worlds"}, {"tcp", "udp"} },
++    {  2701, {"sms-rcinfo"}, {"tcp", "udp"} },
++    {  2702, {"sms-xfer"}, {"tcp", "udp"} },
++    {  2703, {"sms-chat"}, {"tcp", "udp"} },
++    {  2704, {"sms-remctrl"}, {"tcp", "udp"} },
++    {  2725, {"msolap-ptp2"}, {"tcp", "udp"} },
++    {  2869, {"icslap"}, {"tcp", "udp"} },
++    {  3020, {"cifs"}, {"tcp", "udp"} },
++    {  3074, {"xbox"}, {"tcp", "udp"} },
++    {  3126, {"ms-dotnetster"}, {"tcp", "udp"} },
++    {  3132, {"ms-rule-engine"}, {"tcp", "udp"} },
++    {  3268, {"msft-gc"}, {"tcp", "udp"} },
++    {  3269, {"msft-gc-ssl"}, {"tcp", "udp"} },
++    {  3343, {"ms-cluster-net"}, {"tcp", "udp"} },
++    {  3389, {"ms-wbt-server"}, {"tcp", "udp"} },
++    {  3535, {"ms-la"}, {"tcp", "udp"} },
++    {  3540, {"pnrp-port"}, {"tcp", "udp"} },
++    {  3544, {"teredo"}, {"tcp", "udp"} },
++    {  3587, {"p2pgroup"}, {"tcp", "udp"} },
++    {  3702, {"ws-discovery", "upnp-discovery"}, {"udp", "tcp"} },
++    {  3776, {"dvcprov-port"}, {"tcp", "udp"} },
++    {  3847, {"msfw-control"}, {"tcp"} },
++    {  3882, {"msdts1"}, {"tcp"} },
++    {  3935, {"sdp-portmapper"}, {"tcp", "udp"} },
++    {  4350, {"net-device"}, {"tcp", "udp"} },
++    {  4500, {"ipsec-msft"}, {"tcp", "udp"} },
++    {  5355, {"llmnr"}, {"tcp", "udp"} },
++    {  5357, {"wsd"}, {"tcp"} },
++    {  5358, {"wsd"}, {"tcp"} },
++    {  5678, {"rrac"}, {"tcp", "udp"} },
++    {  5679, {"dccm"}, {"tcp", "udp"} },
++    {  5720, {"ms-licensing"}, {"tcp", "udp"} },
++    {  6073, {"directplay8"}, {"tcp", "udp"} },
++    {  9535, {"man"}, {"tcp"} },
++    {  9753, {"rasadv"}, {"tcp", "udp"} },
++    { 11320, {"imip-channels"}, {"tcp", "udp"} },
++    { 47624, {"directplaysrvr"}, {"tcp", "udp"} },
++};
++
+ /***********************************************************************
+  *		getservbyname		(WS2_32.55)
+  */
+ struct WS_servent* WINAPI WS_getservbyname(const char *name, const char *proto)
+ {
+     struct WS_servent* retval = NULL;
+-    struct servent*     serv;
+-    char *name_str;
+-    char *proto_str = NULL;
+-
+-    if (!(name_str = strdup_lower(name))) return NULL;
+-
+-    if (proto && *proto)
++    int i, j, k;
++    for (i = 0; i < ARRAY_SIZE(services); i++)
+     {
+-        if (!(proto_str = strdup_lower(proto)))
++        for (j = 0; services[i].names[j]; j++)
+         {
+-            HeapFree( GetProcessHeap(), 0, name_str );
+-            return NULL;
++            if (_strnicmp(services[i].names[j], name, -1) != 0) continue;
++            for (k = 0; k < ARRAY_SIZE(services[0].protos) && services[i].protos[k]; k++)
++            {
++                if (proto && _strnicmp(services[i].protos[k], proto, -1) != 0) continue;
++                retval = WS_create_se(services[i].names[0], (char **)services[i].names + 1,
++                                      services[i].port, services[i].protos[k]);
++                goto found;
++            }
++            break;
+         }
+     }
++    if (!retval)
++    {
++        WARN("service %s/%s not found\n", debugstr_a(name), debugstr_a(proto));
++        SetLastError(WSANO_DATA);
++    }
++found:
++    TRACE("%s/%s ret %p\n", debugstr_a(name), debugstr_a(proto), retval);
++    return retval;
++}
+ 
+-    EnterCriticalSection( &csWSgetXXXbyYYY );
+-    serv = getservbyname(name_str, proto_str);
+-    if( serv != NULL )
++/***********************************************************************
++ *		getservbyport		(WS2_32.56)
++ */
++struct WS_servent* WINAPI WS_getservbyport(int port, const char *proto)
++{
++    struct WS_servent* retval = NULL;
++    int i, j;
++    port = ntohs(port);
++    for (i = 0; i < ARRAY_SIZE(services); i++)
++    {
++        if (services[i].port != port) continue;
++        for (j = 0; j < ARRAY_SIZE(services[0].protos) && services[i].protos[j]; j++)
++        {
++            if (proto && _strnicmp(services[i].protos[j], proto, -1) != 0) continue;
++            retval = WS_create_se(services[i].names[0], (char **)services[i].names + 1,
++                                  services[i].port, services[i].protos[j]);
++            goto found;
++        }
++    }
++    if (!retval)
+     {
+-        retval = WS_dup_se(serv);
++        WARN("service %d/%s not found\n", port, debugstr_a(proto));
++        SetLastError(WSANO_DATA);
+     }
+-    else SetLastError(WSANO_DATA);
+-    LeaveCriticalSection( &csWSgetXXXbyYYY );
+-    HeapFree( GetProcessHeap(), 0, proto_str );
+-    HeapFree( GetProcessHeap(), 0, name_str );
+-    TRACE( "%s, %s ret %p\n", debugstr_a(name), debugstr_a(proto), retval );
++found:
++    TRACE("%d/%s ret %p\n", port, debugstr_a(proto), retval);
+     return retval;
+ }
+ 
++
+ /***********************************************************************
+  *		freeaddrinfo		(WS2_32.@)
+  */
+@@ -7285,32 +7488,6 @@ int WINAPI GetNameInfoW(const SOCKADDR *sa, WS_socklen_t salen, PWCHAR host,
+     return ret;
+ }
+ 
+-/***********************************************************************
+- *		getservbyport		(WS2_32.56)
+- */
+-struct WS_servent* WINAPI WS_getservbyport(int port, const char *proto)
+-{
+-    struct WS_servent* retval = NULL;
+-#ifdef HAVE_GETSERVBYPORT
+-    struct servent*     serv;
+-    char *proto_str = NULL;
+-
+-    if (proto && *proto)
+-    {
+-        if (!(proto_str = strdup_lower(proto))) return NULL;
+-    }
+-    EnterCriticalSection( &csWSgetXXXbyYYY );
+-    if( (serv = getservbyport(port, proto_str)) != NULL ) {
+-        retval = WS_dup_se(serv);
+-    }
+-    else SetLastError(WSANO_DATA);
+-    LeaveCriticalSection( &csWSgetXXXbyYYY );
+-    HeapFree( GetProcessHeap(), 0, proto_str );
+-#endif
+-    TRACE("%d (i.e. port %d), %s ret %p\n", port, (int)ntohl(port), debugstr_a(proto), retval);
+-    return retval;
+-}
+-
+ 
+ /***********************************************************************
+  *              gethostname           (WS2_32.57)
+@@ -7795,12 +7972,7 @@ INT WINAPI WSAUnhookBlockingHook(void)
+ 
+ /* ----------------------------------- end of API stuff */
+ 
+-/* ----------------------------------- helper functions -
+- *
+- * TODO: Merge WS_dup_..() stuff into one function that
+- * would operate with a generic structure containing internal
+- * pointers (via a template of some kind).
+- */
++/* ----------------------------------- helper functions */
+ 
+ static int list_size(char** l, int item_size)
+ {
+@@ -7935,31 +8107,20 @@ static struct WS_protoent *WS_create_pe( const char *name, char **aliases, int p
+ 
+ /* ----- servent */
+ 
+-static struct WS_servent *WS_dup_se(const struct servent* p_se)
++static struct WS_servent *WS_create_se( const char *name, char **aliases, int port, const char *proto )
+ {
+-    char *p;
+-    struct WS_servent *p_to;
+-
+-    int size = (sizeof(*p_se) +
+-                strlen(p_se->s_proto) + 1 +
+-                strlen(p_se->s_name) + 1 +
+-                list_size(p_se->s_aliases, 0));
+-
+-    if (!(p_to = check_buffer_se(size))) return NULL;
+-    p_to->s_port = p_se->s_port;
+-
+-    p = (char *)(p_to + 1);
+-    p_to->s_name = p;
+-    strcpy(p, p_se->s_name);
+-    p += strlen(p) + 1;
+-
+-    p_to->s_proto = p;
+-    strcpy(p, p_se->s_proto);
+-    p += strlen(p) + 1;
++    struct WS_servent *ret;
++    unsigned int size = sizeof(*ret) + strlen(name) + 1 + strlen(proto) + sizeof(char *) + list_size(aliases, 0);
+ 
+-    p_to->s_aliases = (char **)p;
+-    list_dup(p_se->s_aliases, p_to->s_aliases, 0);
+-    return p_to;
++    if (!(ret = check_buffer_se( size ))) return NULL;
++    ret->s_port = htons(port);
++    ret->s_name = (char *)(ret + 1);
++    ret->s_proto = (char *)ret->s_name + strlen(name) + 1;
++    strcpy( ret->s_name, name );
++    strcpy( ret->s_proto, proto );
++    ret->s_aliases = (char **)ret->s_proto + strlen(proto) / sizeof(char *) + 1;
++    list_dup( aliases, ret->s_aliases, 0 );
++    return ret;
+ }
+ 
+ 
+diff --git a/dlls/ws2_32/tests/protocol.c b/dlls/ws2_32/tests/protocol.c
+index d6e454a5fbd..b230ac80c80 100644
+--- a/dlls/ws2_32/tests/protocol.c
++++ b/dlls/ws2_32/tests/protocol.c
+@@ -39,6 +39,13 @@
+                            | XP1_SUPPORT_MULTIPOINT  \
+                            | XP1_IFS_HANDLES)
+ 
++#define PRIVATE_PORT_START 49152
++
++#define TEST_TIMEOUT 30    /* Seconds to wait before killing child threads
++                              after server initialization, if something hangs */
++#define NUM_THREADS 3      /* Number of threads to run getservbyname */
++#define NUM_QUERIES 250    /* Number of getservbyname queries per thread */
++
+ static void test_service_flags(int family, int version, int socktype, int protocol, DWORD testflags)
+ {
+     DWORD expectedflags = 0;
+@@ -290,6 +297,356 @@ static void test_getprotobynumber(void)
+     }
+ }
+ 
++struct service
++{
++    unsigned short port;
++    const char *names[2];
++    const char *protos[2];
++    enum { MISSING = 0x1, RENAMED = 0x2 } flags;
++};
++
++static const struct service services[] =
++{
++    {     7, {"echo"}, {"tcp", "udp"} },
++    {     9, {"discard", "sink"}, {"tcp", "udp"} },
++    {    11, {"systat", "users"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {    13, {"daytime"}, {"tcp", "udp"} },
++    {    17, {"qotd", "quote"}, {"tcp", "udp"} },
++    {    19, {"chargen", "ttytst"}, {"tcp", "udp"} },
++    {    20, {"ftp-data"}, {"tcp"} },
++    {    21, {"ftp"}, {"tcp"} },
++    {    22, {"ssh"}, {"tcp"}, MISSING /* xp */ },
++    {    23, {"telnet"}, {"tcp"} },
++    {    25, {"smtp", "mail"}, {"tcp"} },
++    {    37, {"time", "timserver"}, {"tcp", "udp"} },
++    {    39, {"rlp", "resource"}, {"udp"} },
++    {    42, {"nameserver", "name"}, {"tcp", "udp"} },
++    {    43, {"nicname", "whois"}, {"tcp"} },
++    {    53, {"domain"}, {"tcp", "udp"} },
++    {    67, {"bootps", "dhcps"}, {"udp"} },
++    {    68, {"bootpc", "dhcpc"}, {"udp"} },
++    {    69, {"tftp"}, {"udp"} },
++    {    70, {"gopher"}, {"tcp"} },
++    {    79, {"finger"}, {"tcp"} },
++    {    80, {"http", "www"}, {"tcp"} },
++    {    81, {"hosts2-ns"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {    88, {"kerberos", "krb5"}, {"tcp", "udp"} },
++    {   101, {"hostname", "hostnames"}, {"tcp"} },
++    {   102, {"iso-tsap"}, {"tcp"} },
++    {   107, {"rtelnet"}, {"tcp"} },
++    {   109, {"pop2", "postoffice"}, {"tcp"} },
++    {   110, {"pop3"}, {"tcp"} },
++    {   111, {"sunrpc", "rpcbind"}, {"tcp", "udp"} },
++    {   113, {"auth", "ident"}, {"tcp"} },
++    {   117, {"uucp-path"}, {"tcp"} },
++    {   118, {"sqlserv"}, {"tcp"}, MISSING /* xp */ },
++    {   119, {"nntp", "usenet"}, {"tcp"} },
++    {   123, {"ntp"}, {"udp"} },
++    {   135, {"epmap", "loc-srv"}, {"tcp", "udp"} },
++    {   137, {"netbios-ns", "nbname"}, {"tcp", "udp"} },
++    {   138, {"netbios-dgm", "nbdatagram"}, {"udp"} },
++    {   139, {"netbios-ssn", "nbsession"}, {"tcp"} },
++    {   143, {"imap", "imap4"}, {"tcp"} },
++    {   150, {"sql-net"}, {"tcp"}, MISSING /* xp */ },
++    {   156, {"sqlsrv"}, {"tcp"}, MISSING /* xp */ },
++    {   158, {"pcmail-srv"}, {"tcp"} },
++    {   161, {"snmp"}, {"udp"} },
++    {   162, {"snmptrap", "snmp-trap"}, {"udp"} },
++    {   170, {"print-srv"}, {"tcp"} },
++    {   179, {"bgp"}, {"tcp"} },
++    {   194, {"irc"}, {"tcp"} },
++    {   213, {"ipx"}, {"udp"} },
++    {   322, {"rtsps"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   349, {"mftp"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   389, {"ldap"}, {"tcp"} },
++    {   443, {"https", "MCom"}, {"tcp", "udp"} },
++    {   445, {"microsoft-ds"}, {"tcp", "udp"} },
++    {   464, {"kpasswd"}, {"tcp", "udp"} },
++    {   500, {"isakmp", "ike"}, {"udp"} },
++    {   507, {"crs"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   512, {"exec"}, {"tcp"} },
++    {   512, {"biff", "comsat"}, {"udp", "tcp"}, MISSING /* win10 */ },
++    {   513, {"login"}, {"tcp"} },
++    {   513, {"who", "whod"}, {"udp", "tcp"}, MISSING /* win10 */ },
++    {   514, {"cmd", "shell"}, {"tcp"} },
++    {   514, {"syslog"}, {"udp", "tcp"}, MISSING /* win10 */ },
++    {   515, {"printer", "spooler"}, {"tcp"} },
++    {   517, {"talk"}, {"udp"} },
++    {   518, {"ntalk"}, {"udp"} },
++    {   520, {"efs"}, {"tcp"} },
++    {   520, {"router", "route"}, {"udp", "tcp"}, MISSING /* win10 */ },
++    {   522, {"ulp"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   525, {"timed", "timeserver"}, {"udp"} },
++    {   526, {"tempo", "newdate"}, {"tcp"} },
++    {   529, {"irc-serv"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   530, {"courier", "rpc"}, {"tcp"} },
++    {   531, {"conference", "chat"}, {"tcp"} },
++    {   532, {"netnews", "readnews"}, {"tcp"} },
++    {   533, {"netwall"}, {"udp"} },
++    {   540, {"uucp", "uucpd"}, {"tcp"} },
++    {   543, {"klogin"}, {"tcp"} },
++    {   544, {"kshell", "krcmd"}, {"tcp"} },
++    {   546, {"dhcpv6-client"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   547, {"dhcpv6-server"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   548, {"afpovertcp"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   550, {"new-rwho", "new-who"}, {"udp"} },
++    {   554, {"rtsp"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   556, {"remotefs", "rfs"}, {"tcp"} },
++    {   560, {"rmonitor", "rmonitord"}, {"udp"} },
++    {   561, {"monitor"}, {"udp"} },
++    {   563, {"nntps", "snntp"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   565, {"whoami"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   568, {"ms-shuttle"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   569, {"ms-rome"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   593, {"http-rpc-epmap"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   612, {"hmmp-ind"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   613, {"hmmp-op"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   636, {"ldaps", "sldap"}, {"tcp"} },
++    {   666, {"doom"}, {"tcp", "udp"} },
++    {   691, {"msexch-routing"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   749, {"kerberos-adm"}, {"tcp", "udp"} },
++    {   750, {"kerberos-iv"}, {"udp"} },
++    {   800, {"mdbs_daemon"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {   989, {"ftps-data"}, {"tcp"}, MISSING /* xp */ },
++    {   990, {"ftps"}, {"tcp"}, MISSING /* xp */ },
++    {   992, {"telnets"}, {"tcp"}, MISSING /* xp */ },
++    {   993, {"imaps"}, {"tcp"}, MISSING /* xp */ },
++    {   994, {"ircs"}, {"tcp"}, MISSING /* xp */ },
++    {   995, {"pop3s", "spop3"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  1034, {"activesync"}, {"tcp"}, MISSING /* xp */ },
++    {  1109, {"kpop"}, {"tcp"} },
++    {  1110, {"nfsd-status"}, {"tcp"}, MISSING /* xp */ },
++    {  1110, {"nfsd-keepalive"}, {"udp"}, MISSING /* xp */ },
++    {  1155, {"nfa"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  1167, {"phone"}, {"udp"} },
++    {  1270, {"opsmgr"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  1433, {"ms-sql-s"}, {"tcp", "udp"} },
++    {  1434, {"ms-sql-m"}, {"tcp", "udp"} },
++    {  1477, {"ms-sna-server"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  1478, {"ms-sna-base"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  1512, {"wins"}, {"tcp", "udp"} },
++    {  1524, {"ingreslock", "ingres"}, {"tcp"} },
++    {  1607, {"stt"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  1701, {"l2tp"}, {"udp"} },
++    {  1711, {"pptconference"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  1723, {"pptp"}, {"tcp"} },
++    {  1731, {"msiccp"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  1745, {"remote-winsock"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  1755, {"ms-streaming"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  1801, {"msmq"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  1812, {"radius"}, {"udp"} },
++    {  1813, {"radacct"}, {"udp"} },
++    {  1863, {"msnp"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  1900, {"ssdp"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  1944, {"close-combat"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2049, {"nfsd", "nfs"}, {"udp"} },
++    {  2053, {"knetd"}, {"tcp"} },
++    {  2106, {"mzap"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2177, {"qwave"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2234, {"directplay"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2382, {"ms-olap3"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2383, {"ms-olap4"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2393, {"ms-olap1"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2394, {"ms-olap2"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2460, {"ms-theater"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2504, {"wlbs"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2525, {"ms-v-worlds"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2701, {"sms-rcinfo"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2702, {"sms-xfer"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2703, {"sms-chat"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2704, {"sms-remctrl"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2725, {"msolap-ptp2"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  2869, {"icslap"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  3020, {"cifs"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  3074, {"xbox"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  3126, {"ms-dotnetster"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  3132, {"ms-rule-engine"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  3268, {"msft-gc"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  3269, {"msft-gc-ssl"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  3343, {"ms-cluster-net"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  3389, {"ms-wbt-server"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  3535, {"ms-la"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  3540, {"pnrp-port"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  3544, {"teredo"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  3587, {"p2pgroup"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  3702, {"ws-discovery", "upnp-discovery"}, {"udp", "tcp"}, MISSING /* xp */ | RENAMED /* 2008 */ },
++    {  3776, {"dvcprov-port"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  3847, {"msfw-control"}, {"tcp"}, MISSING /* xp */ },
++    {  3882, {"msdts1"}, {"tcp"}, MISSING /* xp */ },
++    {  3935, {"sdp-portmapper"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  4350, {"net-device"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  4500, {"ipsec-msft"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  5355, {"llmnr"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  5357, {"wsd"}, {"tcp"}, MISSING /* xp */ },
++    {  5358, {"wsd"}, {"tcp"}, MISSING /* xp */ },
++    {  5678, {"rrac"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  5679, {"dccm"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  5720, {"ms-licensing"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  6073, {"directplay8"}, {"tcp", "udp"}, MISSING /* xp */ },
++    {  9535, {"man"}, {"tcp"} },
++    {  9753, {"rasadv"}, {"tcp", "udp"}, MISSING /* xp */ },
++    { 11320, {"imip-channels"}, {"tcp", "udp"}, MISSING /* xp */ },
++    { 47624, {"directplaysrvr"}, {"tcp", "udp"}, MISSING /* xp */ },
++};
++
++static const struct service *find_service(int port, const char *proto)
++{
++    int i, j;
++    for (i = 0; i < ARRAY_SIZE(services) && services[i].port <= port; i++)
++    {
++        if (services[i].port != port) continue;
++        for (j = 0; j < ARRAY_SIZE(services[0].protos) && services[i].protos[j]; j++)
++        {
++            if (!proto || _stricmp(proto, services[i].protos[j]) == 0)
++                return &services[i];
++        }
++    }
++    return NULL;
++}
++
++static DWORD WINAPI do_getservbyname(void *param)
++{
++    HANDLE *starttest = param;
++    int i, j, k, l;
++    struct servent *results[ARRAY_SIZE(services)];
++    char all_caps_name[16];
++
++    if (starttest)
++    {
++        ok(WaitForSingleObject(*starttest, TEST_TIMEOUT * 1000) != WAIT_TIMEOUT,
++           "test_getservbyname: timeout waiting for start signal\n");
++    }
++
++    /* ensure that necessary buffer resizes are completed */
++    for (i = 0; i < 2; i++)
++        results[i] = getservbyname(services[i].names[0], NULL);
++
++    for (i = 0; i < (starttest ? NUM_QUERIES / 2 : 1); i++)
++    {
++        for (j = 0; j < (starttest ? 2 : ARRAY_SIZE(services)); j++)
++        {
++            if (j > 0 && strcmp(services[j].names[0], services[j-1].names[0]) == 0) continue;
++            for (k = 0; k < ARRAY_SIZE(services[0].names) && services[j].names[k]; k++)
++            {
++                for (l = 0; services[j].names[k][l]; l++)
++                    all_caps_name[l] = toupper(services[j].names[k][l]);
++                all_caps_name[l] = 0;
++                for (l = 0; l < ARRAY_SIZE(services[0].protos); l++)
++                {
++                    results[j] = getservbyname(services[j].names[k], services[j].protos[l]);
++                    ok(results[j] != NULL || broken(services[j].flags & MISSING),
++                       "getservbyname could not retrieve information for %s/%s: %d\n",
++                       services[j].names[k], wine_dbgstr_a(services[j].protos[l]), WSAGetLastError());
++                    if (!results[j]) continue;
++                    ok(ntohs(results[j]->s_port) == services[j].port,
++                       "getservbyname returned the wrong port for %s/%s: %d\n",
++                       services[j].names[k], wine_dbgstr_a(services[j].protos[l]), ntohs(results[j]->s_port));
++                    ok(!strcmp(results[j]->s_proto, services[j].protos[l] ? services[j].protos[l] : services[j].protos[0]),
++                       "getservbyname returned the wrong protocol for %s/%s: %s\n",
++                       services[j].names[k], wine_dbgstr_a(services[j].protos[l]), results[j]->s_proto);
++                    ok(!strcmp(results[j]->s_name, services[j].names[0]) ||
++                       broken((services[j].flags & RENAMED) && !strcmp(results[j]->s_name, services[j].names[1])),
++                       "getservbyname returned the wrong name for %s/%s: %s\n",
++                       services[j].names[k], wine_dbgstr_a(services[j].protos[l]), results[j]->s_name);
++
++                    results[j] = getservbyname(all_caps_name, services[j].protos[l]);
++                    ok(ntohs(results[j]->s_port) == services[j].port,
++                       "getservbyname returned the wrong port for %s/%s: %d\n",
++                       all_caps_name, wine_dbgstr_a(services[j].protos[l]), ntohs(results[j]->s_port));
++                    ok(!strcmp(results[j]->s_proto, services[j].protos[l] ? services[j].protos[l] : services[j].protos[0]),
++                       "getservbyname returned the wrong protocol for %s/%s: %s\n",
++                       all_caps_name, wine_dbgstr_a(services[j].protos[l]), results[j]->s_proto);
++                    ok(!strcmp(results[j]->s_name, services[j].names[0]) ||
++                       broken((services[j].flags & RENAMED) && !strcmp(results[j]->s_name, services[j].names[1])),
++                       "getservbyname returned the wrong name for %s/%s: %s\n",
++                       all_caps_name, wine_dbgstr_a(services[j].protos[l]), results[j]->s_name);
++                }
++            }
++        }
++        ok(results[0] == results[1],
++           "getservbyname: winsock resized servent buffer when not necessary\n");
++    }
++
++    return 0;
++}
++
++static void test_getservbyname(void)
++{
++    int i;
++    HANDLE starttest, thread[NUM_THREADS];
++    DWORD thread_id[NUM_THREADS];
++
++    /* test the complete list of service entries */
++    do_getservbyname(NULL);
++
++    /* test thread safety using just the first two service entries */
++    starttest = CreateEventA(NULL, 1, 0, "test_getservbyname_starttest");
++
++    /* create threads */
++    for (i = 0; i < NUM_THREADS; i++)
++        thread[i] = CreateThread(NULL, 0, do_getservbyname, &starttest, 0, &thread_id[i]);
++
++    /* signal threads to start */
++    SetEvent(starttest);
++
++    for (i = 0; i < NUM_THREADS; i++)
++        WaitForSingleObject(thread[i], TEST_TIMEOUT * 1000);
++}
++
++static void test_getservbyport(void)
++{
++    static const char *test_protos[] = { NULL, "tcp", "udp", "icmp", "Tcp", "udP" };
++    struct servent *ent;
++    const struct service *ref;
++    int i, j;
++
++    /* Testing all port/protocol combinations takes a very long time on Windows. To avoid timeouts,
++     * don't test the private port range and skip the tests for specific protocols if there is no
++     * defined service on a particular port for any protocol. */
++    for (i = 0; i <= PRIVATE_PORT_START; i++)
++    {
++        for (j = 0; j < ARRAY_SIZE(test_protos); j++)
++        {
++            ent = getservbyport(htons(i), test_protos[j]);
++            ref = find_service(i, test_protos[j]);
++
++            if (!ref)
++            {
++                ok(!ent, "Expected service %d/%s to be undefined, got %s\n",
++                   i, wine_dbgstr_a(test_protos[j]), wine_dbgstr_a(ent ? ent->s_name : NULL));
++                if (!ent && j == 0) break;
++                continue;
++            }
++
++            ok((ent && ent->s_name && strcmp(ent->s_name, ref->names[0]) == 0) ||
++               broken((ref->flags & MISSING) && !ent) ||
++               broken((ref->flags & RENAMED) && ent && ent->s_name && strcmp(ent->s_name, ref->names[1]) == 0),
++               "Expected service %d/%s to be %s, got %s\n",
++               i, wine_dbgstr_a(test_protos[j]), wine_dbgstr_a(ref->names[0]),
++               wine_dbgstr_a(ent ? ent->s_name : NULL));
++
++            if (ref->names[1])
++            {
++                ok((ent && ent->s_aliases && ent->s_aliases[0] &&
++                    strcmp(ent->s_aliases[0], ref->names[1]) == 0) ||
++                   broken((ref->flags & MISSING) && !ent) ||
++                   broken((ref->flags & RENAMED) && ent && ent->s_aliases && !ent->s_aliases[0]),
++                   "Expected service %d/%s alias 0 to be %s, got %s\n",
++                   i, wine_dbgstr_a(test_protos[j]), wine_dbgstr_a(ref->names[1]),
++                   wine_dbgstr_a(ent && ent->s_aliases ? ent->s_aliases[0] : NULL));
++            }
++            else
++            {
++                ok((ent && ent->s_aliases && !ent->s_aliases[0]) ||
++                   broken((ref->flags & MISSING) && !ent),
++                   "Expected service %d/%s alias 0 to be undefined, got %s\n",
++                   i, wine_dbgstr_a(test_protos[j]),
++                   wine_dbgstr_a(ent && ent->s_aliases ? ent->s_aliases[0] : NULL));
++            }
++        }
++    }
++}
++
+ START_TEST( protocol )
+ {
+     WSADATA data;
+@@ -301,4 +658,6 @@ START_TEST( protocol )
+     test_WSAEnumProtocolsW();
+     test_getprotobyname();
+     test_getprotobynumber();
++    test_getservbyname();
++    test_getservbyport();
+ }
+diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
+index c7f88d6f3b1..f038618f766 100644
+--- a/dlls/ws2_32/tests/sock.c
++++ b/dlls/ws2_32/tests/sock.c
+@@ -45,9 +45,6 @@
+ 
+ #define NUM_UDP_PEERS 3    /* Number of UDP sockets to create and test > 1 */
+ 
+-#define NUM_THREADS 3      /* Number of threads to run getservbyname */
+-#define NUM_QUERIES 250    /* Number of getservbyname queries per thread */
+-
+ #define SERVERIP "127.0.0.1"   /* IP to bind to */
+ #define SERVERPORT 9374        /* Port number to bind to */
+ 
+@@ -2403,68 +2400,6 @@ static void test_UDP(void)
+     }
+ }
+ 
+-static DWORD WINAPI do_getservbyname( void *param )
+-{
+-    struct {
+-        const char *name;
+-        const char *proto;
+-        int port;
+-    } serv[2] = { {"domain", "udp", 53}, {"telnet", "tcp", 23} };
+-
+-    HANDLE *starttest = param;
+-    int i, j;
+-    struct servent *pserv[2];
+-
+-    ok ( WaitForSingleObject ( *starttest, TEST_TIMEOUT * 1000 ) != WAIT_TIMEOUT,
+-         "test_getservbyname: timeout waiting for start signal\n" );
+-
+-    /* ensure that necessary buffer resizes are completed */
+-    for ( j = 0; j < 2; j++) {
+-        pserv[j] = getservbyname ( serv[j].name, serv[j].proto );
+-    }
+-
+-    for ( i = 0; i < NUM_QUERIES / 2; i++ ) {
+-        for ( j = 0; j < 2; j++ ) {
+-            pserv[j] = getservbyname ( serv[j].name, serv[j].proto );
+-            ok ( pserv[j] != NULL || broken(pserv[j] == NULL) /* win8, fixed in win81 */,
+-                 "getservbyname could not retrieve information for %s: %d\n", serv[j].name, WSAGetLastError() );
+-            if ( !pserv[j] ) continue;
+-            ok ( pserv[j]->s_port == htons(serv[j].port),
+-                 "getservbyname returned the wrong port for %s: %d\n", serv[j].name, ntohs(pserv[j]->s_port) );
+-            ok ( !strcmp ( pserv[j]->s_proto, serv[j].proto ),
+-                 "getservbyname returned the wrong protocol for %s: %s\n", serv[j].name, pserv[j]->s_proto );
+-            ok ( !strcmp ( pserv[j]->s_name, serv[j].name ),
+-                 "getservbyname returned the wrong name for %s: %s\n", serv[j].name, pserv[j]->s_name );
+-        }
+-
+-        ok ( pserv[0] == pserv[1] || broken(pserv[0] != pserv[1]) /* win8, fixed in win81 */,
+-             "getservbyname: winsock resized servent buffer when not necessary\n" );
+-    }
+-
+-    return 0;
+-}
+-
+-static void test_getservbyname(void)
+-{
+-    int i;
+-    HANDLE starttest, thread[NUM_THREADS];
+-    DWORD thread_id[NUM_THREADS];
+-
+-    starttest = CreateEventA ( NULL, 1, 0, "test_getservbyname_starttest" );
+-
+-    /* create threads */
+-    for ( i = 0; i < NUM_THREADS; i++ ) {
+-        thread[i] = CreateThread ( NULL, 0, do_getservbyname, &starttest, 0, &thread_id[i] );
+-    }
+-
+-    /* signal threads to start */
+-    SetEvent ( starttest );
+-
+-    for ( i = 0; i < NUM_THREADS; i++) {
+-        WaitForSingleObject ( thread[i], TEST_TIMEOUT * 1000 );
+-    }
+-}
+-
+ static void test_WSASocket(void)
+ {
+     SOCKET sock = INVALID_SOCKET;
+@@ -11439,7 +11374,6 @@ START_TEST( sock )
+ 
+     test_UDP();
+ 
+-    test_getservbyname();
+     test_WSASocket();
+     test_WSADuplicateSocket();
+     test_WSAEnumNetworkEvents();
+
+-- 
+2.28.0
+

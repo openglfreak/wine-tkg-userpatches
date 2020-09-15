@@ -1,0 +1,115 @@
+From: Louis Lenders <xerox.xerox2000x@gmail.com>
+Subject: [PATCH] advapi32: add stub for LogonUserEx{A,W}
+Message-Id: <20200902162229.662150-1-xerox.xerox2000x@gmail.com>
+Date: Wed,  2 Sep 2020 18:22:29 +0200
+
+This was API mentioned on forum: https://forum.winehq.org/viewtopic.php?f=2&t=34291
+(The app is ConsultantPlus)
+
+Signed-off-by: Louis Lenders <xerox.xerox2000x@gmail.com>
+---
+ dlls/advapi32/advapi.c      | 57 ++++++++++++++++++++++++++-----------
+ dlls/advapi32/advapi32.spec |  4 +--
+ 2 files changed, 42 insertions(+), 19 deletions(-)
+
+diff --git a/dlls/advapi32/advapi.c b/dlls/advapi32/advapi.c
+index 589405b59e..b494740bd8 100644
+--- a/dlls/advapi32/advapi.c
++++ b/dlls/advapi32/advapi.c
+@@ -237,36 +237,59 @@ DWORD WINAPI InitiateShutdownW(WCHAR *name, WCHAR *message, DWORD seconds, DWORD
+     return ERROR_CALL_NOT_IMPLEMENTED;
+ }
+ 
+-BOOL WINAPI LogonUserA( LPCSTR lpszUsername, LPCSTR lpszDomain, LPCSTR lpszPassword,
+-                        DWORD dwLogonType, DWORD dwLogonProvider, PHANDLE phToken )
++BOOL WINAPI LogonUserExW ( const WCHAR *name, const WCHAR *domain, const WCHAR *pwd,
++                           DWORD type, DWORD provider, HANDLE *token, SID **sid, VOID **buf,
++                           DWORD *size, QUOTA_LIMITS *quota_limits )
+ {
+-    WCHAR *usernameW = NULL, *domainW = NULL, *passwordW = NULL;
++    FIXME("%s %s %s 0x%08x 0x%08x %p %p %p %p %p\n", debugstr_w(name),
++          debugstr_w(domain), debugstr_w(pwd), type, provider, token, sid, buf, size, quota_limits);
++
++    if ( sid || buf || size || quota_limits )
++    {
++        FIXME(" %p %p %p %p - unsupported arguments\n", sid, buf, size, quota_limits);
++        return FALSE;
++    }
++
++    if ( token )
++        *token = (HANDLE *)0xdeadbeef;
++
++    return TRUE;
++}
++
++BOOL WINAPI LogonUserExA ( const char *name, const char *domain, const char *pwd,
++                           DWORD type, DWORD provider, HANDLE *token, SID **sid, VOID **buf,
++                           DWORD *size, QUOTA_LIMITS *quota_limits )
++{
++    WCHAR *nameW = NULL, *domainW = NULL, *pwdW = NULL;
+     BOOL ret = FALSE;
+ 
+-    TRACE("%s %s %p 0x%08x 0x%08x %p\n", debugstr_a(lpszUsername),
+-          debugstr_a(lpszDomain), lpszPassword, dwLogonType, dwLogonProvider, phToken);
++    TRACE("%s %s %s 0x%08x 0x%08x %p %p %p %p %p\n", debugstr_a(name),
++          debugstr_a(domain), debugstr_a(pwd), type, provider, token, sid, buf, size, quota_limits);
+ 
+-    if (lpszUsername && !(usernameW = strdupAW( lpszUsername ))) return FALSE;
+-    if (lpszDomain && !(domainW = strdupAW( lpszUsername ))) goto done;
+-    if (lpszPassword && !(passwordW = strdupAW( lpszPassword ))) goto done;
++    if (name && !(nameW = strdupAW( name ))) return FALSE;
++    if (domain && !(domainW = strdupAW( domain ))) goto done;
++    if (pwd && !(pwdW = strdupAW( pwd ))) goto done;
+ 
+-    ret = LogonUserW( usernameW, domainW, passwordW, dwLogonType, dwLogonProvider, phToken );
++    ret = LogonUserExW( nameW, domainW, pwdW, type, provider, token, sid, buf, size, quota_limits );
+ 
+ done:
+-    heap_free( usernameW );
++    heap_free( nameW );
+     heap_free( domainW );
+-    heap_free( passwordW );
++    heap_free( pwdW );
+     return ret;
+ }
+ 
+-BOOL WINAPI LogonUserW( LPCWSTR lpszUsername, LPCWSTR lpszDomain, LPCWSTR lpszPassword,
+-                        DWORD dwLogonType, DWORD dwLogonProvider, PHANDLE phToken )
++BOOL WINAPI LogonUserW( const WCHAR *name, const WCHAR *domain, const WCHAR *pwd,
++                        DWORD type, DWORD provider, HANDLE *token )
+ {
+-    FIXME("%s %s %p 0x%08x 0x%08x %p - stub\n", debugstr_w(lpszUsername),
+-          debugstr_w(lpszDomain), lpszPassword, dwLogonType, dwLogonProvider, phToken);
++    return LogonUserExW ( name, domain, pwd, type, provider, token, NULL, NULL, NULL, NULL );
++}
+ 
+-    *phToken = (HANDLE *)0xdeadbeef;
+-    return TRUE;
++
++BOOL WINAPI LogonUserA( const char *name, const char *domain, const char *pwd,
++                        DWORD type, DWORD provider, HANDLE *token )
++{
++    return LogonUserExA ( name, domain, pwd, type, provider, token, NULL, NULL, NULL, NULL );
+ }
+ 
+ typedef UINT (WINAPI *fnMsiProvideComponentFromDescriptor)(LPCWSTR,LPWSTR,DWORD*,DWORD*);
+diff --git a/dlls/advapi32/advapi32.spec b/dlls/advapi32/advapi32.spec
+index fcef859a7c..6b41eb77dd 100644
+--- a/dlls/advapi32/advapi32.spec
++++ b/dlls/advapi32/advapi32.spec
+@@ -423,9 +423,9 @@
+ @ stdcall -import IsWellKnownSid(ptr long)
+ @ stdcall LockServiceDatabase(ptr)
+ @ stdcall LogonUserA(str str str long long ptr)
+-# @ stub LogonUserExA
++@ stdcall LogonUserExA(str str str long long ptr ptr ptr ptr ptr)
+ # @ stub LogonUserExExW
+-# @ stub LogonUserExW
++@ stdcall LogonUserExW(wstr wstr wstr long long ptr ptr ptr ptr ptr)
+ @ stdcall LogonUserW(wstr wstr wstr long long ptr)
+ @ stdcall LookupAccountNameA(str str ptr ptr ptr ptr ptr)
+ @ stdcall LookupAccountNameW(wstr wstr ptr ptr ptr ptr ptr)
+
+-- 
+2.28.0
+

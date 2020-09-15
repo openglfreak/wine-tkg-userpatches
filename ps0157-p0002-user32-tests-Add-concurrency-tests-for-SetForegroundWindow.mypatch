@@ -1,0 +1,434 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH v2 2/5] user32/tests: Add concurrency tests for SetForegroundWindow.
+Message-Id: <20200902170102.324526-2-rbernon@codeweavers.com>
+Date: Wed,  2 Sep 2020 19:00:59 +0200
+In-Reply-To: <20200902170102.324526-1-rbernon@codeweavers.com>
+References: <20200902170102.324526-1-rbernon@codeweavers.com>
+
+When calling SetForegroundWindow for a window in another thread, an
+internal message is posted to the thread's message queue.
+
+If this thread then calls SetForegroundWindow before processing its
+messages it will execute the corresponding set_active_window first,
+but then overwrite the active window later, when processing its internal
+messages.
+
+This is not always the correct behavior and these tests help determine
+what should actually be done in various situations.
+
+This aims to check the following sequences, with A being a separate
+thread or a separate process that created three windows, and B being
+the main test thread with some windows initially in background:
+
+* window A0, A1, or A2 is foreground, then:
+  * B sets foreground to window A0
+  * A sets foreground to window A1
+
+As well as these sequences where foreground is also temporarily switched
+to window B0:
+
+* window A0, A1, or A2 is foreground, then:
+  * B sets foreground to window B0
+  * B sets foreground to window A0
+  * B sets foreground to window B0
+  * A sets foreground to window A1
+
+In addition, we also do tests with additional SetActiveWindow / SetFocus
+calls to check their influence.
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/user32/tests/win.c | 336 +++++++++++++++++++++++++++++++++-------
+ 1 file changed, 276 insertions(+), 60 deletions(-)
+
+diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
+index c001247b651..92a7686cc5d 100644
+--- a/dlls/user32/tests/win.c
++++ b/dlls/user32/tests/win.c
+@@ -3240,40 +3240,292 @@ static void test_SetActiveWindow(HWND hwnd)
+     DestroyWindow(hwnd2);
+ }
+ 
+-struct create_window_thread_params
++static int test_sfw_msg_count;
++
++static LRESULT WINAPI test_sfw_wndproc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+ {
+-    HWND window;
+-    HANDLE window_created;
+-    HANDLE test_finished;
++    switch (msg)
++    {
++    case WM_NCACTIVATE:
++    case WM_ACTIVATE:
++    case WM_SETFOCUS:
++    case WM_KILLFOCUS:
++        test_sfw_msg_count++;
++        break;
++    }
++
++    return DefWindowProcA( hwnd, msg, wparam, lparam );
++}
++
++struct test_sfw_test_desc
++{
++    int  initial_window;
++    BOOL steal_foreground;
++    BOOL call_set_active_window;
++    BOOL call_set_focus;
++
++    BOOL todo_msgcount_before_set_foreground;
++    int  msgcount_before_set_foreground;
++    BOOL todo_msgcount_after_set_foreground;
++    int  msgcount_after_set_foreground;
++    BOOL todo_msgcount_after_peek_message;
++    int  msgcount_after_peek_message;
++    BOOL todo_expected_window;
++    int  expected_window;
++};
++
++static struct test_sfw_test_desc test_sfw_tests[] = {
++    {1, FALSE, FALSE, FALSE,  FALSE, 0, FALSE, 0, FALSE, 6, FALSE, 0},
++    {1, TRUE, FALSE, FALSE,   FALSE, 0,  TRUE, 1,  TRUE, 6,  TRUE, 0},
++    {1, FALSE, TRUE, FALSE,   FALSE, 0, FALSE, 0, FALSE, 6, FALSE, 0},
++    {1, TRUE, TRUE, FALSE,    FALSE, 0,  TRUE, 1,  TRUE, 6,  TRUE, 0},
++    {1, FALSE, FALSE, TRUE,   FALSE, 0, FALSE, 0, FALSE, 6, FALSE, 0},
++    {1, TRUE, FALSE, TRUE,    FALSE, 0,  TRUE, 1,  TRUE, 6,  TRUE, 0},
++
++    {2, FALSE, FALSE, FALSE,  FALSE, 0, FALSE, 6,  TRUE, 0,  TRUE, 1},
++    {2, TRUE, FALSE, FALSE,   FALSE, 0, FALSE, 6,  TRUE, 0,  TRUE, 1},
++    {2, FALSE, TRUE, FALSE,   FALSE, 6, FALSE, 0,  TRUE, 0,  TRUE, 1},
++    {2, TRUE, TRUE, FALSE,    FALSE, 6,  TRUE, 1,  TRUE, 6,  TRUE, 0},
++    {2, FALSE, FALSE, TRUE,    TRUE, 8, FALSE, 0,  TRUE, 0,  TRUE, 1},
++    {2, TRUE, FALSE, TRUE,     TRUE, 8,  TRUE, 1,  TRUE, 6,  TRUE, 0},
++
++    {0, FALSE, FALSE, FALSE,  FALSE, 0, FALSE, 6, FALSE, 0, FALSE, 1},
++    {0, TRUE, FALSE, FALSE,   FALSE, 0, FALSE, 6,  TRUE, 0,  TRUE, 1},
++    {0, FALSE, TRUE, FALSE,   FALSE, 6, FALSE, 0, FALSE, 0, FALSE, 1},
++    {0, TRUE, TRUE, FALSE,    FALSE, 6,  TRUE, 1, FALSE, 6, FALSE, 0},
++    {0, FALSE, FALSE, TRUE,    TRUE, 8, FALSE, 0, FALSE, 0, FALSE, 1},
++    {0, TRUE, FALSE, TRUE,     TRUE, 8,  TRUE, 1, FALSE, 6, FALSE, 0},
+ };
+ 
+-static DWORD WINAPI create_window_thread(void *param)
++static DWORD WINAPI test_sfw_thread( void *param )
+ {
+-    struct create_window_thread_params *p = param;
++    HANDLE test_sfw_ready, test_sfw_start, test_sfw_done;
++    WNDPROC wndprocs[3];
++    HWND windows[3];
+     DWORD res;
+     BOOL ret;
++    MSG msg;
++    int i;
+ 
+-    p->window = CreateWindowA("static", NULL, WS_POPUP | WS_VISIBLE, 0, 0, 0, 0, 0, 0, 0, 0);
++    test_sfw_ready = OpenEventA( EVENT_ALL_ACCESS, FALSE, "test_sfw_ready" );
++    test_sfw_start = OpenEventA( EVENT_ALL_ACCESS, FALSE, "test_sfw_start" );
++    test_sfw_done = OpenEventA( EVENT_ALL_ACCESS, FALSE, "test_sfw_done" );
+ 
+-    ret = SetEvent(p->window_created);
++    windows[1] = CreateWindowA( "static", NULL, WS_POPUP | WS_VISIBLE, 0, 0, 0, 0, 0, 0, 0, 0 );
++    windows[2] = CreateWindowA( "static", NULL, WS_POPUP | WS_VISIBLE, 0, 0, 0, 0, 0, 0, 0, 0 );
++    windows[0] = CreateWindowA( "static", "test_sfw_window", WS_POPUP | WS_VISIBLE, 0, 0, 0, 0, 0, 0, 0, 0 );
++    trace( "window[0]:%p windows[1]:%p windows[2]:%p\n", windows[0], windows[1], windows[2] );
++
++    ret = SetEvent( test_sfw_ready );
+     ok(ret, "SetEvent failed, last error %#x.\n", GetLastError());
+ 
+-    res = WaitForSingleObject(p->test_finished, INFINITE);
++    /* wait for the initial state to be clean */
++
++    res = WaitForSingleObject( test_sfw_start, INFINITE );
+     ok(res == WAIT_OBJECT_0, "Wait failed (%#x), last error %#x.\n", res, GetLastError());
++    ret = ResetEvent( test_sfw_start );
++    ok( ret, "ResetEvent failed, last error %#x.\n", GetLastError() );
++
++    for (i = 0; i < ARRAY_SIZE(windows); ++i)
++        wndprocs[i] = (WNDPROC)SetWindowLongPtrA( windows[i], GWLP_WNDPROC, (LONG_PTR)test_sfw_wndproc );
++
++    flush_events( TRUE );
++
++    for (i = 0; i < ARRAY_SIZE(test_sfw_tests); ++i)
++    {
++        struct test_sfw_test_desc *test = test_sfw_tests + i;
++        HWND initial_window = windows[test->initial_window];
++        HWND expected_window = windows[test->expected_window];
++        trace( "running test %d\n", i );
++
++        SetForegroundWindow( initial_window );
++        flush_events( TRUE );
++        check_wnd_state( initial_window, initial_window, initial_window, 0 );
++
++        ret = SetEvent( test_sfw_ready );
++        ok( ret, "SetEvent failed, last error %#x.\n", GetLastError() );
++
++        res = WaitForSingleObject( test_sfw_start, INFINITE );
++        ok( res == WAIT_OBJECT_0, "Wait failed (%#x), last error %#x.\n", res, GetLastError() );
++        ret = ResetEvent( test_sfw_start );
++        ok( ret, "ResetEvent failed, last error %#x.\n", GetLastError() );
++
++        test_sfw_msg_count = 0;
++        if (test->call_set_active_window) SetActiveWindow( windows[1] );
++        if (test->call_set_focus) SetFocus( windows[1] );
++        todo_wine_if( test->todo_msgcount_before_set_foreground )
++        ok( test_sfw_msg_count == test->msgcount_before_set_foreground,
++            "%d: Unexpected number of messages received before SetForegroundWindow: %d\n", i, test_sfw_msg_count );
++
++        test_sfw_msg_count = 0;
++        SetForegroundWindow( windows[1] );
++        todo_wine_if( test->todo_msgcount_after_set_foreground )
++        ok( test_sfw_msg_count == test->msgcount_after_set_foreground,
++            "%d: Unexpected number of messages received after SetForegroundWindow: %d\n", i, test_sfw_msg_count );
++
++        test_sfw_msg_count = 0;
++        ok( GetForegroundWindow() == windows[1], "GetForegroundWindow() returned %p\n", GetForegroundWindow() );
++        ok( GetActiveWindow() == windows[1], "GetActiveWindow() returned %p\n", GetActiveWindow() );
++        ok( GetFocus() == windows[1], "GetFocus() returned %p\n", GetFocus() );
++        while (PeekMessageA( &msg, 0, 0, 0, PM_REMOVE )) DispatchMessageA( &msg );
++        todo_wine_if( test->todo_msgcount_after_peek_message )
++        ok( test_sfw_msg_count == test->msgcount_after_peek_message,
++            "%d: Unexpected number of messages received after PeekMessageA: %d\n", i, test_sfw_msg_count );
++
++        todo_wine_if( test->todo_expected_window )
++        ok( GetForegroundWindow() == expected_window, "%d: GetForegroundWindow() returned %p\n", i,
++            GetForegroundWindow() );
++        todo_wine_if( test->todo_expected_window )
++        ok( GetActiveWindow() == expected_window, "%d: GetActiveWindow() returned %p\n", i, GetActiveWindow() );
++        todo_wine_if( test->todo_expected_window )
++        ok( GetFocus() == expected_window, "%d: GetFocus() returned %p\n", i, GetFocus() );
++
++        res = WaitForSingleObject( test_sfw_done, INFINITE );
++        ok( res == WAIT_OBJECT_0, "Wait failed (%#x), last error %#x.\n", res, GetLastError() );
++        ret = ResetEvent( test_sfw_done );
++        ok( ret, "ResetEvent failed, last error %#x.\n", GetLastError() );
++    }
++
++    for (i = 0; i < ARRAY_SIZE(windows); ++i)
++        SetWindowLongPtrA( windows[i], GWLP_WNDPROC, (LONG_PTR)wndprocs[i] );
++
++    for (i = 0; i < ARRAY_SIZE(windows); ++i) DestroyWindow( windows[i] );
++
++    CloseHandle( test_sfw_ready );
++    CloseHandle( test_sfw_start );
++    CloseHandle( test_sfw_done );
+ 
+-    DestroyWindow(p->window);
+     return 0;
+ }
+ 
+-static void test_SetForegroundWindow(HWND hwnd)
++static void test_sfw_multi_thread( const char *argv0, HWND hwnd, BOOL cross_process )
+ {
+-    struct create_window_thread_params thread_params;
+-    HANDLE thread;
++    PROCESS_INFORMATION pi;
++    STARTUPINFOA si = {sizeof(si)};
++    HANDLE thread = 0;
++    HANDLE test_sfw_ready, test_sfw_start, test_sfw_done;
+     DWORD res, tid;
+-    BOOL ret;
++    HWND test_sfw_window;
++    char cmd[MAX_PATH];
+     HWND hwnd2;
+-    MSG msg;
+     LONG style;
++    BOOL ret;
++    MSG msg;
++    int i;
++
++    hwnd2 = CreateWindowA( "static", NULL, WS_POPUP | WS_VISIBLE, 0, 0, 0, 0, 0, 0, 0, 0 );
++    check_wnd_state( hwnd2, hwnd2, hwnd2, 0 );
++
++    test_sfw_ready = CreateEventA( NULL, FALSE, FALSE, "test_sfw_ready" );
++    ok( !!test_sfw_ready, "CreateEvent failed, last error %#x.\n", GetLastError() );
++    test_sfw_start = CreateEventA( NULL, FALSE, FALSE, "test_sfw_start" );
++    ok( !!test_sfw_start, "CreateEvent failed, last error %#x.\n", GetLastError() );
++    test_sfw_done = CreateEventA( NULL, FALSE, FALSE, "test_sfw_done" );
++    ok( !!test_sfw_done, "CreateEvent failed, last error %#x.\n", GetLastError() );
++
++    if (cross_process)
++    {
++        sprintf( cmd, "%s win test_sfw", argv0 );
++        ret = CreateProcessA( NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi );
++        ok( ret, "CreateProcessA failed, last error: %#x.\n", GetLastError() );
++    }
++    else
++    {
++        thread = CreateThread( NULL, 0, test_sfw_thread, NULL, 0, &tid );
++        ok( !!thread, "Failed to create thread, last error %#x.\n", GetLastError() );
++    }
++
++    res = WaitForSingleObject( test_sfw_ready, INFINITE );
++    ok( res == WAIT_OBJECT_0, "Wait failed (%#x), last error %#x.\n", res, GetLastError() );
++    ret = ResetEvent( test_sfw_ready );
++    ok( ret, "ResetEvent failed, last error %#x.\n", GetLastError() );
++
++    test_sfw_window = FindWindowA( "static", "test_sfw_window" );
++    ok( test_sfw_window != NULL, "FindWindowA failed to find test window, last error %#x\n", GetLastError() );
++    check_wnd_state( hwnd2, test_sfw_window, hwnd2, 0 );
++
++    /* ensure initial state is consistent, with hwnd as active / foreground / focus window */
++
++    SetForegroundWindow( hwnd2 );
++    check_wnd_state( hwnd2, hwnd2, hwnd2, 0 );
++
++    while (PeekMessageA( &msg, 0, 0, 0, PM_REMOVE )) DispatchMessageA( &msg );
++    if (0) check_wnd_state( hwnd2, hwnd2, hwnd2, 0 );
++
++    /* FIXME: these tests are failing because of a race condition
++     * between internal process focus state applied immediately and
++     * X11 focus message coming late */
++    todo_wine_if( !cross_process )
++    ok( GetActiveWindow() == hwnd2, "Expected active window %p, got %p.\n", hwnd2, GetActiveWindow() );
++    todo_wine_if( !cross_process )
++    ok( GetFocus() == hwnd2, "Expected focus window %p, got %p.\n", hwnd2, GetFocus() );
++
++    SetForegroundWindow( hwnd );
++    check_wnd_state( hwnd, hwnd, hwnd, 0 );
++    style = GetWindowLongA( hwnd2, GWL_STYLE ) | WS_CHILD;
++    ok( SetWindowLongA( hwnd2, GWL_STYLE, style ), "SetWindowLong failed\n" );
++    ok( SetForegroundWindow( hwnd2 ), "SetForegroundWindow failed\n" );
++    check_wnd_state( hwnd2, hwnd2, hwnd2, 0 );
++
++    SetForegroundWindow( hwnd );
++    check_wnd_state( hwnd, hwnd, hwnd, 0 );
++    ok( SetWindowLongA( hwnd2, GWL_STYLE, style & (~WS_POPUP) ), "SetWindowLong failed\n" );
++    ok( !SetForegroundWindow( hwnd2 ), "SetForegroundWindow failed\n" );
++    check_wnd_state( hwnd, hwnd, hwnd, 0 );
++
++    res = SetEvent( test_sfw_start );
++    ok( res, "SetEvent failed, last error %#x.\n", GetLastError() );
++
++    /* now run the tests */
++
++    for (i = 0; i < ARRAY_SIZE(test_sfw_tests); ++i)
++    {
++        struct test_sfw_test_desc *test = test_sfw_tests + i;
++
++        while (MsgWaitForMultipleObjects( 1, &test_sfw_ready, FALSE, INFINITE, QS_SENDMESSAGE ) != WAIT_OBJECT_0)
++        {
++            while (PeekMessageA( &msg, 0, 0, 0, PM_REMOVE | PM_QS_SENDMESSAGE ))
++                DispatchMessageA( &msg );
++        }
++
++        ret = ResetEvent( test_sfw_ready );
++        ok( ret, "ResetEvent failed, last error %#x.\n", GetLastError() );
++
++        if (test->steal_foreground) SetForegroundWindow( hwnd );
++        SetForegroundWindow( test_sfw_window );
++        if (test->steal_foreground) SetForegroundWindow( hwnd );
++
++        res = SetEvent( test_sfw_start );
++        ok( res, "SetEvent failed, last error %#x.\n", GetLastError() );
++
++        ret = SetEvent( test_sfw_done );
++        ok( res, "SetEvent failed, last error %#x.\n", GetLastError() );
++    }
++
++    if (cross_process)
++    {
++        wait_child_process( pi.hProcess );
++        CloseHandle( pi.hProcess );
++        CloseHandle( pi.hThread );
++    }
++    else
++    {
++        WaitForSingleObject( thread, INFINITE );
++        CloseHandle( thread );
++    }
++
++    CloseHandle( test_sfw_start );
++    CloseHandle( test_sfw_done );
++    CloseHandle( test_sfw_ready );
++
++    DestroyWindow( hwnd2 );
++    flush_events( TRUE );
++}
++
++static void test_SetForegroundWindow( const char *argv0, HWND hwnd )
++{
++    BOOL ret;
++    HWND hwnd2;
+ 
+     flush_events( TRUE );
+     ShowWindow(hwnd, SW_HIDE);
+@@ -3347,50 +3599,8 @@ static void test_SetForegroundWindow(HWND hwnd)
+     DestroyWindow(hwnd2);
+     check_wnd_state(hwnd, hwnd, hwnd, 0);
+ 
+-    hwnd2 = CreateWindowA("static", NULL, WS_POPUP | WS_VISIBLE, 0, 0, 0, 0, 0, 0, 0, 0);
+-    check_wnd_state(hwnd2, hwnd2, hwnd2, 0);
+-
+-    thread_params.window_created = CreateEventW(NULL, FALSE, FALSE, NULL);
+-    ok(!!thread_params.window_created, "CreateEvent failed, last error %#x.\n", GetLastError());
+-    thread_params.test_finished = CreateEventW(NULL, FALSE, FALSE, NULL);
+-    ok(!!thread_params.test_finished, "CreateEvent failed, last error %#x.\n", GetLastError());
+-    thread = CreateThread(NULL, 0, create_window_thread, &thread_params, 0, &tid);
+-    ok(!!thread, "Failed to create thread, last error %#x.\n", GetLastError());
+-    res = WaitForSingleObject(thread_params.window_created, INFINITE);
+-    ok(res == WAIT_OBJECT_0, "Wait failed (%#x), last error %#x.\n", res, GetLastError());
+-    check_wnd_state(hwnd2, thread_params.window, hwnd2, 0);
+-
+-    SetForegroundWindow(hwnd2);
+-    check_wnd_state(hwnd2, hwnd2, hwnd2, 0);
+-
+-    while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) DispatchMessageA(&msg);
+-    if (0) check_wnd_state(hwnd2, hwnd2, hwnd2, 0);
+-
+-    /* FIXME: these tests are failing because of a race condition
+-     * between internal focus state applied immediately and X11 focus
+-     * message coming late */
+-    todo_wine ok(GetActiveWindow() == hwnd2, "Expected active window %p, got %p.\n", hwnd2, GetActiveWindow());
+-    todo_wine ok(GetFocus() == hwnd2, "Expected focus window %p, got %p.\n", hwnd2, GetFocus());
+-
+-    SetForegroundWindow(hwnd);
+-    check_wnd_state(hwnd, hwnd, hwnd, 0);
+-    style = GetWindowLongA(hwnd2, GWL_STYLE) | WS_CHILD;
+-    ok(SetWindowLongA(hwnd2, GWL_STYLE, style), "SetWindowLong failed\n");
+-    ok(SetForegroundWindow(hwnd2), "SetForegroundWindow failed\n");
+-    check_wnd_state(hwnd2, hwnd2, hwnd2, 0);
+-
+-    SetForegroundWindow(hwnd);
+-    check_wnd_state(hwnd, hwnd, hwnd, 0);
+-    ok(SetWindowLongA(hwnd2, GWL_STYLE, style & (~WS_POPUP)), "SetWindowLong failed\n");
+-    ok(!SetForegroundWindow(hwnd2), "SetForegroundWindow failed\n");
+-    check_wnd_state(hwnd, hwnd, hwnd, 0);
+-
+-    SetEvent(thread_params.test_finished);
+-    WaitForSingleObject(thread, INFINITE);
+-    CloseHandle(thread_params.test_finished);
+-    CloseHandle(thread_params.window_created);
+-    CloseHandle(thread);
+-    DestroyWindow(hwnd2);
++    test_sfw_multi_thread( argv0, hwnd, FALSE );
++    test_sfw_multi_thread( argv0, hwnd, TRUE );
+ }
+ 
+ static WNDPROC old_button_proc;
+@@ -11993,6 +12203,12 @@ START_TEST(win)
+         return;
+     }
+ 
++    if (argc == 3 && !strcmp( argv[2], "test_sfw" ))
++    {
++        test_sfw_thread( NULL );
++        return;
++    }
++
+     if (!RegisterWindowClasses()) assert(0);
+ 
+     hwndMain = CreateWindowExA(/*WS_EX_TOOLWINDOW*/ 0, "MainWindowClass", "Main window",
+@@ -12090,7 +12306,7 @@ START_TEST(win)
+     test_Expose();
+     test_layered_window();
+ 
+-    test_SetForegroundWindow(hwndMain);
++    test_SetForegroundWindow( argv[0], hwndMain );
+     test_handles( hwndMain );
+     test_winregion();
+     test_map_points();
+
+-- 
+2.28.0
+

@@ -1,0 +1,333 @@
+From: Derek Lesho <dlesho@codeweavers.com>
+Subject: [PATCH v2 2/3] ntoskrnl.exe: Add tests for KeInsertQueueApc.
+Message-Id: <20200909183229.695475-2-dlesho@codeweavers.com>
+Date: Wed,  9 Sep 2020 13:32:28 -0500
+In-Reply-To: <20200909183229.695475-1-dlesho@codeweavers.com>
+References: <20200909183229.695475-1-dlesho@codeweavers.com>
+
+Signed-off-by: Derek Lesho <dlesho@codeweavers.com>
+---
+v2: Minor naming adjustments and applies to latest head.
+---
+ dlls/ntoskrnl.exe/ntoskrnl.exe.spec |   2 +-
+ dlls/ntoskrnl.exe/sync.c            |  10 ++
+ dlls/ntoskrnl.exe/tests/driver.c    | 145 +++++++++++++++++++++++++++-
+ dlls/ntoskrnl.exe/tests/driver.h    |   2 +
+ dlls/ntoskrnl.exe/tests/ntoskrnl.c  |  40 ++++++++
+ 5 files changed, 197 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
+index 8892fde5054..8127fd417e1 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
++++ b/dlls/ntoskrnl.exe/ntoskrnl.exe.spec
+@@ -581,7 +581,7 @@
+ @ stub KeInsertDeviceQueue
+ @ stub KeInsertHeadQueue
+ @ stdcall KeInsertQueue(ptr ptr)
+-@ stub KeInsertQueueApc
++@ stdcall KeInsertQueueApc(ptr ptr ptr long)
+ @ stub KeInsertQueueDpc
+ @ stub KeIsAttachedProcess
+ @ stub KeIsExecutingDpc
+diff --git a/dlls/ntoskrnl.exe/sync.c b/dlls/ntoskrnl.exe/sync.c
+index 0ddb1b353c5..c96a490ff04 100644
+--- a/dlls/ntoskrnl.exe/sync.c
++++ b/dlls/ntoskrnl.exe/sync.c
+@@ -696,6 +696,16 @@ void WINAPI KeInitializeApc(PRKAPC apc, PRKTHREAD thread, KAPC_ENVIRONMENT env,
+     }
+ }
+ 
++/***********************************************************************
++ *           KeInsertQueueApc  (NTOSKRNL.EXE.@)
++ */
++BOOLEAN WINAPI KeInsertQueueApc(PRKAPC apc, PVOID sysarg1, PVOID sysarg2, KPRIORITY increment)
++{
++    FIXME("apc %p arg1 %p arg2 %p inc %u\n", apc, sysarg1, sysarg2, increment);
++
++    return FALSE;
++}
++
+ /***********************************************************************
+  *           KeTestAlertThread  (NTOSKRNL.EXE.@)
+  */
+diff --git a/dlls/ntoskrnl.exe/tests/driver.c b/dlls/ntoskrnl.exe/tests/driver.c
+index dfc742eec3b..32095476abf 100644
+--- a/dlls/ntoskrnl.exe/tests/driver.c
++++ b/dlls/ntoskrnl.exe/tests/driver.c
+@@ -60,7 +60,7 @@ static const WCHAR driver_link[] = {'\\','D','o','s','D','e','v','i','c','e','s'
+ static DRIVER_OBJECT *driver_obj;
+ static DEVICE_OBJECT *lower_device, *upper_device;
+ 
+-static POBJECT_TYPE *pExEventObjectType, *pIoFileObjectType, *pPsThreadType, *pIoDriverObjectType;
++static POBJECT_TYPE *pExEventObjectType, *pIoFileObjectType, *pPsThreadType, *pPsProcessType, *pIoDriverObjectType;
+ static PEPROCESS *pPsInitialSystemProcess;
+ static void *create_caller_thread;
+ 
+@@ -1990,6 +1990,145 @@ static void test_dpc(void)
+     KeRevertToUserAffinityThread();
+ }
+ 
++void WINAPI apc_host_thread_func(PVOID context)
++{
++    /* kernel mode APCs don't require an alertable wait */
++    wait_single((PKEVENT)context, 50 * -10000000);
++
++    PsTerminateSystemThread(STATUS_SUCCESS);
++}
++
++enum
++{
++    SPECIAL_KERNEL,
++    NORMAL_KERNEL,
++    NORMAL_USER,
++} current_apc_type;
++
++PKTHREAD current_apc_thread;
++
++static void WINAPI kernel_routine(PKAPC apc, PKNORMAL_ROUTINE *nrml_routine, PVOID *normal_ctx, PVOID *sysarg1, PVOID *sysarg2)
++{
++    ok(KeGetCurrentThread() == current_apc_thread, "Got unexpected current thread: %p!=%p\n", KeGetCurrentThread(), current_apc_thread);
++    ok(apc && nrml_routine && normal_ctx && sysarg1 && sysarg2, "Missing parameter pointer in kernel_routine\n");
++    if (current_apc_type == SPECIAL_KERNEL)
++    {
++        ok(*nrml_routine == NULL, "Got non-null normal routine value %p in special APC.\n", *nrml_routine);
++        ok(*normal_ctx == NULL, "Got unexpected normal context %p in APC.\n", *normal_ctx);
++        KeSetEvent((PKEVENT)*sysarg2, 0, FALSE);
++    }
++    else
++    {
++        ok(*nrml_routine == (PVOID)(ULONG_PTR)0xdeadbeef, "Got unexpected initial normal routine value: %p\n", *normal_ctx);
++        ok(*normal_ctx == (PVOID)(ULONG_PTR)0xdeadbeef, "Got unexpected normal context: %p\n", *normal_ctx);
++    }
++    /* in a special kernel APC, the normal routine we set should be ignored */
++    /* in a normal routine, the special section has the final say on the normal routine and parameters */
++    *nrml_routine = *sysarg1;
++}
++
++static void WINAPI rundown_routine(PKAPC apc)
++{
++    ok(FALSE, "Unexpected execution of rundown routine\n");
++}
++
++static void WINAPI normal_routine(PVOID normal_ctx, PVOID sysarg1, PVOID sysarg2)
++{
++    ok(KeGetCurrentThread() == current_apc_thread, "Got unexpected current thread: %p!=%p\n", KeGetCurrentThread(), current_apc_thread);
++    ok (current_apc_type == NORMAL_KERNEL, "Got unexpected current APC type: %u\n", current_apc_type);
++    KeSetEvent((PKEVENT)sysarg2, 0, FALSE);
++}
++
++static void test_apc(const struct test_input *test_input)
++{
++    void (WINAPI *pKeInitializeApc)(PRKAPC,PRKTHREAD,KAPC_ENVIRONMENT,PKKERNEL_ROUTINE,PKRUNDOWN_ROUTINE,PKNORMAL_ROUTINE,KPROCESSOR_MODE,PVOID);
++    BOOLEAN (WINAPI *pKeInsertQueueApc)(PKAPC,PVOID,PVOID,KPRIORITY);
++    OBJECT_ATTRIBUTES attr;
++    PEPROCESS user_process;
++    PKTHREAD user_apc_thread;
++    HANDLE user_process_handle;
++    HANDLE done_event_system_handle, done_event_user_handle;
++    KEVENT *done_event, terminate_event;
++    HANDLE apc_host_thread;
++    KAPC special_apc, kernel_apc, user_apc;
++    BOOLEAN res;
++    NTSTATUS stat;
++
++    pKeInitializeApc = get_proc_address("KeInitializeApc");
++    pKeInsertQueueApc = get_proc_address("KeInsertQueueApc");
++
++    ok(pKeInitializeApc && pKeInsertQueueApc, "Unable to find KeInitializeApc and KeInsertQueueApc\n");
++    if (!pKeInitializeApc || !pKeInsertQueueApc)
++        return;
++
++    InitializeObjectAttributes(&attr, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
++    ZwCreateEvent(&done_event_system_handle, SYNCHRONIZE|EVENT_MODIFY_STATE, &attr, SynchronizationEvent, FALSE);
++    ObReferenceObjectByHandle(done_event_system_handle, 0, *pExEventObjectType, KernelMode, (void**)&done_event, NULL);
++
++    KeInitializeEvent(&terminate_event, NotificationEvent, FALSE);
++
++    apc_host_thread = create_thread(apc_host_thread_func, &terminate_event);
++    ObReferenceObjectByHandle(apc_host_thread, 0, *pPsThreadType, KernelMode, (void**)&current_apc_thread, NULL);
++    ZwClose(apc_host_thread);
++
++    current_apc_type = SPECIAL_KERNEL;
++    pKeInitializeApc(&special_apc, current_apc_thread, OriginalApcEnvironment, kernel_routine, rundown_routine,
++                     NULL, KernelMode, (PVOID)(ULONG_PTR)0xdeadbeef);
++    res = pKeInsertQueueApc(&special_apc, normal_routine, done_event, 0);
++todo_wine
++    ok(res, "KeInsertQueueApc failed.\n");
++    if (!res)
++    {
++        KeSetEvent(&terminate_event, 0, FALSE);
++        ObDereferenceObject(current_apc_thread);
++        ObDereferenceObject(done_event);
++        ZwClose(done_event_system_handle);
++        return;
++    }
++    stat = wait_single(done_event, 5 * -10000000);
++    ok(stat == STATUS_WAIT_0, "Waiting on special kernel APC to complete failed: %#x\n", stat);
++
++    current_apc_type = NORMAL_KERNEL;
++    pKeInitializeApc(&kernel_apc, current_apc_thread, OriginalApcEnvironment, kernel_routine, rundown_routine,
++                     (PVOID)(ULONG_PTR)0xdeadbeef, KernelMode, (PVOID)(ULONG_PTR)0xdeadbeef);
++    res = pKeInsertQueueApc(&kernel_apc, normal_routine, done_event, 0);
++    ok(res, "KeInsertQueueApc failed.\n");
++    stat = wait_single(done_event, 5 * -10000000);
++    ok(stat == STATUS_WAIT_0, "Waiting on normal kernel APC to complete failed: %#x\n", stat);
++
++    KeSetEvent(&terminate_event, 0, FALSE);
++    ObDereferenceObject(current_apc_thread);
++
++    /* Get usermode thread accepting APCs */
++    stat = PsLookupThreadByThreadId((HANDLE)(ULONG_PTR)test_input->apc_thread_id, (PETHREAD *)&user_apc_thread);
++    ok(stat == STATUS_SUCCESS, "Got unexpected status %#x.\n", stat);
++
++    /* create handle for done event (once user mode handles are supported, this won't be necessary) */
++    stat = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)test_input->process_id, &user_process);
++    ok(stat == STATUS_SUCCESS, "Got unexpected status %#x.\n", stat);
++
++    stat = ObOpenObjectByPointer(user_process, OBJ_KERNEL_HANDLE, NULL, PROCESS_DUP_HANDLE, *pPsProcessType, KernelMode, &user_process_handle);
++    ok(stat == STATUS_SUCCESS, "Got unexpected status %#x.\n", stat);
++    ObDereferenceObject(user_process);
++
++    stat = ZwDuplicateObject(NtCurrentProcess(), done_event_system_handle, user_process_handle, &done_event_user_handle, SYNCHRONIZE|EVENT_MODIFY_STATE, 0, DUPLICATE_SAME_ACCESS|DUPLICATE_CLOSE_SOURCE);
++    ok(stat == STATUS_SUCCESS, "Got unexpected status %#x.\n", stat);
++
++    current_apc_type = NORMAL_USER;
++    current_apc_thread = user_apc_thread;
++    pKeInitializeApc(&user_apc, user_apc_thread, OriginalApcEnvironment, kernel_routine, rundown_routine,
++                     (PVOID)(ULONG_PTR)0xdeadbeef, UserMode, (PVOID)(ULONG_PTR)0xdeadbeef);
++    pKeInsertQueueApc(&user_apc, test_input->apc_func, done_event_user_handle, 0);
++    ok(res, "KeInsertQueueApc failed.\n");
++
++    stat = wait_single(done_event, 5 * -10000000);
++    ok(stat == STATUS_WAIT_0, "Waiting on user APC to complete failed: %#x\n", stat);
++
++    ZwClose(done_event_user_handle);
++    ObDereferenceObject(done_event);
++    ObDereferenceObject(current_apc_thread);
++}
++
+ static void test_process_memory(const struct test_input *test_input)
+ {
+     NTSTATUS (WINAPI *pMmCopyVirtualMemory)(PEPROCESS fromprocess, void *fromaddress, PEPROCESS toprocess,
+@@ -2135,6 +2274,9 @@ static NTSTATUS main_test(DEVICE_OBJECT *device, IRP *irp, IO_STACK_LOCATION *st
+     pPsThreadType = get_proc_address("PsThreadType");
+     ok(!!pPsThreadType, "IofileObjectType not found\n");
+ 
++    pPsProcessType = get_proc_address("PsProcessType");
++    ok(!!pPsProcessType, "PsProcessType not found\n");
++
+     pPsInitialSystemProcess = get_proc_address("PsInitialSystemProcess");
+     ok(!!pPsInitialSystemProcess, "PsInitialSystemProcess not found\n");
+ 
+@@ -2158,6 +2300,7 @@ static NTSTATUS main_test(DEVICE_OBJECT *device, IRP *irp, IO_STACK_LOCATION *st
+ #endif
+     test_affinity();
+     test_dpc();
++    test_apc(test_input);
+     test_process_memory(test_input);
+     test_permanence();
+ 
+diff --git a/dlls/ntoskrnl.exe/tests/driver.h b/dlls/ntoskrnl.exe/tests/driver.h
+index 58a92d4838e..d0a609329e0 100644
+--- a/dlls/ntoskrnl.exe/tests/driver.h
++++ b/dlls/ntoskrnl.exe/tests/driver.h
+@@ -44,6 +44,8 @@ struct test_input
+     int winetest_report_success;
+     int winetest_debug;
+     DWORD process_id;
++    DWORD apc_thread_id;
++    PKNORMAL_ROUTINE apc_func;
+     SIZE_T teststr_offset;
+     ULONG64 *modified_value;
+     WCHAR path[1];
+diff --git a/dlls/ntoskrnl.exe/tests/ntoskrnl.c b/dlls/ntoskrnl.exe/tests/ntoskrnl.c
+index 61b1e401c56..83766a7783a 100644
+--- a/dlls/ntoskrnl.exe/tests/ntoskrnl.c
++++ b/dlls/ntoskrnl.exe/tests/ntoskrnl.c
+@@ -30,6 +30,7 @@
+ #include "winsock2.h"
+ #include "wine/test.h"
+ #include "wine/heap.h"
++#include "ddk/wdm.h"
+ 
+ #include "driver.h"
+ 
+@@ -153,6 +154,27 @@ static BOOL start_driver(HANDLE service, BOOL vista_plus)
+ }
+ 
+ static ULONG64 modified_value;
++static BOOL apc_ran = FALSE;
++
++DWORD WINAPI apc_host_thread_func(PVOID param)
++{
++    HANDLE done_event = param;
++
++    WaitForSingleObjectEx(done_event, INFINITE, TRUE);
++todo_wine
++    ok (apc_ran == TRUE, "Driver failed to queue user mode APC\n");
++    CloseHandle(done_event);
++    return 0;
++}
++
++static void WINAPI apc_func(PVOID normal_ctx, PVOID sysarg1, PVOID sysarg2)
++{
++    HANDLE done_event = sysarg2;
++
++    ok(normal_ctx == (PVOID)(ULONG_PTR)0xdeadbeef, "Unexpected normal context %p\n", normal_ctx);
++    apc_ran = TRUE;
++    ok(SetEvent(done_event), "Setting done event failed: %u\n", GetLastError());
++}
+ 
+ static void main_test(void)
+ {
+@@ -160,8 +182,11 @@ static void main_test(void)
+     WCHAR temppathW[MAX_PATH], pathW[MAX_PATH];
+     struct test_input *test_input;
+     DWORD len, written, read;
++    DWORD apc_thread_id = 0;
+     UNICODE_STRING pathU;
+     LONG new_failures;
++    HANDLE apc_thread;
++    HANDLE done_event;
+     char buffer[512];
+     HANDLE okfile;
+     BOOL res;
+@@ -171,12 +196,24 @@ static void main_test(void)
+     GetTempFileNameW(temppathW, dokW, 0, pathW);
+     pRtlDosPathNameToNtPathName_U( pathW, &pathU, NULL, NULL );
+ 
++    done_event = CreateEventW(NULL, TRUE, FALSE, NULL);
++    if (done_event)
++    {
++        if ((apc_thread = CreateThread(NULL, 0, apc_host_thread_func, done_event, 0, &apc_thread_id)))
++            CloseHandle(apc_thread);
++        else
++            CloseHandle(done_event);
++    }
++    ok (apc_thread_id, "APC host thread creation failed: %u\n", GetLastError());
++
+     len = pathU.Length + sizeof(WCHAR);
+     test_input = heap_alloc( offsetof( struct test_input, path[len / sizeof(WCHAR)]) );
+     test_input->running_under_wine = !strcmp(winetest_platform, "wine");
+     test_input->winetest_report_success = winetest_report_success;
+     test_input->winetest_debug = winetest_debug;
+     test_input->process_id = GetCurrentProcessId();
++    test_input->apc_thread_id = apc_thread_id;
++    test_input->apc_func = apc_func;
+     test_input->teststr_offset = (SIZE_T)((BYTE *)&teststr - (BYTE *)NtCurrentTeb()->Peb->ImageBaseAddress);
+     test_input->modified_value = &modified_value;
+     modified_value = 0;
+@@ -188,6 +225,9 @@ static void main_test(void)
+     ok(res, "DeviceIoControl failed: %u\n", GetLastError());
+     ok(written == sizeof(new_failures), "got size %x\n", written);
+ 
++    if (apc_thread_id)
++        SetEvent(done_event);
++
+     okfile = CreateFileW(pathW, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+     ok(okfile != INVALID_HANDLE_VALUE, "failed to create %s: %u\n", wine_dbgstr_w(pathW), GetLastError());
+ 
+
+-- 
+2.28.0
+

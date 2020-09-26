@@ -1,0 +1,93 @@
+From: Gijs Vermeulen <gijsvrm@gmail.com>
+Subject: [PATCH v3] ieframe: Implement IWebBrowser2::get_LocationName().
+Message-Id: <20200918020506.44304-1-gijsvrm@gmail.com>
+Date: Fri, 18 Sep 2020 04:05:06 +0200
+
+From: Andrey Turkin <andrey.turkin@gmail.com>
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=12457
+Signed-off-by: Gijs Vermeulen <gijsvrm@gmail.com>
+---
+Superseeds 192607
+
+ dlls/ieframe/tests/webbrowser.c | 18 ++++++++++++++++++
+ dlls/ieframe/webbrowser.c       | 21 +++++++++++++++++++--
+ 2 files changed, 37 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ieframe/tests/webbrowser.c b/dlls/ieframe/tests/webbrowser.c
+index 9c2c393aaf..79f019312e 100644
+--- a/dlls/ieframe/tests/webbrowser.c
++++ b/dlls/ieframe/tests/webbrowser.c
+@@ -256,6 +256,22 @@ static void _test_LocationURL(unsigned line, IWebBrowser2 *wb, const WCHAR *exur
+     }
+ }
+ 
++#define test_LocationName(a,b) _test_LocationName(__LINE__,a,b)
++static void _test_LocationName(unsigned line, IWebBrowser2 *wb, const WCHAR *exname)
++{
++    BSTR name = (void*)0xdeadbeef;
++    HRESULT hres;
++
++    hres = IWebBrowser2_get_LocationName(wb, &name);
++    ok_(__FILE__,line) (hres == (*exname ? S_OK : S_FALSE), "get_LocationName failed: %08x\n", hres);
++todo_wine_if(!is_http && *exname)
++{
++    ok_(__FILE__,line) (!lstrcmpW(name, exname) || broken(is_http && !lstrcmpW(name, current_url)) /* Win10 2004 */,
++            "expected %s, got %s\n", wine_dbgstr_w(exname), wine_dbgstr_w(name));
++}
++    SysFreeString(name);
++}
++
+ #define test_ready_state(a,b) _test_ready_state(__LINE__,a,b)
+ static void _test_ready_state(unsigned line, READYSTATE exstate, VARIANT_BOOL expect_busy)
+ {
+@@ -2791,11 +2807,13 @@ static void test_ConnectionPoint(IWebBrowser2 *unk, BOOL init)
+ 
+ static void test_Navigate2(IWebBrowser2 *webbrowser, const WCHAR *nav_url)
+ {
++    const WCHAR *title = L"WineHQ - Run Windows applications on Linux, BSD, Solaris and Mac OS X";
+     VARIANT url;
+     BOOL is_file;
+     HRESULT hres;
+ 
+     test_LocationURL(webbrowser, is_first_load ? L"" : current_url);
++    test_LocationName(webbrowser, is_first_load ? L"" : (is_http ? title : current_url));
+     test_ready_state(is_first_load ? READYSTATE_UNINITIALIZED : READYSTATE_COMPLETE, VARIANT_FALSE);
+ 
+     is_http = !memcmp(nav_url, "http:", 5);
+diff --git a/dlls/ieframe/webbrowser.c b/dlls/ieframe/webbrowser.c
+index 87b74b8e01..965cd5f0ee 100644
+--- a/dlls/ieframe/webbrowser.c
++++ b/dlls/ieframe/webbrowser.c
+@@ -539,8 +539,25 @@ static HRESULT WINAPI WebBrowser_put_Height(IWebBrowser2 *iface, LONG Height)
+ static HRESULT WINAPI WebBrowser_get_LocationName(IWebBrowser2 *iface, BSTR *LocationName)
+ {
+     WebBrowser *This = impl_from_IWebBrowser2(iface);
+-    FIXME("(%p)->(%p)\n", This, LocationName);
+-    return E_NOTIMPL;
++    IHTMLDocument2 *doc;
++    HRESULT hres;
++
++    TRACE("(%p)->(%p)\n", This, LocationName);
++
++    if(This->doc_host.document &&
++            SUCCEEDED(IUnknown_QueryInterface(This->doc_host.document, &IID_IHTMLDocument2, (void **)&doc))) {
++        hres = IHTMLDocument2_get_title(doc, LocationName);
++        IHTMLDocument2_Release(doc);
++    } else if(This->doc_host.url) {
++        *LocationName = SysAllocString(This->doc_host.url);
++        hres = S_OK;
++    } else {
++        static const WCHAR null_char = 0;
++        *LocationName = SysAllocString(&null_char);
++        hres = S_FALSE;
++    }
++
++    return hres;
+ }
+ 
+ static HRESULT WINAPI WebBrowser_get_LocationURL(IWebBrowser2 *iface, BSTR *LocationURL)
+
+-- 
+2.28.0
+

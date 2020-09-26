@@ -1,0 +1,322 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH v4 6/7] wmphoto: Implement WmpDecoder stub when jxrlib is found.
+Message-Id: <20200923114946.1208468-6-rbernon@codeweavers.com>
+Date: Wed, 23 Sep 2020 13:49:45 +0200
+In-Reply-To: <20200923114946.1208468-1-rbernon@codeweavers.com>
+References: <20200923114946.1208468-1-rbernon@codeweavers.com>
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+
+v4: * Return WINCODEC_ERR_WRONGSTATE on multiple initialization.
+
+ dlls/windowscodecs/tests/wmpformat.c |  13 +-
+ dlls/wmphoto/Makefile.in             |   2 +
+ dlls/wmphoto/main.c                  | 214 ++++++++++++++++++++++++++-
+ 3 files changed, 225 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/windowscodecs/tests/wmpformat.c b/dlls/windowscodecs/tests/wmpformat.c
+index 2e2809701f6..62e734f0f71 100644
+--- a/dlls/windowscodecs/tests/wmpformat.c
++++ b/dlls/windowscodecs/tests/wmpformat.c
+@@ -119,8 +119,8 @@ static void test_decode(void)
+        "unexpected container format\n");
+ 
+     hr = IWICBitmapDecoder_GetFrameCount(decoder, &count);
+-    ok(SUCCEEDED(hr), "GetFrameCount failed, hr=%x\n", hr);
+-    ok(count == 1, "unexpected count %u\n", count);
++    todo_wine ok(SUCCEEDED(hr), "GetFrameCount failed, hr=%x\n", hr);
++    todo_wine ok(count == 1, "unexpected count %u\n", count);
+ 
+     hr = IWICBitmapDecoder_GetFrame(decoder, 0, NULL);
+     ok(hr == E_INVALIDARG, "GetFrame(NULL) returned hr=%x\n", hr);
+@@ -128,7 +128,13 @@ static void test_decode(void)
+     for (j = 2; j > 0; --j)
+     {
+         hr = IWICBitmapDecoder_GetFrame(decoder, 0, &framedecode);
+-        ok(SUCCEEDED(hr), "GetFrame failed, hr=%x\n", hr);
++        todo_wine ok(SUCCEEDED(hr), "GetFrame failed, hr=%x\n", hr);
++
++        if (FAILED(hr))
++        {
++            skip("No frame returned, skipping tests\n");
++            goto done;
++        }
+ 
+         hr = IWICBitmapFrameDecode_GetSize(framedecode, &width, &height);
+         ok(SUCCEEDED(hr), "GetSize failed, hr=%x\n", hr);
+@@ -165,6 +171,7 @@ static void test_decode(void)
+         IWICBitmapFrameDecode_Release(framedecode);
+     }
+ 
++done:
+     IStream_Release(wmpstream);
+     GlobalFree(hwmpdata);
+ 
+diff --git a/dlls/wmphoto/Makefile.in b/dlls/wmphoto/Makefile.in
+index b2cab132dbd..b1a840ca28f 100644
+--- a/dlls/wmphoto/Makefile.in
++++ b/dlls/wmphoto/Makefile.in
+@@ -1,6 +1,8 @@
+ MODULE = wmphoto.dll
+ IMPORTS = windowscodecs uuid kernelbase
+ 
++EXTRAINCL = $(JXRLIB_CFLAGS)
++
+ C_SRCS = main.c
+ 
+ IDL_SRCS = wmphoto.idl
+diff --git a/dlls/wmphoto/main.c b/dlls/wmphoto/main.c
+index efb408e94cb..054f89c27dd 100644
+--- a/dlls/wmphoto/main.c
++++ b/dlls/wmphoto/main.c
+@@ -17,6 +17,12 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
++#include "config.h"
++#include "wine/port.h"
++
++#ifdef HAVE_UNISTD_H
++# include <unistd.h>
++#endif
+ #include <stdarg.h>
+ #include <stdio.h>
+ #include <string.h>
+@@ -31,15 +37,209 @@
+ #include "wincodecsdk.h"
+ 
+ #include "wine/debug.h"
++#include "wine/unicode.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(wincodecs);
+ 
++#ifdef SONAME_LIBJXRGLUE
++
++static void *libjxrglue;
++
++struct wmp_decoder
++{
++    IWICBitmapDecoder IWICBitmapDecoder_iface;
++    LONG ref;
++    IStream *stream;
++    CRITICAL_SECTION lock;
++};
++
++static inline struct wmp_decoder *impl_from_IWICBitmapDecoder(IWICBitmapDecoder *iface)
++{
++    return CONTAINING_RECORD(iface, struct wmp_decoder, IWICBitmapDecoder_iface);
++}
++
++static HRESULT WINAPI wmp_decoder_QueryInterface(IWICBitmapDecoder *iface, REFIID iid, void **out)
++{
++    struct wmp_decoder *This = impl_from_IWICBitmapDecoder(iface);
++
++    TRACE("iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out);
++
++    if (!out) return E_INVALIDARG;
++
++    *out = NULL;
++    if (!IsEqualIID(&IID_IUnknown, iid) && !IsEqualIID(&IID_IWICBitmapDecoder, iid))
++        return E_NOINTERFACE;
++
++    *out = &This->IWICBitmapDecoder_iface;
++    IUnknown_AddRef((IUnknown *)*out);
++    return S_OK;
++}
++
++static ULONG WINAPI wmp_decoder_AddRef(IWICBitmapDecoder *iface)
++{
++    struct wmp_decoder *This = impl_from_IWICBitmapDecoder(iface);
++    ULONG ref = InterlockedIncrement(&This->ref);
++    TRACE("iface %p -> ref %u.\n", iface, ref);
++    return ref;
++}
++
++static ULONG WINAPI wmp_decoder_Release(IWICBitmapDecoder *iface)
++{
++    struct wmp_decoder *This = impl_from_IWICBitmapDecoder(iface);
++    ULONG ref = InterlockedDecrement(&This->ref);
++    TRACE("iface %p -> ref %u.\n", iface, ref);
++
++    if (ref == 0)
++    {
++        This->lock.DebugInfo->Spare[0] = 0;
++        DeleteCriticalSection(&This->lock);
++        if (This->stream) IStream_Release(This->stream);
++        HeapFree(GetProcessHeap(), 0, This);
++    }
++
++    return ref;
++}
++
++static HRESULT WINAPI wmp_decoder_QueryCapability(IWICBitmapDecoder *iface, IStream *stream, DWORD *capability)
++{
++    FIXME("iface %p, stream %p, capability %p, stub!\n", iface, stream, capability);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI wmp_decoder_Initialize(IWICBitmapDecoder *iface, IStream *stream, WICDecodeOptions options)
++{
++    struct wmp_decoder *This = impl_from_IWICBitmapDecoder(iface);
++    LARGE_INTEGER seek;
++    HRESULT hr = S_OK;
++
++    TRACE("iface %p, stream %p, options %u.\n", iface, stream, options);
++
++    EnterCriticalSection(&This->lock);
++
++    if (This->stream) hr = WINCODEC_ERR_WRONGSTATE;
++    else
++    {
++        seek.QuadPart = 0;
++        IStream_Seek(stream, seek, STREAM_SEEK_SET, NULL);
++        IStream_AddRef(stream);
++        This->stream = stream;
++    }
++
++    LeaveCriticalSection(&This->lock);
++    return hr;
++}
++
++static HRESULT WINAPI wmp_decoder_GetContainerFormat(IWICBitmapDecoder *iface, GUID *format)
++{
++    memcpy(format, &GUID_ContainerFormatWmp, sizeof(GUID));
++    return S_OK;
++}
++
++static HRESULT WINAPI wmp_decoder_GetDecoderInfo(IWICBitmapDecoder *iface, IWICBitmapDecoderInfo **info)
++{
++    FIXME("iface %p, info %p, stub!\n", iface, info);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI wmp_decoder_CopyPalette(IWICBitmapDecoder *iface, IWICPalette *palette)
++{
++    TRACE("iface %p, palette %p.\n", iface, palette);
++    return WINCODEC_ERR_PALETTEUNAVAILABLE;
++}
++
++static HRESULT WINAPI wmp_decoder_GetMetadataQueryReader(IWICBitmapDecoder *iface, IWICMetadataQueryReader **reader)
++{
++    FIXME("iface %p, reader %p, stub!\n", iface, reader);
++    if (!reader) return E_INVALIDARG;
++    *reader = NULL;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI wmp_decoder_GetPreview(IWICBitmapDecoder *iface, IWICBitmapSource **source)
++{
++    FIXME("iface %p, source %p, stub!\n", iface, source);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI wmp_decoder_GetColorContexts(IWICBitmapDecoder *iface, UINT maxcount,
++                                                   IWICColorContext **contexts, UINT *count)
++{
++    FIXME("iface %p, maxcount %u, contexts %p, count %p, stub!\n", iface, maxcount, contexts, count);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI wmp_decoder_GetThumbnail(IWICBitmapDecoder *iface, IWICBitmapSource **thumbnail)
++{
++    FIXME("iface %p, thumbnail %p, stub!\n", iface, thumbnail);
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI wmp_decoder_GetFrameCount(IWICBitmapDecoder *iface, UINT *count)
++{
++    TRACE("iface %p, count %p.\n", iface, count);
++    if (!count) return E_INVALIDARG;
++    *count = 0;
++    return E_NOTIMPL;
++}
++
++static HRESULT WINAPI wmp_decoder_GetFrame(IWICBitmapDecoder *iface, UINT index, IWICBitmapFrameDecode **frame)
++{
++    TRACE("iface %p, index %u, frame %p.\n", iface, index, frame);
++    if (!frame) return E_INVALIDARG;
++    *frame = NULL;
++    return E_NOTIMPL;
++}
++
++static const IWICBitmapDecoderVtbl wmp_decoder_vtbl =
++{
++    /* IUnknown methods */
++    wmp_decoder_QueryInterface,
++    wmp_decoder_AddRef,
++    wmp_decoder_Release,
++    /* IWICBitmapDecoder methods */
++    wmp_decoder_QueryCapability,
++    wmp_decoder_Initialize,
++    wmp_decoder_GetContainerFormat,
++    wmp_decoder_GetDecoderInfo,
++    wmp_decoder_CopyPalette,
++    wmp_decoder_GetMetadataQueryReader,
++    wmp_decoder_GetPreview,
++    wmp_decoder_GetColorContexts,
++    wmp_decoder_GetThumbnail,
++    wmp_decoder_GetFrameCount,
++    wmp_decoder_GetFrame
++};
++
+ static HRESULT wmp_decoder_create(IUnknown *outer, IUnknown **out)
+ {
+-    FIXME("outer %p, out %p, stub!\n", outer, out);
++    struct wmp_decoder *This;
++
++    TRACE("outer %p, out %p.\n", outer, out);
++
++    *out = NULL;
++    This = HeapAlloc(GetProcessHeap(), 0, sizeof(struct wmp_decoder));
++    if (!This) return E_OUTOFMEMORY;
++
++    This->IWICBitmapDecoder_iface.lpVtbl = &wmp_decoder_vtbl;
++    This->ref = 1;
++    This->stream = NULL;
++    InitializeCriticalSection(&This->lock);
++    This->lock.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": wmp_decoder.lock");
++
++    *out = (IUnknown *)&This->IWICBitmapDecoder_iface;
++    return S_OK;
++}
++
++#else /* !defined(SONAME_LIBJXRGLUE) */
++
++static HRESULT wmp_decoder_create(IUnknown *outer, IUnknown **out)
++{
++    ERR("JPEG-XR support not compiled in!\n");
+     return E_NOTIMPL;
+ }
+ 
++#endif
++
+ struct class_factory
+ {
+     IClassFactory IClassFactory_iface;
+@@ -117,9 +317,21 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+     case DLL_PROCESS_ATTACH:
+         WMPHOTO_hInstance = hinstDLL;
+         DisableThreadLibraryCalls(hinstDLL);
++#ifdef SONAME_LIBJXRGLUE
++        if (!(libjxrglue = dlopen(SONAME_LIBJXRGLUE, RTLD_NOW)))
++        {
++            ERR("unable to load %s!\n", SONAME_LIBJXRGLUE);
++            return FALSE;
++        }
++#endif
+         break;
+     case DLL_WINE_PREATTACH:
+         return FALSE; /* prefer native version */
++    case DLL_PROCESS_DETACH:
++#ifdef SONAME_LIBJXRGLUE
++        dlclose(libjxrglue);
++#endif
++        return TRUE;
+     }
+ 
+     return TRUE;
+
+-- 
+2.28.0
+

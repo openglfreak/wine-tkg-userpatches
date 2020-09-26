@@ -1,0 +1,373 @@
+From: Zebediah Figura <z.figura12@gmail.com>
+Subject: [PATCH] makefiles: Optionally emit automake-style "silent" output.
+Message-Id: <20200915034018.513744-1-z.figura12@gmail.com>
+Date: Mon, 14 Sep 2020 22:40:18 -0500
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=49841
+Signed-off-by: Zebediah Figura <z.figura12@gmail.com>
+---
+ Makefile.in     | 12 +++++--
+ configure.ac    |  8 +++++
+ tools/makedep.c | 89 ++++++++++++++++++++++++++++++++-----------------
+ 3 files changed, 76 insertions(+), 33 deletions(-)
+
+diff --git a/Makefile.in b/Makefile.in
+index 307a95b3b1a..f5dd32a5394 100644
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -75,6 +75,7 @@ DELAYLOADFLAG   = @DELAYLOADFLAG@
+ PACKAGE_VERSION = @PACKAGE_VERSION@
+ SED_CMD         = LC_ALL=C sed -e 's,@bindir\@,${bindir},g' -e 's,@dlldir\@,${dlldir},g' -e 's,@PACKAGE_STRING\@,@PACKAGE_STRING@,g' -e 's,@PACKAGE_VERSION\@,@PACKAGE_VERSION@,g'
+ api_manext      = 3w
++DEFAULT_VERBOSITY   = @DEFAULT_VERBOSITY@
+ WINELOADER_PROGRAMS = @WINELOADER_PROGRAMS@
+ WINELOADER_DEPENDS  = @WINELOADER_DEPENDS@
+ WINELOADER_LDFLAGS  = @WINELOADER_LDFLAGS@
+@@ -89,6 +90,11 @@ TOP_INSTALL_DEV     = @TOP_INSTALL_DEV@
+ @ALL_VARS_RULES@
+ @SET_MAKE@
+ 
++WINE_V_at = $(WINE_V_at_$(V))
++WINE_V_at_ = $(WINE_V_at_$(DEFAULT_VERBOSITY))
++WINE_V_at_0 = @
++WINE_V_at_1 =
++
+ all: wine
+ 	@echo "Wine build complete."
+ 
+diff --git a/configure.ac b/configure.ac
+index 20ae7577fa9..91fb253a079 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -33,6 +33,7 @@ AC_ARG_ENABLE(win64, AS_HELP_STRING([--enable-win64],[build a Win64 emulator on
+ AC_ARG_ENABLE(tests, AS_HELP_STRING([--disable-tests],[do not build the regression tests]))
+ AC_ARG_ENABLE(maintainer-mode, AS_HELP_STRING([--enable-maintainer-mode],[enable maintainer-specific build rules]))
+ AC_ARG_ENABLE(werror, AS_HELP_STRING([--enable-werror],[treat compilation warnings as errors]))
++AC_ARG_ENABLE(silent-rules, AS_HELP_STRING([--disable-silent-rules],[do not abbreviate build output]))
+ 
+ AC_ARG_WITH(alsa,      AS_HELP_STRING([--without-alsa],[do not use the Alsa sound support]))
+ AC_ARG_WITH(capi,      AS_HELP_STRING([--without-capi],[do not use CAPI (ISDN support)]))
+@@ -399,6 +400,13 @@ WINE_WARNING_WITH(gettext,[test "$MSGFMT" = false],
+                   [gettext tools not found (or too old), translations won't be built.],
+                   [enable_po])
+ 
++if test "x$enable_silent_rules" = "xno"
++then
++  AC_SUBST(DEFAULT_VERBOSITY,"1")
++else
++  AC_SUBST(DEFAULT_VERBOSITY,"0")
++fi
++
+ dnl **** Check for some libraries ****
+ 
+ dnl Check for -li386 for NetBSD and OpenBSD
+diff --git a/tools/makedep.c b/tools/makedep.c
+index 7fe2c4daf54..73c6297b956 100644
+--- a/tools/makedep.c
++++ b/tools/makedep.c
+@@ -2415,7 +2415,7 @@ static const char *get_debug_file( struct makefile *make, const char *name )
+  */
+ static void output_winegcc_command( struct makefile *make, int is_cross )
+ {
+-    output( "\t%s -o $@", tools_path( make, "winegcc" ));
++    output( "\t$(WINE_V_WINEGCC)%s -o $@", tools_path( make, "winegcc" ));
+     output_filename( "--wine-objdir" );
+     output_filename( top_obj_dir_path( make, "" ));
+     if (tools_dir)
+@@ -2445,7 +2445,7 @@ static void output_symlink_rule( const char *src_name, const char *link_name )
+ {
+     const char *name;
+ 
+-    output( "\trm -f %s && ", link_name );
++    output( "\t$(WINE_V_at)rm -f %s && ", link_name );
+ 
+     /* dest path with a directory needs special handling if ln -s isn't supported */
+     if (strcmp( ln_s, "ln -s" ) && ((name = strrchr( link_name, '/' ))))
+@@ -2675,7 +2675,7 @@ static void output_po_files( const struct makefile *make )
+         for (i = 0; i < linguas.count; i++)
+             output_filename( strmake( "%s/%s.po", po_dir, linguas.str[i] ));
+         output( ": %s/wine.pot\n", po_dir );
+-        output( "\tmsgmerge --previous -q $@ %s/wine.pot | msgattrib --no-obsolete -o $@.new && mv $@.new $@\n",
++        output( "\t$(AM_V_MSGMERGE)msgmerge --previous -q $@ %s/wine.pot | msgattrib --no-obsolete -o $@.new && mv $@.new $@\n",
+                 po_dir );
+         output( "po:" );
+         for (i = 0; i < linguas.count; i++)
+@@ -2685,7 +2685,7 @@ static void output_po_files( const struct makefile *make )
+     output( "%s/wine.pot:", po_dir );
+     output_filenames( pot_files );
+     output( "\n" );
+-    output( "\tmsgcat -o $@" );
++    output( "\t$(AM_V_MSGCAT)msgcat -o $@" );
+     output_filenames( pot_files );
+     output( "\n" );
+ }
+@@ -2702,7 +2702,7 @@ static void output_source_y( struct makefile *make, struct incl_file *source, co
+     if (find_include_file( make, header ))
+     {
+         output( "%s: %s\n", obj_dir_path( make, header ), source->filename );
+-        output( "\t%s -p %s_ -o %s.tab.c -d %s\n",
++        output( "\t$(WINE_V_BISON)%s -p %s_ -o %s.tab.c -d %s\n",
+                 bison, obj, obj_dir_path( make, obj ), source->filename );
+         output( "%s.tab.c: %s %s\n", obj_dir_path( make, obj ),
+                 source->filename, obj_dir_path( make, header ));
+@@ -2710,7 +2710,7 @@ static void output_source_y( struct makefile *make, struct incl_file *source, co
+     }
+     else output( "%s.tab.c: %s\n", obj_dir_path( make, obj ), source->filename );
+ 
+-    output( "\t%s -p %s_ -o $@ %s\n", bison, obj, source->filename );
++    output( "\t$(WINE_V_BISON)%s -p %s_ -o $@ %s\n", bison, obj, source->filename );
+ }
+ 
+ 
+@@ -2720,7 +2720,7 @@ static void output_source_y( struct makefile *make, struct incl_file *source, co
+ static void output_source_l( struct makefile *make, struct incl_file *source, const char *obj )
+ {
+     output( "%s.yy.c: %s\n", obj_dir_path( make, obj ), source->filename );
+-    output( "\t%s -o$@ %s\n", flex, source->filename );
++    output( "\t$(WINE_V_FLEX)%s -o$@ %s\n", flex, source->filename );
+ }
+ 
+ 
+@@ -2758,7 +2758,7 @@ static void output_source_rc( struct makefile *make, struct incl_file *source, c
+     output_filename( tools_path( make, "wrc" ));
+     output_filenames( source->dependencies );
+     output( "\n" );
+-    output( "\t%s -u -o $@", tools_path( make, "wrc" ) );
++    output( "\t$(WINE_V_WRC)%s -u -o $@", tools_path( make, "wrc" ) );
+     if (make->is_win16) output_filename( "-m16" );
+     else output_filenames( target_flags );
+     output_filename( "--nostdinc" );
+@@ -2790,7 +2790,7 @@ static void output_source_mc( struct makefile *make, struct incl_file *source, c
+     output_filename( tools_path( make, "wmc" ));
+     output_filenames( source->dependencies );
+     output( "\n" );
+-    output( "\t%s -u -o $@ %s", tools_path( make, "wmc" ), source->filename );
++    output( "\t$(WINE_V_WMC)%s -u -o $@ %s", tools_path( make, "wmc" ), source->filename );
+     if (linguas.count)
+     {
+         output_filename( "--po-dir=po" );
+@@ -2848,7 +2848,7 @@ static void output_source_idl( struct makefile *make, struct incl_file *source,
+ 
+     output_filenames_obj_dir( make, targets );
+     output( ": %s\n", tools_path( make, "widl" ));
+-    output( "\t%s -o $@", tools_path( make, "widl" ) );
++    output( "\t$(WINE_V_WIDL)%s -o $@", tools_path( make, "widl" ) );
+     output_filenames( target_flags );
+     output_filename( "--nostdinc" );
+     output_filenames( defines );
+@@ -2879,7 +2879,7 @@ static void output_source_x( struct makefile *make, struct incl_file *source, co
+ {
+     output( "%s.h: %s%s %s\n", obj_dir_path( make, obj ),
+             tools_dir_path( make, "make_xftmpl" ), tools_ext, source->filename );
+-    output( "\t%s%s -H -o $@ %s\n",
++    output( "\t$(WINE_V_MAKE_XFTMPL)%s%s -H -o $@ %s\n",
+             tools_dir_path( make, "make_xftmpl" ), tools_ext, source->filename );
+     if (source->file->flags & FLAG_INSTALL)
+     {
+@@ -2903,7 +2903,7 @@ static void output_source_sfd( struct makefile *make, struct incl_file *source,
+     if (fontforge && !make->src_dir)
+     {
+         output( "%s: %s\n", ttf_file, source->filename );
+-        output( "\t%s -script %s %s $@\n",
++        output( "\t$(WINE_V_FONTFORGE)%s -script %s %s $@\n",
+                 fontforge, top_src_dir_path( make, "fonts/genttf.ff" ), source->filename );
+         if (!(source->file->flags & FLAG_SFD_FONTS)) strarray_add( &make->font_files, ttf_obj );
+     }
+@@ -2925,7 +2925,7 @@ static void output_source_sfd( struct makefile *make, struct incl_file *source,
+             strarray_add( &make->all_targets, xstrdup( font ));
+             output( "%s: %s %s\n", obj_dir_path( make, font ),
+                     tools_path( make, "sfnt2fon" ), ttf_file );
+-            output( "\t%s -q -o $@ %s %s\n", tools_path( make, "sfnt2fon" ), ttf_file, args );
++            output( "\t$(WINE_V_SFNT2FON)%s -q -o $@ %s %s\n", tools_path( make, "sfnt2fon" ), ttf_file, args );
+             add_install_rule( make, source->name, xstrdup(font), strmake( "d$(fontdir)/%s", font ));
+         }
+     }
+@@ -2948,7 +2948,7 @@ static void output_source_svg( struct makefile *make, struct incl_file *source,
+         if (images[i])
+         {
+             output( "%s.%s: %s\n", src_dir_path( make, obj ), images[i], source->filename );
+-            output( "\tCONVERT=\"%s\" ICOTOOL=\"%s\" RSVG=\"%s\" %s %s $@\n", convert, icotool, rsvg,
++            output( "\t$(WINE_V_BUILDIMAGE)CONVERT=\"%s\" ICOTOOL=\"%s\" RSVG=\"%s\" %s %s $@\n", convert, icotool, rsvg,
+                     top_src_dir_path( make, "tools/buildimage" ), source->filename );
+         }
+     }
+@@ -2982,7 +2982,7 @@ static void output_source_desktop( struct makefile *make, struct incl_file *sour
+ static void output_source_po( struct makefile *make, struct incl_file *source, const char *obj )
+ {
+     output( "%s.mo: %s\n", obj_dir_path( make, obj ), source->filename );
+-    output( "\t%s -o $@ %s\n", msgfmt, source->filename );
++    output( "\t$(WINE_V_MSGFMT)%s -o $@ %s\n", msgfmt, source->filename );
+     strarray_add( &make->all_targets, strmake( "%s.mo", obj ));
+ }
+ 
+@@ -3017,7 +3017,7 @@ static void output_source_in( struct makefile *make, struct incl_file *source, c
+     strarray_add( &make->in_files, xstrdup(obj) );
+     strarray_add( &make->all_targets, xstrdup(obj) );
+     output( "%s: %s\n", obj_dir_path( make, obj ), source->filename );
+-    output( "\t%s %s >$@ || (rm -f $@ && false)\n", sed_cmd, source->filename );
++    output( "\t$(WINE_V_GEN)%s %s >$@ || (rm -f $@ && false)\n", sed_cmd, source->filename );
+     output( "%s:", obj_dir_path( make, obj ));
+     output_filenames( source->dependencies );
+     output( "\n" );
+@@ -3049,7 +3049,7 @@ static void output_source_spec( struct makefile *make, struct incl_file *source,
+     strarray_add( &make->clean_files, dll_name );
+     strarray_add( &make->res_files, strmake( "%s.res", obj ));
+     output( "%s.res: %s\n", obj_dir_path( make, obj ), obj_dir_path( make, dll_name ));
+-    output( "\techo \"%s.dll TESTDLL \\\"%s\\\"\" | %s -u -o $@\n", obj, output_file,
++    output( "\t$(WINE_V_WRC)echo \"%s.dll TESTDLL \\\"%s\\\"\" | %s -u -o $@\n", obj, output_file,
+             tools_path( make, "wrc" ));
+ 
+     output( "%s:", output_file);
+@@ -3107,7 +3107,7 @@ static void output_source_default( struct makefile *make, struct incl_file *sour
+         else
+             strarray_add( &make->clean_files, strmake( "%s.o", obj ));
+         output( "%s.o: %s\n", obj_dir_path( make, obj ), source->filename );
+-        output( "\t$(CC) -c -o $@ %s", source->filename );
++        output( "\t$(WINE_V_CC)$(CC) -c -o $@ %s", source->filename );
+         output_filenames( defines );
+         if (make->module || make->staticlib || make->sharedlib || make->testdll)
+         {
+@@ -3123,7 +3123,7 @@ static void output_source_default( struct makefile *make, struct incl_file *sour
+     {
+         strarray_add( is_dll_src ? &make->clean_files : &make->crossobj_files, strmake( "%s.cross.o", obj ));
+         output( "%s.cross.o: %s\n", obj_dir_path( make, obj ), source->filename );
+-        output( "\t$(CROSSCC) -c -o $@ %s", source->filename );
++        output( "\t$(WINE_V_CC)$(CROSSCC) -c -o $@ %s", source->filename );
+         output_filenames( defines );
+         output_filenames( extra_cross_cflags );
+         if (source->file->flags & FLAG_C_IMPLIB) output_filename( "-fno-builtin" );
+@@ -3374,7 +3374,7 @@ static void output_module( struct makefile *make )
+         {
+             strarray_add( &make->clean_files, strmake( "lib%s.def", make->importlib ));
+             output( "%s.def: %s %s\n", importlib_path, tools_path( make, "winebuild" ), spec_file );
+-            output( "\t%s -w --def -o $@", tools_path( make, "winebuild" ) );
++            output( "\t$(WINE_V_WINEBUILD)%s -w --def -o $@", tools_path( make, "winebuild" ) );
+             output_filenames( target_flags );
+             if (make->is_win16) output_filename( "-m16" );
+             output_filename( "--export" );
+@@ -3395,7 +3395,7 @@ static void output_module( struct makefile *make )
+             output( "%s.a: %s %s", importlib_path, tools_path( make, "winebuild" ), spec_file );
+             output_filenames_obj_dir( make, make->implib_objs );
+             output( "\n" );
+-            output( "\t%s -w --implib -o $@", tools_path( make, "winebuild" ) );
++            output( "\t$(WINE_V_WINEBUILD)%s -w --implib -o $@", tools_path( make, "winebuild" ) );
+             output_filenames( target_flags );
+             if (make->is_win16) output_filename( "-m16" );
+             output_filename( "--export" );
+@@ -3422,7 +3422,7 @@ static void output_module( struct makefile *make )
+             output( ": %s %s", tools_path( make, "winebuild" ), spec_file );
+             output_filenames_obj_dir( make, cross_files );
+             output( "\n" );
+-            output( "\t%s -b %s -w --implib -o $@", tools_path( make, "winebuild" ), crosstarget );
++            output( "\t$(WINE_V_WINEBUILD)%s -b %s -w --implib -o $@", tools_path( make, "winebuild" ), crosstarget );
+             if (make->is_win16) output_filename( "-m16" );
+             output_filename( "--export" );
+             output_filename( spec_file );
+@@ -3452,11 +3452,11 @@ static void output_static_lib( struct makefile *make )
+     output( "%s:", obj_dir_path( make, make->staticlib ));
+     output_filenames_obj_dir( make, make->object_files );
+     output_filenames_obj_dir( make, make->unixobj_files );
+-    output( "\n\trm -f $@\n" );
+-    output( "\t%s rc $@", ar );
++    output( "\n\t$(WINE_V_at)rm -f $@\n" );
++    output( "\t$(WINE_V_AR)%s rc $@", ar );
+     output_filenames_obj_dir( make, make->object_files );
+     output_filenames_obj_dir( make, make->unixobj_files );
+-    output( "\n\t%s $@\n", ranlib );
++    output( "\n\t$(WINE_V_RANLIB)%s $@\n", ranlib );
+     add_install_rule( make, make->staticlib, make->staticlib,
+                       strmake( "d$(dlldir)/%s", make->staticlib ));
+     if (needs_cross_lib( make ))
+@@ -3467,7 +3467,7 @@ static void output_static_lib( struct makefile *make )
+         output( "%s: %s", obj_dir_path( make, name ), tools_path( make, "winebuild" ));
+         output_filenames_obj_dir( make, make->crossobj_files );
+         output( "\n" );
+-        output( "\t%s -b %s -w --staticlib -o $@", tools_path( make, "winebuild" ), crosstarget );
++        output( "\t$(WINE_V_WINEBUILD)%s -b %s -w --staticlib -o $@", tools_path( make, "winebuild" ), crosstarget );
+         output_filenames_obj_dir( make, make->crossobj_files );
+         output( "\n" );
+     }
+@@ -3496,7 +3496,7 @@ static void output_shared_lib( struct makefile *make )
+     output_filenames_obj_dir( make, make->object_files );
+     output_filenames( dep_libs );
+     output( "\n" );
+-    output( "\t$(CC) -o $@" );
++    output( "\t$(WINE_V_CC)$(CC) -o $@" );
+     output_filenames_obj_dir( make, make->object_files );
+     output_filenames( all_libs );
+     output_filename( "$(LDFLAGS)" );
+@@ -3563,7 +3563,7 @@ static void output_test_module( struct makefile *make )
+         output( "all: %s/%s\n", top_obj_dir_path( make, "programs/winetest" ), testres );
+     output( "%s/%s: %s%s\n", top_obj_dir_path( make, "programs/winetest" ), testres,
+             obj_dir_path( make, stripped ), ext );
+-    output( "\techo \"%s TESTRES \\\"%s%s\\\"\" | %s -u -o $@\n",
++    output( "\t$(WINE_V_WRC)echo \"%s TESTRES \\\"%s%s\\\"\" | %s -u -o $@\n",
+             testmodule, obj_dir_path( make, stripped ), ext, tools_path( make, "wrc" ));
+ 
+     output_filenames_obj_dir( make, make->ok_files );
+@@ -3608,7 +3608,7 @@ static void output_programs( struct makefile *make )
+         output_filenames_obj_dir( make, objs );
+         output_filenames( deps );
+         output( "\n" );
+-        output( "\t$(CC) -o $@" );
++        output( "\t$(WINE_V_CC)$(CC) -o $@" );
+         output_filenames_obj_dir( make, objs );
+         output_filenames( all_libs );
+         output_filename( "$(LDFLAGS)" );
+@@ -3783,7 +3783,7 @@ static void output_sources( struct makefile *make )
+     {
+         output( "%s: %s %s\n", obj_dir_path( make, "dlldata.c" ),
+                 tools_path( make, "widl" ), src_dir_path( make, "Makefile.in" ));
+-        output( "\t%s --dlldata-only -o $@", tools_path( make, "widl" ));
++        output( "\t$(WINE_V_WIDL)%s --dlldata-only -o $@", tools_path( make, "widl" ));
+         output_filenames( make->dlldata_files );
+         output( "\n" );
+     }
+@@ -4047,6 +4047,15 @@ static void output_stub_makefile( struct makefile *make )
+ }
+ 
+ 
++static void output_verbose_var( const char *cmd )
++{
++    output( "WINE_V_%s = $(WINE_V_%s_$(V))\n", cmd, cmd );
++    output( "WINE_V_%s_ = $(WINE_V_%s_$(DEFAULT_VERBOSITY))\n", cmd, cmd );
++    output( "WINE_V_%s_0 = @echo \"  %-9s\" $@;\n", cmd, cmd );
++    output( "WINE_V_%s_1 =\n", cmd );
++}
++
++
+ /*******************************************************************
+  *         output_dependencies
+  */
+@@ -4074,6 +4083,27 @@ static void output_dependencies( struct makefile *make )
+     input_file_name = NULL;
+ 
+     if (!found) output( "\n%s (everything below this line is auto-generated; DO NOT EDIT!!)\n", separator );
++
++    output_verbose_var( "AR" );
++    output_verbose_var( "BISON" );
++    output_verbose_var( "BUILDIMAGE" );
++    output_verbose_var( "CC" );
++    output_verbose_var( "FLEX" );
++    output_verbose_var( "FONTFORGE" );
++    output_verbose_var( "GEN" );
++    output_verbose_var( "GRADLE" );
++    output_verbose_var( "MAKE_XFTMPL" );
++    output_verbose_var( "MSGCAT" );
++    output_verbose_var( "MSGFMT" );
++    output_verbose_var( "MSGMERGE" );
++    output_verbose_var( "RANLIB" );
++    output_verbose_var( "SFNT2FON" );
++    output_verbose_var( "WIDL" );
++    output_verbose_var( "WINEGCC" );
++    output_verbose_var( "WINEBUILD" );
++    output_verbose_var( "WMC" );
++    output_verbose_var( "WRC" );
++
+     output_sources( make );
+ 
+     fclose( output_file );
+
+-- 
+2.28.0
+

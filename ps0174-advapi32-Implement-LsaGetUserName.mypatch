@@ -1,0 +1,168 @@
+From: Dmitry Timoshkov <dmitry@baikal.ru>
+Subject: [PATCH] advapi32: Implement LsaGetUserName.
+Message-Id: <20200921180631.6af8ce8fcfd09c0554b3371f@baikal.ru>
+Date: Mon, 21 Sep 2020 18:06:31 +0300
+
+Signed-off-by: Dmitry Timoshkov <dmitry@baikal.ru>
+---
+ dlls/advapi32/advapi32.spec |  2 +-
+ dlls/advapi32/lsa.c         | 47 ++++++++++++++++++++++++++++++++++
+ dlls/advapi32/tests/lsa.c   | 50 ++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 97 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/advapi32/advapi32.spec b/dlls/advapi32/advapi32.spec
+index fcef859a7c..d5235c6adb 100644
+--- a/dlls/advapi32/advapi32.spec
++++ b/dlls/advapi32/advapi32.spec
+@@ -463,7 +463,7 @@
+ # @ stub LsaGetQuotasForAccount
+ # @ stub LsaGetRemoteUserName
+ @ stub LsaGetSystemAccessAccount
+-# @ stub LsaGetUserName
++@ stdcall LsaGetUserName(ptr ptr)
+ @ stub LsaICLookupNames
+ # @ stub LsaICLookupNamesWithCreds
+ @ stub LsaICLookupSids
+diff --git a/dlls/advapi32/lsa.c b/dlls/advapi32/lsa.c
+index bd3585f8d0..a7c5e93ef5 100644
+--- a/dlls/advapi32/lsa.c
++++ b/dlls/advapi32/lsa.c
+@@ -104,6 +104,53 @@ static void* ADVAPI_GetDomainName(unsigned sz, unsigned ofs)
+     return ptr;
+ }
+ 
++/******************************************************************************
++ * LsaGetUserName [ADVAPI32.@]
++ *
++ */
++NTSTATUS WINAPI LsaGetUserName(PUNICODE_STRING *user, PUNICODE_STRING *domain)
++{
++    WCHAR computer[MAX_COMPUTERNAME_LENGTH + 1];
++    DWORD user_size, domain_size;
++
++    user_size = 0;
++    if (GetUserNameW(NULL, &user_size) || GetLastError() != ERROR_INSUFFICIENT_BUFFER)
++       return STATUS_UNSUCCESSFUL;
++
++    domain_size = ARRAY_SIZE(computer);
++    if (!GetComputerNameW(computer, &domain_size))
++        return STATUS_UNSUCCESSFUL;
++
++    *user = heap_alloc(sizeof(*user) + user_size * sizeof(WCHAR));
++    if (!*user) return STATUS_NO_MEMORY;
++
++    (*user)->Buffer = (WCHAR *)(*user + 1);
++    (*user)->Length = user_size * sizeof(WCHAR);
++    (*user)->MaximumLength = (*user)->Length + sizeof(WCHAR);
++    if (!GetUserNameW((*user)->Buffer, &user_size))
++    {
++        heap_free(*user);
++        return STATUS_UNSUCCESSFUL;
++    }
++
++    if (domain)
++    {
++        *domain = heap_alloc(sizeof(*domain) + domain_size * sizeof(WCHAR));
++        if (!*domain)
++        {
++            heap_free(*user);
++            return STATUS_NO_MEMORY;
++        }
++
++        (*domain)->Buffer = (WCHAR *)(*domain + 1);
++        (*domain)->Length = domain_size * sizeof(WCHAR);
++        (*domain)->MaximumLength = (*domain)->Length + sizeof(WCHAR);
++        wcscpy((*domain)->Buffer, computer);
++    }
++
++    return STATUS_SUCCESS;
++}
++
+ /******************************************************************************
+  * LsaAddAccountRights [ADVAPI32.@]
+  *
+diff --git a/dlls/advapi32/tests/lsa.c b/dlls/advapi32/tests/lsa.c
+index f2e10671a4..d616d509c8 100644
+--- a/dlls/advapi32/tests/lsa.c
++++ b/dlls/advapi32/tests/lsa.c
+@@ -2,6 +2,7 @@
+  * Unit tests for lsa functions
+  *
+  * Copyright (c) 2006 Robert Reif
++ * Copyright (c) 2020 Dmitry Timoshkov
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -38,6 +39,7 @@
+ DEFINE_GUID(GUID_NULL,0,0,0,0,0,0,0,0,0,0,0);
+ 
+ static BOOL (WINAPI *pGetSystemPreferredUILanguages)(DWORD, ULONG*, WCHAR*, ULONG*);
++static NTSTATUS (WINAPI *pLsaGetUserName)(PUNICODE_STRING *user, PUNICODE_STRING *domain);
+ 
+ static void test_lsa(void)
+ {
+@@ -463,13 +465,59 @@ static void test_LsaLookupPrivilegeName(void)
+     LsaFreeMemory(name);
+ }
+ 
++static void test_LsaGetUserName(void)
++{
++    NTSTATUS status;
++    BOOL ret;
++    UNICODE_STRING *lsa_user, *lsa_domain;
++    WCHAR user[256], computer[256];
++    DWORD size;
++
++    if (!pLsaGetUserName)
++    {
++        skip("LsaGetUserName is not available on this platform\n");
++        return;
++    }
++
++    size = ARRAY_SIZE(user);
++    ret = GetUserNameW(user, &size);
++    ok(ret, "GetUserName error %u\n", GetLastError());
++
++    size = ARRAY_SIZE(computer);
++    ret = GetComputerNameW(computer, &size);
++    ok(ret, "GetComputerName error %u\n", GetLastError());
++
++    if (0) /* crashes under Windows */
++        status = pLsaGetUserName(NULL, NULL);
++
++    if (0) /* crashes under Windows */
++        status = pLsaGetUserName(NULL, &lsa_domain);
++
++    status = pLsaGetUserName(&lsa_user, NULL);
++    ok(!status, "got %#x\n", status);
++    ok(!lstrcmpW(user, lsa_user->Buffer), "%s != %s\n", wine_dbgstr_w(user), wine_dbgstr_wn(lsa_user->Buffer, lsa_user->Length/sizeof(WCHAR)));
++    LsaFreeMemory(lsa_user);
++
++    status = pLsaGetUserName(&lsa_user, &lsa_domain);
++    ok(!status, "got %#x\n", status);
++    ok(!lstrcmpW(user, lsa_user->Buffer), "%s != %s\n", wine_dbgstr_w(user), wine_dbgstr_wn(lsa_user->Buffer, lsa_user->Length/sizeof(WCHAR)));
++    /* Some Windows versions need case insensitive comparison */
++    ok(!lstrcmpiW(computer, lsa_domain->Buffer), "%s != %s\n", wine_dbgstr_w(computer), wine_dbgstr_wn(lsa_domain->Buffer, lsa_domain->Length/sizeof(WCHAR)));
++    LsaFreeMemory(lsa_user);
++    LsaFreeMemory(lsa_domain);
++}
++
+ START_TEST(lsa)
+ {
+-    HMODULE hkernel32 = GetModuleHandleA("kernel32");
++    HMODULE hkernel32 = GetModuleHandleA("kernel32.dll");
++    HMODULE hadvapi32 = GetModuleHandleA("advapi32.dll");
++
+     pGetSystemPreferredUILanguages = (void*)GetProcAddress(hkernel32, "GetSystemPreferredUILanguages");
++    pLsaGetUserName = (void *)GetProcAddress(hadvapi32, "LsaGetUserName");
+ 
+     test_lsa();
+     test_LsaLookupNames2();
+     test_LsaLookupSids();
+     test_LsaLookupPrivilegeName();
++    test_LsaGetUserName();
+ }
+
+-- 
+2.26.2
+

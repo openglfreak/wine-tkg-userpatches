@@ -1,0 +1,47 @@
+From: Haoyang Chen <chenhaoyang@uniontech.com>
+#Subject: [PATCH] ntdll: Improve the performance of log output.
+Message-Id: <10f77f78-238f-1196-d958-93bb211f9143@uniontech.com>
+Date: Mon, 14 Sep 2020 11:02:19 +0800
+
+From 43ea0be463f43e0d2bc6b29603d40ee4996a2e98 Mon Sep 17 00:00:00 2001
+From: Haoyang Chen <chenhaoyang@uniontech.com>
+Date: Fri, 11 Sep 2020 17:06:27 +0800
+Subject: [PATCH] ntdll: Improve the performance of log output.
+
+Logs with line breaks do not need to be copied.
+
+Signed-off-by: Haoyang Chen <chenhaoyang@uniontech.com>
+---
+ dlls/ntdll/unix/debug.c | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/unix/debug.c b/dlls/ntdll/unix/debug.c
+index 368baac46f..dfdf35fd15 100644
+--- a/dlls/ntdll/unix/debug.c
++++ b/dlls/ntdll/unix/debug.c
+@@ -246,9 +246,18 @@ int __cdecl __wine_dbg_output( const char *str )
+ 
+     if (end)
+     {
+-        ret += append_output( info, str, end + 1 - str );
+-        write( 2, info->output, info->out_pos );
+-        info->out_pos = 0;
++        if (info->out_pos)
++        {
++            ret += append_output( info, str, end + 1 - str );
++            write( 2, info->output, info->out_pos );
++            info->out_pos = 0;
++        }
++        else
++        {
++            /* output directly, no need cache */
++            ret = end - str + 1;
++            write( 2, str, ret );
++        }
+         str = end + 1;
+     }
+     if (*str) ret += append_output( info, str, strlen( str ));
+
+-- 
+2.20.1
+

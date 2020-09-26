@@ -1,0 +1,54 @@
+From: Dmitry Timoshkov <dmitry@baikal.ru>
+Subject: [PATCH] crypt32: Fix conversion of CRYPT_KEY_PROV_INFO between store and certificate property.
+Message-Id: <20200915190011.83859f78473b79477d523bd1@baikal.ru>
+Date: Tue, 15 Sep 2020 19:00:11 +0300
+
+Store uses relative offsets while certificate property uses pointers.
+
+Signed-off-by: Dmitry Timoshkov <dmitry@baikal.ru>
+---
+ dlls/crypt32/cert.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/crypt32/cert.c b/dlls/crypt32/cert.c
+index 13d8df9258..ef871155b9 100644
+--- a/dlls/crypt32/cert.c
++++ b/dlls/crypt32/cert.c
+@@ -566,7 +566,7 @@ void CRYPT_FixKeyProvInfoPointers(PCRYPT_KEY_PROV_INFO buf)
+ 
+     if (store->pwszContainerName)
+     {
+-        info.pwszContainerName = (LPWSTR)p;
++        info.pwszContainerName = (LPWSTR)((BYTE *)store + store->pwszContainerName);
+         p += (lstrlenW(info.pwszContainerName) + 1) * sizeof(WCHAR);
+     }
+     else
+@@ -574,7 +574,7 @@ void CRYPT_FixKeyProvInfoPointers(PCRYPT_KEY_PROV_INFO buf)
+ 
+     if (store->pwszProvName)
+     {
+-        info.pwszProvName = (LPWSTR)p;
++        info.pwszProvName = (LPWSTR)((BYTE *)store + store->pwszProvName);
+         p += (lstrlenW(info.pwszProvName) + 1) * sizeof(WCHAR);
+     }
+     else
+@@ -705,6 +705,7 @@ static void CRYPT_CopyKeyProvInfo(store_CRYPT_KEY_PROV_INFO *to, const CRYPT_KEY
+     to->dwProvType = from->dwProvType;
+     to->dwFlags = from->dwFlags;
+     to->cProvParam = from->cProvParam;
++    to->rgProvParam = 0;
+     to->dwKeySpec = from->dwKeySpec;
+ 
+     for (i = 0; i < to->cProvParam; i++)
+@@ -713,6 +714,7 @@ static void CRYPT_CopyKeyProvInfo(store_CRYPT_KEY_PROV_INFO *to, const CRYPT_KEY
+         p += sizeof(*param);
+ 
+         param->dwParam = from->rgProvParam[i].dwParam;
++        param->pbData = 0;
+         param->cbData = from->rgProvParam[i].cbData;
+         param->dwFlags = from->rgProvParam[i].dwFlags;
+         memcpy(p, from->rgProvParam[i].pbData, from->rgProvParam[i].cbData);
+
+-- 
+2.26.2
+

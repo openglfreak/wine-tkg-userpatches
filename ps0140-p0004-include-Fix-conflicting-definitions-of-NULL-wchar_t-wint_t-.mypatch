@@ -1,26 +1,43 @@
-From: Puetz Kevin A <PuetzKevinA@JohnDeere.com>
-Subject: [PATCH 5/5] include: Fix conflicting definitions of NULL, wchar_t, wint_t, wctype_t.
-Message-Id: <DM6PR05MB68580B68A906AD01FBC121B4B57C0@DM6PR05MB6858.namprd05.prod.outlook.com>
-Date: Fri, 17 Jul 2020 01:12:14 +0000
+From: Kevin Puetz <PuetzKevinA@JohnDeere.com>
+Subject: [PATCH v2 4/4] include: Fix conflicting definitions of NULL, wchar_t, wint_t, wctype_t.
+Message-Id: <20200917225240.2581-2-PuetzKevinA@JohnDeere.com>
+Date: Thu, 17 Sep 2020 17:52:40 -0500
+In-Reply-To: <C20200917224905.2465-1-PuetzKevinA@JohnDeere.com>
+References: <C20200917224905.2465-1-PuetzKevinA@JohnDeere.com>
 
 When <basetyps.h> defines wchar_t, it must obey -f(no-)short-wchar
 by referring to __WCHAR_TYPE__ which may not be `unsigned short`.
+
 Similarly, windef.h defining NULL may need to use GCC's __null.
 Otherwise one-definition-rule problems arise depending on whether
 wine or libc headers are included first.
+
+tchar.h wint_t and wctype_t are defined by <wchar.h>,
+which was already being included.
 
 Implementing these by deferring to the C89-specified libc headers,
 (or msvcrt's versions with -mno-cygwin) ensures matching definitions.
 
 Signed-off-by: Kevin Puetz <PuetzKevinA@JohnDeere.com>
 ---
- include/basetyps.h |  8 +++++---
- include/tchar.h    |  9 +--------
- include/windef.h   | 11 +++++++----
- 3 files changed, 13 insertions(+), 15 deletions(-)
+
+<basetyps.h> uses gcc's __need_* macros to document/filter that it only
+intends to define wchar_t (and not the rest, e.g. size_t/ptrdiff_t)
+to match the names defined by the MSVC version as closely as possible.
+That's not portable, but if not supported it'll just get the rest too,
+which is unlikely to really hurt anything in practice.
+
+<windef.h> always ended up with all of <stddef.h> later (via <winnt.h>),
+and the real SDK header does to, so there's no reason to be subtle
+there.
+---
+ include/basetyps.h | 8 +++++---
+ include/tchar.h    | 9 ---------
+ include/windef.h   | 9 +++++----
+ 3 files changed, 10 insertions(+), 16 deletions(-)
 
 diff --git a/include/basetyps.h b/include/basetyps.h
-index b0dd5d77f4..e6243d5a59 100644
+index b0dd5d77f4..a2c5ed49f2 100644
 --- a/include/basetyps.h
 +++ b/include/basetyps.h
 @@ -91,9 +91,11 @@ typedef unsigned long error_status_t;
@@ -31,7 +48,7 @@ index b0dd5d77f4..e6243d5a59 100644
 -typedef unsigned short wchar_t;
 -#endif
 +# ifndef __cplusplus
-+#  define __need_wchar_t // tells GCC's stddef.h to only define wchar_t
++#  define __need_wchar_t /* tells GCC's stddef.h we only need wchar_t */
 +#  include <stddef.h>
 +#  undef __need_wchar_t
 +# endif
@@ -39,10 +56,10 @@ index b0dd5d77f4..e6243d5a59 100644
  #endif
  
 diff --git a/include/tchar.h b/include/tchar.h
-index 6c9035c219..0049ea7e7a 100644
+index 3f6db726af..06184f61a5 100644
 --- a/include/tchar.h
 +++ b/include/tchar.h
-@@ -232,14 +232,7 @@ extern "C" {
+@@ -232,15 +232,6 @@ extern "C" {
  #endif /* tchar mappings */
  
  #ifdef _UNICODE
@@ -54,15 +71,15 @@ index 6c9035c219..0049ea7e7a 100644
 -typedef unsigned short wctype_t;
 -#define _WCTYPE_T_DEFINED
 -#endif
-+#include <wchar.h>
- 
+-
  #ifndef __TCHAR_DEFINED
  #if defined(WINE_UNICODE_NATIVE)
+ #define __T(x) L##x
 diff --git a/include/windef.h b/include/windef.h
-index 521c3ab451..e26ffe6ff4 100644
+index 521c3ab451..c0323d4275 100644
 --- a/include/windef.h
 +++ b/include/windef.h
-@@ -206,11 +206,14 @@ extern "C" {
+@@ -206,11 +206,12 @@ extern "C" {
  
  /* Misc. constants. */
  
@@ -74,12 +91,9 @@ index 521c3ab451..e26ffe6ff4 100644
 +#ifdef RC_INVOKED
  #define NULL  ((void*)0)
 +#else
-+#define __need_NULL // tells GCC's stddef.h to only define NULL
 +#include <stddef.h>
-+#undef __need_NULL
 +#endif
  #endif
  
  #ifdef FALSE
-
 

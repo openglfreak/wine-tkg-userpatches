@@ -1,0 +1,103 @@
+From: Alistair Leslie-Hughes <leslie_alistair@hotmail.com>
+Subject: [PATCH] ws2_32: Return a valid value for WSAIoctl SIO_IDEAL_SEND_BACKLOG_QUERY.
+Message-Id: <SLXP216MB0621F746E135CCC543ED54CD93200@SLXP216MB0621.KORP216.PROD.OUTLOOK.COM>
+Date: Tue, 15 Sep 2020 19:45:16 +1000
+
+Signed-off-by: Alistair Leslie-Hughes <leslie_alistair@hotmail.com>
+---
+ dlls/ws2_32/socket.c     | 30 ++++++++++++++++++++++++++++++
+ dlls/ws2_32/tests/sock.c | 14 +++++++++++++-
+ 2 files changed, 43 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
+index 0ed1af3092..a145b8c1f7 100644
+--- a/dlls/ws2_32/socket.c
++++ b/dlls/ws2_32/socket.c
+@@ -4784,6 +4784,36 @@ INT WINAPI WSAIoctl(SOCKET s, DWORD code, LPVOID in_buff, DWORD in_size, LPVOID
+         break;
+     }
+ 
++    case WS_SIO_IDEAL_SEND_BACKLOG_QUERY:
++    {
++        int ret, proto;
++        unsigned protolen = sizeof(protolen);
++
++        if (!out_buff)
++        {
++            SetLastError(WSAEFAULT);
++            return SOCKET_ERROR;
++        }
++
++        if ( (fd = get_sock_fd( s, 0, NULL )) == -1)
++            return SOCKET_ERROR;
++
++        ret = getsockopt(fd, SOL_SOCKET, SO_PROTOCOL, &proto, &protolen);
++        if(ret || proto != IPPROTO_TCP)
++        {
++            TRACE("ret %d, proto %d\n", ret, proto);
++            release_sock_fd( s, fd );
++            SetLastError(WSAEOPNOTSUPP);
++            return SOCKET_ERROR;
++        }
++
++        total = sizeof(DWORD);
++        *(DWORD*)out_buff = 0x10000; /* 64k */
++
++        release_sock_fd( s, fd );
++        break;
++    }
++
+     case WS_SIOCATMARK:
+     {
+         unsigned int oob = 0, atmark = 0;
+diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
+index 7835246397..df3e893d10 100644
+--- a/dlls/ws2_32/tests/sock.c
++++ b/dlls/ws2_32/tests/sock.c
+@@ -6405,8 +6405,10 @@ static void test_WSASendTo(void)
+     struct sockaddr_in addr;
+     char buf[12] = "hello world";
+     WSABUF data_buf;
+-    DWORD bytesSent;
++    DWORD bytesSent, size;
+     int ret;
++    ULONG backlog = 0;
++    int iret;
+ 
+     addr.sin_family = AF_INET;
+     addr.sin_port = htons(139);
+@@ -6436,6 +6438,11 @@ static void test_WSASendTo(void)
+     }
+     ok(!WSAGetLastError(), "WSAGetLastError() should return zero after "
+             "a successful call to WSASendTo()\n");
++
++    iret = WSAIoctl(s, SIO_IDEAL_SEND_BACKLOG_QUERY, NULL, 0, &backlog, sizeof(backlog), &size, NULL, NULL);
++    ok(iret == SOCKET_ERROR && WSAGetLastError() == WSAEOPNOTSUPP,
++       "WSAIoctl() failed: %d/%d\n", iret, WSAGetLastError());
++    closesocket(s);
+ }
+ 
+ static DWORD WINAPI recv_thread(LPVOID arg)
+@@ -6476,6 +6483,7 @@ static void test_WSARecv(void)
+     DWORD dwret;
+     BOOL bret;
+     HANDLE thread, event = NULL, io_port;
++    ULONG backlog = 0, size;
+ 
+     tcp_socketpair(&src, &dest);
+     if (src == INVALID_SOCKET || dest == INVALID_SOCKET)
+@@ -6629,6 +6637,10 @@ static void test_WSARecv(void)
+ 
+     CloseHandle(io_port);
+ 
++    iret = WSAIoctl(src, SIO_IDEAL_SEND_BACKLOG_QUERY, NULL, 0, &backlog, sizeof(backlog), &size, NULL, NULL);
++    ok(!iret, "WSAIoctl() failed: %d/%d\n", iret, WSAGetLastError());
++    ok(backlog == 0x10000, "got %08x\n", backlog);
++
+ end:
+     if (server != INVALID_SOCKET)
+         closesocket(server);
+
+-- 
+2.28.0
+

@@ -1,0 +1,257 @@
+From: Dmitry Timoshkov <dmitry@baikal.ru>
+Subject: [PATCH] wevtsvc: Add EventLog service stub.
+Message-Id: <20200922175018.beb7b35182ece047ae715975@baikal.ru>
+Date: Tue, 22 Sep 2020 17:50:18 +0300
+
+There's an installer that fails if EventLog service is not running.
+
+Signed-off-by: Dmitry Timoshkov <dmitry@baikal.ru>
+---
+ dlls/advapi32/tests/service.c | 42 +++++++++++++++++
+ dlls/wevtsvc/Makefile.in      |  7 +++
+ dlls/wevtsvc/wevtsvc.c        | 87 +++++++++++++++++++++++++++++++++++
+ dlls/wevtsvc/wevtsvc.spec     |  1 +
+ loader/wine.inf.in            | 17 +++++++
+ 5 files changed, 154 insertions(+)
+ create mode 100644 dlls/wevtsvc/Makefile.in
+ create mode 100644 dlls/wevtsvc/wevtsvc.c
+ create mode 100644 dlls/wevtsvc/wevtsvc.spec
+
+diff --git a/dlls/advapi32/tests/service.c b/dlls/advapi32/tests/service.c
+index 7048e5a09a..94aecf5d7e 100644
+--- a/dlls/advapi32/tests/service.c
++++ b/dlls/advapi32/tests/service.c
+@@ -2678,6 +2678,47 @@ static void test_refcount(void)
+     CloseServiceHandle(scm_handle);
+ }
+ 
++static void test_EventLog(void)
++{
++    SC_HANDLE scm_handle, svc_handle;
++    DWORD size;
++    BOOL ret;
++    QUERY_SERVICE_CONFIGA *config;
++
++    scm_handle = OpenSCManagerA(NULL, NULL, GENERIC_READ);
++    ok(scm_handle != NULL, "OpenSCManager error %u\n", GetLastError());
++
++    svc_handle = OpenServiceA(scm_handle, "EventLog", GENERIC_READ);
++    ok(svc_handle != NULL, "OpenService error %u\n", GetLastError());
++
++    SetLastError(0xdeadbeef);
++    ret = QueryServiceConfigA(svc_handle, NULL, 0, &size);
++    ok(!ret, "QueryServiceConfig should fail\n");
++    ok(GetLastError() == ERROR_INSUFFICIENT_BUFFER, "got %u\n", GetLastError());
++
++    config = HeapAlloc(GetProcessHeap(), 0, size);
++    ret = QueryServiceConfigA(svc_handle, config, size, &size);
++    ok(ret, "QueryServiceConfig error %u\n", GetLastError());
++
++    ok(config->dwServiceType == SERVICE_WIN32_SHARE_PROCESS, "got %#x\n", config->dwServiceType);
++    ok(config->dwStartType == SERVICE_AUTO_START, "got %u\n", config->dwStartType);
++    ok(config->dwErrorControl == SERVICE_ERROR_NORMAL, "got %u\n", config->dwErrorControl);
++    ok(!strcmpi(config->lpBinaryPathName, "C:\\windows\\system32\\services.exe") /* XP */ ||
++       !strcmpi(config->lpBinaryPathName, "C:\\windows\\system32\\svchost.exe -k LocalServiceNetworkRestricted") /* Vista+ */,
++       "got %s\n", config->lpBinaryPathName);
++todo_wine
++    ok(!strcmp(config->lpLoadOrderGroup, "Event log"), "got %s\n", config->lpLoadOrderGroup);
++    ok(config->dwTagId == 0, "Expected 0, got %d\n", config->dwTagId);
++    ok(!config->lpDependencies[0], "lpDependencies is not empty\n");
++    ok(!strcmp(config->lpServiceStartName, "LocalSystem"), "got %s\n", config->lpServiceStartName);
++    ok(!strcmp(config->lpDisplayName, "Event Log"), "got %s\n", config->lpDisplayName);
++
++    HeapFree(GetProcessHeap(), 0, config);
++
++    CloseServiceHandle(svc_handle);
++    CloseServiceHandle(scm_handle);
++}
++
+ static DWORD WINAPI ctrl_handler(DWORD ctl, DWORD type, void *data, void *user)
+ {
+     HANDLE evt = user;
+@@ -2775,4 +2816,5 @@ START_TEST(service)
+      * and what the rules are
+      */
+     test_refcount();
++    test_EventLog();
+ }
+diff --git a/dlls/wevtsvc/Makefile.in b/dlls/wevtsvc/Makefile.in
+new file mode 100644
+index 0000000000..3dcbb804a3
+--- /dev/null
++++ b/dlls/wevtsvc/Makefile.in
+@@ -0,0 +1,7 @@
++MODULE    = wevtsvc.dll
++IMPORTS   = rpcrt4 advapi32
++
++EXTRADLLFLAGS = -mno-cygwin
++
++C_SRCS = \
++	wevtsvc.c
+diff --git a/dlls/wevtsvc/wevtsvc.c b/dlls/wevtsvc/wevtsvc.c
+new file mode 100644
+index 0000000000..14c30791ff
+--- /dev/null
++++ b/dlls/wevtsvc/wevtsvc.c
+@@ -0,0 +1,87 @@
++/*
++ * Event Log Service
++ *
++ * Copyright 2020 Dmitry Timoshkov
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdarg.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "winsvc.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(eventlog);
++
++static SERVICE_STATUS_HANDLE svc_handle;
++static HANDLE done_event;
++
++static void eventlog_update_status(DWORD state)
++{
++    SERVICE_STATUS status;
++
++    status.dwServiceType = SERVICE_WIN32;
++    status.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
++    status.dwWin32ExitCode = 0;
++    status.dwServiceSpecificExitCode = 0;
++    status.dwCheckPoint = 0;
++    status.dwWaitHint = 0;
++    status.dwControlsAccepted = 0;
++    status.dwCurrentState = state;
++
++    SetServiceStatus(svc_handle, &status);
++}
++
++static void WINAPI eventlog_handler(DWORD control)
++{
++    TRACE("%#x\n", control);
++
++    switch (control)
++    {
++    case SERVICE_CONTROL_STOP:
++    case SERVICE_CONTROL_SHUTDOWN:
++        eventlog_update_status(SERVICE_STOP_PENDING);
++        SetEvent(done_event);
++        break;
++
++    default:
++        eventlog_update_status(SERVICE_RUNNING);
++        break;
++    }
++}
++
++void WINAPI ServiceMain(DWORD argc, LPWSTR *argv)
++{
++    TRACE("starting Event Log Service\n");
++
++    svc_handle = RegisterServiceCtrlHandlerW(L"EventLog", eventlog_handler);
++    if (!svc_handle)
++    {
++        ERR("RegisterServiceCtrlHandler error %u\n", GetLastError());
++        return;
++    }
++
++    eventlog_update_status(SERVICE_RUNNING);
++
++    done_event = CreateEventW(NULL, TRUE, FALSE, NULL);
++    WaitForSingleObject(done_event, INFINITE);
++    CloseHandle(done_event);
++
++    eventlog_update_status(SERVICE_STOPPED);
++
++    TRACE("exiting Event Log Service\n");
++}
+diff --git a/dlls/wevtsvc/wevtsvc.spec b/dlls/wevtsvc/wevtsvc.spec
+new file mode 100644
+index 0000000000..daa88578f7
+--- /dev/null
++++ b/dlls/wevtsvc/wevtsvc.spec
+@@ -0,0 +1 @@
++@ stdcall -private ServiceMain(long ptr)
+diff --git a/loader/wine.inf.in b/loader/wine.inf.in
+index cd0e7bd16f..0b71b10544 100644
+--- a/loader/wine.inf.in
++++ b/loader/wine.inf.in
+@@ -149,6 +149,7 @@ WineFakeDlls=FakeDllsWin32
+ 
+ [DefaultInstall.Services]
+ AddService=BITS,0,BITSService
++AddService=EventLog,0,EventLogService
+ AddService=HTTP,0,HTTPService
+ AddService=MSIServer,0,MSIService
+ AddService=MountMgr,0x800,MountMgrService
+@@ -167,6 +168,7 @@ AddService=NDIS,0x800,NDISService
+ 
+ [DefaultInstall.NT.Services]
+ AddService=BITS,0,BITSService
++AddService=EventLog,0,EventLogService
+ AddService=HTTP,0,HTTPService
+ AddService=MSIServer,0,MSIService
+ AddService=MountMgr,0x800,MountMgrService
+@@ -185,6 +187,7 @@ AddService=NDIS,0x800,NDISService
+ 
+ [DefaultInstall.ntamd64.Services]
+ AddService=BITS,0,BITSService
++AddService=EventLog,0,EventLogService
+ AddService=HTTP,0,HTTPService
+ AddService=MSIServer,0,MSIService
+ AddService=MountMgr,0x800,MountMgrService
+@@ -203,6 +206,7 @@ AddService=NDIS,0x800,NDISService
+ 
+ [DefaultInstall.ntarm64.Services]
+ AddService=BITS,0,BITSService
++AddService=EventLog,0,EventLogService
+ AddService=HTTP,0,HTTPService
+ AddService=MSIServer,0,MSIService
+ AddService=MountMgr,0x800,MountMgrService
+@@ -3609,6 +3613,15 @@ ServiceType=16
+ StartType=3
+ ErrorControl=1
+ 
++[EventLogService]
++AddReg=EventLogServiceKeys
++Description="Event Log"
++DisplayName="Event Log"
++ServiceBinary="%11%\svchost.exe -k LocalServiceNetworkRestricted"
++ServiceType=32
++StartType=2
++ErrorControl=1
++
+ [HTTPService]
+ Description="HTTP server"
+ DisplayName="HTTP"
+@@ -3696,6 +3709,10 @@ ErrorControl=1
+ HKR,Parameters,"ServiceDll",,"%11%\qmgr.dll"
+ HKLM,%CurrentVersionNT%\SvcHost,"netsvcs",0x00010000,"BITS"
+ 
++[EventLogServiceKeys]
++HKR,Parameters,"ServiceDll",,"%11%\wevtsvc.dll"
++HKLM,%CurrentVersionNT%\SvcHost,"LocalServiceNetworkRestricted",0x00010000,"Event Log"
++
+ [StiServiceKeys]
+ HKR,Parameters,"ServiceDll",,"%11%\wiaservc.dll"
+ HKLM,%CurrentVersionNT%\SvcHost,"imgsvc",0x00010000,"StiSvc"
+
+-- 
+2.26.2
+

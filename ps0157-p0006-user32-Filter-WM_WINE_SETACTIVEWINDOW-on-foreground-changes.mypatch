@@ -1,0 +1,163 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH v2 6/8] user32: Filter WM_WINE_SETACTIVEWINDOW on foreground changes.
+Message-Id: <20201001102004.149704-6-rbernon@codeweavers.com>
+Date: Thu,  1 Oct 2020 12:20:02 +0200
+In-Reply-To: <20201001102004.149704-1-rbernon@codeweavers.com>
+References: <20201001102004.149704-1-rbernon@codeweavers.com>
+
+We need to use the internal peek_message here, as we really only should
+process these internal messages and shouldn't check the driver events.
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/user32/focus.c        | 11 +++++++++
+ dlls/user32/message.c      |  2 +-
+ dlls/user32/tests/win.c    | 46 +++++++++++++++++---------------------
+ dlls/user32/user_private.h |  2 ++
+ 4 files changed, 34 insertions(+), 27 deletions(-)
+
+diff --git a/dlls/user32/focus.c b/dlls/user32/focus.c
+index dd4c282e63d..6a09d491995 100644
+--- a/dlls/user32/focus.c
++++ b/dlls/user32/focus.c
+@@ -73,10 +73,12 @@ static HWND set_focus_window( HWND hwnd )
+  */
+ BOOL set_active_window( HWND hwnd, HWND *prev, UINT flags )
+ {
++    struct user_thread_info *thread_data = get_user_thread_info();
+     HWND previous = GetActiveWindow();
+     BOOL ret, mouse = (flags & SET_ACTIVE_WINDOW_FLAGS_MOUSE);
+     DWORD winflags, old_thread, new_thread;
+     CBTACTIVATESTRUCT cbt;
++    MSG msg;
+ 
+     if (previous == hwnd)
+     {
+@@ -84,6 +86,15 @@ BOOL set_active_window( HWND hwnd, HWND *prev, UINT flags )
+         return TRUE;
+     }
+ 
++    if (thread_data->ignore_setactivewindow) return FALSE;
++    else if (!(flags & SET_ACTIVE_WINDOW_FLAGS_INTERNAL) &&
++             GetWindowThreadProcessId( GetForegroundWindow(), NULL ) == GetCurrentThreadId())
++    {
++        thread_data->ignore_setactivewindow = TRUE;
++        while (peek_message( &msg, 0, WM_WINE_SETACTIVEWINDOW, WM_WINE_SETACTIVEWINDOW, PM_REMOVE|PM_QS_SENDMESSAGE, 0 ));
++        thread_data->ignore_setactivewindow = FALSE;
++    }
++
+     /* Prevent a recursive activation loop with the activation messages */
+     winflags = win_set_flags(hwnd, WIN_IS_IN_ACTIVATION, 0);
+     if (!(winflags & WIN_IS_IN_ACTIVATION))
+diff --git a/dlls/user32/message.c b/dlls/user32/message.c
+index 2a70b57b597..89f8727670a 100644
+--- a/dlls/user32/message.c
++++ b/dlls/user32/message.c
+@@ -2643,7 +2643,7 @@ static inline void call_sendmsg_callback( SENDASYNCPROC callback, HWND hwnd, UIN
+  * available; -1 on error.
+  * All pending sent messages are processed before returning.
+  */
+-static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags, UINT changed_mask )
++int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags, UINT changed_mask )
+ {
+     LRESULT result;
+     struct user_thread_info *thread_info = get_user_thread_info();
+diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
+index a9400d4368a..feb1fb4a1bf 100644
+--- a/dlls/user32/tests/win.c
++++ b/dlls/user32/tests/win.c
+@@ -3267,33 +3267,31 @@ struct test_sfw_test_desc
+     int  msgcount_before_set_foreground;
+     BOOL todo_msgcount_after_set_foreground;
+     int  msgcount_after_set_foreground;
+-    BOOL todo_msgcount_after_peek_message;
+     int  msgcount_after_peek_message;
+-    BOOL todo_expected_window;
+     int  expected_window;
+ };
+ 
+ static struct test_sfw_test_desc test_sfw_tests[] = {
+-    {1, FALSE, FALSE, FALSE,  FALSE, 0, FALSE, 0, FALSE, 7, FALSE, 0},
+-    {1, TRUE, FALSE, FALSE,   FALSE, 0,  TRUE, 1, FALSE, 7, FALSE, 0},
+-    {1, FALSE, TRUE, FALSE,   FALSE, 0, FALSE, 0, FALSE, 7, FALSE, 0},
+-    {1, TRUE, TRUE, FALSE,    FALSE, 0,  TRUE, 1, FALSE, 7, FALSE, 0},
+-    {1, FALSE, FALSE, TRUE,   FALSE, 0, FALSE, 0, FALSE, 7, FALSE, 0},
+-    {1, TRUE, FALSE, TRUE,    FALSE, 0,  TRUE, 1, FALSE, 7, FALSE, 0},
+-
+-    {2, FALSE, FALSE, FALSE,  FALSE, 0, FALSE, 6,  TRUE, 1,  TRUE, 1},
+-    {2, TRUE, FALSE, FALSE,   FALSE, 0, FALSE, 6,  TRUE, 1,  TRUE, 1},
+-    {2, FALSE, TRUE, FALSE,   FALSE, 6, FALSE, 0,  TRUE, 1,  TRUE, 1},
+-    {2, TRUE, TRUE, FALSE,    FALSE, 6,  TRUE, 1, FALSE, 7, FALSE, 0},
+-    {2, FALSE, FALSE, TRUE,    TRUE, 8, FALSE, 0,  TRUE, 1,  TRUE, 1},
+-    {2, TRUE, FALSE, TRUE,     TRUE, 8,  TRUE, 1, FALSE, 7, FALSE, 0},
+-
+-    {0, FALSE, FALSE, FALSE,  FALSE, 0, FALSE, 6, FALSE, 1, FALSE, 1},
+-    {0, TRUE, FALSE, FALSE,   FALSE, 0, FALSE, 6,  TRUE, 1,  TRUE, 1},
+-    {0, FALSE, TRUE, FALSE,   FALSE, 6, FALSE, 0, FALSE, 1, FALSE, 1},
+-    {0, TRUE, TRUE, FALSE,    FALSE, 6,  TRUE, 1, FALSE, 7, FALSE, 0},
+-    {0, FALSE, FALSE, TRUE,    TRUE, 8, FALSE, 0, FALSE, 1, FALSE, 1},
+-    {0, TRUE, FALSE, TRUE,     TRUE, 8,  TRUE, 1, FALSE, 7, FALSE, 0},
++    {1, FALSE, FALSE, FALSE,  FALSE, 0, FALSE, 0, 7, 0},
++    {1, TRUE, FALSE, FALSE,   FALSE, 0,  TRUE, 1, 7, 0},
++    {1, FALSE, TRUE, FALSE,   FALSE, 0, FALSE, 0, 7, 0},
++    {1, TRUE, TRUE, FALSE,    FALSE, 0,  TRUE, 1, 7, 0},
++    {1, FALSE, FALSE, TRUE,   FALSE, 0, FALSE, 0, 7, 0},
++    {1, TRUE, FALSE, TRUE,    FALSE, 0,  TRUE, 1, 7, 0},
++
++    {2, FALSE, FALSE, FALSE,  FALSE, 0, FALSE, 6, 1, 1},
++    {2, TRUE, FALSE, FALSE,   FALSE, 0, FALSE, 6, 1, 1},
++    {2, FALSE, TRUE, FALSE,   FALSE, 6, FALSE, 0, 1, 1},
++    {2, TRUE, TRUE, FALSE,    FALSE, 6,  TRUE, 1, 7, 0},
++    {2, FALSE, FALSE, TRUE,    TRUE, 8, FALSE, 0, 1, 1},
++    {2, TRUE, FALSE, TRUE,     TRUE, 8,  TRUE, 1, 7, 0},
++
++    {0, FALSE, FALSE, FALSE,  FALSE, 0, FALSE, 6, 1, 1},
++    {0, TRUE, FALSE, FALSE,   FALSE, 0, FALSE, 6, 1, 1},
++    {0, FALSE, TRUE, FALSE,   FALSE, 6, FALSE, 0, 1, 1},
++    {0, TRUE, TRUE, FALSE,    FALSE, 6,  TRUE, 1, 7, 0},
++    {0, FALSE, FALSE, TRUE,    TRUE, 8, FALSE, 0, 1, 1},
++    {0, TRUE, FALSE, TRUE,     TRUE, 8,  TRUE, 1, 7, 0},
+ };
+ 
+ static DWORD WINAPI test_sfw_thread( void *param )
+@@ -3372,16 +3370,12 @@ static DWORD WINAPI test_sfw_thread( void *param )
+         test_sfw_msg_count = 0;
+         trace( "%d: calling PeekMessageA\n", i );
+         while (PeekMessageA( &msg, 0, 0, 0, PM_REMOVE )) DispatchMessageA( &msg );
+-        todo_wine_if( test->todo_msgcount_after_peek_message )
+         ok( test_sfw_msg_count == test->msgcount_after_peek_message,
+             "%d: Unexpected number of messages received after PeekMessageA: %d\n", i, test_sfw_msg_count );
+ 
+-        todo_wine_if( test->todo_expected_window )
+         ok( GetForegroundWindow() == expected_window, "%d: GetForegroundWindow() returned %p\n", i,
+             GetForegroundWindow() );
+-        todo_wine_if( test->todo_expected_window )
+         ok( GetActiveWindow() == expected_window, "%d: GetActiveWindow() returned %p\n", i, GetActiveWindow() );
+-        todo_wine_if( test->todo_expected_window )
+         ok( GetFocus() == expected_window, "%d: GetFocus() returned %p\n", i, GetFocus() );
+         trace( "%d: done\n", i );
+ 
+diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
+index febb1bbb7bb..0c0968a16c2 100644
+--- a/dlls/user32/user_private.h
++++ b/dlls/user32/user_private.h
+@@ -209,6 +209,7 @@ struct user_thread_info
+     HWND                          top_window;             /* Desktop window */
+     HWND                          msg_window;             /* HWND_MESSAGE parent window */
+     struct rawinput_thread_data  *rawinput;               /* RawInput thread local data / buffer */
++    BOOL                          ignore_setactivewindow; /* Ingore WM_WINE_SETACTIVEWINDOW messages */
+ };
+ 
+ C_ASSERT( sizeof(struct user_thread_info) <= sizeof(((TEB *)0)->Win32ClientInfo) );
+@@ -252,6 +253,7 @@ extern struct rawinput_thread_data *rawinput_thread_data(void);
+ 
+ extern void CLIPBOARD_ReleaseOwner( HWND hwnd ) DECLSPEC_HIDDEN;
+ extern BOOL FOCUS_MouseActivate( HWND hwnd ) DECLSPEC_HIDDEN;
++extern int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags, UINT changed_mask ) DECLSPEC_HIDDEN;
+ extern BOOL set_active_window( HWND hwnd, HWND *prev, UINT flags ) DECLSPEC_HIDDEN;
+ extern BOOL set_capture_window( HWND hwnd, UINT gui_flags, HWND *prev_ret ) DECLSPEC_HIDDEN;
+ extern void free_dce( struct dce *dce, HWND hwnd ) DECLSPEC_HIDDEN;
+
+-- 
+2.28.0
+

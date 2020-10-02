@@ -1,0 +1,61 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH v2 2/8] user32: Do not deactivate if thread is foreground.
+Message-Id: <20201001102004.149704-2-rbernon@codeweavers.com>
+Date: Thu,  1 Oct 2020 12:19:58 +0200
+In-Reply-To: <20201001102004.149704-1-rbernon@codeweavers.com>
+References: <20201001102004.149704-1-rbernon@codeweavers.com>
+
+Instead of only checking that the window is foreground.
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/user32/message.c   |  3 ++-
+ dlls/user32/tests/win.c | 10 +++++-----
+ 2 files changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/user32/message.c b/dlls/user32/message.c
+index 4434f4b0c2a..02628e4b92b 100644
+--- a/dlls/user32/message.c
++++ b/dlls/user32/message.c
+@@ -1867,7 +1867,8 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
+         if (is_desktop_window( hwnd )) return 0;
+         return WIN_SetStyle(hwnd, wparam, lparam);
+     case WM_WINE_SETACTIVEWINDOW:
+-        if (!wparam && GetForegroundWindow() == hwnd) return 0;
++        if (!wparam && GetWindowThreadProcessId( GetForegroundWindow(), NULL ) == GetCurrentThreadId())
++            return 0;
+         return (LRESULT)SetActiveWindow( (HWND)wparam );
+     case WM_WINE_KEYBOARD_LL_HOOK:
+     case WM_WINE_MOUSE_LL_HOOK:
+diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
+index bbc3fbfb1d9..a9400d4368a 100644
+--- a/dlls/user32/tests/win.c
++++ b/dlls/user32/tests/win.c
+@@ -3275,18 +3275,18 @@ struct test_sfw_test_desc
+ 
+ static struct test_sfw_test_desc test_sfw_tests[] = {
+     {1, FALSE, FALSE, FALSE,  FALSE, 0, FALSE, 0, FALSE, 7, FALSE, 0},
+-    {1, TRUE, FALSE, FALSE,   FALSE, 0,  TRUE, 1,  TRUE, 7,  TRUE, 0},
++    {1, TRUE, FALSE, FALSE,   FALSE, 0,  TRUE, 1, FALSE, 7, FALSE, 0},
+     {1, FALSE, TRUE, FALSE,   FALSE, 0, FALSE, 0, FALSE, 7, FALSE, 0},
+-    {1, TRUE, TRUE, FALSE,    FALSE, 0,  TRUE, 1,  TRUE, 7,  TRUE, 0},
++    {1, TRUE, TRUE, FALSE,    FALSE, 0,  TRUE, 1, FALSE, 7, FALSE, 0},
+     {1, FALSE, FALSE, TRUE,   FALSE, 0, FALSE, 0, FALSE, 7, FALSE, 0},
+-    {1, TRUE, FALSE, TRUE,    FALSE, 0,  TRUE, 1,  TRUE, 7,  TRUE, 0},
++    {1, TRUE, FALSE, TRUE,    FALSE, 0,  TRUE, 1, FALSE, 7, FALSE, 0},
+ 
+     {2, FALSE, FALSE, FALSE,  FALSE, 0, FALSE, 6,  TRUE, 1,  TRUE, 1},
+     {2, TRUE, FALSE, FALSE,   FALSE, 0, FALSE, 6,  TRUE, 1,  TRUE, 1},
+     {2, FALSE, TRUE, FALSE,   FALSE, 6, FALSE, 0,  TRUE, 1,  TRUE, 1},
+-    {2, TRUE, TRUE, FALSE,    FALSE, 6,  TRUE, 1,  TRUE, 7,  TRUE, 0},
++    {2, TRUE, TRUE, FALSE,    FALSE, 6,  TRUE, 1, FALSE, 7, FALSE, 0},
+     {2, FALSE, FALSE, TRUE,    TRUE, 8, FALSE, 0,  TRUE, 1,  TRUE, 1},
+-    {2, TRUE, FALSE, TRUE,     TRUE, 8,  TRUE, 1,  TRUE, 7,  TRUE, 0},
++    {2, TRUE, FALSE, TRUE,     TRUE, 8,  TRUE, 1, FALSE, 7, FALSE, 0},
+ 
+     {0, FALSE, FALSE, FALSE,  FALSE, 0, FALSE, 6, FALSE, 1, FALSE, 1},
+     {0, TRUE, FALSE, FALSE,   FALSE, 0, FALSE, 6,  TRUE, 1,  TRUE, 1},
+
+-- 
+2.28.0
+

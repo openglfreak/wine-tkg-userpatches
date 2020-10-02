@@ -1,0 +1,126 @@
+From 545127f7cae38cafe54f6881fb52ef328508e6d8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 28 Sep 2020 12:04:13 +0200
+Subject: [PATCH] winex11.drv: Forward clip_fullscreen_window to foreground
+ thread.
+
+If the current thread isn't the foreground thread. Otherwise we may
+clip the cursor in the wrong thread, that isn't expecting mouse messages
+or may not be checking its messages.
+
+Red Faction has some race condition where this can happen for instance,
+with clip_fullscreen_window called from X11DRV_DisplayDevices_Update
+callback in a background thread. This thread starts clipping the cursor,
+and the foreground thread isn't receiving MotionNotify events anymore.
+
+We use WM_X11DRV_CLIP_CURSOR message here, with wparam set to TRUE if
+clip_fullscreen_window was the origin, and lparam being the reset param
+in that case. The lparam / wparam were only previously used when sending
+the WM_X11DRV_CLIP_CURSOR message to clip message windows or to the
+desktop window, so it should be safe to change their semantic in that
+case.
+---
+ dlls/winex11.drv/mouse.c  | 31 ++++++++++++++++++++++---------
+ dlls/winex11.drv/window.c |  2 +-
+ dlls/winex11.drv/x11drv.h |  2 +-
+ 3 files changed, 24 insertions(+), 11 deletions(-)
+
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 7148115dc95..3997e0825b4 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -614,15 +614,16 @@ BOOL CDECL X11DRV_ClipCursor( const RECT *clip );
+  *
+  * Notification function called upon receiving a WM_X11DRV_CLIP_CURSOR.
+  */
+-LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd )
++LRESULT clip_cursor_notify( HWND hwnd, WPARAM wparam, LPARAM lparam )
+ {
+     struct x11drv_thread_data *data = x11drv_init_thread_data();
++    HWND prev_clip_hwnd;
++    RECT clip;
+ 
+     if (hwnd == GetDesktopWindow())  /* change the clip window stored in the desktop process */
+     {
+         static HWND clip_hwnd;
+-
+-        HWND prev = clip_hwnd;
++        HWND prev = clip_hwnd, new_clip_hwnd = (HWND)lparam;
+         clip_hwnd = new_clip_hwnd;
+         if (prev || new_clip_hwnd) TRACE( "clip hwnd changed from %p to %p\n", prev, new_clip_hwnd );
+         if (prev) SendNotifyMessageW( prev, WM_X11DRV_CLIP_CURSOR, (WPARAM)prev, 0 );
+@@ -637,12 +638,14 @@ LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd )
+     }
+     else if (hwnd == GetForegroundWindow())  /* request to clip */
+     {
+-        RECT clip;
+-
+-        GetClipCursor( &clip );
+-        X11DRV_ClipCursor( &clip );
++        if (wparam) clip_fullscreen_window( hwnd, lparam );
++        else
++        {
++            GetClipCursor( &clip );
++            X11DRV_ClipCursor( &clip );
++        }
+     }
+-    else if (prev_clip_hwnd)
++    else if ((prev_clip_hwnd = (HWND)wparam))
+     {
+         /* This is a notification send by the desktop window to an old
+          * dangling clip window.
+@@ -666,6 +669,16 @@ BOOL clip_fullscreen_window( HWND hwnd, BOOL reset )
+     HMONITOR monitor;
+     DWORD style;
+     BOOL fullscreen;
++    DWORD tid, pid;
++
++    /* forward request to the window thread if it's in a different thread */
++    if ((tid = GetWindowThreadProcessId( hwnd, &pid )) &&
++         tid != GetCurrentThreadId() && pid == GetCurrentProcessId())
++    {
++        TRACE( "forwarding clip request to %p\n", hwnd );
++        SendNotifyMessageW( hwnd, WM_X11DRV_CLIP_CURSOR, TRUE, reset );
++        return TRUE;
++    }
+ 
+     if (hwnd == GetDesktopWindow()) return FALSE;
+     style = GetWindowLongW( hwnd, GWL_STYLE );
+@@ -1646,7 +1659,7 @@ BOOL CDECL X11DRV_ClipCursor( LPCRECT clip )
+         if (tid && tid != GetCurrentThreadId() && pid == GetCurrentProcessId())
+         {
+             TRACE( "forwarding clip request to %p\n", foreground );
+-            SendNotifyMessageW( foreground, WM_X11DRV_CLIP_CURSOR, 0, 0 );
++            SendNotifyMessageW( foreground, WM_X11DRV_CLIP_CURSOR, FALSE, FALSE );
+             return TRUE;
+         }
+ 
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 36660ea2a81..05b775a9a4e 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -2915,7 +2915,7 @@ LRESULT CDECL X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
+             set_window_cursor( x11drv_thread_data()->clip_window, (HCURSOR)lp );
+         return 0;
+     case WM_X11DRV_CLIP_CURSOR:
+-        return clip_cursor_notify( hwnd, (HWND)wp, (HWND)lp );
++        return clip_cursor_notify( hwnd, wp, lp );
+     case WM_X11DRV_DROPEVENT:
+         X11DRV_XDND_DropEventProcess( hwnd );
+         return 0;
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index cb0f42f07b3..3994e4264f6 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -654,7 +654,7 @@ extern void X11DRV_InitClipboard(void) DECLSPEC_HIDDEN;
+ extern void CDECL X11DRV_SetFocus( HWND hwnd ) DECLSPEC_HIDDEN;
+ extern void set_window_cursor( Window window, HCURSOR handle ) DECLSPEC_HIDDEN;
+ extern void sync_window_cursor( Window window ) DECLSPEC_HIDDEN;
+-extern LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd ) DECLSPEC_HIDDEN;
++extern LRESULT clip_cursor_notify( HWND hwnd, WPARAM wparam, LPARAM lparam ) DECLSPEC_HIDDEN;
+ extern void ungrab_clipping_window(void) DECLSPEC_HIDDEN;
+ extern void reset_clipping_window(void) DECLSPEC_HIDDEN;
+ extern BOOL clip_fullscreen_window( HWND hwnd, BOOL reset ) DECLSPEC_HIDDEN;
+-- 
+2.28.0
+

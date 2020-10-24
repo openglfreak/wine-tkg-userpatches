@@ -20,14 +20,12 @@ v4: * Add partial todo_wine for the d3dx10 test.
     * Store the frame count and check the frame index with it, only
       print the FIXME on initialize if multiple frames are detected.
 
- dlls/d3dx10_43/tests/d3dx10.c        |   2 +-
- dlls/windowscodecs/Makefile.in       |   1 +
- dlls/windowscodecs/copy_pixels.c     |  74 ++++++
- dlls/windowscodecs/main.c            |  65 -----
- dlls/windowscodecs/tests/wmpformat.c |  13 +-
- dlls/wmphoto/Makefile.in             |   5 +-
- dlls/wmphoto/main.c                  | 365 ++++++++++++++++++++++++++-
- 7 files changed, 443 insertions(+), 82 deletions(-)
+ dlls/d3dx10_43/tests/d3dx10.c         |   2 +-
+ dlls/windowscodecs/tests/wmpformat.c  |  13 +-
+ dlls/windowscodecs/wincodecs_common.h |  65 -----
+ dlls/wmphoto/Makefile.in              |   5 +-
+ dlls/wmphoto/main.c                   | 365 ++++++++++++++++++++++++++-
+ 5 files changed, 368 insertions(+), 82 deletions(-)
  create mode 100644 dlls/windowscodecs/copy_pixels.c
 
 diff --git a/dlls/d3dx10_43/tests/d3dx10.c b/dlls/d3dx10_43/tests/d3dx10.c
@@ -43,174 +41,6 @@ index 640e83fcd0f..ab5e839c653 100644
              ok(hr == S_OK, "Test %u: Got unexpected hr %#x.\n", i, hr);
          if (hr != S_OK)
              continue;
-diff --git a/dlls/windowscodecs/Makefile.in b/dlls/windowscodecs/Makefile.in
-index fac90344fa3..56fa821939f 100644
---- a/dlls/windowscodecs/Makefile.in
-+++ b/dlls/windowscodecs/Makefile.in
-@@ -13,6 +13,7 @@ C_SRCS = \
- 	colorcontext.c \
- 	colortransform.c \
- 	converter.c \
-+	copy_pixels.c \
- 	ddsformat.c \
- 	fliprotate.c \
- 	gifformat.c \
-diff --git a/dlls/windowscodecs/copy_pixels.c b/dlls/windowscodecs/copy_pixels.c
-new file mode 100644
-index 00000000000..fe19b16e90a
---- /dev/null
-+++ b/dlls/windowscodecs/copy_pixels.c
-@@ -0,0 +1,74 @@
-+#include "config.h"
-+
-+#include <stdarg.h>
-+
-+#include "wincodecs_private.h"
-+
-+#include "wine/debug.h"
-+
-+WINE_DEFAULT_DEBUG_CHANNEL(wincodecs);
-+
-+HRESULT copy_pixels(UINT bpp, const BYTE *srcbuffer,
-+    UINT srcwidth, UINT srcheight, INT srcstride,
-+    const WICRect *rc, UINT dststride, UINT dstbuffersize, BYTE *dstbuffer)
-+{
-+    UINT bytesperrow;
-+    UINT row_offset; /* number of bits into the source rows where the data starts */
-+    WICRect rect;
-+
-+    if (!rc)
-+    {
-+        rect.X = 0;
-+        rect.Y = 0;
-+        rect.Width = srcwidth;
-+        rect.Height = srcheight;
-+        rc = &rect;
-+    }
-+    else
-+    {
-+        if (rc->X < 0 || rc->Y < 0 || rc->X+rc->Width > srcwidth || rc->Y+rc->Height > srcheight)
-+            return E_INVALIDARG;
-+    }
-+
-+    bytesperrow = ((bpp * rc->Width)+7)/8;
-+
-+    if (dststride < bytesperrow)
-+        return E_INVALIDARG;
-+
-+    if ((dststride * (rc->Height-1)) + bytesperrow > dstbuffersize)
-+        return E_INVALIDARG;
-+
-+    /* if the whole bitmap is copied and the buffer format matches then it's a matter of a single memcpy */
-+    if (rc->X == 0 && rc->Y == 0 && rc->Width == srcwidth && rc->Height == srcheight &&
-+        srcstride == dststride && srcstride == bytesperrow)
-+    {
-+        memcpy(dstbuffer, srcbuffer, srcstride * srcheight);
-+        return S_OK;
-+    }
-+
-+    row_offset = rc->X * bpp;
-+
-+    if (row_offset % 8 == 0)
-+    {
-+        /* everything lines up on a byte boundary */
-+        INT row;
-+        const BYTE *src;
-+        BYTE *dst;
-+
-+        src = srcbuffer + (row_offset / 8) + srcstride * rc->Y;
-+        dst = dstbuffer;
-+        for (row=0; row < rc->Height; row++)
-+        {
-+            memcpy(dst, src, bytesperrow);
-+            src += srcstride;
-+            dst += dststride;
-+        }
-+        return S_OK;
-+    }
-+    else
-+    {
-+        /* we have to do a weird bitwise copy. eww. */
-+        FIXME("cannot reliably copy bitmap data if bpp < 8\n");
-+        return E_FAIL;
-+    }
-+}
-diff --git a/dlls/windowscodecs/main.c b/dlls/windowscodecs/main.c
-index 7e03112a63c..ca708d26fd4 100644
---- a/dlls/windowscodecs/main.c
-+++ b/dlls/windowscodecs/main.c
-@@ -55,71 +55,6 @@ HRESULT WINAPI DllCanUnloadNow(void)
-     return S_FALSE;
- }
- 
--HRESULT copy_pixels(UINT bpp, const BYTE *srcbuffer,
--    UINT srcwidth, UINT srcheight, INT srcstride,
--    const WICRect *rc, UINT dststride, UINT dstbuffersize, BYTE *dstbuffer)
--{
--    UINT bytesperrow;
--    UINT row_offset; /* number of bits into the source rows where the data starts */
--    WICRect rect;
--
--    if (!rc)
--    {
--        rect.X = 0;
--        rect.Y = 0;
--        rect.Width = srcwidth;
--        rect.Height = srcheight;
--        rc = &rect;
--    }
--    else
--    {
--        if (rc->X < 0 || rc->Y < 0 || rc->X+rc->Width > srcwidth || rc->Y+rc->Height > srcheight)
--            return E_INVALIDARG;
--    }
--
--    bytesperrow = ((bpp * rc->Width)+7)/8;
--
--    if (dststride < bytesperrow)
--        return E_INVALIDARG;
--
--    if ((dststride * (rc->Height-1)) + bytesperrow > dstbuffersize)
--        return E_INVALIDARG;
--
--    /* if the whole bitmap is copied and the buffer format matches then it's a matter of a single memcpy */
--    if (rc->X == 0 && rc->Y == 0 && rc->Width == srcwidth && rc->Height == srcheight &&
--        srcstride == dststride && srcstride == bytesperrow)
--    {
--        memcpy(dstbuffer, srcbuffer, srcstride * srcheight);
--        return S_OK;
--    }
--
--    row_offset = rc->X * bpp;
--
--    if (row_offset % 8 == 0)
--    {
--        /* everything lines up on a byte boundary */
--        INT row;
--        const BYTE *src;
--        BYTE *dst;
--
--        src = srcbuffer + (row_offset / 8) + srcstride * rc->Y;
--        dst = dstbuffer;
--        for (row=0; row < rc->Height; row++)
--        {
--            memcpy(dst, src, bytesperrow);
--            src += srcstride;
--            dst += dststride;
--        }
--        return S_OK;
--    }
--    else
--    {
--        /* we have to do a weird bitwise copy. eww. */
--        FIXME("cannot reliably copy bitmap data if bpp < 8\n");
--        return E_FAIL;
--    }
--}
--
- HRESULT configure_write_source(IWICBitmapFrameEncode *iface,
-     IWICBitmapSource *source, const WICRect *prc,
-     const WICPixelFormatGUID *format,
 diff --git a/dlls/windowscodecs/tests/wmpformat.c b/dlls/windowscodecs/tests/wmpformat.c
 index 62e734f0f71..2e2809701f6 100644
 --- a/dlls/windowscodecs/tests/wmpformat.c
@@ -253,19 +83,13 @@ diff --git a/dlls/wmphoto/Makefile.in b/dlls/wmphoto/Makefile.in
 index b1a840ca28f..18a4c191962 100644
 --- a/dlls/wmphoto/Makefile.in
 +++ b/dlls/wmphoto/Makefile.in
-@@ -1,8 +1,11 @@
+@@ -1,5 +1,6 @@
  MODULE = wmphoto.dll
  IMPORTS = windowscodecs uuid kernelbase
 +PARENTSRC = ../windowscodecs
  
  EXTRAINCL = $(JXRLIB_CFLAGS)
  
--C_SRCS = main.c
-+C_SRCS = \
-+	main.c \
-+	copy_pixels.c
- 
- IDL_SRCS = wmphoto.idl
 diff --git a/dlls/wmphoto/main.c b/dlls/wmphoto/main.c
 index 054f89c27dd..c4bae79c497 100644
 --- a/dlls/wmphoto/main.c

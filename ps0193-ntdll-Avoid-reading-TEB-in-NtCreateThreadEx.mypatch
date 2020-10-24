@@ -8,40 +8,40 @@ Signed-off-by: Myah Caron <qsniyg@protonmail.com>
 ---
 As noted in the bug, some programs hold a breakpoint on memory reads to the TEB, and they get triggered by GetCurrentProcessId. Since this is a syscall, this wouldn't occur under Windows.
 
- dlls/ntdll/thread.c | 4 +++-
- server/protocol.def | 1 +
- server/thread.c     | 1 +
+ dlls/ntdll/unix/thread.c | 4 +++-
+ server/protocol.def      | 1 +
+ server/thread.c          | 1 +
  3 files changed, 5 insertions(+), 1 deletion(-)
 
-diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
 index ded4b33eb0..9f318eaa4c 100644
---- a/dlls/ntdll/thread.c
-+++ b/dlls/ntdll/thread.c
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
 @@ -144,6 +144,7 @@ NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATT
-     CLIENT_ID *id = NULL;
-     HANDLE handle = 0, actctx = 0;
-     TEB *teb = NULL;
+     data_size_t len;
+     struct object_attributes *objattr;
+     struct ntdll_thread_data *thread_data;
 +    DWORD pid = 0;
      DWORD tid = 0;
      int request_pipe[2];
-     NTSTATUS status;
+     SIZE_T extra_stack = PTHREAD_STACK_MIN;
 @@ -200,6 +201,7 @@ NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATT
          if (!(status = wine_server_call( req )))
          {
-             handle = wine_server_ptr_handle( reply->handle );
+             *handle = wine_server_ptr_handle( reply->handle );
 +            pid = reply->pid;
              tid = reply->tid;
          }
          close( request_pipe[0] );
 @@ -223,7 +225,7 @@ NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATT
+         goto done;
+     }
  
-     if ((status = virtual_alloc_teb( &teb ))) goto error;
+-    client_id.UniqueProcess = ULongToHandle( GetCurrentProcessId() );
++    client_id.UniqueProcess = ULongToHandle( pid );
+     client_id.UniqueThread  = ULongToHandle( tid );
+     teb->ClientId = client_id;
  
--    teb->ClientId.UniqueProcess = ULongToHandle(GetCurrentProcessId());
-+    teb->ClientId.UniqueProcess = ULongToHandle(pid);
-     teb->ClientId.UniqueThread  = ULongToHandle(tid);
- 
-     /* create default activation context frame for new thread */
 diff --git a/server/protocol.def b/server/protocol.def
 index f538c6dcf5..fe6a44bcda 100644
 --- a/server/protocol.def

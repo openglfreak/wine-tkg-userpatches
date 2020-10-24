@@ -6,16 +6,16 @@ Date: Thu,  5 Mar 2020 15:52:25 +0200
 Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
 ---
  dlls/kernel32/tests/process.c |  9 ---------
- dlls/ntdll/unix/sync.c        | 34 +++++++++++++++++++++++++++++++---
+ dlls/ntdll/unix/sync.c        | 28 ++++++++++++++++++++++++++--
  server/process.c              | 23 +++++++++++++++++++++++
  server/protocol.def           |  9 +++++++++
- 4 files changed, 63 insertions(+), 12 deletions(-)
+ 4 files changed, 58 insertions(+), 11 deletions(-)
 
 diff --git a/dlls/kernel32/tests/process.c b/dlls/kernel32/tests/process.c
-index b5ed990..6c29db3 100644
+index 5145965c0a0..7dc4aa4619f 100644
 --- a/dlls/kernel32/tests/process.c
 +++ b/dlls/kernel32/tests/process.c
-@@ -2606,15 +2606,11 @@ static void test_QueryInformationJobObject(void)
+@@ -2754,15 +2754,11 @@ static void test_QueryInformationJobObject(void)
      pid_list->NumberOfProcessIdsInList  = 42;
      ret = QueryInformationJobObject(job, JobObjectBasicProcessIdList, pid_list,
                                      FIELD_OFFSET(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList[1]), &ret_len);
@@ -31,7 +31,7 @@ index b5ed990..6c29db3 100644
          expect_eq_d(42, pid_list->NumberOfProcessIdsInList);
      }
  
-@@ -2629,17 +2625,12 @@ static void test_QueryInformationJobObject(void)
+@@ -2777,17 +2773,12 @@ static void test_QueryInformationJobObject(void)
          {
              ULONG_PTR *list = pid_list->ProcessIdList;
  
@@ -50,10 +50,10 @@ index b5ed990..6c29db3 100644
          }
      }
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
-index 2b5b6ce..4a889eb 100644
+index d8a8eb526a1..5d0ebf45147 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
-@@ -716,10 +716,31 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
+@@ -866,10 +866,31 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
      case JobObjectBasicProcessIdList:
      {
          JOBOBJECT_BASIC_PROCESS_ID_LIST *process = info;
@@ -87,7 +87,7 @@ index 2b5b6ce..4a889eb 100644
          return STATUS_SUCCESS;
      }
      case JobObjectExtendedLimitInformation:
-@@ -731,6 +753,7 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
+@@ -877,6 +898,7 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
          JOBOBJECT_EXTENDED_LIMIT_INFORMATION *extended_limit = info;
  
          if (len < sizeof(*extended_limit)) return STATUS_INFO_LENGTH_MISMATCH;
@@ -95,7 +95,7 @@ index 2b5b6ce..4a889eb 100644
          memset( extended_limit, 0, sizeof(*extended_limit) );
          if (ret_len) *ret_len = sizeof(*extended_limit);
          return STATUS_SUCCESS;
-@@ -743,6 +766,7 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
+@@ -886,11 +908,13 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
          JOBOBJECT_BASIC_LIMIT_INFORMATION *basic_limit = info;
  
          if (len < sizeof(*basic_limit)) return STATUS_INFO_LENGTH_MISMATCH;
@@ -103,20 +103,18 @@ index 2b5b6ce..4a889eb 100644
          memset( basic_limit, 0, sizeof(*basic_limit) );
          if (ret_len) *ret_len = sizeof(*basic_limit);
          return STATUS_SUCCESS;
-@@ -750,6 +774,7 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
-         }
- 
+     }
      default:
 +        FIXME( "stub: %p %u %p %u %p\n", handle, class, info, len, ret_len );
          return STATUS_NOT_IMPLEMENTED;
      }
  }
 diff --git a/server/process.c b/server/process.c
-index 73984f3..46a61d0 100644
+index 49c776fce24..8158fcd4c0b 100644
 --- a/server/process.c
 +++ b/server/process.c
-@@ -1715,6 +1715,29 @@ DECL_HANDLER(process_in_job)
-     release_object( process );
+@@ -1800,6 +1800,29 @@ DECL_HANDLER(get_job_info)
+     release_object( job );
  }
  
 +/* get a list of the pids associated with the job */
@@ -146,10 +144,10 @@ index 73984f3..46a61d0 100644
  DECL_HANDLER(terminate_job)
  {
 diff --git a/server/protocol.def b/server/protocol.def
-index 6c44b2b..8beda28 100644
+index 381bd8d8218..a7cb89dc77e 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -3924,6 +3924,15 @@ struct handle_info
+@@ -3672,6 +3672,15 @@ struct handle_info
  @END
  
  
@@ -165,7 +163,3 @@ index 6c44b2b..8beda28 100644
  /* Set limit flags on a job */
  @REQ(set_job_limits)
      obj_handle_t handle;          /* handle to the job */
-
--- 
-2.21.0
-

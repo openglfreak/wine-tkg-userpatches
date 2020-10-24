@@ -14,14 +14,14 @@ message replies checking in DBus calls either.
  configure.ac        |  2 +-
  include/config.h.in |  3 ++
  server/Makefile.in  |  3 +-
- server/thread.c     | 84 ++++++++++++++++++++++++++++++++++++++++++++-
+ server/thread.c     | 84 ++++++++++++++++++++++++++++++++++++++++++++++++++++-
  4 files changed, 89 insertions(+), 3 deletions(-)
 
 diff --git a/configure.ac b/configure.ac
-index 47c1f7c5315..4d83d54823d 100644
+index 06d6920973e..eea4f292c7f 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -1403,7 +1403,7 @@ dnl **** Check for libdbus ****
+@@ -1438,7 +1438,7 @@ dnl **** Check for libdbus ****
  if test "x$with_dbus" != "xno"
  then
      WINE_PACKAGE_FLAGS(DBUS,[dbus-1],,,,
@@ -31,38 +31,38 @@ index 47c1f7c5315..4d83d54823d 100644
              [DBUS_CFLAGS=""])])
  fi
 diff --git a/include/config.h.in b/include/config.h.in
-index 929b11a8754..559bd57d1c2 100644
+index 2222f4823e5..5a231acdf1c 100644
 --- a/include/config.h.in
 +++ b/include/config.h.in
 @@ -97,6 +97,9 @@
- /* Define to 1 if you have the <curses.h> header file. */
- #undef HAVE_CURSES_H
-
+ /* Define to 1 if you have the <cups/ppd.h> header file. */
+ #undef HAVE_CUPS_PPD_H
+ 
 +/* Define to 1 if you have the <dbus/dbus.h> header file. */
 +#undef HAVE_DBUS_DBUS_H
 +
  /* Define to 1 if you have the <dirent.h> header file. */
  #undef HAVE_DIRENT_H
-
+ 
 diff --git a/server/Makefile.in b/server/Makefile.in
-index b39bd30305b..114df2a8de3 100644
+index 6dc5c465e52..d16b3f2be87 100644
 --- a/server/Makefile.in
 +++ b/server/Makefile.in
-@@ -50,4 +50,5 @@ MANPAGES = \
+@@ -52,4 +52,5 @@ MANPAGES = \
  	wineserver.fr.UTF-8.man.in \
  	wineserver.man.in
-
+ 
 -EXTRALIBS = $(LDEXECFLAGS) $(POLL_LIBS) $(RT_LIBS) $(INOTIFY_LIBS)
 +EXTRAINCL = $(DBUS_CFLAGS)
 +EXTRALIBS = $(LDEXECFLAGS) $(POLL_LIBS) $(RT_LIBS) $(INOTIFY_LIBS) $(DBUS_LIBS)
 diff --git a/server/thread.c b/server/thread.c
-index 36bd41e977f..8d8d08ca172 100644
+index 51a4ca05a22..ab46d0edec4 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -58,6 +58,77 @@
- #include "user.h"
- #include "security.h"
-
+@@ -60,6 +60,77 @@
+ #include "esync.h"
+ #include "fsync.h"
+ 
 +#ifdef HAVE_DBUS_DBUS_H
 +#include <dbus/dbus.h>
 +
@@ -134,20 +134,20 @@ index 36bd41e977f..8d8d08ca172 100644
 +    return ret;
 +}
 +#endif
-
+ 
  #ifdef __i386__
  static const unsigned int supported_cpus = CPU_FLAG(CPU_x86);
-@@ -521,7 +592,8 @@ affinity_t get_thread_affinity( struct thread *thread )
+@@ -642,7 +713,8 @@ affinity_t get_thread_affinity( struct thread *thread )
      return mask;
  }
-
+ 
 -#if defined(HAVE_SCHED_SETSCHEDULER) || defined(HAVE_SETPRIORITY)
 +#if defined(HAVE_SCHED_SETSCHEDULER) || defined(HAVE_SETPRIORITY) || \
 +    defined(HAVE_DBUS_DBUS_H)
  static int get_unix_priority( int priority_class, int priority )
  {
      switch (priority_class) {
-@@ -641,6 +713,11 @@ int set_thread_priority( struct thread* thread, int priority_class, int priority
+@@ -762,6 +834,11 @@ int set_thread_priority( struct thread* thread, int priority_class, int priority
          param.sched_priority = get_unix_priority( priority_class, priority );
          if (sched_setscheduler( thread->unix_tid, SCHED_RR|SCHED_RESET_ON_FORK, &param ) == 0)
              return 0;
@@ -159,7 +159,7 @@ index 36bd41e977f..8d8d08ca172 100644
  #endif
      }
      else
-@@ -649,6 +726,11 @@ int set_thread_priority( struct thread* thread, int priority_class, int priority
+@@ -770,6 +847,11 @@ int set_thread_priority( struct thread* thread, int priority_class, int priority
          if (setpriority( PRIO_PROCESS, thread->unix_tid,
                           get_unix_priority( priority_class, priority ) ) == 0)
              return 0;
@@ -171,6 +171,3 @@ index 36bd41e977f..8d8d08ca172 100644
  #endif
      }
  #endif
---
-2.23.0
-

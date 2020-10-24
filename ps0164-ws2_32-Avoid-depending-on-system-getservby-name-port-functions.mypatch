@@ -9,16 +9,16 @@ These functions are incredibly slow on Windows. To avoid timeouts, I had
 to put the tests in protocol.c rather than the crowded sock.c.
 ---
  configure.ac                 |   1 -
- dlls/ws2_32/socket.c         | 339 ++++++++++++++++++++++++---------
- dlls/ws2_32/tests/protocol.c | 359 +++++++++++++++++++++++++++++++++++
- dlls/ws2_32/tests/sock.c     |  66 -------
+ dlls/ws2_32/socket.c         | 339 +++++++++++++++++++++++++++++-----------
+ dlls/ws2_32/tests/protocol.c | 359 +++++++++++++++++++++++++++++++++++++++++++
+ dlls/ws2_32/tests/sock.c     |  66 --------
  4 files changed, 609 insertions(+), 156 deletions(-)
 
 diff --git a/configure.ac b/configure.ac
-index 123dea0f5f1..0204c8ffd53 100644
+index fea716a4962..48b3b858d00 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -2237,7 +2237,6 @@ AC_CHECK_FUNCS(\
+@@ -2345,7 +2345,6 @@ AC_CHECK_FUNCS(\
  	getaddrinfo \
  	getnameinfo \
  	getnetbyname \
@@ -27,10 +27,10 @@ index 123dea0f5f1..0204c8ffd53 100644
  
  dnl Check for clock_gettime which may be in -lrt
 diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
-index b7a570043cd..01e14dd9661 100644
+index 9ae27f2f7c2..883e5ff5657 100644
 --- a/dlls/ws2_32/socket.c
 +++ b/dlls/ws2_32/socket.c
-@@ -649,7 +649,7 @@ static FARPROC blocking_hook = (FARPROC)WSA_DefaultBlockingHook;
+@@ -795,7 +795,7 @@ static FARPROC blocking_hook = (FARPROC)WSA_DefaultBlockingHook;
  static struct WS_hostent *WS_create_he(char *name, int aliases, int aliases_size, int addresses, int address_length);
  static struct WS_hostent *WS_dup_he(const struct hostent* p_he);
  static struct WS_protoent *WS_create_pe( const char *name, char **aliases, int prot );
@@ -39,7 +39,7 @@ index b7a570043cd..01e14dd9661 100644
  static int ws_protocol_info(SOCKET s, int unicode, WSAPROTOCOL_INFOW *buffer, int *size);
  
  int WSAIOCTL_GetInterfaceCount(void);
-@@ -1488,20 +1488,6 @@ static int convert_sockopt(INT *level, INT *optname)
+@@ -1650,20 +1650,6 @@ static int convert_sockopt(INT *level, INT *optname)
  
  /* ----------------------------------- Per-thread info (or per-process?) */
  
@@ -60,7 +60,7 @@ index b7a570043cd..01e14dd9661 100644
  /* Utility: get the SO_RCVTIMEO or SO_SNDTIMEO socket option
   * from an fd and return the value converted to milli seconds
   * or 0 if there is an infinite time out */
-@@ -6560,41 +6546,258 @@ struct WS_protoent* WINAPI WS_getprotobynumber(int number)
+@@ -6423,41 +6409,258 @@ struct WS_protoent* WINAPI WS_getprotobynumber(int number)
  }
  
  
@@ -308,7 +308,8 @@ index b7a570043cd..01e14dd9661 100644
 +    int i, j;
 +    port = ntohs(port);
 +    for (i = 0; i < ARRAY_SIZE(services); i++)
-+    {
+     {
+-        retval = WS_dup_se(serv);
 +        if (services[i].port != port) continue;
 +        for (j = 0; j < ARRAY_SIZE(services[0].protos) && services[i].protos[j]; j++)
 +        {
@@ -317,18 +318,17 @@ index b7a570043cd..01e14dd9661 100644
 +                                  services[i].port, services[i].protos[j]);
 +            goto found;
 +        }
-+    }
-+    if (!retval)
-     {
--        retval = WS_dup_se(serv);
-+        WARN("service %d/%s not found\n", port, debugstr_a(proto));
-+        SetLastError(WSANO_DATA);
      }
 -    else SetLastError(WSANO_DATA);
 -    LeaveCriticalSection( &csWSgetXXXbyYYY );
 -    HeapFree( GetProcessHeap(), 0, proto_str );
 -    HeapFree( GetProcessHeap(), 0, name_str );
 -    TRACE( "%s, %s ret %p\n", debugstr_a(name), debugstr_a(proto), retval );
++    if (!retval)
++    {
++        WARN("service %d/%s not found\n", port, debugstr_a(proto));
++        SetLastError(WSANO_DATA);
++    }
 +found:
 +    TRACE("%d/%s ret %p\n", port, debugstr_a(proto), retval);
      return retval;
@@ -338,7 +338,7 @@ index b7a570043cd..01e14dd9661 100644
  /***********************************************************************
   *		freeaddrinfo		(WS2_32.@)
   */
-@@ -7285,32 +7488,6 @@ int WINAPI GetNameInfoW(const SOCKADDR *sa, WS_socklen_t salen, PWCHAR host,
+@@ -7147,32 +7350,6 @@ int WINAPI GetNameInfoW(const SOCKADDR *sa, WS_socklen_t salen, PWCHAR host,
      return ret;
  }
  
@@ -371,7 +371,7 @@ index b7a570043cd..01e14dd9661 100644
  
  /***********************************************************************
   *              gethostname           (WS2_32.57)
-@@ -7795,12 +7972,7 @@ INT WINAPI WSAUnhookBlockingHook(void)
+@@ -7620,12 +7797,7 @@ INT WINAPI WSAUnhookBlockingHook(void)
  
  /* ----------------------------------- end of API stuff */
  
@@ -385,7 +385,7 @@ index b7a570043cd..01e14dd9661 100644
  
  static int list_size(char** l, int item_size)
  {
-@@ -7935,31 +8107,20 @@ static struct WS_protoent *WS_create_pe( const char *name, char **aliases, int p
+@@ -7760,31 +7932,20 @@ static struct WS_protoent *WS_create_pe( const char *name, char **aliases, int p
  
  /* ----- servent */
  
@@ -394,7 +394,9 @@ index b7a570043cd..01e14dd9661 100644
  {
 -    char *p;
 -    struct WS_servent *p_to;
--
++    struct WS_servent *ret;
++    unsigned int size = sizeof(*ret) + strlen(name) + 1 + strlen(proto) + sizeof(char *) + list_size(aliases, 0);
+ 
 -    int size = (sizeof(*p_se) +
 -                strlen(p_se->s_proto) + 1 +
 -                strlen(p_se->s_name) + 1 +
@@ -411,9 +413,7 @@ index b7a570043cd..01e14dd9661 100644
 -    p_to->s_proto = p;
 -    strcpy(p, p_se->s_proto);
 -    p += strlen(p) + 1;
-+    struct WS_servent *ret;
-+    unsigned int size = sizeof(*ret) + strlen(name) + 1 + strlen(proto) + sizeof(char *) + list_size(aliases, 0);
- 
+-
 -    p_to->s_aliases = (char **)p;
 -    list_dup(p_se->s_aliases, p_to->s_aliases, 0);
 -    return p_to;
@@ -812,7 +812,7 @@ index d6e454a5fbd..b230ac80c80 100644
 +    test_getservbyport();
  }
 diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
-index c7f88d6f3b1..f038618f766 100644
+index c746b262ddb..3f71c3158e9 100644
 --- a/dlls/ws2_32/tests/sock.c
 +++ b/dlls/ws2_32/tests/sock.c
 @@ -45,9 +45,6 @@
@@ -825,7 +825,7 @@ index c7f88d6f3b1..f038618f766 100644
  #define SERVERIP "127.0.0.1"   /* IP to bind to */
  #define SERVERPORT 9374        /* Port number to bind to */
  
-@@ -2403,68 +2400,6 @@ static void test_UDP(void)
+@@ -2241,68 +2238,6 @@ static void test_UDP(void)
      }
  }
  
@@ -894,7 +894,7 @@ index c7f88d6f3b1..f038618f766 100644
  static void test_WSASocket(void)
  {
      SOCKET sock = INVALID_SOCKET;
-@@ -11439,7 +11374,6 @@ START_TEST( sock )
+@@ -10528,7 +10463,6 @@ START_TEST( sock )
  
      test_UDP();
  
@@ -902,7 +902,3 @@ index c7f88d6f3b1..f038618f766 100644
      test_WSASocket();
      test_WSADuplicateSocket();
      test_WSAEnumNetworkEvents();
-
--- 
-2.28.0
-

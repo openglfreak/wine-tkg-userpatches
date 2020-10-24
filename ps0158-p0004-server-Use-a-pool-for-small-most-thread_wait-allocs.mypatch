@@ -8,18 +8,18 @@ Subject: [PATCH 4/4] server: Use a pool for small (most) thread_wait allocs.
  1 file changed, 45 insertions(+), 2 deletions(-)
 
 diff --git a/server/thread.c b/server/thread.c
-index 9b5c9804dbd..9fe91f86e68 100644
+index 8ab03734a7e..d2ccdc62d21 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -73,6 +73,7 @@ struct thread_wait
+@@ -152,6 +152,7 @@ struct thread_wait
  {
      struct thread_wait     *next;       /* next wait structure for this thread */
      struct thread          *thread;     /* owner thread */
 +    int                     capacity;   /* size of objects */
      int                     count;      /* count of objects */
      int                     flags;
-     int                     abandoned;
-@@ -725,6 +726,47 @@ void make_wait_abandoned( struct wait_queue_entry *entry )
+     int                     in_kernel;  /* we can't timeout when winedevice is working on the thread's behalf */
+@@ -987,6 +988,47 @@ void make_wait_abandoned( struct wait_queue_entry *entry )
      entry->wait->abandoned = 1;
  }
  
@@ -67,7 +67,7 @@ index 9b5c9804dbd..9fe91f86e68 100644
  /* finish waiting */
  static unsigned int end_wait( struct thread *thread, unsigned int status )
  {
-@@ -752,7 +794,7 @@ static unsigned int end_wait( struct thread *thread, unsigned int status )
+@@ -1014,7 +1056,7 @@ static unsigned int end_wait( struct thread *thread, unsigned int status )
      for (i = 0, entry = wait->queues; i < wait->count; i++, entry++)
          entry->obj->ops->remove_queue( entry->obj, entry );
      if (wait->user) remove_timeout_user( wait->user );
@@ -76,7 +76,7 @@ index 9b5c9804dbd..9fe91f86e68 100644
      return status;
  }
  
-@@ -764,9 +806,10 @@ static int wait_on( const select_op_t *select_op, unsigned int count, struct obj
+@@ -1026,9 +1068,10 @@ static int wait_on( const select_op_t *select_op, unsigned int count, struct obj
      struct wait_queue_entry *entry;
      unsigned int i;
  

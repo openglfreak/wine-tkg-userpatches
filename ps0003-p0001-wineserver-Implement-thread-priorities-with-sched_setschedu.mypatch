@@ -11,18 +11,18 @@ We only call setpriority on Linux, as unix_tid is a Mach port on Mac OS.
 
 Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
 ---
- configure.ac        |  19 ++++++
+ configure.ac        |  19 +++++++
  include/config.h.in |   6 ++
- server/process.c    |  20 +++++-
- server/thread.c     | 154 ++++++++++++++++++++++++++++++++++++++++----
+ server/process.c    |  20 ++++++-
+ server/thread.c     | 157 ++++++++++++++++++++++++++++++++++++++++++++++------
  server/thread.h     |   1 +
- 5 files changed, 186 insertions(+), 14 deletions(-)
+ 5 files changed, 186 insertions(+), 17 deletions(-)
 
 diff --git a/configure.ac b/configure.ac
-index b9339b90aa7..47c1f7c5315 100644
+index cd2c01a3f3d..06d6920973e 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -2285,6 +2285,25 @@ then
+@@ -2364,6 +2364,25 @@ then
    AC_DEFINE(HAVE_SCHED_SETAFFINITY, 1, [Define to 1 if you have the `sched_setaffinity' function.])
  fi
  
@@ -49,10 +49,10 @@ index b9339b90aa7..47c1f7c5315 100644
                  AC_LINK_IFELSE([AC_LANG_PROGRAM(
  [[#define _GNU_SOURCE
 diff --git a/include/config.h.in b/include/config.h.in
-index 9c7a49ae9a2..929b11a8754 100644
+index 853aa3887c5..2222f4823e5 100644
 --- a/include/config.h.in
 +++ b/include/config.h.in
-@@ -785,6 +785,9 @@
+@@ -786,6 +786,9 @@
  /* Define to 1 if you have the `sched_setaffinity' function. */
  #undef HAVE_SCHED_SETAFFINITY
  
@@ -62,7 +62,7 @@ index 9c7a49ae9a2..929b11a8754 100644
  /* Define to 1 if you have the `sched_yield' function. */
  #undef HAVE_SCHED_YIELD
  
-@@ -809,6 +812,9 @@
+@@ -810,6 +813,9 @@
  /* Define to 1 if you have the `select' function. */
  #undef HAVE_SELECT
  
@@ -73,10 +73,10 @@ index 9c7a49ae9a2..929b11a8754 100644
  #undef HAVE_SETPROCTITLE
  
 diff --git a/server/process.c b/server/process.c
-index 16bb5d57e72..0c544b46096 100644
+index c4f51dcad30..49c776fce24 100644
 --- a/server/process.c
 +++ b/server/process.c
-@@ -1465,6 +1465,24 @@ DECL_HANDLER(get_process_vm_counters)
+@@ -1534,6 +1534,24 @@ DECL_HANDLER(get_process_vm_counters)
      release_object( process );
  }
  
@@ -101,7 +101,7 @@ index 16bb5d57e72..0c544b46096 100644
  static void set_process_affinity( struct process *process, affinity_t affinity )
  {
      struct thread *thread;
-@@ -1490,7 +1508,7 @@ DECL_HANDLER(set_process_info)
+@@ -1559,7 +1577,7 @@ DECL_HANDLER(set_process_info)
  
      if ((process = get_process_from_handle( req->handle, PROCESS_SET_INFORMATION )))
      {
@@ -111,7 +111,7 @@ index 16bb5d57e72..0c544b46096 100644
          release_object( process );
      }
 diff --git a/server/thread.c b/server/thread.c
-index e753c8d0dda..36bd41e977f 100644
+index 1fb3603f2a7..51a4ca05a22 100644
 --- a/server/thread.c
 +++ b/server/thread.c
 @@ -38,6 +38,12 @@
@@ -127,7 +127,7 @@ index e753c8d0dda..36bd41e977f 100644
  
  #include "ntstatus.h"
  #define WIN32_NO_STATUS
-@@ -515,31 +521,149 @@ affinity_t get_thread_affinity( struct thread *thread )
+@@ -636,31 +642,149 @@ affinity_t get_thread_affinity( struct thread *thread )
      return mask;
  }
  
@@ -293,7 +293,7 @@ index e753c8d0dda..36bd41e977f 100644
      }
      if (req->mask & SET_THREAD_INFO_AFFINITY)
      {
-@@ -1367,6 +1494,7 @@ DECL_HANDLER(init_thread)
+@@ -1546,6 +1670,7 @@ DECL_HANDLER(init_thread)
              process->unix_pid = -1;  /* can happen with linuxthreads */
          init_thread_context( current );
          generate_debug_event( current, CREATE_THREAD_DEBUG_EVENT, &req->entry );
@@ -302,18 +302,14 @@ index e753c8d0dda..36bd41e977f 100644
      }
      debug_level = max( debug_level, req->debug_level );
 diff --git a/server/thread.h b/server/thread.h
-index e10120dcf6e..b81061aea11 100644
+index 53627631343..936b82b0811 100644
 --- a/server/thread.h
 +++ b/server/thread.h
-@@ -125,6 +125,7 @@ extern int thread_add_inflight_fd( struct thread *thread, int client, int server
+@@ -124,6 +124,7 @@ extern void thread_cancel_apc( struct thread *thread, struct object *owner, enum
+ extern int thread_add_inflight_fd( struct thread *thread, int client, int server );
  extern int thread_get_inflight_fd( struct thread *thread, int client );
- extern struct thread_snapshot *thread_snap( int *count );
  extern struct token *thread_get_impersonation_token( struct thread *thread );
 +extern int set_thread_priority( struct thread *thread, int priority_class, int priority );
  extern int set_thread_affinity( struct thread *thread, affinity_t affinity );
  extern int is_cpu_supported( enum cpu_type cpu );
  extern unsigned int get_supported_cpu_mask(void);
-
--- 
-2.23.0
-

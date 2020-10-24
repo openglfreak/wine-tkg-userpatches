@@ -12,18 +12,18 @@ Fixes crash on start in Unity of Command II (failure is from python38.dll).
 
 Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
 ---
- dlls/ntdll/tests/file.c | 12 +++++++++
- server/fd.c             | 17 +++++++++---
- server/file.c           | 60 ++++++++++++++++++++++++++++++++++++++---
- server/file.h           |  4 ++-
+ dlls/ntdll/tests/file.c | 12 ++++++++++
+ server/fd.c             | 17 +++++++++++---
+ server/file.c           | 60 +++++++++++++++++++++++++++++++++++++++++++++----
+ server/file.h           |  4 +++-
  server/mapping.c        |  2 +-
  5 files changed, 86 insertions(+), 9 deletions(-)
 
 diff --git a/dlls/ntdll/tests/file.c b/dlls/ntdll/tests/file.c
-index 31c18454f0..78a6ac2ee5 100644
+index 105da78564a..d3f0f1408cf 100644
 --- a/dlls/ntdll/tests/file.c
 +++ b/dlls/ntdll/tests/file.c
-@@ -1406,6 +1406,7 @@ static void test_file_all_information(void)
+@@ -1469,6 +1469,7 @@ static void test_file_all_information(void)
        FILE_ALL_INFORMATION fai;
        WCHAR buf[256];
      } fai_buf;
@@ -31,7 +31,7 @@ index 31c18454f0..78a6ac2ee5 100644
      HANDLE h;
      int res;
      int attrib_mask = FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_NORMAL;
-@@ -1463,6 +1464,17 @@ static void test_file_all_information(void)
+@@ -1526,6 +1527,17 @@ static void test_file_all_information(void)
      todo_wine ok ( (fai_buf.fai.BasicInformation.FileAttributes & attrib_mask) == FILE_ATTRIBUTE_NORMAL, "attribute %x not FILE_ATTRIBUTE_NORMAL\n", fai_buf.fai.BasicInformation.FileAttributes );
  
      CloseHandle( h );
@@ -50,10 +50,10 @@ index 31c18454f0..78a6ac2ee5 100644
  
  static void delete_object( WCHAR *path )
 diff --git a/server/fd.c b/server/fd.c
-index 39fb419f25..5f38128a48 100644
+index 11d43f6b953..e63db31985a 100644
 --- a/server/fd.c
 +++ b/server/fd.c
-@@ -1945,10 +1945,10 @@ error:
+@@ -2156,10 +2156,10 @@ error:
      return NULL;
  }
  
@@ -67,7 +67,7 @@ index 39fb419f25..5f38128a48 100644
  {
      struct fd *fd = alloc_fd_object();
  
-@@ -1957,12 +1957,23 @@ struct fd *create_anonymous_fd( const struct fd_ops *fd_user_ops, int unix_fd, s
+@@ -2168,12 +2168,23 @@ struct fd *create_anonymous_fd( const struct fd_ops *fd_user_ops, int unix_fd, s
          set_fd_user( fd, fd_user_ops, user );
          fd->unix_fd = unix_fd;
          fd->options = options;
@@ -92,10 +92,10 @@ index 39fb419f25..5f38128a48 100644
  {
  #ifdef __linux__
 diff --git a/server/file.c b/server/file.c
-index bce202138e..f43373b085 100644
+index 78eb25443c4..80461c6c27b 100644
 --- a/server/file.c
 +++ b/server/file.c
-@@ -118,7 +118,7 @@ static const struct fd_ops file_fd_ops =
+@@ -146,7 +146,7 @@ static const struct fd_ops file_fd_ops =
  
  /* create a file from a file descriptor */
  /* if the function fails the fd is closed */
@@ -104,7 +104,7 @@ index bce202138e..f43373b085 100644
  {
      struct file *file;
      struct stat st;
-@@ -139,8 +139,60 @@ struct file *create_file_for_fd( int fd, unsigned int access, unsigned int shari
+@@ -167,8 +167,60 @@ struct file *create_file_for_fd( int fd, unsigned int access, unsigned int shari
      file->mode = st.st_mode;
      file->access = default_fd_map_access( &file->obj, access );
      list_init( &file->kernel_object );
@@ -167,7 +167,7 @@ index bce202138e..f43373b085 100644
      {
          release_object( file );
          return NULL;
-@@ -758,7 +810,7 @@ DECL_HANDLER(alloc_file_handle)
+@@ -1061,7 +1113,7 @@ DECL_HANDLER(alloc_file_handle)
          set_error( STATUS_INVALID_HANDLE );
          return;
      }
@@ -177,10 +177,10 @@ index bce202138e..f43373b085 100644
          reply->handle = alloc_handle( current->process, file, req->access, req->attributes );
          release_object( file );
 diff --git a/server/file.h b/server/file.h
-index 4c454de4d4..69ec1634d2 100644
+index c798daed5dd..2f70b8d2059 100644
 --- a/server/file.h
 +++ b/server/file.h
-@@ -82,6 +82,8 @@ extern struct fd *open_fd( struct fd *root, const char *name, int flags, mode_t
+@@ -83,6 +83,8 @@ extern struct fd *open_fd( struct fd *root, const char *name, int flags, mode_t
                             unsigned int access, unsigned int sharing, unsigned int options );
  extern struct fd *create_anonymous_fd( const struct fd_ops *fd_user_ops,
                                         int unix_fd, struct object *user, unsigned int options );
@@ -189,7 +189,7 @@ index 4c454de4d4..69ec1634d2 100644
  extern void set_unix_name_of_fd( struct fd *fd, const struct stat *fd_st );
  extern struct fd *dup_fd_object( struct fd *orig, unsigned int access, unsigned int sharing,
                                   unsigned int options );
-@@ -156,7 +158,7 @@ extern const char *get_timeout_str( timeout_t timeout );
+@@ -160,7 +162,7 @@ extern const char *get_timeout_str( timeout_t timeout );
  extern struct file *get_file_obj( struct process *process, obj_handle_t handle,
                                    unsigned int access );
  extern int get_file_unix_fd( struct file *file );
@@ -199,10 +199,10 @@ index 4c454de4d4..69ec1634d2 100644
  extern void file_set_error(void);
  extern struct object_type *file_get_type( struct object *obj );
 diff --git a/server/mapping.c b/server/mapping.c
-index 6970c86ffc..e833d51750 100644
+index d55df5145f7..7a9999909a9 100644
 --- a/server/mapping.c
 +++ b/server/mapping.c
-@@ -481,7 +481,7 @@ static int build_shared_mapping( struct mapping *mapping, int fd,
+@@ -491,7 +491,7 @@ static int build_shared_mapping( struct mapping *mapping, int fd,
      /* create a temp file for the mapping */
  
      if ((shared_fd = create_temp_file( total_size )) == -1) return 0;
@@ -211,7 +211,3 @@ index 6970c86ffc..e833d51750 100644
  
      if (!(buffer = malloc( max_size ))) goto error;
  
-
--- 
-2.26.2
-

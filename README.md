@@ -1,5 +1,6 @@
 This repo contains a set of userpatches for [Wine-TkG](https://github.com/Frogging-Family/wine-tkg-git/tree/master/wine-tkg-git).  
-The rename.sh script is licensed under the [MPL 2.0](https://www.mozilla.org/en-US/MPL/2.0/).
+The rename.sh script is licensed under the [MPL 2.0](https://www.mozilla.org/en-US/MPL/2.0/).  
+The patches are intended to keep their original license, however I'm taking the liberty of rebasing the patches to work on Wine-TkG.
 
 To add a new patch/-set:
 

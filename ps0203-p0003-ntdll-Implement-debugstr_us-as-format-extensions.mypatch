@@ -1,0 +1,53 @@
+From c5b2a1e4c3b6a3214bcf9a52e041e7c571781a53 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 18 Sep 2020 16:06:49 +0200
+Subject: [PATCH 3/4] ntdll: Implement debugstr_us/as format extensions.
+
+Using %p(us) / %p(as) respectively for UNICODE_STRING* and ANSI_STRING*.
+---
+ dlls/ntdll/unix/debug.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/dlls/ntdll/unix/debug.c b/dlls/ntdll/unix/debug.c
+index acccd2fe2a6..664e0c8d3cc 100644
+--- a/dlls/ntdll/unix/debug.c
++++ b/dlls/ntdll/unix/debug.c
+@@ -376,6 +376,18 @@ static size_t sprintf_dbgstr_wn( char *buffer, size_t length, const WCHAR *str,
+     return dst - buffer;
+ }
+ 
++static size_t sprintf_dbgstr_us( char *buffer, size_t length, const UNICODE_STRING *us )
++{
++    if (!us) { if (length >= 7) strcpy(buffer, "<null>"); return 6; }
++    return sprintf_dbgstr_wn( buffer, length, us->Buffer, us->Length / sizeof(WCHAR) );
++}
++
++static size_t sprintf_dbgstr_as( char *buffer, size_t length, const ANSI_STRING *as )
++{
++    if (!as) { if (length >= 7) strcpy(buffer, "<null>"); return 6; }
++    return sprintf_dbgstr_an( buffer, length, as->Buffer, as->Length );
++}
++
+ int __cdecl __wine_dbg_vsnprintf( char *buffer, size_t length, const char *format, __ms_va_list args )
+ {
+     char fmtbuf[1024];
+@@ -534,6 +546,16 @@ int __cdecl __wine_dbg_vsnprintf( char *buffer, size_t length, const char *forma
+                 append_checked(buf, end - buf, sprintf_dbgstr_wn(buf, end - buf, va_arg(args, const WCHAR *), w));
+                 snprintf_checked(buf, end - buf, spec + 7);
+             }
++            else if (!strncmp(spec, "p(us)", 5)) /* debugstr_us */
++            {
++                append_checked(buf, end - buf, sprintf_dbgstr_us(buf, end - buf, va_arg(args, const UNICODE_STRING *)));
++                snprintf_checked(buf, end - buf, spec + 5);
++            }
++            else if (!strncmp(spec, "p(as)", 5))
++            {
++                append_checked(buf, end - buf, sprintf_dbgstr_as(buf, end - buf, va_arg(args, const ANSI_STRING *)));
++                snprintf_checked(buf, end - buf, spec + 5);
++            }
+             else snprintf_dispatch(buf, end - buf, fmt, va_arg(args, void *));
+             break;
+         case 'A':
+-- 
+2.29.1
+

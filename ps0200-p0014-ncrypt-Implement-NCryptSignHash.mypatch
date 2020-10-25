@@ -1,0 +1,80 @@
+From: abdaandroid@gmail.com
+Subject: [PATCH 14/16] ncrypt: Implement NCryptSignHash
+Message-Id: <20201011154535.75913-14-abdaandroid@gmail.com>
+Date: Sun, 11 Oct 2020 18:45:33 +0300
+In-Reply-To: <20201011154535.75913-1-abdaandroid@gmail.com>
+References: <20201011154535.75913-1-abdaandroid@gmail.com>
+
+From: Ariel Darshan <abdaandroid@gmail.com>
+
+Signed-off-by: Ariel Darshan <abdaandroid@gmail.com>
+---
+ dlls/ncrypt/main.c      | 24 ++++++++++++++++++++++++
+ dlls/ncrypt/ncrypt.spec |  2 +-
+ include/ncrypt.h        |  1 +
+ 3 files changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ncrypt/main.c b/dlls/ncrypt/main.c
+index 23cf6896405..bb6f90e6cf9 100644
+--- a/dlls/ncrypt/main.c
++++ b/dlls/ncrypt/main.c
+@@ -607,6 +607,30 @@ SECURITY_STATUS WINAPI NCryptSetProperty(NCRYPT_HANDLE object, const WCHAR *prop
+     }
+ }
+ 
++SECURITY_STATUS WINAPI NCryptSignHash(NCRYPT_KEY_HANDLE key, void *paddingInfo, PBYTE hashValue, DWORD hashSize,
++                                      PBYTE signature, DWORD signatureSize, DWORD *result, DWORD flags)
++{
++    struct ncrypt_key_instance *keyInstance;
++    struct ncrypt_provider_instance * providerInstance;
++
++    TRACE("(0x%lx, %p, %p, 0x%08x, %p, 0x%08x, %p, 0x%08x)\n", key, paddingInfo, hashValue, hashSize,
++                                                                 signature, signatureSize, result, flags);
++
++    if (!key)
++    {
++        return NTE_INVALID_HANDLE;
++    }
++    keyInstance = handle2key(key);
++
++    if (!keyInstance->provider)
++    {
++        return NTE_INVALID_HANDLE;
++    }
++    providerInstance = handle2provider(keyInstance->provider);
++
++    return providerInstance->functions.SignHash(keyInstance->kspHandle, paddingInfo, hashValue, hashSize, signature, signatureSize, result, flags);
++}
++
+ static SECURITY_STATUS open_provider(NCRYPT_PROV_HANDLE *providerInstance, const WCHAR *name, const WCHAR *dllName, DWORD flags)
+ {
+     unsigned int size;
+diff --git a/dlls/ncrypt/ncrypt.spec b/dlls/ncrypt/ncrypt.spec
+index cc566313cd1..9c09b061ff7 100644
+--- a/dlls/ncrypt/ncrypt.spec
++++ b/dlls/ncrypt/ncrypt.spec
+@@ -91,7 +91,7 @@
+ @ stub NCryptSecretAgreement
+ @ stub NCryptSetAuditingInterface
+ @ stdcall NCryptSetProperty(ptr wstr ptr long long)
+-@ stub NCryptSignHash
++@ stdcall NCryptSignHash(long ptr ptr long ptr long ptr long)
+ @ stub NCryptStreamClose
+ @ stub NCryptStreamOpenToProtect
+ @ stub NCryptStreamOpenToUnprotect
+diff --git a/include/ncrypt.h b/include/ncrypt.h
+index ce82603b673..2a58067b54d 100644
+--- a/include/ncrypt.h
++++ b/include/ncrypt.h
+@@ -92,6 +92,7 @@ BOOL WINAPI NCryptIsKeyHandle(NCRYPT_HANDLE);
+ SECURITY_STATUS WINAPI NCryptOpenKey(NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE *, const WCHAR *, DWORD, DWORD);
+ SECURITY_STATUS WINAPI NCryptOpenStorageProvider(NCRYPT_PROV_HANDLE *, const WCHAR *, DWORD);
+ SECURITY_STATUS WINAPI NCryptSetProperty(NCRYPT_HANDLE, const WCHAR *, PBYTE, DWORD, DWORD);
++SECURITY_STATUS WINAPI NCryptSignHash(NCRYPT_KEY_HANDLE, void *, PBYTE, DWORD, PBYTE, DWORD, DWORD *, DWORD);
+ 
+ #ifdef __cplusplus
+ }
+
+-- 
+2.28.0
+

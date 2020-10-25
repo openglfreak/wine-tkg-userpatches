@@ -1,0 +1,71 @@
+From 7f09d4501383c7a0c1842e2317fec36e5ed05534 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 5 May 2020 14:24:35 +0200
+Subject: [PATCH 06/11] ntdll: Implement RtlSetHeapInformation for LFH.
+
+---
+ dlls/kernel32/tests/heap.c |  2 --
+ dlls/ntdll/heap.c          | 32 ++++++++++++++++++++++++++++++--
+ 2 files changed, 30 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/kernel32/tests/heap.c b/dlls/kernel32/tests/heap.c
+index a534ad039c8..d80453ad82f 100644
+--- a/dlls/kernel32/tests/heap.c
++++ b/dlls/kernel32/tests/heap.c
+@@ -653,10 +653,8 @@ static void test_HeapCreate(void)
+ 
+         hci = 1;
+         SetLastError(0xdeadbeef);
+-        todo_wine
+         ok(!pHeapSetInformation(heap, HeapCompatibilityInformation, &hci, sizeof(hci)),
+            "HeapSetInformation succeeded\n");
+-        todo_wine
+         ok(GetLastError() == ERROR_GEN_FAILURE,
+            "expected ERROR_GEN_FAILURE, got %u\n", GetLastError());
+ 
+diff --git a/dlls/ntdll/heap.c b/dlls/ntdll/heap.c
+index 0d13897bf93..7324793cc65 100644
+--- a/dlls/ntdll/heap.c
++++ b/dlls/ntdll/heap.c
+@@ -2345,8 +2345,36 @@ NTSTATUS WINAPI RtlQueryHeapInformation( HANDLE heap, HEAP_INFORMATION_CLASS inf
+  */
+ NTSTATUS WINAPI RtlSetHeapInformation( HANDLE heap, HEAP_INFORMATION_CLASS info_class, PVOID info, SIZE_T size)
+ {
+-    FIXME("%p %d %p %ld stub\n", heap, info_class, info, size);
+-    return STATUS_SUCCESS;
++    HEAP *heapPtr;
++
++    TRACE("%p %d %p %ld stub\n", heap, info_class, info, size);
++
++    if (!(heapPtr = HEAP_GetPtr( heap )))
++        return STATUS_INVALID_PARAMETER;
++
++    switch (info_class)
++    {
++    case HeapCompatibilityInformation:
++        if (size < sizeof(ULONG))
++            return STATUS_BUFFER_TOO_SMALL;
++
++        if (heapPtr->extended_type != HEAP_STD)
++            return STATUS_UNSUCCESSFUL;
++
++        if (*(ULONG *)info != HEAP_STD &&
++            *(ULONG *)info != HEAP_LFH)
++        {
++            FIXME("unimplemented HeapCompatibilityInformation %d\n", *(ULONG *)info);
++            return STATUS_SUCCESS;
++        }
++
++        heapPtr->extended_type = *(ULONG *)info;
++        return STATUS_SUCCESS;
++
++    default:
++        FIXME("Unknown heap information class %u\n", info_class);
++        return STATUS_INVALID_INFO_CLASS;
++    }
+ }
+ 
+ void HEAP_notify_thread_destroy( BOOLEAN last )
+-- 
+2.29.1
+

@@ -1,0 +1,291 @@
+From: abdaandroid@gmail.com
+Subject: [PATCH 02/16] ncrypt: Implement NCryptOpenStorageProvider
+Message-Id: <20201011154535.75913-2-abdaandroid@gmail.com>
+Date: Sun, 11 Oct 2020 18:45:21 +0300
+In-Reply-To: <20201011154535.75913-1-abdaandroid@gmail.com>
+References: <20201011154535.75913-1-abdaandroid@gmail.com>
+
+From: Ariel Darshan <abdaandroid@gmail.com>
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=48733
+Signed-off-by: Ariel Darshan <abdaandroid@gmail.com>
+---
+ dlls/ncrypt/main.c            | 125 +++++++++++++++++++++++++++++++++-
+ dlls/ncrypt/ncrypt_internal.h |  92 +++++++++++++++++++++++++
+ include/bcrypt.h              |   6 ++
+ 3 files changed, 221 insertions(+), 2 deletions(-)
+ create mode 100644 dlls/ncrypt/ncrypt_internal.h
+
+diff --git a/dlls/ncrypt/main.c b/dlls/ncrypt/main.c
+index 86bc9190717..8a8d8d0ed13 100644
+--- a/dlls/ncrypt/main.c
++++ b/dlls/ncrypt/main.c
+@@ -2,6 +2,7 @@
+  * New cryptographic library (ncrypt.dll)
+  *
+  * Copyright 2016 Alex Henrie
++ * Copyright 2020 Ariel Darshan
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -26,6 +27,7 @@
+ #include "winreg.h"
+ #include "wine/debug.h"
+ #include "wine/heap.h"
++#include "ncrypt_internal.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(ncrypt);
+ 
+@@ -264,8 +266,60 @@ SECURITY_STATUS WINAPI NCryptOpenKey(NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HAN
+ 
+ SECURITY_STATUS WINAPI NCryptOpenStorageProvider(NCRYPT_PROV_HANDLE *provider, const WCHAR *name, DWORD flags)
+ {
+-    FIXME("(%p, %s, %u): stub\n", provider, wine_dbgstr_w(name), flags);
+-    return NTE_NOT_SUPPORTED;
++    NCryptProviderName *providerNames;
++    DWORD providerCount;
++    DWORD i;
++    BOOL isKSP;
++    LSTATUS lstatus;
++    SECURITY_STATUS secStatus;
++    WCHAR registryPath[MAX_PATH];
++    WCHAR dllName[MAX_PATH];
++    DWORD dllNameLen;
++
++    TRACE("(%p, %s, %u)\n", provider, wine_dbgstr_w(name), flags);
++
++
++    secStatus = NCryptEnumStorageProviders(&providerCount, &providerNames, 0);
++    if (secStatus != ERROR_SUCCESS)
++    {
++        return secStatus;
++    }
++
++    isKSP = FALSE;
++    for (i = 0; i < providerCount; ++i)
++    {
++        if (!wcscmp(providerNames[i].pszName, name))
++        {
++            isKSP = TRUE;
++            break;
++        }
++    }
++
++    secStatus = NCryptFreeBuffer(providerNames);
++    if (secStatus != ERROR_SUCCESS)
++    {
++        WARN("Failed to free providers list\n");
++    }
++
++    if (!isKSP)
++    {
++        ERR("provider not found: %s\n", wine_dbgstr_w(name));
++        return NTE_INVALID_PARAMETER;
++    }
++
++
++
++    dllNameLen = MAX_PATH;
++    swprintf(registryPath, MAX_PATH, L"SYSTEM\\CurrentControlSet\\Control\\Cryptography\\Providers\\%s\\UM", name);
++
++    lstatus = RegGetValueW(HKEY_LOCAL_MACHINE, registryPath, L"Image", RRF_RT_REG_SZ, NULL, dllName, &dllNameLen);
++    if (lstatus != ERROR_SUCCESS)
++    {
++        ERR("Couldn't find image for provider: %s\n", wine_dbgstr_w(name));
++        return NTE_INVALID_PARAMETER;
++    }
++
++    return open_provider(provider, name, dllName, flags);
+ }
+ 
+ SECURITY_STATUS WINAPI NCryptSetProperty(NCRYPT_HANDLE object, const WCHAR *property,
+@@ -275,3 +329,70 @@ SECURITY_STATUS WINAPI NCryptSetProperty(NCRYPT_HANDLE object, const WCHAR *prop
+                                                flags);
+     return NTE_NOT_SUPPORTED;
+ }
++
++static SECURITY_STATUS open_provider(NCRYPT_PROV_HANDLE *providerInstance, const WCHAR *name, const WCHAR *dllName, DWORD flags)
++{
++    unsigned int size;
++    void *buffer;
++    struct ncrypt_provider_instance *ret;
++    HMODULE hDLL;
++    getInterfaceFn getKeyStorageInterface;
++    SECURITY_STATUS status;
++    NCRYPT_KEY_STORAGE_FUNCTION_TABLE *functionTable;
++    NCRYPT_PROV_HANDLE kspHandle;
++
++    hDLL = LoadLibraryW(dllName);
++    if (!hDLL)
++    {
++        ERR("Failed to load provider dll: %s. error code: 0x%08x\n", wine_dbgstr_w(dllName), GetLastError());
++        return NTE_PROV_DLL_NOT_FOUND;
++    }
++
++    getKeyStorageInterface = (getInterfaceFn) GetProcAddress(hDLL, "GetKeyStorageInterface");
++    if (!getKeyStorageInterface)
++    {
++        ERR("Failed to locate the 'GetKeyStorageInterface' export in dll: %s. error code: 0x%08x\n", wine_dbgstr_w(dllName), GetLastError());
++        FreeLibrary(hDLL);
++        return NTE_PROVIDER_DLL_FAIL;
++    }
++
++    /* FIXME: What should flags be? */
++    status = getKeyStorageInterface(name, &functionTable, 0);
++    if (status != ERROR_SUCCESS)
++    {
++        ERR("Failed to get key storage interface from dll: %s\n", wine_dbgstr_w(dllName));
++        FreeLibrary(hDLL);
++        return status;
++    }
++
++    status = functionTable->OpenProvider(&kspHandle, name, flags);
++    if (status != ERROR_SUCCESS)
++    {
++        ERR("OpenProvider failed in dll: %s\n", wine_dbgstr_w(dllName));
++        FreeLibrary(hDLL);
++        return status;
++    }
++
++    /* Allocate both structure and name in the same call */
++    size = sizeof(struct ncrypt_provider_instance) + (wcslen(name) + 1) * sizeof(WCHAR);
++
++    buffer = heap_alloc(size);
++    if (!buffer)
++    {
++        ERR("Out of memory!\n");
++        FreeLibrary(hDLL);
++        return NTE_NO_MEMORY;
++    }
++
++    ret = (struct ncrypt_provider_instance*)buffer;
++    ret->sType = NCRYPT_OBJ_TYPE_PROVIDER;
++    ret->refCount = 1;
++    ret->kspDLL = hDLL;
++    memcpy(&ret->functions, functionTable, sizeof(NCRYPT_KEY_STORAGE_FUNCTION_TABLE));
++    ret->kspHandle = kspHandle;
++    ret->name = (WCHAR*)((char*)buffer + sizeof(struct ncrypt_provider_instance));
++    wcscpy(ret->name, name);
++
++    *providerInstance = provider2handle(ret);
++    return ERROR_SUCCESS;
++}
+diff --git a/dlls/ncrypt/ncrypt_internal.h b/dlls/ncrypt/ncrypt_internal.h
+new file mode 100644
+index 00000000000..e5c9a946f2c
+--- /dev/null
++++ b/dlls/ncrypt/ncrypt_internal.h
+@@ -0,0 +1,92 @@
++/*
++ *    Common definitions
++ *
++ * Copyright 2020 Ariel Darshan
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef __NCRYPT_INTERNAL__
++#define __NCRYPT_INTERNAL__
++
++#include "bcrypt.h"
++
++typedef struct _NCRYPT_KEY_STORAGE_FUNCTION_TABLE
++{
++	BCRYPT_INTERFACE_VERSION version;
++	SECURITY_STATUS(*OpenProvider)(NCRYPT_PROV_HANDLE *outProvider, LPCWSTR name, DWORD flags);
++	SECURITY_STATUS(*OpenKey)(NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE *outKey, LPCWSTR keyName, DWORD legacyKeySpec, DWORD flags);
++	SECURITY_STATUS(*CreatePersistedKey)(NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE* outKey, LPCWSTR algId, LPCWSTR keyName, DWORD legacyKeySpec, DWORD flags);
++	SECURITY_STATUS(*GetProviderProperty)(NCRYPT_PROV_HANDLE provider, LPCWSTR propertyName, BYTE *output, DWORD outputSize, DWORD *result, DWORD flags);
++	SECURITY_STATUS(*GetKeyProperty)(NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE key, LPCWSTR propertyName, BYTE* output, DWORD outputSize, DWORD* result, DWORD flags);
++	SECURITY_STATUS(*SetProviderProperty)(NCRYPT_PROV_HANDLE provider, LPCWSTR propertyName, BYTE* input, DWORD inputSize, DWORD flags);
++	SECURITY_STATUS(*SetKeyProperty)(NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE key, LPCWSTR propertyName, BYTE* input, DWORD inputSize, DWORD flags);
++	SECURITY_STATUS(*FinalizeKey)(NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE key, DWORD flags);
++	SECURITY_STATUS(*DeleteKey)(NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE key, DWORD flags);
++	SECURITY_STATUS(*FreeProvider)(NCRYPT_PROV_HANDLE provider);
++	SECURITY_STATUS(*FreeKey)(NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE key);
++	SECURITY_STATUS(*FreeBuffer)(void *buffer);
++	SECURITY_STATUS(*Encrypt)(NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE key, BYTE *input, DWORD inputSize, void *paddingInfo, BYTE *output, DWORD outputSize, DWORD *result, DWORD flags);
++	SECURITY_STATUS(*Decrypt)(NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE key, BYTE* input, DWORD inputSize, void *paddingInfo, BYTE* output, DWORD outputSize, DWORD* result, DWORD flags);
++	SECURITY_STATUS(*IsAlgSupported)(NCRYPT_PROV_HANDLE provider, LPCWSTR algId, DWORD flags);
++	SECURITY_STATUS(*EnumAlgorithms)(NCRYPT_PROV_HANDLE provider, DWORD algOperations, DWORD *algCount, NCryptAlgorithmName **algList, DWORD flags);
++	SECURITY_STATUS(*EnumKeys)(NCRYPT_PROV_HANDLE provider, LPCWSTR scope, NCryptKeyName **keyName, void **enumState, DWORD flags);
++	SECURITY_STATUS(*ImportKey)(NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE decryptKey, LPCWSTR blobType, NCryptBufferDesc *parameterList, NCRYPT_KEY_HANDLE *outKey, BYTE *data, DWORD dataSize, DWORD flags);
++	SECURITY_STATUS(*ExportKey)(NCRYPT_KEY_HANDLE key, NCRYPT_KEY_HANDLE encryptKey, LPCWSTR blobType, NCryptBufferDesc *parameterList, BYTE *output, DWORD outputSize, DWORD *result, DWORD flags);
++	SECURITY_STATUS(*SignHash)(NCRYPT_KEY_HANDLE key, void *paddingInfo, BYTE *hashValue, DWORD hashSize, BYTE *outSig, DWORD outSigSize, DWORD *result, DWORD flags);
++	SECURITY_STATUS(*VerifySignature)(NCRYPT_KEY_HANDLE key, void *paddingInfo, BYTE *hashValue, DWORD hashSize, BYTE *signature, DWORD signatureSize, DWORD flags);
++	SECURITY_STATUS(*PromptUser)(NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE key, LPCWSTR operation, DWORD flags);
++	SECURITY_STATUS(*NotifyChangeKey)(NCRYPT_PROV_HANDLE provider, HANDLE *event, DWORD flags);
++	SECURITY_STATUS(*SecretAgreement)(NCRYPT_KEY_HANDLE privateKey, NCRYPT_KEY_HANDLE publicKey, NCRYPT_SECRET_HANDLE *agreedSecret, DWORD flags);
++	SECURITY_STATUS(*DeriveKey)(NCRYPT_SECRET_HANDLE sharedSecret, LPCWSTR kdf, NCryptBufferDesc *parameterList, BYTE *outKey, DWORD outKeySize, DWORD *result, DWORD flags);
++	SECURITY_STATUS(*FreeSecret)(NCRYPT_PROV_HANDLE provider, NCRYPT_SECRET_HANDLE sharedSecret);
++
++}NCRYPT_KEY_STORAGE_FUNCTION_TABLE;
++
++typedef NTSTATUS(*getInterfaceFn)(LPCWSTR providerName, NCRYPT_KEY_STORAGE_FUNCTION_TABLE **outFunctionTable, DWORD dwFlags);
++
++
++#define NCRYPT_OBJ_TYPE_PROVIDER    0x44440001
++#define NCRYPT_OBJ_TYPE_KEY         0x44440002
++#define NCRYPT_OBJ_TYPE_HASH        0x44440003
++#define NCRYPT_OBJ_TYPE_SECRET      0x44440004
++
++struct ncrypt_base_object
++{
++    DWORD sType;
++};
++
++struct ncrypt_provider_instance
++{
++    DWORD sType;
++    DWORD refCount;
++    HMODULE kspDLL;
++    NCRYPT_KEY_STORAGE_FUNCTION_TABLE functions;
++    NCRYPT_PROV_HANDLE kspHandle;
++    WCHAR *name;
++};
++
++
++#define handle2baseObject(x) ((struct ncrypt_base_object*)(x))
++#define baseObject2handle(x) ((NCRYPT_HANDLE)(x))
++
++#define handle2provider(x) ((struct ncrypt_provider_instance*)(x))
++#define provider2handle(x) ((NCRYPT_PROV_HANDLE)(x))
++
++
++
++static SECURITY_STATUS open_provider(NCRYPT_PROV_HANDLE *providerInstance ,const WCHAR *name, const WCHAR *dllName, DWORD flags);
++
++#endif /* __NCRYPT_INTERNAL__ */
+diff --git a/include/bcrypt.h b/include/bcrypt.h
+index a099f2f4b0e..4d3f59c3462 100644
+--- a/include/bcrypt.h
++++ b/include/bcrypt.h
+@@ -221,6 +221,12 @@ static const WCHAR BCRYPT_KDF_RAW_SECRET[] = {'T','R','U','N','C','A','T','E',0}
+ #define BCRYPT_SUPPORTED_PAD_OAEP       0x00000008
+ #define BCRYPT_SUPPORTED_PAD_PSS        0x00000010
+ 
++typedef struct _BCRYPT_INTERFACE_VERSION
++{
++    USHORT MajorVersion;
++    USHORT MinorVersion;
++}BCRYPT_INTERFACE_VERSION, *PBCRYPT_INTERFACE_VERSION;
++
+ typedef struct _BCRYPT_ALGORITHM_IDENTIFIER
+ {
+     LPWSTR pszName;
+
+-- 
+2.28.0
+

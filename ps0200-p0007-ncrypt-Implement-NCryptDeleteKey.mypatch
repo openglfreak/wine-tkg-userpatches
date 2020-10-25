@@ -1,0 +1,72 @@
+From: abdaandroid@gmail.com
+Subject: [PATCH 07/16] ncrypt: Implement NCryptDeleteKey
+Message-Id: <20201011154535.75913-7-abdaandroid@gmail.com>
+Date: Sun, 11 Oct 2020 18:45:26 +0300
+In-Reply-To: <20201011154535.75913-1-abdaandroid@gmail.com>
+References: <20201011154535.75913-1-abdaandroid@gmail.com>
+
+From: Ariel Darshan <abdaandroid@gmail.com>
+
+Signed-off-by: Ariel Darshan <abdaandroid@gmail.com>
+---
+ dlls/ncrypt/main.c | 30 ++++++++++++++++++++++++++++--
+ include/ncrypt.h   |  1 +
+ 2 files changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ncrypt/main.c b/dlls/ncrypt/main.c
+index 4189132c395..63687850b55 100644
+--- a/dlls/ncrypt/main.c
++++ b/dlls/ncrypt/main.c
+@@ -95,8 +95,34 @@ SECURITY_STATUS WINAPI NCryptDecrypt(NCRYPT_KEY_HANDLE key, BYTE *input, DWORD i
+ 
+ SECURITY_STATUS WINAPI NCryptDeleteKey(NCRYPT_KEY_HANDLE key, DWORD flags)
+ {
+-    FIXME("(0x%lx, 0x%08x): stub\n", key, flags);
+-    return NTE_NOT_SUPPORTED;
++    struct ncrypt_key_instance *keyInstance;
++    struct ncrypt_provider_instance *providerInstance;
++    SECURITY_STATUS ret;
++
++    TRACE("(0x%lx, 0x%08x)", key, flags);
++
++    if (!key)
++    {
++        return NTE_INVALID_HANDLE;
++    }
++    keyInstance = handle2key(key);
++
++    if (!keyInstance->provider)
++    {
++        return NTE_INVALID_HANDLE;
++    }
++    providerInstance = handle2provider(keyInstance->provider);
++
++    ret = providerInstance->functions.DeleteKey(providerInstance->kspHandle, keyInstance->kspHandle, flags);
++    if (ret != ERROR_SUCCESS)
++    {
++        return ret;
++    }
++    keyInstance->kspHandle = 0;
++
++    free_key(key);
++
++    return ret;
+ }
+ 
+ SECURITY_STATUS WINAPI NCryptEncrypt(NCRYPT_KEY_HANDLE key, BYTE *input, DWORD insize, void *padding,
+diff --git a/include/ncrypt.h b/include/ncrypt.h
+index b78fa3aeae7..22f9c67ebb6 100644
+--- a/include/ncrypt.h
++++ b/include/ncrypt.h
+@@ -76,6 +76,7 @@ typedef ULONG_PTR NCRYPT_SECRET_HANDLE;
+ 
+ SECURITY_STATUS WINAPI NCryptCreatePersistedKey(NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE *, const WCHAR *, const WCHAR *, DWORD, DWORD);
+ SECURITY_STATUS WINAPI NCryptDecrypt(NCRYPT_KEY_HANDLE, BYTE *, DWORD, void *, BYTE *, DWORD, DWORD *, DWORD);
++SECURITY_STATUS WINAPI NCryptDeleteKey(NCRYPT_KEY_HANDLE, DWORD);
+ SECURITY_STATUS WINAPI NCryptEncrypt(NCRYPT_KEY_HANDLE, BYTE *, DWORD, void *, BYTE *, DWORD, DWORD *, DWORD);
+ SECURITY_STATUS WINAPI NCryptEnumStorageProviders(DWORD *, NCryptProviderName **, DWORD);
+ SECURITY_STATUS WINAPI NCryptFinalizeKey(NCRYPT_KEY_HANDLE, DWORD);
+
+-- 
+2.28.0
+

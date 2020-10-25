@@ -1,0 +1,135 @@
+From: abdaandroid@gmail.com
+Subject: [PATCH 03/16] ncrypt: Implement NCryptCreatePersistedKey
+Message-Id: <20201011154535.75913-3-abdaandroid@gmail.com>
+Date: Sun, 11 Oct 2020 18:45:22 +0300
+In-Reply-To: <20201011154535.75913-1-abdaandroid@gmail.com>
+References: <20201011154535.75913-1-abdaandroid@gmail.com>
+
+From: Ariel Darshan <abdaandroid@gmail.com>
+
+Signed-off-by: Ariel Darshan <abdaandroid@gmail.com>
+---
+ dlls/ncrypt/main.c            | 65 +++++++++++++++++++++++++++++++++--
+ dlls/ncrypt/ncrypt_internal.h | 15 ++++++++
+ 2 files changed, 78 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ncrypt/main.c b/dlls/ncrypt/main.c
+index 8a8d8d0ed13..c7546cce897 100644
+--- a/dlls/ncrypt/main.c
++++ b/dlls/ncrypt/main.c
+@@ -51,9 +51,23 @@ SECURITY_STATUS WINAPI NCryptCreatePersistedKey(NCRYPT_PROV_HANDLE provider, NCR
+                                                 const WCHAR *algid, const WCHAR *name, DWORD keyspec,
+                                                 DWORD flags)
+ {
+-    FIXME("(0x%lx, %p, %s, %s, 0x%08x, 0x%08x): stub\n", provider, key, wine_dbgstr_w(algid),
++    struct ncrypt_provider_instance *providerInstance;
++    struct ncrypt_key_instance *outKeyInstance;
++
++    TRACE("(0x%lx, %p, %s, %s, 0x%08x, 0x%08x)\n", provider, key, wine_dbgstr_w(algid),
+                                                          wine_dbgstr_w(name), keyspec, flags);
+-    return NTE_NOT_SUPPORTED;
++    if (!provider)
++    {
++        return NTE_INVALID_HANDLE;
++    }
++    providerInstance = handle2provider(provider);
++    outKeyInstance = create_key(provider, name);
++    if (!outKeyInstance)
++    {
++        return NTE_NO_MEMORY;
++    }
++    *key = (NCRYPT_KEY_HANDLE)outKeyInstance;
++    return providerInstance->functions.CreatePersistedKey(providerInstance->kspHandle, &outKeyInstance->kspHandle, algid, name, keyspec, flags);
+ }
+ 
+ SECURITY_STATUS WINAPI NCryptDecrypt(NCRYPT_KEY_HANDLE key, BYTE *input, DWORD insize, void *padding,
+@@ -396,3 +410,50 @@ static SECURITY_STATUS open_provider(NCRYPT_PROV_HANDLE *providerInstance, const
+     *providerInstance = provider2handle(ret);
+     return ERROR_SUCCESS;
+ }
++
++static struct ncrypt_key_instance* create_key(NCRYPT_PROV_HANDLE provider, const WCHAR *name)
++{
++    unsigned int size;
++    void *buffer;
++    struct ncrypt_key_instance *ret;
++
++    size = sizeof(struct ncrypt_key_instance);
++
++    if (name)
++    {
++        /* Allocate both structure and name in the same call */
++        size += (wcslen(name) + 1) * sizeof(WCHAR);
++    }
++
++    buffer = heap_alloc(size);
++    if (!buffer)
++    {
++        return NULL;
++    }
++
++    ret = (struct ncrypt_key_instance *) buffer;
++    ret->sType = NCRYPT_OBJ_TYPE_KEY;
++    ret->provider = ref_provider(provider);
++
++    if (name)
++    {
++        ret->name = (WCHAR*)((char*)buffer + sizeof(struct ncrypt_key_instance));
++        wcscpy(ret->name, name);
++    }
++    else
++    {
++        ret->name = NULL;
++    }
++
++    return ret;
++}
++
++static NCRYPT_PROV_HANDLE ref_provider(NCRYPT_PROV_HANDLE provider)
++{
++    struct ncrypt_provider_instance *providerInstance;
++
++    providerInstance = handle2provider(provider);
++    providerInstance->refCount++;
++
++    return provider;
++}
+diff --git a/dlls/ncrypt/ncrypt_internal.h b/dlls/ncrypt/ncrypt_internal.h
+index e5c9a946f2c..3a87727cb1e 100644
+--- a/dlls/ncrypt/ncrypt_internal.h
++++ b/dlls/ncrypt/ncrypt_internal.h
+@@ -78,15 +78,30 @@ struct ncrypt_provider_instance
+     WCHAR *name;
+ };
+ 
++struct ncrypt_key_instance
++{
++    DWORD sType;
++    NCRYPT_PROV_HANDLE provider;
++    NCRYPT_KEY_HANDLE kspHandle;
++    WCHAR *name;
++};
++
+ 
+ #define handle2baseObject(x) ((struct ncrypt_base_object*)(x))
+ #define baseObject2handle(x) ((NCRYPT_HANDLE)(x))
+ 
++#define handle2key(x) ((struct ncrypt_key_instance*)(x))
++#define key2handle(x) ((NCRYPT_KEY_HANDLE)(x))
++
+ #define handle2provider(x) ((struct ncrypt_provider_instance*)(x))
+ #define provider2handle(x) ((NCRYPT_PROV_HANDLE)(x))
+ 
+ 
+ 
+ static SECURITY_STATUS open_provider(NCRYPT_PROV_HANDLE *providerInstance ,const WCHAR *name, const WCHAR *dllName, DWORD flags);
++static struct ncrypt_key_instance* create_key(NCRYPT_PROV_HANDLE provider, const WCHAR *name);
++static NCRYPT_PROV_HANDLE ref_provider(NCRYPT_PROV_HANDLE provider);
++static SECURITY_STATUS free_provider(NCRYPT_HANDLE provider);
++static SECURITY_STATUS free_key(NCRYPT_HANDLE key);
+ 
+ #endif /* __NCRYPT_INTERNAL__ */
+
+-- 
+2.28.0
+

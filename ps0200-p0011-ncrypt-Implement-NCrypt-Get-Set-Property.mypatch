@@ -1,0 +1,115 @@
+From: abdaandroid@gmail.com
+Subject: [PATCH 11/16] ncrypt: Implement NCrypt{Get, Set}Property
+Message-Id: <20201011154535.75913-11-abdaandroid@gmail.com>
+Date: Sun, 11 Oct 2020 18:45:30 +0300
+In-Reply-To: <20201011154535.75913-1-abdaandroid@gmail.com>
+References: <20201011154535.75913-1-abdaandroid@gmail.com>
+
+From: Ariel Darshan <abdaandroid@gmail.com>
+
+Signed-off-by: Ariel Darshan <abdaandroid@gmail.com>
+---
+ dlls/ncrypt/main.c | 59 ++++++++++++++++++++++++++++++++++++++++++----
+ include/ncrypt.h   |  2 ++
+ 2 files changed, 57 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ncrypt/main.c b/dlls/ncrypt/main.c
+index d940a49c1e4..e574743430a 100644
+--- a/dlls/ncrypt/main.c
++++ b/dlls/ncrypt/main.c
+@@ -402,9 +402,35 @@ SECURITY_STATUS WINAPI NCryptFreeObject(NCRYPT_HANDLE object)
+ SECURITY_STATUS WINAPI NCryptGetProperty(NCRYPT_HANDLE object, const WCHAR *property, PBYTE output,
+                                          DWORD outsize, DWORD *result, DWORD flags)
+ {
+-    FIXME("(0x%lx, %s, %p, %u, %p, 0x%08x): stub\n", object, wine_dbgstr_w(property), output, outsize,
++    struct ncrypt_base_object *obj;
++    struct ncrypt_key_instance *keyInstance;
++    struct ncrypt_provider_instance *providerInstance;
++
++    TRACE("(0x%lx, %s, %p, %u, %p, 0x%08x)\n", object, wine_dbgstr_w(property), output, outsize,
+                                                          result, flags);
+-    return NTE_NOT_SUPPORTED;
++
++    if (!object)
++    {
++        return NTE_INVALID_HANDLE;
++    }
++
++    obj = handle2baseObject(object);
++
++    switch(obj->sType)
++    {
++        case NCRYPT_OBJ_TYPE_PROVIDER:
++            providerInstance = handle2provider(object);
++            return providerInstance->functions.GetProviderProperty(providerInstance->kspHandle, property, output, outsize, result, flags);
++
++        case NCRYPT_OBJ_TYPE_KEY:
++            keyInstance = handle2key(object);
++            providerInstance = handle2provider(keyInstance->provider);
++            return providerInstance->functions.GetKeyProperty(providerInstance->kspHandle, keyInstance->kspHandle, property, output, outsize, result, flags);
++
++        default:
++            FIXME("Object type not implemented: 0x%08x\n", obj->sType);
++            return NTE_NOT_SUPPORTED;
++    }
+ }
+ 
+ SECURITY_STATUS WINAPI NCryptImportKey(NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE decrypt_key,
+@@ -526,9 +552,34 @@ SECURITY_STATUS WINAPI NCryptOpenStorageProvider(NCRYPT_PROV_HANDLE *provider, c
+ SECURITY_STATUS WINAPI NCryptSetProperty(NCRYPT_HANDLE object, const WCHAR *property,
+                                          PBYTE input, DWORD insize, DWORD flags)
+ {
+-    FIXME("(%lx, %s, %p, %u, 0x%08x): stub\n", object, wine_dbgstr_w(property), input, insize,
++    struct ncrypt_base_object *obj;
++    struct ncrypt_key_instance *keyInstance;
++    struct ncrypt_provider_instance *providerInstance;
++
++    TRACE("(%lx, %s, %p, %u, 0x%08x)\n", object, wine_dbgstr_w(property), input, insize,
+                                                flags);
+-    return NTE_NOT_SUPPORTED;
++    if (!object)
++    {
++        return NTE_INVALID_HANDLE;
++    }
++
++    obj = handle2baseObject(object);
++
++    switch(obj->sType)
++    {
++        case NCRYPT_OBJ_TYPE_PROVIDER:
++            providerInstance = handle2provider(object);
++            return providerInstance->functions.SetProviderProperty(providerInstance->kspHandle, property, input, insize, flags);
++
++        case NCRYPT_OBJ_TYPE_KEY:
++            keyInstance = handle2key(object);
++            providerInstance = handle2provider(keyInstance->provider);
++            return providerInstance->functions.SetKeyProperty(providerInstance->kspHandle, keyInstance->kspHandle, property, input, insize, flags);
++
++        default:
++            FIXME("Object type not implemented: 0x%08x\n", obj->sType);
++            return NTE_NOT_SUPPORTED;
++    }
+ }
+ 
+ static SECURITY_STATUS open_provider(NCRYPT_PROV_HANDLE *providerInstance, const WCHAR *name, const WCHAR *dllName, DWORD flags)
+diff --git a/include/ncrypt.h b/include/ncrypt.h
+index 3edc069352f..d4ace11c6e8 100644
+--- a/include/ncrypt.h
++++ b/include/ncrypt.h
+@@ -85,10 +85,12 @@ SECURITY_STATUS WINAPI NCryptExportKey(NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE, co
+ SECURITY_STATUS WINAPI NCryptFinalizeKey(NCRYPT_KEY_HANDLE, DWORD);
+ SECURITY_STATUS WINAPI NCryptFreeBuffer(PVOID);
+ SECURITY_STATUS WINAPI NCryptFreeObject(NCRYPT_HANDLE);
++SECURITY_STATUS WINAPI NCryptGetProperty(NCRYPT_HANDLE, const WCHAR *, PBYTE, DWORD, DWORD *, DWORD);
+ SECURITY_STATUS WINAPI NCryptImportKey(NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE, const WCHAR *, NCryptBufferDesc *, NCRYPT_KEY_HANDLE *, PBYTE, DWORD, DWORD);
+ BOOL WINAPI NCryptIsKeyHandle(NCRYPT_HANDLE);
+ SECURITY_STATUS WINAPI NCryptOpenKey(NCRYPT_PROV_HANDLE, NCRYPT_KEY_HANDLE *, const WCHAR *, DWORD, DWORD);
+ SECURITY_STATUS WINAPI NCryptOpenStorageProvider(NCRYPT_PROV_HANDLE *, const WCHAR *, DWORD);
++SECURITY_STATUS WINAPI NCryptSetProperty(NCRYPT_HANDLE, const WCHAR *, PBYTE, DWORD, DWORD);
+ 
+ #ifdef __cplusplus
+ }
+
+-- 
+2.28.0
+

@@ -1,24 +1,27 @@
-From: "Rémi Bernon" <rbernon@codeweavers.com>
-Subject: [PATCH v4 6/7] wmphoto: Implement WmpDecoder stub when jxrlib is found.
-Message-Id: <20200923114946.1208468-6-rbernon@codeweavers.com>
-Date: Wed, 23 Sep 2020 13:49:45 +0200
-In-Reply-To: <20200923114946.1208468-1-rbernon@codeweavers.com>
-References: <20200923114946.1208468-1-rbernon@codeweavers.com>
+From 95950bac6376e97bec4fae983f152de1db14dce0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 24 Sep 2020 19:44:42 +0200
+Subject: [PATCH 2/5] wmphoto: Implement stub WmpDecoder interface.
 
-Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
 ---
-
-v4: * Return WINCODEC_ERR_WRONGSTATE on multiple initialization.
-
- dlls/windowscodecs/tests/wmpformat.c |  13 ++-
- dlls/wmphoto/Makefile.in             |   2 +
- dlls/wmphoto/main.c                  | 214 ++++++++++++++++++++++++++++++++++-
- 3 files changed, 225 insertions(+), 4 deletions(-)
+ dlls/windowscodecs/tests/wmpformat.c |  15 ++-
+ dlls/wmphoto/Makefile.in             |   1 +
+ dlls/wmphoto/main.c                  | 186 ++++++++++++++++++++++++++-
+ 3 files changed, 196 insertions(+), 6 deletions(-)
 
 diff --git a/dlls/windowscodecs/tests/wmpformat.c b/dlls/windowscodecs/tests/wmpformat.c
-index 2e2809701f6..62e734f0f71 100644
+index 2e2809701f6..12bc1275919 100644
 --- a/dlls/windowscodecs/tests/wmpformat.c
 +++ b/dlls/windowscodecs/tests/wmpformat.c
+@@ -89,7 +89,7 @@ static void test_decode(void)
+                           &IID_IWICBitmapDecoder, (void **)&decoder);
+     if (FAILED(hr))
+     {
+-        todo_wine win_skip("WmpDecoder isn't available, skipping test\n");
++        win_skip("WmpDecoder isn't available, skipping test\n");
+         return;
+     }
+ 
 @@ -119,8 +119,8 @@ static void test_decode(void)
         "unexpected container format\n");
  
@@ -54,49 +57,28 @@ index 2e2809701f6..62e734f0f71 100644
      GlobalFree(hwmpdata);
  
 diff --git a/dlls/wmphoto/Makefile.in b/dlls/wmphoto/Makefile.in
-index b2cab132dbd..b1a840ca28f 100644
+index 83462bd4c2f..21dfce04fa6 100644
 --- a/dlls/wmphoto/Makefile.in
 +++ b/dlls/wmphoto/Makefile.in
-@@ -1,6 +1,8 @@
+@@ -1,5 +1,6 @@
  MODULE = wmphoto.dll
  IMPORTS = windowscodecs uuid kernelbase
++PARENTSRC = ../windowscodecs
  
-+EXTRAINCL = $(JXRLIB_CFLAGS)
-+
- C_SRCS = main.c
+ EXTRADLLFLAGS = -mno-cygwin
  
- IDL_SRCS = wmphoto.idl
 diff --git a/dlls/wmphoto/main.c b/dlls/wmphoto/main.c
-index efb408e94cb..054f89c27dd 100644
+index efb408e94cb..5715d1676ae 100644
 --- a/dlls/wmphoto/main.c
 +++ b/dlls/wmphoto/main.c
-@@ -17,6 +17,12 @@
-  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
-  */
- 
-+#include "config.h"
-+#include "wine/port.h"
-+
-+#ifdef HAVE_UNISTD_H
-+# include <unistd.h>
-+#endif
- #include <stdarg.h>
- #include <stdio.h>
- #include <string.h>
-@@ -31,15 +37,209 @@
- #include "wincodecsdk.h"
- 
- #include "wine/debug.h"
-+#include "wine/unicode.h"
+@@ -34,12 +34,194 @@
  
  WINE_DEFAULT_DEBUG_CHANNEL(wincodecs);
  
-+#ifdef SONAME_LIBJXRGLUE
-+
-+static void *libjxrglue;
-+
+-static HRESULT wmp_decoder_create(IUnknown *outer, IUnknown **out)
 +struct wmp_decoder
-+{
+ {
+-    FIXME("outer %p, out %p, stub!\n", outer, out);
 +    IWICBitmapDecoder IWICBitmapDecoder_iface;
 +    LONG ref;
 +    IStream *stream;
@@ -160,7 +142,7 @@ index efb408e94cb..054f89c27dd 100644
 +{
 +    struct wmp_decoder *This = impl_from_IWICBitmapDecoder(iface);
 +    LARGE_INTEGER seek;
-+    HRESULT hr = S_OK;
++    HRESULT hr;
 +
 +    TRACE("iface %p, stream %p, options %u.\n", iface, stream, options);
 +
@@ -170,11 +152,14 @@ index efb408e94cb..054f89c27dd 100644
 +    else
 +    {
 +        seek.QuadPart = 0;
-+        IStream_Seek(stream, seek, STREAM_SEEK_SET, NULL);
++        if (FAILED(hr = IStream_Seek(stream, seek, STREAM_SEEK_SET, NULL))) goto done;
++
 +        IStream_AddRef(stream);
 +        This->stream = stream;
++        hr = S_OK;
 +    }
 +
++done:
 +    LeaveCriticalSection(&This->lock);
 +    return hr;
 +}
@@ -202,9 +187,9 @@ index efb408e94cb..054f89c27dd 100644
 +    FIXME("iface %p, reader %p, stub!\n", iface, reader);
 +    if (!reader) return E_INVALIDARG;
 +    *reader = NULL;
-+    return E_NOTIMPL;
-+}
-+
+     return E_NOTIMPL;
+ }
+ 
 +static HRESULT WINAPI wmp_decoder_GetPreview(IWICBitmapDecoder *iface, IWICBitmapSource **source)
 +{
 +    FIXME("iface %p, source %p, stub!\n", iface, source);
@@ -260,9 +245,8 @@ index efb408e94cb..054f89c27dd 100644
 +    wmp_decoder_GetFrame
 +};
 +
- static HRESULT wmp_decoder_create(IUnknown *outer, IUnknown **out)
- {
--    FIXME("outer %p, out %p, stub!\n", outer, out);
++static HRESULT CDECL wmp_decoder_create(IUnknown *outer, IUnknown **out)
++{
 +    struct wmp_decoder *This;
 +
 +    TRACE("outer %p, out %p.\n", outer, out);
@@ -281,38 +265,9 @@ index efb408e94cb..054f89c27dd 100644
 +    return S_OK;
 +}
 +
-+#else /* !defined(SONAME_LIBJXRGLUE) */
-+
-+static HRESULT wmp_decoder_create(IUnknown *outer, IUnknown **out)
-+{
-+    ERR("JPEG-XR support not compiled in!\n");
-     return E_NOTIMPL;
- }
- 
-+#endif
-+
  struct class_factory
  {
      IClassFactory IClassFactory_iface;
-@@ -117,9 +317,21 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
-     case DLL_PROCESS_ATTACH:
-         WMPHOTO_hInstance = hinstDLL;
-         DisableThreadLibraryCalls(hinstDLL);
-+#ifdef SONAME_LIBJXRGLUE
-+        if (!(libjxrglue = dlopen(SONAME_LIBJXRGLUE, RTLD_NOW)))
-+        {
-+            ERR("unable to load %s!\n", SONAME_LIBJXRGLUE);
-+            return FALSE;
-+        }
-+#endif
-         break;
-     case DLL_WINE_PREATTACH:
-         return FALSE; /* prefer native version */
-+    case DLL_PROCESS_DETACH:
-+#ifdef SONAME_LIBJXRGLUE
-+        dlclose(libjxrglue);
-+#endif
-+        return TRUE;
-     }
- 
-     return TRUE;
+-- 
+2.29.1
+

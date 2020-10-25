@@ -1,0 +1,279 @@
+From 715d8df80a16cb4ec5ba48164c7d5bc843ef8dcb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 28 Aug 2019 22:24:47 +0200
+Subject: [PATCH 05/11] ntdll: Add extended heap type and LFH stubs.
+
+---
+ dlls/ntdll/Makefile.in  |  1 +
+ dlls/ntdll/heap.c       | 68 +++++++++++++++++++++++++++++++++++++----
+ dlls/ntdll/heap_lfh.c   | 55 +++++++++++++++++++++++++++++++++
+ dlls/ntdll/ntdll_misc.h | 12 ++++++++
+ 4 files changed, 130 insertions(+), 6 deletions(-)
+ create mode 100644 dlls/ntdll/heap_lfh.c
+
+diff --git a/dlls/ntdll/Makefile.in b/dlls/ntdll/Makefile.in
+index f39ffb42c6f..ad7b13565c7 100644
+--- a/dlls/ntdll/Makefile.in
++++ b/dlls/ntdll/Makefile.in
+@@ -18,6 +18,7 @@ C_SRCS = \
+ 	exception.c \
+ 	handletable.c \
+ 	heap.c \
++	heap_lfh.c \
+ 	large_int.c \
+ 	loader.c \
+ 	loadorder.c \
+diff --git a/dlls/ntdll/heap.c b/dlls/ntdll/heap.c
+index 34fbc900658..0d13897bf93 100644
+--- a/dlls/ntdll/heap.c
++++ b/dlls/ntdll/heap.c
+@@ -164,6 +164,7 @@ typedef struct tagHEAP
+     struct list     *freeList;      /* Free lists */
+     struct wine_rb_tree freeTree;   /* Free tree */
+     DWORD            freeMask[HEAP_NB_FREE_LISTS / (8 * sizeof(DWORD))];
++    int              extended_type; /* Extended heap type */
+ } HEAP;
+ 
+ #define HEAP_FREEMASK_BLOCK    (8 * sizeof(DWORD))
+@@ -1511,6 +1512,8 @@ void heap_set_debug_flags( HANDLE handle )
+                                               MAX_FREE_PENDING * sizeof(*heap->pending_free) );
+         heap->pending_pos = 0;
+     }
++
++    HEAP_lfh_set_debug_flags( flags );
+ }
+ 
+ 
+@@ -1554,11 +1557,13 @@ HANDLE WINAPI RtlCreateHeap( ULONG flags, PVOID addr, SIZE_T totalSize, SIZE_T c
+         HEAP *heapPtr = subheap->heap;
+         enter_critical_section( &processHeap->critSection );
+         list_add_head( &processHeap->entry, &heapPtr->entry );
++        heapPtr->extended_type = HEAP_STD;
+         leave_critical_section( &processHeap->critSection );
+     }
+     else if (!addr)
+     {
+         processHeap = subheap->heap;  /* assume the first heap we create is the process main heap */
++        processHeap->extended_type = HEAP_STD;
+         list_init( &processHeap->entry );
+     }
+ 
+@@ -1644,6 +1649,7 @@ HANDLE WINAPI RtlDestroyHeap( HANDLE heap )
+ void * WINAPI DECLSPEC_HOTPATCH RtlAllocateHeap( HANDLE heap, ULONG flags, SIZE_T size )
+ {
+     HEAP *heapPtr;
++    void *ptr;
+ 
+     if (!(heapPtr = HEAP_GetPtr( heap )))
+         return NULL;
+@@ -1651,7 +1657,15 @@ void * WINAPI DECLSPEC_HOTPATCH RtlAllocateHeap( HANDLE heap, ULONG flags, SIZE_
+     flags &= HEAP_GENERATE_EXCEPTIONS | HEAP_NO_SERIALIZE | HEAP_ZERO_MEMORY;
+     flags |= heapPtr->flags;
+ 
+-    return HEAP_std_allocate( heapPtr, flags, size );
++    switch (heapPtr->extended_type)
++    {
++    case HEAP_LFH:
++        if ((ptr = HEAP_lfh_allocate( heapPtr, flags, size )))
++            return ptr;
++        /* fallthrough */
++    default:
++        return HEAP_std_allocate( heapPtr, flags, size );
++    }
+ }
+ 
+ void * HEAP_std_allocate( HEAP *heapPtr, ULONG flags, SIZE_T size )
+@@ -1750,7 +1764,15 @@ BOOLEAN WINAPI DECLSPEC_HOTPATCH RtlFreeHeap( HANDLE heap, ULONG flags, void *pt
+     flags &= HEAP_NO_SERIALIZE;
+     flags |= heapPtr->flags;
+ 
+-    return HEAP_std_free( heapPtr, flags, ptr );
++    switch (heapPtr->extended_type)
++    {
++    case HEAP_LFH:
++        if (HEAP_lfh_validate( heapPtr, flags, ptr ))
++            return HEAP_lfh_free( heapPtr, flags, ptr );
++        /* fallthrough */
++    default:
++        return HEAP_std_free( heapPtr, flags, ptr );
++    }
+ }
+ 
+ BOOLEAN HEAP_std_free( HEAP *heapPtr, ULONG flags, void *ptr )
+@@ -1818,7 +1840,15 @@ PVOID WINAPI RtlReAllocateHeap( HANDLE heap, ULONG flags, PVOID ptr, SIZE_T size
+              HEAP_REALLOC_IN_PLACE_ONLY;
+     flags |= heapPtr->flags;
+ 
+-    return HEAP_std_reallocate( heapPtr, flags, ptr, size );
++    switch (heapPtr->extended_type)
++    {
++    case HEAP_LFH:
++        if (HEAP_lfh_validate( heapPtr, flags, ptr ))
++            return HEAP_lfh_reallocate( heapPtr, flags, ptr, size );
++        /* fallthrough */
++    default:
++        return HEAP_std_reallocate( heapPtr, flags, ptr, size );
++    }
+ }
+ 
+ void *HEAP_std_reallocate( HEAP *heapPtr, ULONG flags, void *ptr, SIZE_T size )
+@@ -2038,7 +2068,15 @@ SIZE_T WINAPI RtlSizeHeap( HANDLE heap, ULONG flags, const void *ptr )
+     flags &= HEAP_NO_SERIALIZE;
+     flags |= heapPtr->flags;
+ 
+-    return HEAP_std_get_allocated_size( heapPtr, flags, ptr );
++    switch (heapPtr->extended_type)
++    {
++    case HEAP_LFH:
++        if (HEAP_lfh_validate( heapPtr, flags, ptr ))
++            return HEAP_lfh_get_allocated_size( heapPtr, flags, ptr );
++        /* fallthrough */
++    default:
++        return HEAP_std_get_allocated_size( heapPtr, flags, ptr );
++    }
+ }
+ 
+ SIZE_T HEAP_std_get_allocated_size( HEAP *heapPtr, ULONG flags, const void *ptr )
+@@ -2095,7 +2133,17 @@ BOOLEAN WINAPI RtlValidateHeap( HANDLE heap, ULONG flags, LPCVOID ptr )
+     flags &= HEAP_NO_SERIALIZE;
+     flags |= heapPtr->flags;
+ 
+-    return HEAP_std_validate( heapPtr, flags, ptr );
++    switch (heapPtr->extended_type)
++    {
++    case HEAP_LFH:
++        if (!HEAP_lfh_validate( heapPtr, flags, ptr ))
++            return FALSE;
++        /* only fallback to std heap if pointer is NULL or didn't validate */
++        if (ptr) return TRUE;
++        /* fallthrough */
++    default:
++        return HEAP_std_validate( heapPtr, flags, ptr );
++    }
+ }
+ 
+ BOOLEAN HEAP_std_validate( HEAP *heapPtr, ULONG flags, const void *ptr )
+@@ -2268,6 +2316,13 @@ ULONG WINAPI RtlGetProcessHeaps( ULONG count, HANDLE *heaps )
+ NTSTATUS WINAPI RtlQueryHeapInformation( HANDLE heap, HEAP_INFORMATION_CLASS info_class,
+                                          PVOID info, SIZE_T size_in, PSIZE_T size_out)
+ {
++    HEAP *heapPtr;
++
++    TRACE("%p %d %p %ld\n", heap, info_class, info, size_in);
++
++    if (!(heapPtr = HEAP_GetPtr( heap )))
++        return STATUS_INVALID_PARAMETER;
++
+     switch (info_class)
+     {
+     case HeapCompatibilityInformation:
+@@ -2276,7 +2331,7 @@ NTSTATUS WINAPI RtlQueryHeapInformation( HANDLE heap, HEAP_INFORMATION_CLASS inf
+         if (size_in < sizeof(ULONG))
+             return STATUS_BUFFER_TOO_SMALL;
+ 
+-        *(ULONG *)info = 0; /* standard heap */
++        *(ULONG *)info = heapPtr->extended_type;
+         return STATUS_SUCCESS;
+ 
+     default:
+@@ -2296,4 +2351,5 @@ NTSTATUS WINAPI RtlSetHeapInformation( HANDLE heap, HEAP_INFORMATION_CLASS info_
+ 
+ void HEAP_notify_thread_destroy( BOOLEAN last )
+ {
++    HEAP_lfh_notify_thread_destroy( last );
+ }
+diff --git a/dlls/ntdll/heap_lfh.c b/dlls/ntdll/heap_lfh.c
+new file mode 100644
+index 00000000000..8dc3a391483
+--- /dev/null
++++ b/dlls/ntdll/heap_lfh.c
+@@ -0,0 +1,55 @@
++/*
++ * Wine Low Fragmentation Heap
++ *
++ * Copyright 2020 Remi Bernon for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "ntdll_misc.h"
++
++void *HEAP_lfh_allocate(struct tagHEAP *std_heap, ULONG flags, SIZE_T size)
++{
++    return NULL;
++}
++
++BOOLEAN HEAP_lfh_free(struct tagHEAP *std_heap, ULONG flags, void *ptr)
++{
++    return FALSE;
++}
++
++void *HEAP_lfh_reallocate(struct tagHEAP *std_heap, ULONG flags, void *ptr, SIZE_T size)
++{
++    return NULL;
++}
++
++SIZE_T HEAP_lfh_get_allocated_size(struct tagHEAP *std_heap, ULONG flags, const void *ptr)
++{
++    return ~(SIZE_T)0;
++}
++
++BOOLEAN HEAP_lfh_validate(struct tagHEAP *std_heap, ULONG flags, const void *ptr)
++{
++    if (ptr) return FALSE;
++    else return TRUE;
++}
++
++void HEAP_lfh_notify_thread_destroy(BOOLEAN last)
++{
++}
++
++void HEAP_lfh_set_debug_flags(ULONG flags)
++{
++}
+diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
+index 5dae878e2f8..00a4c75b562 100644
+--- a/dlls/ntdll/ntdll_misc.h
++++ b/dlls/ntdll/ntdll_misc.h
+@@ -115,6 +115,10 @@ extern enum loadorder get_load_order( const WCHAR *app_name, const UNICODE_STRIN
+ static inline TEB64 *NtCurrentTeb64(void) { return (TEB64 *)NtCurrentTeb()->GdiBatchCount; }
+ #endif
+ 
++#define HEAP_STD 0
++#define HEAP_LAL 1
++#define HEAP_LFH 2
++
+ struct tagHEAP;
+ void   *HEAP_std_allocate( struct tagHEAP *heap, ULONG flags, SIZE_T size );
+ BOOLEAN HEAP_std_free( struct tagHEAP *heap, ULONG flags, void *ptr );
+@@ -122,7 +126,15 @@ void   *HEAP_std_reallocate( struct tagHEAP *heap, ULONG flags, void *ptr, SIZE_
+ SIZE_T  HEAP_std_get_allocated_size( struct tagHEAP *heap, ULONG flags, const void *ptr );
+ BOOLEAN HEAP_std_validate( struct tagHEAP *heap, ULONG flags, const void *ptr );
+ 
++void   *HEAP_lfh_allocate( struct tagHEAP *std_heap, ULONG flags, SIZE_T size );
++BOOLEAN HEAP_lfh_free( struct tagHEAP *std_heap, ULONG flags, void *ptr );
++void   *HEAP_lfh_reallocate( struct tagHEAP *std_heap, ULONG flags, void *ptr, SIZE_T size );
++SIZE_T  HEAP_lfh_get_allocated_size( struct tagHEAP *std_heap, ULONG flags, const void *ptr );
++BOOLEAN HEAP_lfh_validate( struct tagHEAP *std_heap, ULONG flags, const void *ptr );
++
+ void HEAP_notify_thread_destroy( BOOLEAN last );
++void HEAP_lfh_notify_thread_destroy( BOOLEAN last );
++void HEAP_lfh_set_debug_flags( ULONG flags );
+ 
+ #define HASH_STRING_ALGORITHM_DEFAULT  0
+ #define HASH_STRING_ALGORITHM_X65599   1
+-- 
+2.29.1
+

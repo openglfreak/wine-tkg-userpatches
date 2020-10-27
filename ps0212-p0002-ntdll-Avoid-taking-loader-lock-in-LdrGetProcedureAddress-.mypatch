@@ -1,0 +1,141 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH 2/4] ntdll: Avoid taking loader lock in LdrGetProcedureAddress().
+Message-Id: <20201030123438.588715-2-pgofman@codeweavers.com>
+Date: Fri, 30 Oct 2020 15:34:36 +0300
+In-Reply-To: <20201030123438.588715-1-pgofman@codeweavers.com>
+References: <20201030123438.588715-1-pgofman@codeweavers.com>
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/kernel32/tests/loader.c | 70 ++++++++++++++++++++++++++++++++++++
+ dlls/ntdll/loader.c          |  4 +--
+ 2 files changed, 72 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/kernel32/tests/loader.c b/dlls/kernel32/tests/loader.c
+index 67fd62ef6aa..5d8991bf0f0 100644
+--- a/dlls/kernel32/tests/loader.c
++++ b/dlls/kernel32/tests/loader.c
+@@ -70,6 +70,7 @@ static NTSTATUS (WINAPI *pLdrLockLoaderLock)(ULONG, ULONG *, ULONG_PTR *);
+ static NTSTATUS (WINAPI *pLdrUnlockLoaderLock)(ULONG, ULONG_PTR);
+ static NTSTATUS (WINAPI *pLdrLoadDll)(LPCWSTR,DWORD,const UNICODE_STRING *,HMODULE*);
+ static NTSTATUS (WINAPI *pLdrUnloadDll)(HMODULE);
++static NTSTATUS (WINAPI *pLdrGetProcedureAddress)(HMODULE, const ANSI_STRING *, ULONG, void **);
+ static void (WINAPI *pRtlInitUnicodeString)(PUNICODE_STRING,LPCWSTR);
+ static void (WINAPI *pRtlAcquirePebLock)(void);
+ static void (WINAPI *pRtlReleasePebLock)(void);
+@@ -3992,6 +3993,73 @@ static void test_LoadPackagedLibrary(void)
+             h, GetLastError());
+ }
+ 
++static HANDLE test_loader_lock_event, test_loader_lock_test_done_event;
++
++static DWORD WINAPI test_loader_lock_thread(void *param)
++{
++    NTSTATUS status;
++    ULONG_PTR magic;
++    DWORD ret;
++
++    status = pLdrLockLoaderLock(0, NULL, &magic);
++    ok(!status, "Got unexpected status %#x.\n", status);
++    pRtlAcquirePebLock();
++    SetEvent(test_loader_lock_event);
++
++    ret = WaitForSingleObject(test_loader_lock_test_done_event, 2000);
++    ok(ret == WAIT_OBJECT_0 || broken(ret == WAIT_TIMEOUT) /* before Win8 */,
++            "Got unexpected ret %#x.\n", ret);
++    pRtlReleasePebLock();
++    status = pLdrUnlockLoaderLock(0, magic);
++    ok(!status, "Got unexpected status %#x.\n", status);
++
++    return 0;
++}
++
++static void test_loader_lock_scope(void)
++{
++    ANSI_STRING name;
++    HMODULE hmodule;
++    ULONG_PTR magic;
++    NTSTATUS status;
++    HANDLE hthread;
++    void *address;
++    ULONG result;
++    DWORD ret;
++
++    if (!pRtlAcquirePebLock || !pLdrLockLoaderLock)
++    {
++        win_skip("RtlAcquirePebLock or LdrLockLoaderLock is not available.\n");
++        return;
++    }
++
++    test_loader_lock_event = CreateEventA(NULL, FALSE, FALSE, NULL);
++    test_loader_lock_test_done_event = CreateEventA(NULL, FALSE, FALSE, NULL);
++
++    hmodule = GetModuleHandleA("ntdll.dll");
++    ok(!!hmodule, "Got NULL hmodule.\n");
++
++    hthread = CreateThread(NULL, 0, test_loader_lock_thread, NULL, 0, NULL);
++    ok(!!hthread, "Thread creation failed.\n");
++
++    ret = WaitForSingleObject(test_loader_lock_event, INFINITE);
++    ok(ret == WAIT_OBJECT_0, "Got unexpected ret %#x.\n", ret);
++
++    result = 0xdeadbeef;
++    status = pLdrLockLoaderLock(2, &result, &magic);
++    ok(!status && result == 2, "Got unexpected status %#x, result %#x,\n", status, result);
++
++    RtlInitAnsiString(&name, "LdrLockLoaderLock");
++    address = (void *)0xdeadbeef;
++    /* Locks up on loader lock before Win7. */
++    status = pLdrGetProcedureAddress(hmodule, &name, 0, &address);
++    ok(!status && address == pLdrLockLoaderLock, "Got unexpected status %#x, address %p.\n", status, address);
++
++    SetEvent(test_loader_lock_test_done_event);
++    ret = WaitForSingleObject(hthread, INFINITE);
++    ok(ret == WAIT_OBJECT_0, "Got unexpected ret %#x.\n", ret);
++}
++
+ START_TEST(loader)
+ {
+     int argc;
+@@ -4016,6 +4084,7 @@ START_TEST(loader)
+     pLdrUnlockLoaderLock = (void *)GetProcAddress(ntdll, "LdrUnlockLoaderLock");
+     pLdrLoadDll = (void *)GetProcAddress(ntdll, "LdrLoadDll");
+     pLdrUnloadDll = (void *)GetProcAddress(ntdll, "LdrUnloadDll");
++    pLdrGetProcedureAddress = (void *)GetProcAddress(ntdll, "LdrGetProcedureAddress");
+     pRtlInitUnicodeString = (void *)GetProcAddress(ntdll, "RtlInitUnicodeString");
+     pRtlAcquirePebLock = (void *)GetProcAddress(ntdll, "RtlAcquirePebLock");
+     pRtlReleasePebLock = (void *)GetProcAddress(ntdll, "RtlReleasePebLock");
+@@ -4068,6 +4137,7 @@ START_TEST(loader)
+     test_dll_file( "kernel32.dll" );
+     test_dll_file( "advapi32.dll" );
+     test_dll_file( "user32.dll" );
++    test_loader_lock_scope();
+     /* loader test must be last, it can corrupt the internal loader state on Windows */
+     test_Loader();
+ }
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 15690524b63..9048885d803 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -1752,7 +1752,7 @@ NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
+     DWORD exp_size;
+     NTSTATUS ret = STATUS_PROCEDURE_NOT_FOUND;
+ 
+-    RtlEnterCriticalSection( &loader_section );
++    lock_ldr_data();
+ 
+     /* check if the module itself is invalid to return the proper error */
+     if (!get_modref( module )) ret = STATUS_DLL_NOT_FOUND;
+@@ -1769,7 +1769,7 @@ NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
+         }
+     }
+ 
+-    RtlLeaveCriticalSection( &loader_section );
++    unlock_ldr_data();
+     return ret;
+ }
+ 
+
+-- 
+2.28.0
+

@@ -1,0 +1,45 @@
+From: Will Mainio <will.mainio@fastmail.com>
+Subject: [PATCH v3 1/2] msvcrt: Fix scanf with dashes in scanset.
+Message-Id: <20201031180733.262099-1-will.mainio@fastmail.com>
+Date: Sat, 31 Oct 2020 19:07:32 +0100
+
+Signed-off-by: Will Mainio <will.mainio@fastmail.com>
+---
+ dlls/msvcrt/scanf.h | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/msvcrt/scanf.h b/dlls/msvcrt/scanf.h
+index 3b4686c1107..44cb0faa87e 100644
+--- a/dlls/msvcrt/scanf.h
++++ b/dlls/msvcrt/scanf.h
+@@ -615,6 +615,7 @@ _FUNCTION_ {
+                     _CHAR_ *sptr = str;
+ 		    RTL_BITMAP bitMask;
+                     ULONG *Mask;
++		    VOID *scansetLastRangeEnd;
+ 		    int invert = 0; /* Set if we are NOT to find the chars */
+ #ifdef SECURE
+                     unsigned size = suppress ? UINT_MAX : va_arg(ap, unsigned);
+@@ -636,15 +637,17 @@ _FUNCTION_ {
+ 			RtlSetBits(&bitMask, ']', 1);
+ 			format++;
+ 		    }
++		    scansetLastRangeEnd = (VOID *)(format - 1);
+                     while(*format && (*format != ']')) {
+ 			/* According to msdn:
+ 			 * "Note that %[a-z] and %[z-a] are interpreted as equivalent to %[abcde...z]." */
+-			if((*format == '-') && (*(format + 1) != ']')) {
++			if((*format == '-') && ((VOID *)(format - 1) > scansetLastRangeEnd) && (*(format + 1) != ']')) {
+ 			    if ((*(format - 1)) < *(format + 1))
+ 				RtlSetBits(&bitMask, *(format - 1) +1 , *(format + 1) - *(format - 1));
+ 			    else
+ 				RtlSetBits(&bitMask, *(format + 1)    , *(format - 1) - *(format + 1));			      
+ 			    format++;
++			    scansetLastRangeEnd = (VOID *)format;
+ 			} else
+ 			    RtlSetBits(&bitMask, *format, 1);
+ 			format++;
+
+-- 
+2.28.0
+

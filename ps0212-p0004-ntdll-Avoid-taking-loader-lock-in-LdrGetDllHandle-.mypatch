@@ -1,0 +1,122 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH 4/4] ntdll: Avoid taking loader lock in LdrGetDllHandle().
+Message-Id: <20201030123438.588715-4-pgofman@codeweavers.com>
+Date: Fri, 30 Oct 2020 15:34:38 +0300
+In-Reply-To: <20201030123438.588715-1-pgofman@codeweavers.com>
+References: <20201030123438.588715-1-pgofman@codeweavers.com>
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/kernel32/tests/loader.c |  5 ++---
+ dlls/ntdll/loader.c          | 23 +++++++++++++++++++----
+ 2 files changed, 21 insertions(+), 7 deletions(-)
+
+diff --git a/dlls/kernel32/tests/loader.c b/dlls/kernel32/tests/loader.c
+index 5d8991bf0f0..8b4be58036d 100644
+--- a/dlls/kernel32/tests/loader.c
++++ b/dlls/kernel32/tests/loader.c
+@@ -4036,9 +4036,6 @@ static void test_loader_lock_scope(void)
+     test_loader_lock_event = CreateEventA(NULL, FALSE, FALSE, NULL);
+     test_loader_lock_test_done_event = CreateEventA(NULL, FALSE, FALSE, NULL);
+ 
+-    hmodule = GetModuleHandleA("ntdll.dll");
+-    ok(!!hmodule, "Got NULL hmodule.\n");
+-
+     hthread = CreateThread(NULL, 0, test_loader_lock_thread, NULL, 0, NULL);
+     ok(!!hthread, "Thread creation failed.\n");
+ 
+@@ -4052,6 +4049,8 @@ static void test_loader_lock_scope(void)
+     RtlInitAnsiString(&name, "LdrLockLoaderLock");
+     address = (void *)0xdeadbeef;
+     /* Locks up on loader lock before Win7. */
++    hmodule = GetModuleHandleA("ntdll.dll");
++    ok(!!hmodule, "Got NULL hmodule.\n");
+     status = pLdrGetProcedureAddress(hmodule, &name, 0, &address);
+     ok(!status && address == pLdrLockLoaderLock, "Got unexpected status %#x, address %p.\n", status, address);
+ 
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 66956c3d373..443cf49e10b 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -2267,12 +2267,17 @@ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm, void
+     NTSTATUS status;
+     HANDLE handle, mapping;
+ 
++    if (loaded_only)
++        lock_ldr_data();
+     if ((*pwm = find_fullname_module( nt_name )))
+     {
+         NtUnmapViewOfSection( NtCurrentProcess(), *module );
+         *module = NULL;
++        /* ldr_data_section to be unlocked by the caller. */
+         return STATUS_SUCCESS;
+     }
++    if (loaded_only)
++        unlock_ldr_data();
+ 
+     attr.Length = sizeof(attr);
+     attr.RootDirectory = 0;
+@@ -2298,6 +2303,8 @@ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm, void
+     if (!NtFsControlFile( handle, 0, NULL, NULL, &io, FSCTL_GET_OBJECT_ID, NULL, 0, &fid, sizeof(fid) ))
+     {
+         memcpy( id, fid.ObjectId, sizeof(*id) );
++        if (loaded_only)
++            lock_ldr_data();
+         if ((*pwm = find_fileid_module( id )))
+         {
+             TRACE( "%s is the same file as existing module %p %s\n", debugstr_w( nt_name->Buffer ),
+@@ -2305,8 +2312,11 @@ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm, void
+             NtClose( handle );
+             NtUnmapViewOfSection( NtCurrentProcess(), *module );
+             *module = NULL;
++            /* ldr_data_section to be unlocked by the caller. */
+             return STATUS_SUCCESS;
+         }
++        if (loaded_only)
++            unlock_ldr_data();
+     }
+ 
+     if (loaded_only)
+@@ -2640,11 +2650,17 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, con
+         else
+         {
+             if (status != STATUS_SXS_KEY_NOT_FOUND) goto done;
++
++            if (loaded_only)
++                lock_ldr_data();
+             if ((*pwm = find_basename_module( libname )) != NULL)
+             {
+                 status = STATUS_SUCCESS;
++                /* ldr_data_section to be unlocked by the caller. */
+                 goto done;
+             }
++            if (loaded_only)
++                unlock_ldr_data();
+         }
+     }
+ 
+@@ -2866,17 +2882,16 @@ NTSTATUS WINAPI LdrGetDllHandle( LPCWSTR load_path, ULONG flags, const UNICODE_S
+     SECTION_IMAGE_INFORMATION image_info;
+     struct file_id id;
+ 
+-    RtlEnterCriticalSection( &loader_section );
+-
+     if (!load_path) load_path = NtCurrentTeb()->Peb->ProcessParameters->DllPath.Buffer;
+ 
+     if (!(status = find_dll_file( load_path, name->Buffer, dllW,
+             &nt_name, &wm, &module, &image_info, &id, TRUE )))
++    {
+         *base = wm->ldr.DllBase;
+-
++        unlock_ldr_data();
++    }
+     RtlFreeUnicodeString( &nt_name );
+ 
+-    RtlLeaveCriticalSection( &loader_section );
+     TRACE( "%s -> %p (load path %s)\n", debugstr_us(name), status ? NULL : *base, debugstr_w(load_path) );
+     return status;
+ }
+
+-- 
+2.28.0
+

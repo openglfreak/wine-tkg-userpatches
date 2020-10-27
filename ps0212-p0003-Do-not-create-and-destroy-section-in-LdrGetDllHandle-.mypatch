@@ -1,0 +1,121 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH 3/4] Do not create and destroy section in LdrGetDllHandle().
+Message-Id: <20201030123438.588715-3-pgofman@codeweavers.com>
+Date: Fri, 30 Oct 2020 15:34:37 +0300
+In-Reply-To: <20201030123438.588715-1-pgofman@codeweavers.com>
+References: <20201030123438.588715-1-pgofman@codeweavers.com>
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/ntdll/loader.c | 36 +++++++++++++++++++++---------------
+ 1 file changed, 21 insertions(+), 15 deletions(-)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 9048885d803..66956c3d373 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -2255,7 +2255,8 @@ static NTSTATUS get_dll_load_path_search_flags( LPCWSTR module, DWORD flags, WCH
+  * Open a file for a new dll. Helper for find_dll_file.
+  */
+ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm, void **module,
+-                               SECTION_IMAGE_INFORMATION *image_info, struct file_id *id )
++                               SECTION_IMAGE_INFORMATION *image_info, struct file_id *id,
++                               BOOL loaded_only )
+ {
+     FILE_BASIC_INFORMATION info;
+     OBJECT_ATTRIBUTES attr;
+@@ -2308,6 +2309,14 @@ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm, void
+         }
+     }
+ 
++    if (loaded_only)
++    {
++        NtClose( handle );
++        NtUnmapViewOfSection( NtCurrentProcess(), *module );
++        *module = NULL;
++        return STATUS_DLL_NOT_FOUND;
++    }
++
+     size.QuadPart = 0;
+     status = NtCreateSection( &mapping, STANDARD_RIGHTS_REQUIRED | SECTION_QUERY |
+                               SECTION_MAP_READ | SECTION_MAP_EXECUTE,
+@@ -2532,7 +2541,7 @@ done:
+  */
+ static NTSTATUS search_dll_file( LPCWSTR paths, LPCWSTR search, UNICODE_STRING *nt_name,
+                                  WINE_MODREF **pwm, void **module, SECTION_IMAGE_INFORMATION *image_info,
+-                                 struct file_id *id )
++                                 struct file_id *id, BOOL loaded_only )
+ {
+     WCHAR *name;
+     BOOL found_image = FALSE;
+@@ -2559,7 +2568,7 @@ static NTSTATUS search_dll_file( LPCWSTR paths, LPCWSTR search, UNICODE_STRING *
+         nt_name->Buffer = NULL;
+         if ((status = RtlDosPathNameToNtPathName_U_WithStatus( name, nt_name, NULL, NULL ))) goto done;
+ 
+-        status = open_dll_file( nt_name, pwm, module, image_info, id );
++        status = open_dll_file( nt_name, pwm, module, image_info, id, loaded_only );
+         if (status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH) found_image = TRUE;
+         else if (status != STATUS_DLL_NOT_FOUND) goto done;
+         RtlFreeUnicodeString( nt_name );
+@@ -2588,7 +2597,8 @@ done:
+  */
+ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, const WCHAR *default_ext,
+                                UNICODE_STRING *nt_name, WINE_MODREF **pwm, void **module,
+-                               SECTION_IMAGE_INFORMATION *image_info, struct file_id *id )
++                               SECTION_IMAGE_INFORMATION *image_info, struct file_id *id,
++                               BOOL loaded_only )
+ {
+     WCHAR *ext, *dllname;
+     NTSTATUS status;
+@@ -2639,9 +2649,9 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, con
+     }
+ 
+     if (RtlDetermineDosPathNameType_U( libname ) == RELATIVE_PATH)
+-        status = search_dll_file( load_path, libname, nt_name, pwm, module, image_info, id );
++        status = search_dll_file( load_path, libname, nt_name, pwm, module, image_info, id, loaded_only );
+     else if (!(status = RtlDosPathNameToNtPathName_U_WithStatus( libname, nt_name, NULL, NULL )))
+-        status = open_dll_file( nt_name, pwm, module, image_info, id );
++        status = open_dll_file( nt_name, pwm, module, image_info, id, loaded_only );
+ 
+     if (status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH) status = STATUS_INVALID_IMAGE_FORMAT;
+ 
+@@ -2671,7 +2681,7 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, const WC
+ 
+     TRACE( "looking for %s in %s\n", debugstr_w(libname), debugstr_w(load_path) );
+ 
+-    nts = find_dll_file( load_path, libname, default_ext, &nt_name, pwm, &module, &image_info, &id );
++    nts = find_dll_file( load_path, libname, default_ext, &nt_name, pwm, &module, &image_info, &id, FALSE );
+ 
+     if (*pwm)  /* found already loaded module */
+     {
+@@ -2749,7 +2759,7 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, const WC
+                     LdrUnloadDll( (*pwm)->ldr.DllBase );
+                     nts = STATUS_DLL_NOT_FOUND;
+                     /* map the dll again if it was unmapped */
+-                    if (!module && open_dll_file( &nt_name, pwm, &module, &image_info, &id )) break;
++                    if (!module && open_dll_file( &nt_name, pwm, &module, &image_info, &id, FALSE )) break;
+                 }
+                 if (nts == STATUS_DLL_NOT_FOUND)
+                     nts = load_native_dll( load_path, &nt_name, &module, &image_info, &id, flags, pwm );
+@@ -2860,14 +2870,10 @@ NTSTATUS WINAPI LdrGetDllHandle( LPCWSTR load_path, ULONG flags, const UNICODE_S
+ 
+     if (!load_path) load_path = NtCurrentTeb()->Peb->ProcessParameters->DllPath.Buffer;
+ 
+-    status = find_dll_file( load_path, name->Buffer, dllW, &nt_name, &wm, &module, &image_info, &id );
++    if (!(status = find_dll_file( load_path, name->Buffer, dllW,
++            &nt_name, &wm, &module, &image_info, &id, TRUE )))
++        *base = wm->ldr.DllBase;
+ 
+-    if (wm) *base = wm->ldr.DllBase;
+-    else
+-    {
+-        if (status == STATUS_SUCCESS) NtUnmapViewOfSection( NtCurrentProcess(), module );
+-        status = STATUS_DLL_NOT_FOUND;
+-    }
+     RtlFreeUnicodeString( &nt_name );
+ 
+     RtlLeaveCriticalSection( &loader_section );
+
+-- 
+2.28.0
+

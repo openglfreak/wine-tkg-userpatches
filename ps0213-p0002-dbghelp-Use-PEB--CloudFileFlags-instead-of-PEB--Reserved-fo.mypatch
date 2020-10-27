@@ -1,0 +1,52 @@
+From: Brendan Shanks <bshanks@codeweavers.com>
+Subject: [PATCH v2 2/3] dbghelp: Use PEB->CloudFileFlags instead of PEB->Reserved for debug base address.
+Message-Id: <20201030151716.22959-2-bshanks@codeweavers.com>
+Date: Fri, 30 Oct 2020 08:17:15 -0700
+In-Reply-To: <20201030151716.22959-1-bshanks@codeweavers.com>
+References: <20201030151716.22959-1-bshanks@codeweavers.com>
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=50077
+Signed-off-by: Brendan Shanks <bshanks@codeweavers.com>
+---
+ dlls/dbghelp/dbghelp.c    | 4 ++--
+ dlls/ntdll/unix/virtual.c | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/dbghelp/dbghelp.c b/dlls/dbghelp/dbghelp.c
+index 9d33bc67f2b..e38687412eb 100644
+--- a/dlls/dbghelp/dbghelp.c
++++ b/dlls/dbghelp/dbghelp.c
+@@ -304,14 +304,14 @@ static BOOL check_live_target(struct process* pcs)
+         PEB32 peb32;
+         C_ASSERT(sizeof(void*) != 4 || FIELD_OFFSET(RTL_USER_PROCESS_PARAMETERS, Environment) == 0x48);
+         if (!ReadProcessMemory(pcs->handle, pbi.PebBaseAddress, &peb32, sizeof(peb32), NULL)) return FALSE;
+-        base = peb32.Reserved[0];
++        if (!ReadProcessMemory(pcs->handle, (char *)pbi.PebBaseAddress + 0x460 /* CloudFileFlags */, &base, sizeof(base), NULL)) return FALSE;
+         if (read_process_memory(pcs, peb32.ProcessParameters + 0x48, &env32, sizeof(env32))) env = env32;
+     }
+     else
+     {
+         PEB peb;
+         if (!ReadProcessMemory(pcs->handle, pbi.PebBaseAddress, &peb, sizeof(peb), NULL)) return FALSE;
+-        base = peb.Reserved[0];
++        if (!ReadProcessMemory(pcs->handle, &peb.CloudFileFlags, &base, sizeof(base), NULL)) return FALSE;
+         ReadProcessMemory(pcs->handle, &peb.ProcessParameters->Environment, &env, sizeof(env), NULL);
+     }
+ 
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 614159b7d90..853eb0469b9 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -2591,7 +2591,7 @@ TEB *virtual_alloc_first_teb(void)
+     NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&ptr, 0, &block_size, MEM_COMMIT, PAGE_READWRITE );
+     NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&peb, 0, &peb_size, MEM_COMMIT, PAGE_READWRITE );
+     init_teb( teb, peb );
+-    *(ULONG_PTR *)peb->Reserved = get_image_address();
++    *(ULONG_PTR *)&peb->CloudFileFlags = get_image_address();
+     return teb;
+ }
+ 
+
+-- 
+2.26.2
+

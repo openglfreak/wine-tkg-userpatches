@@ -1,0 +1,67 @@
+From: Michael Stefaniuc <mstefani@winehq.org>
+Subject: [PATCH] shdocvw: There's no need to load ieframe.dll again, it's delayimported
+Message-Id: <20201027192122.98740-1-mstefani@winehq.org>
+Date: Tue, 27 Oct 2020 20:21:22 +0100
+
+Signed-off-by: Michael Stefaniuc <mstefani@winehq.org>
+---
+ dlls/shdocvw/shdocvw_main.c | 22 ++--------------------
+ 1 file changed, 2 insertions(+), 20 deletions(-)
+
+diff --git a/dlls/shdocvw/shdocvw_main.c b/dlls/shdocvw/shdocvw_main.c
+index ac3913dd239..e8487f8b747 100644
+--- a/dlls/shdocvw/shdocvw_main.c
++++ b/dlls/shdocvw/shdocvw_main.c
+@@ -39,30 +39,13 @@ WINE_DEFAULT_DEBUG_CHANNEL(shdocvw);
+ LONG SHDOCVW_refCount = 0;
+ 
+ static HMODULE SHDOCVW_hshell32 = 0;
+-static HINSTANCE ieframe_instance;
+-
+-static HINSTANCE get_ieframe_instance(void)
+-{
+-    static const WCHAR ieframe_dllW[] = {'i','e','f','r','a','m','e','.','d','l','l',0};
+-
+-    if(!ieframe_instance)
+-        ieframe_instance = LoadLibraryW(ieframe_dllW);
+-
+-    return ieframe_instance;
+-}
+ 
+ static HRESULT get_ieframe_object(REFCLSID rclsid, REFIID riid, void **ppv)
+ {
+-    HINSTANCE ieframe_instance;
+-
+     static HRESULT (WINAPI *ieframe_DllGetClassObject)(REFCLSID,REFIID,void**);
+ 
+     if(!ieframe_DllGetClassObject) {
+-        ieframe_instance = get_ieframe_instance();
+-        if(!ieframe_instance)
+-            return CLASS_E_CLASSNOTAVAILABLE;
+-
+-        ieframe_DllGetClassObject = (void*)GetProcAddress(ieframe_instance, "DllGetClassObject");
++        ieframe_DllGetClassObject = (void*)GetProcAddress(GetModuleHandleW(L"ieframe.dll"), "DllGetClassObject");
+         if(!ieframe_DllGetClassObject)
+             return CLASS_E_CLASSNOTAVAILABLE;
+     }
+@@ -119,7 +102,7 @@ DWORD WINAPI IEWinMain(LPSTR szCommandLine, int nShowWindow)
+ 
+     TRACE("%s %d\n", debugstr_a(szCommandLine), nShowWindow);
+ 
+-    pIEWinMain = (void*)GetProcAddress(get_ieframe_instance(), MAKEINTRESOURCEA(101));
++    pIEWinMain = (void*)GetProcAddress(GetModuleHandleW(L"ieframe.dll"), MAKEINTRESOURCEA(101));
+     if(!pIEWinMain)
+         ExitProcess(1);
+ 
+@@ -149,7 +132,6 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID fImpLoad)
+     case DLL_PROCESS_DETACH:
+         if (fImpLoad) break;
+         if (SHDOCVW_hshell32) FreeLibrary(SHDOCVW_hshell32);
+-        if (ieframe_instance) FreeLibrary(ieframe_instance);
+         break;
+     }
+     return TRUE;
+
+-- 
+2.26.2
+

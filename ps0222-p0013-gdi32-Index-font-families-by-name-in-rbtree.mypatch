@@ -1,0 +1,305 @@
+From 022723ffe38cbb3b17bc68089da080175153102a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 6 Nov 2020 20:21:09 +0100
+Subject: [PATCH 13/24] gdi32: Index font families by name in rbtree.
+
+And keep them sorted with the vertical / default family rules.
+---
+ dlls/gdi32/font.c | 140 ++++++++++++++++++++++++----------------------
+ 1 file changed, 72 insertions(+), 68 deletions(-)
+
+diff --git a/dlls/gdi32/font.c b/dlls/gdi32/font.c
+index 1cf3e979b5d..20840040c15 100644
+--- a/dlls/gdi32/font.c
++++ b/dlls/gdi32/font.c
+@@ -56,7 +56,8 @@ static inline struct font_physdev *get_font_dev( PHYSDEV dev )
+ 
+ struct gdi_font_family
+ {
+-    struct list             entry;
++    struct wine_rb_entry    entry;
++    struct wine_rb_entry    entry_second;
+     unsigned int            refcount;
+     WCHAR                   family_name[LF_FACESIZE];
+     WCHAR                   second_name[LF_FACESIZE];
+@@ -262,6 +263,9 @@ static const WCHAR * const default_sans_list[3] =
+     L"Liberation Sans",
+     L"Bitstream Vera Sans"
+ };
++static WCHAR ff_roman_default[LF_FACESIZE];
++static WCHAR ff_modern_default[LF_FACESIZE];
++static WCHAR ff_swiss_default[LF_FACESIZE];
+ 
+ static const struct nls_update_font_list
+ {
+@@ -541,7 +545,43 @@ static void load_gdi_font_subst(void)
+ 
+ /* font families */
+ 
+-static struct list font_list = LIST_INIT(font_list);
++static int family_namecmp( const WCHAR *name_a, const WCHAR *name_b )
++{
++    const WCHAR *tmp_a = name_a, *tmp_b = name_b;
++    int res, priority_a, priority_b;
++
++    if (!facename_compare( name_a, ff_swiss_default, LF_FACESIZE - 1 )) priority_a = 3;
++    else if (!facename_compare( name_a, ff_modern_default, LF_FACESIZE - 1 )) priority_a = 2;
++    else if (!facename_compare( name_a, ff_roman_default, LF_FACESIZE - 1 )) priority_a = 1;
++    else priority_a = 0;
++
++    if (!facename_compare( name_b, ff_swiss_default, LF_FACESIZE - 1 )) priority_b = 3;
++    else if (!facename_compare( name_b, ff_modern_default, LF_FACESIZE - 1 )) priority_b = 2;
++    else if (!facename_compare( name_b, ff_roman_default, LF_FACESIZE - 1 )) priority_b = 1;
++    else priority_b = 0;
++
++    if (priority_a != priority_b) return priority_b - priority_a;
++
++    if ((name_a[0] == '@')) tmp_a++;
++    if ((name_b[0] == '@')) tmp_b++;
++    if ((res = facename_compare( tmp_a, tmp_b, LF_FACESIZE - 1 ))) return res;
++    return (name_a[0] == '@') - (name_b[0] == '@');
++}
++
++static int family_name_compare( const void *key, const struct wine_rb_entry *entry )
++{
++    const struct gdi_font_family *family = WINE_RB_ENTRY_VALUE( entry, const struct gdi_font_family, entry );
++    return family_namecmp( (const WCHAR *)key, family->family_name );
++}
++
++static int family_second_name_compare( const void *key, const struct wine_rb_entry *entry )
++{
++    const struct gdi_font_family *family = WINE_RB_ENTRY_VALUE( entry, const struct gdi_font_family, entry_second );
++    return family_namecmp( (const WCHAR *)key, family->second_name );
++}
++
++static struct wine_rb_tree family_tree = { family_name_compare };
++static struct wine_rb_tree family_second_tree = { family_second_name_compare };
+ 
+ static struct gdi_font_family *create_family( const WCHAR *name, const WCHAR *second_name )
+ {
+@@ -557,7 +597,8 @@ static struct gdi_font_family *create_family( const WCHAR *name, const WCHAR *se
+     else family->second_name[0] = 0;
+     list_init( &family->faces );
+     family->replacement = NULL;
+-    list_add_tail( &font_list, &family->entry );
++    wine_rb_put( &family_tree, family->family_name, &family->entry );
++    if (family->second_name[0]) wine_rb_put( &family_second_tree, family->second_name, &family->entry_second );
+     return family;
+ }
+ 
+@@ -565,30 +606,26 @@ static void release_family( struct gdi_font_family *family )
+ {
+     if (--family->refcount) return;
+     assert( list_empty( &family->faces ));
+-    list_remove( &family->entry );
++    wine_rb_remove( &family_tree, &family->entry );
++    if (family->second_name[0]) wine_rb_remove( &family_second_tree, &family->entry_second );
+     if (family->replacement) release_family( family->replacement );
+     HeapFree( GetProcessHeap(), 0, family );
+ }
+ 
+ static struct gdi_font_family *find_family_from_name( const WCHAR *name )
+ {
+-    struct gdi_font_family *family;
+-
+-    LIST_FOR_EACH_ENTRY( family, &font_list, struct gdi_font_family, entry )
+-        if (!facename_compare( family->family_name, name, LF_FACESIZE - 1 )) return family;
+-    return NULL;
++    struct wine_rb_entry *entry;
++    if (!(entry = wine_rb_get( &family_tree, name ))) return NULL;
++    return WINE_RB_ENTRY_VALUE( entry, struct gdi_font_family, entry );
+ }
+ 
+ static struct gdi_font_family *find_family_from_any_name( const WCHAR *name )
+ {
++    struct wine_rb_entry *entry;
+     struct gdi_font_family *family;
+-
+-    LIST_FOR_EACH_ENTRY( family, &font_list, struct gdi_font_family, entry )
+-    {
+-        if (!facename_compare( family->family_name, name, LF_FACESIZE - 1 )) return family;
+-        if (!facename_compare( family->second_name, name, LF_FACESIZE - 1 )) return family;
+-    }
+-    return NULL;
++    if ((family = find_family_from_name( name ))) return family;
++    if (!(entry = wine_rb_get( &family_second_tree, name ))) return NULL;
++    return WINE_RB_ENTRY_VALUE( entry, struct gdi_font_family, entry_second );
+ }
+ 
+ static const struct list *get_family_face_list( const struct gdi_font_family *family )
+@@ -604,7 +641,7 @@ static struct gdi_font_face *find_face_from_filename( const WCHAR *file_name, co
+ 
+     TRACE( "looking for file %s name %s\n", debugstr_w(file_name), debugstr_w(family_name) );
+ 
+-    LIST_FOR_EACH_ENTRY( family, &font_list, struct gdi_font_family, entry )
++    WINE_RB_FOR_EACH_ENTRY( family, &family_tree, struct gdi_font_family, entry )
+     {
+         if (family_name && facename_compare( family_name, family->family_name, LF_FACESIZE - 1 )) continue;
+         LIST_FOR_EACH_ENTRY( face, get_family_face_list(family), struct gdi_font_face, entry )
+@@ -706,7 +743,7 @@ static void dump_gdi_font_list(void)
+     struct gdi_font_family *family;
+     struct gdi_font_face *face;
+ 
+-    LIST_FOR_EACH_ENTRY( family, &font_list, struct gdi_font_family, entry )
++    WINE_RB_FOR_EACH_ENTRY( family, &family_tree, struct gdi_font_family, entry )
+     {
+         TRACE( "Family: %s\n", debugstr_w(family->family_name) );
+         LIST_FOR_EACH_ENTRY( face, &family->faces, struct gdi_font_face, entry )
+@@ -737,26 +774,27 @@ static BOOL enum_fallbacks( DWORD pitch_and_family, int index, WCHAR buffer[LF_F
+     return font_funcs->enum_family_fallbacks( pitch_and_family, index - 3, buffer );
+ }
+ 
+-static void set_default_family( DWORD pitch_and_family )
++static void set_default_family( DWORD pitch_and_family, WCHAR *default_name )
+ {
+-    struct gdi_font_family *family;
++    struct wine_rb_entry *entry;
+     WCHAR name[LF_FACESIZE];
+     int i = 0;
+ 
+     while (enum_fallbacks( pitch_and_family, i++, name ))
+     {
+-        if (!(family = find_family_from_name( name ))) continue;
+-        list_remove( &family->entry );
+-        list_add_head( &font_list, &family->entry );
++        if (!(entry = wine_rb_get( &family_tree, name ))) continue;
++        wine_rb_remove( &family_tree, entry );
++        lstrcpynW( default_name, name, LF_FACESIZE - 1 );
++        wine_rb_put( &family_tree, name, entry );
+         return;
+     }
+ }
+ 
+ static void reorder_font_list(void)
+ {
+-    set_default_family( FF_ROMAN );
+-    set_default_family( FF_MODERN );
+-    set_default_family( FF_SWISS );
++    set_default_family( FF_ROMAN, ff_roman_default );
++    set_default_family( FF_MODERN, ff_modern_default );
++    set_default_family( FF_SWISS, ff_swiss_default );
+ }
+ 
+ static void release_face( struct gdi_font_face *face )
+@@ -782,7 +820,7 @@ static int remove_font( const WCHAR *file, DWORD flags )
+     int count = 0;
+ 
+     EnterCriticalSection( &font_cs );
+-    LIST_FOR_EACH_ENTRY_SAFE( family, family_next, &font_list, struct gdi_font_family, entry )
++    WINE_RB_FOR_EACH_ENTRY_DESTRUCTOR( family, family_next, &family_tree, struct gdi_font_family, entry )
+     {
+         family->refcount++;
+         LIST_FOR_EACH_ENTRY_SAFE( face, face_next, &family->faces, struct gdi_font_face, entry )
+@@ -1029,38 +1067,6 @@ static void load_face_from_cache( HKEY hkey_family, struct gdi_font_family *fami
+     }
+ }
+ 
+-/* move vertical fonts after their horizontal counterpart */
+-/* assumes that font_list is already sorted by family name */
+-static void reorder_vertical_fonts(void)
+-{
+-    struct gdi_font_family *family, *next, *vert_family;
+-    struct list *ptr, *vptr;
+-    struct list vertical_families = LIST_INIT( vertical_families );
+-
+-    LIST_FOR_EACH_ENTRY_SAFE( family, next, &font_list, struct gdi_font_family, entry )
+-    {
+-        if (family->family_name[0] != '@') continue;
+-        list_remove( &family->entry );
+-        list_add_tail( &vertical_families, &family->entry );
+-    }
+-
+-    ptr = list_head( &font_list );
+-    vptr = list_head( &vertical_families );
+-    while (ptr && vptr)
+-    {
+-        family = LIST_ENTRY( ptr, struct gdi_font_family, entry );
+-        vert_family = LIST_ENTRY( vptr, struct gdi_font_family, entry );
+-        if (facename_compare( family->family_name, vert_family->family_name + 1, -1 ) > 0)
+-        {
+-            list_remove( vptr );
+-            list_add_before( ptr, vptr );
+-            vptr = list_head( &vertical_families );
+-        }
+-        else ptr = list_next( &font_list, ptr );
+-    }
+-    list_move_tail( &font_list, &vertical_families );
+-}
+-
+ static void load_font_list_from_cache(void)
+ {
+     DWORD size, family_index = 0;
+@@ -1085,8 +1091,6 @@ static void load_font_list_from_cache(void)
+         release_family( family );
+         size = sizeof(buffer);
+     }
+-
+-    reorder_vertical_fonts();
+ }
+ 
+ static void add_face_to_cache( struct gdi_font_face *face )
+@@ -1476,7 +1480,7 @@ static struct gdi_font_face *find_matching_face_by_name( const WCHAR *name, cons
+     }
+ 
+     /* search by full face name */
+-    LIST_FOR_EACH_ENTRY( family, &font_list, struct gdi_font_family, entry )
++    WINE_RB_FOR_EACH_ENTRY( family, &family_tree, struct gdi_font_family, entry )
+         LIST_FOR_EACH_ENTRY( face, get_family_face_list(family), struct gdi_font_face, entry )
+             if (!facename_compare( face->full_name, name, LF_FACESIZE - 1 ) &&
+                 can_select_face( face, fs, can_use_bitmap ))
+@@ -1500,7 +1504,7 @@ static struct gdi_font_face *find_any_face( const LOGFONTW *lf, FONTSIGNATURE fs
+     /* first try the family fallbacks */
+     while (enum_fallbacks( lf->lfPitchAndFamily, i++, name ))
+     {
+-        LIST_FOR_EACH_ENTRY( family, &font_list, struct gdi_font_family, entry )
++        WINE_RB_FOR_EACH_ENTRY( family, &family_tree, struct gdi_font_family, entry )
+         {
+             if ((family->family_name[0] == '@') == !want_vertical) continue;
+             if (facename_compare( family->family_name + want_vertical, name, -1 ) &&
+@@ -1509,14 +1513,14 @@ static struct gdi_font_face *find_any_face( const LOGFONTW *lf, FONTSIGNATURE fs
+         }
+     }
+     /* otherwise try only scalable */
+-    LIST_FOR_EACH_ENTRY( family, &font_list, struct gdi_font_family, entry )
++    WINE_RB_FOR_EACH_ENTRY( family, &family_tree, struct gdi_font_family, entry )
+     {
+         if ((family->family_name[0] == '@') == !want_vertical) continue;
+         if ((face = find_best_matching_face( family, lf, fs, FALSE ))) return face;
+     }
+     if (!can_use_bitmap) return NULL;
+     /* then also bitmap fonts */
+-    LIST_FOR_EACH_ENTRY( family, &font_list, struct gdi_font_family, entry )
++    WINE_RB_FOR_EACH_ENTRY( family, &family_tree, struct gdi_font_family, entry )
+     {
+         if ((family->family_name[0] == '@') == !want_vertical) continue;
+         if ((face = find_best_matching_face( family, lf, fs, can_use_bitmap ))) return face;
+@@ -2799,7 +2803,7 @@ static BOOL CDECL font_EnumFonts( PHYSDEV dev, LOGFONTW *lf, FONTENUMPROCW proc,
+         }
+         else face_name = lf->lfFaceName;
+ 
+-        LIST_FOR_EACH_ENTRY( family, &font_list, struct gdi_font_family, entry )
++        WINE_RB_FOR_EACH_ENTRY( family, &family_tree, struct gdi_font_family, entry )
+         {
+             if (!family_matches(family, face_name)) continue;
+             LIST_FOR_EACH_ENTRY( face, get_family_face_list(family), struct gdi_font_face, entry )
+@@ -2813,7 +2817,7 @@ static BOOL CDECL font_EnumFonts( PHYSDEV dev, LOGFONTW *lf, FONTENUMPROCW proc,
+     else
+     {
+         TRACE( "charset %d\n", charset );
+-        LIST_FOR_EACH_ENTRY( family, &font_list, struct gdi_font_family, entry )
++        WINE_RB_FOR_EACH_ENTRY( family, &family_tree, struct gdi_font_family, entry )
+         {
+             face = LIST_ENTRY( list_head(get_family_face_list(family)), struct gdi_font_face, entry );
+             if (!enum_face_charsets( family, face, enum_charsets, count, proc, lparam, NULL ))
+@@ -7826,7 +7830,7 @@ static void update_external_font_keys( HKEY hkey )
+ 
+     /* enumerate the fonts and add external ones to the two keys */
+ 
+-    LIST_FOR_EACH_ENTRY( family, &font_list, struct gdi_font_family, entry )
++    WINE_RB_FOR_EACH_ENTRY( family, &family_tree, struct gdi_font_family, entry )
+     {
+         LIST_FOR_EACH_ENTRY( face, &family->faces, struct gdi_font_face, entry )
+         {
+-- 
+2.29.2
+

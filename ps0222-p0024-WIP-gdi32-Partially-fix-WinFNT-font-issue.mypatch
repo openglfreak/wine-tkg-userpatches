@@ -1,0 +1,121 @@
+From 821a2cab7c7ceaaa4595c4ce34211c158abfbf72 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 6 Nov 2020 19:53:50 +0100
+Subject: [PATCH 24/24] WIP: gdi32: Partially fix WinFNT font issue.
+
+---
+ dlls/gdi32/font.c       | 24 ++++++++++++++----------
+ dlls/gdi32/opentype.c   | 28 ++++++++++++++--------------
+ dlls/gdi32/tests/font.c |  2 +-
+ 3 files changed, 29 insertions(+), 25 deletions(-)
+
+diff --git a/dlls/gdi32/font.c b/dlls/gdi32/font.c
+index 07956050102..c5270b96c81 100644
+--- a/dlls/gdi32/font.c
++++ b/dlls/gdi32/font.c
+@@ -876,14 +876,6 @@ static int remove_font( const WCHAR *file, DWORD flags )
+     return count;
+ }
+ 
+-static inline BOOL faces_equal( const struct gdi_font_face *f1, const struct gdi_font_face *f2 )
+-{
+-    if (facename_compare( f1->full_name, f2->full_name, -1 )) return FALSE;
+-    if (f1->scalable) return TRUE;
+-    if (f1->size.y_ppem != f2->size.y_ppem) return FALSE;
+-    return !memcmp( &f1->fs, &f2->fs, sizeof(f1->fs) );
+-}
+-
+ static inline int style_order( const struct gdi_font_face *face )
+ {
+     switch (face->ntmFlags & (NTM_REGULAR | NTM_BOLD | NTM_ITALIC))
+@@ -903,13 +895,25 @@ static inline int style_order( const struct gdi_font_face *face )
+     }
+ }
+ 
++static inline int gdi_font_face_compare( const struct gdi_font_face *f1, const struct gdi_font_face *f2 )
++{
++    int ret;
++    if ((ret = style_order(f1) - style_order(f2))) return ret;
++    if ((ret = facename_compare( f1->full_name, f2->full_name, -1 ))) return ret;
++    if (f1->scalable && f2->scalable) return 0;
++    if ((ret = (f1->fs.fsCsb[0] - f2->fs.fsCsb[0]))) return ret;
++    if ((ret = (f1->size.y_ppem - f2->size.y_ppem))) return ret;
++    return memcmp( &f1->fs, &f2->fs, sizeof(f1->fs) );
++}
++
+ static BOOL insert_face_in_family_list( struct gdi_font_face *face, struct gdi_font_family *family )
+ {
++    int ret;
+     struct gdi_font_face *cursor;
+ 
+     LIST_FOR_EACH_ENTRY( cursor, &family->faces, struct gdi_font_face, entry )
+     {
+-        if (faces_equal( face, cursor ))
++        if (!(ret = gdi_font_face_compare( face, cursor )))
+         {
+             TRACE( "Already loaded face %s in family %s, original version %x, new version %x\n",
+                    debugstr_w(face->full_name), debugstr_w(family->family_name),
+@@ -945,7 +949,7 @@ static BOOL insert_face_in_family_list( struct gdi_font_face *face, struct gdi_f
+                 return TRUE;
+             }
+         }
+-        if (style_order( face ) < style_order( cursor )) break;
++        else if (ret < 0) break;
+     }
+ 
+     TRACE( "Adding face %s in family %s from %s\n", debugstr_w(face->full_name),
+diff --git a/dlls/gdi32/opentype.c b/dlls/gdi32/opentype.c
+index 5af9145f138..b15ee76e844 100644
+--- a/dlls/gdi32/opentype.c
++++ b/dlls/gdi32/opentype.c
+@@ -903,20 +903,20 @@ BOOL winfnt_parse_font_face( const void *data, size_t size, DWORD index, DWORD *
+         switch (fnt_header->fi.dfCharSet)
+         {
+             case ANSI_CHARSET:        fs->fsCsb[0] = FS_LATIN1; break;
+-            case EASTEUROPE_CHARSET:  fs->fsCsb[0] = FS_LATIN2; break;
+-            case RUSSIAN_CHARSET:     fs->fsCsb[0] = FS_CYRILLIC; break;
+-            case GREEK_CHARSET:       fs->fsCsb[0] = FS_GREEK; break;
+-            case TURKISH_CHARSET:     fs->fsCsb[0] = FS_TURKISH; break;
+-            case HEBREW_CHARSET:      fs->fsCsb[0] = FS_HEBREW; break;
+-            case ARABIC_CHARSET:      fs->fsCsb[0] = FS_ARABIC; break;
+-            case BALTIC_CHARSET:      fs->fsCsb[0] = FS_BALTIC; break;
+-            case VIETNAMESE_CHARSET:  fs->fsCsb[0] = FS_VIETNAMESE; break;
+-            case THAI_CHARSET:        fs->fsCsb[0] = FS_THAI; break;
+-            case SHIFTJIS_CHARSET:    fs->fsCsb[0] = FS_JISJAPAN; break;
+-            case GB2312_CHARSET:      fs->fsCsb[0] = FS_CHINESESIMP; break;
+-            case HANGEUL_CHARSET:     fs->fsCsb[0] = FS_WANSUNG; break;
+-            case CHINESEBIG5_CHARSET: fs->fsCsb[0] = FS_CHINESETRAD; break;
+-            case JOHAB_CHARSET:       fs->fsCsb[0] = FS_JOHAB; break;
++            case EASTEUROPE_CHARSET:  fs->fsCsb[0] = FS_LATIN2; return FALSE;
++            case RUSSIAN_CHARSET:     fs->fsCsb[0] = FS_CYRILLIC; return FALSE;
++            case GREEK_CHARSET:       fs->fsCsb[0] = FS_GREEK; return FALSE;
++            case TURKISH_CHARSET:     fs->fsCsb[0] = FS_TURKISH; return FALSE;
++            case HEBREW_CHARSET:      fs->fsCsb[0] = FS_HEBREW; return FALSE;
++            case ARABIC_CHARSET:      fs->fsCsb[0] = FS_ARABIC; return FALSE;
++            case BALTIC_CHARSET:      fs->fsCsb[0] = FS_BALTIC; return FALSE;
++            case VIETNAMESE_CHARSET:  fs->fsCsb[0] = FS_VIETNAMESE; return FALSE;
++            case THAI_CHARSET:        fs->fsCsb[0] = FS_THAI; return FALSE;
++            case SHIFTJIS_CHARSET:    fs->fsCsb[0] = FS_JISJAPAN; return FALSE;
++            case GB2312_CHARSET:      fs->fsCsb[0] = FS_CHINESESIMP; return FALSE;
++            case HANGEUL_CHARSET:     fs->fsCsb[0] = FS_WANSUNG; return FALSE;
++            case CHINESEBIG5_CHARSET: fs->fsCsb[0] = FS_CHINESETRAD; return FALSE;
++            case JOHAB_CHARSET:       fs->fsCsb[0] = FS_JOHAB; return FALSE;
+             case SYMBOL_CHARSET:      fs->fsCsb[0] = FS_SYMBOL; break;
+         }
+ 
+diff --git a/dlls/gdi32/tests/font.c b/dlls/gdi32/tests/font.c
+index d2cd50f4ab9..dafc4247058 100644
+--- a/dlls/gdi32/tests/font.c
++++ b/dlls/gdi32/tests/font.c
+@@ -1001,7 +1001,7 @@ static void test_bitmap_font_metrics(void)
+             if (is_CJK() && lf.lfCharSet == ANSI_CHARSET)
+                 ok(ret == ANSI_CHARSET, "got charset %d, expected ANSI_CHARSETd\n", ret);
+             else
+-                ok(ret == expected_cs, "got charset %d, expected %d\n", ret, expected_cs);
++                ok(ret == expected_cs, "%d: got charset %d, expected %d\n", i, ret, expected_cs);
+ 
+             if(fd[i].dpi == tm.tmDigitizedAspectX)
+             {
+-- 
+2.29.2
+

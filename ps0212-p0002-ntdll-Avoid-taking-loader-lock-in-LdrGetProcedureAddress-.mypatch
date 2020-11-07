@@ -1,15 +1,15 @@
 From: Paul Gofman <pgofman@codeweavers.com>
-Subject: [PATCH 2/4] ntdll: Avoid taking loader lock in LdrGetProcedureAddress().
-Message-Id: <20201030123438.588715-2-pgofman@codeweavers.com>
-Date: Fri, 30 Oct 2020 15:34:36 +0300
-In-Reply-To: <20201030123438.588715-1-pgofman@codeweavers.com>
-References: <20201030123438.588715-1-pgofman@codeweavers.com>
+Subject: [PATCH v2 2/4] ntdll: Avoid taking loader lock in LdrGetProcedureAddress().
+Message-Id: <20201106125627.305602-2-pgofman@codeweavers.com>
+Date: Fri,  6 Nov 2020 15:56:25 +0300
+In-Reply-To: <20201106125627.305602-1-pgofman@codeweavers.com>
+References: <20201106125627.305602-1-pgofman@codeweavers.com>
 
 Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
 ---
  dlls/kernel32/tests/loader.c | 70 ++++++++++++++++++++++++++++++++++++
- dlls/ntdll/loader.c          |  4 +--
- 2 files changed, 72 insertions(+), 2 deletions(-)
+ dlls/ntdll/loader.c          |  6 ++--
+ 2 files changed, 72 insertions(+), 4 deletions(-)
 
 diff --git a/dlls/kernel32/tests/loader.c b/dlls/kernel32/tests/loader.c
 index 67fd62ef6aa..5d8991bf0f0 100644
@@ -114,24 +114,47 @@ index 67fd62ef6aa..5d8991bf0f0 100644
      test_Loader();
  }
 diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
-index 15690524b63..9048885d803 100644
+index e6895d66bd4..5a429b3f7a8 100644
 --- a/dlls/ntdll/loader.c
 +++ b/dlls/ntdll/loader.c
-@@ -1752,7 +1752,7 @@ NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
-     DWORD exp_size;
+@@ -704,7 +704,6 @@ static WINE_MODREF **grow_module_deps( WINE_MODREF *wm, int count )
+  *		find_forwarded_export
+  *
+  * Find the final function pointer for a forwarded function.
+- * The loader_section must be locked while calling this function.
+  */
+ static FARPROC find_forwarded_export( WINE_MODREF **wm_imp, const char *forward, LPCWSTR load_path )
+ {
+@@ -740,6 +739,7 @@ static FARPROC find_forwarded_export( WINE_MODREF **wm_imp, const char *forward,
+     if (!(wm = find_basename_module( mod_name )))
+     {
+         TRACE( "delay loading %s.\n", debugstr_w(mod_name) );
++        RtlEnterCriticalSection( &loader_section );
+         if (load_dll( load_path, mod_name, dllW, 0, &wm ) == STATUS_SUCCESS &&
+             !(wm->ldr.Flags & LDR_DONT_RESOLVE_REFS))
+         {
+@@ -755,6 +755,7 @@ static FARPROC find_forwarded_export( WINE_MODREF **wm_imp, const char *forward,
+                 wm = NULL;
+             }
+         }
++        RtlLeaveCriticalSection( &loader_section );
+         if (!wm)
+         {
+             ERR( "module not found, mod_name %s, path %s.\n", debugstr_w(mod_name), debugstr_w(load_path) );
+@@ -1883,8 +1884,6 @@ NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
      NTSTATUS ret = STATUS_PROCEDURE_NOT_FOUND;
+     WINE_MODREF *modref;
  
 -    RtlEnterCriticalSection( &loader_section );
-+    lock_ldr_data();
- 
+-
      /* check if the module itself is invalid to return the proper error */
-     if (!get_modref( module )) ret = STATUS_DLL_NOT_FOUND;
-@@ -1769,7 +1769,7 @@ NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
-         }
-     }
+     if (!(modref = get_modref( module ))) ret = STATUS_DLL_NOT_FOUND;
+     else if ((exports = RtlImageDirectoryEntryToData( module, TRUE,
+@@ -1903,7 +1902,6 @@ NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
+     if (modref)
+         unlock_modref( modref );
  
 -    RtlLeaveCriticalSection( &loader_section );
-+    unlock_ldr_data();
      return ret;
  }
  

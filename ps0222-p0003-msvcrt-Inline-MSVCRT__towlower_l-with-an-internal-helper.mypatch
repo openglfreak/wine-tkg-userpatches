@@ -1,0 +1,145 @@
+From 656c4eac2c07ceae3f7ebad285bb281affbe6d02 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sat, 7 Nov 2020 02:02:54 +0100
+Subject: [PATCH 03/24] msvcrt: Inline MSVCRT__towlower_l with an internal
+ helper.
+
+Instead of calling it, and querying the current locinfo, which causes a
+TLS lookup, on every character.
+---
+ dlls/msvcrt/wcs.c | 55 ++++++++++++++++++++++++++++++++++-------------
+ 1 file changed, 40 insertions(+), 15 deletions(-)
+
+diff --git a/dlls/msvcrt/wcs.c b/dlls/msvcrt/wcs.c
+index 858ecbd7ed0..ffcc7d11926 100644
+--- a/dlls/msvcrt/wcs.c
++++ b/dlls/msvcrt/wcs.c
+@@ -85,19 +85,10 @@ MSVCRT_wchar_t* CDECL MSVCRT__wcsdup( const MSVCRT_wchar_t* str )
+   return ret;
+ }
+ 
+-/*********************************************************************
+- *              _towlower_l (MSVCRT.@)
+- */
+-int CDECL MSVCRT__towlower_l(MSVCRT_wint_t c, MSVCRT__locale_t locale)
++static inline int msvcrt_towlower_internal(MSVCRT_wint_t c, MSVCRT_pthreadlocinfo locinfo)
+ {
+-    MSVCRT_pthreadlocinfo locinfo;
+     MSVCRT_wchar_t ret;
+ 
+-    if(!locale)
+-        locinfo = get_locinfo();
+-    else
+-        locinfo = locale->locinfo;
+-
+     if(!locinfo->lc_handle[MSVCRT_LC_CTYPE]) {
+         if(c >= 'A' && c <= 'Z')
+             return c + 'a' - 'A';
+@@ -109,6 +100,21 @@ int CDECL MSVCRT__towlower_l(MSVCRT_wint_t c, MSVCRT__locale_t locale)
+     return ret;
+ }
+ 
++/*********************************************************************
++ *              _towlower_l (MSVCRT.@)
++ */
++int CDECL MSVCRT__towlower_l(MSVCRT_wint_t c, MSVCRT__locale_t locale)
++{
++    MSVCRT_pthreadlocinfo locinfo;
++
++    if(!locale)
++        locinfo = get_locinfo();
++    else
++        locinfo = locale->locinfo;
++
++    return msvcrt_towlower_internal(c, locinfo);
++}
++
+ /*********************************************************************
+  *              towlower (MSVCRT.@)
+  */
+@@ -119,15 +125,21 @@ int CDECL MSVCRT_towlower(MSVCRT_wint_t c)
+ 
+ INT CDECL MSVCRT__wcsicmp_l(const MSVCRT_wchar_t *str1, const MSVCRT_wchar_t *str2, MSVCRT__locale_t locale)
+ {
++    MSVCRT_pthreadlocinfo locinfo;
+     MSVCRT_wchar_t c1, c2;
+ 
+     if(!MSVCRT_CHECK_PMT(str1 != NULL) || !MSVCRT_CHECK_PMT(str2 != NULL))
+         return MSVCRT__NLSCMPERROR;
+ 
++    if(!locale)
++        locinfo = get_locinfo();
++    else
++        locinfo = locale->locinfo;
++
+     do
+     {
+-        c1 = MSVCRT__towlower_l(*str1++, locale);
+-        c2 = MSVCRT__towlower_l(*str2++, locale);
++        c1 = msvcrt_towlower_internal(*str1++, locinfo);
++        c2 = msvcrt_towlower_internal(*str2++, locinfo);
+     } while(c1 && (c1 == c2));
+     return c1 - c2;
+ }
+@@ -146,6 +158,7 @@ INT CDECL MSVCRT__wcsicmp( const MSVCRT_wchar_t* str1, const MSVCRT_wchar_t* str
+ INT CDECL MSVCRT__wcsnicmp_l(const MSVCRT_wchar_t *str1, const MSVCRT_wchar_t *str2,
+         MSVCRT_size_t n, MSVCRT__locale_t locale)
+ {
++    MSVCRT_pthreadlocinfo locinfo;
+     MSVCRT_wchar_t c1, c2;
+ 
+     if (!n)
+@@ -154,10 +167,15 @@ INT CDECL MSVCRT__wcsnicmp_l(const MSVCRT_wchar_t *str1, const MSVCRT_wchar_t *s
+     if(!MSVCRT_CHECK_PMT(str1 != NULL) || !MSVCRT_CHECK_PMT(str2 != NULL))
+         return MSVCRT__NLSCMPERROR;
+ 
++    if(!locale)
++        locinfo = get_locinfo();
++    else
++        locinfo = locale->locinfo;
++
+     do
+     {
+-        c1 = MSVCRT__towlower_l(*str1++, locale);
+-        c2 = MSVCRT__towlower_l(*str2++, locale);
++        c1 = msvcrt_towlower_internal(*str1++, locinfo);
++        c2 = msvcrt_towlower_internal(*str2++, locinfo);
+     } while(--n && c1 && (c1 == c2));
+     return c1 - c2;
+ }
+@@ -343,6 +361,7 @@ MSVCRT_wchar_t* CDECL MSVCRT__wcsset( MSVCRT_wchar_t* str, MSVCRT_wchar_t c )
+ int CDECL MSVCRT__wcsupr_s_l( MSVCRT_wchar_t* str, MSVCRT_size_t n,
+    MSVCRT__locale_t locale )
+ {
++  MSVCRT_pthreadlocinfo locinfo;
+   MSVCRT_wchar_t* ptr = str;
+ 
+   if (!str || !n)
+@@ -397,6 +416,7 @@ MSVCRT_wchar_t* CDECL MSVCRT__wcsupr( MSVCRT_wchar_t *str )
+  */
+ int CDECL MSVCRT__wcslwr_s_l( MSVCRT_wchar_t* str, MSVCRT_size_t n, MSVCRT__locale_t locale )
+ {
++  MSVCRT_pthreadlocinfo locinfo;
+   MSVCRT_wchar_t* ptr = str;
+ 
+   if (!str || !n)
+@@ -406,10 +426,15 @@ int CDECL MSVCRT__wcslwr_s_l( MSVCRT_wchar_t* str, MSVCRT_size_t n, MSVCRT__loca
+     return MSVCRT_EINVAL;
+   }
+ 
++  if(!locale)
++      locinfo = get_locinfo();
++  else
++      locinfo = locale->locinfo;
++
+   while (n--)
+   {
+     if (!*ptr) return 0;
+-    *ptr = MSVCRT__towlower_l(*ptr, locale);
++    *ptr = msvcrt_towlower_internal(*ptr, locinfo);
+     ptr++;
+   }
+ 
+-- 
+2.29.2
+

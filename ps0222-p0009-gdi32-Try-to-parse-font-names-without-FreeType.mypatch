@@ -1,0 +1,718 @@
+From 88a28482b13abb4fecbfcfe15126882a96ac1c97 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 6 Nov 2020 13:58:20 +0100
+Subject: [PATCH 09/24] gdi32: Try to parse font names without FreeType.
+
+---
+ dlls/gdi32/freetype.c    | 112 ++++++++-
+ dlls/gdi32/gdi_private.h |  11 +
+ dlls/gdi32/opentype.c    | 482 +++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 600 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/gdi32/freetype.c b/dlls/gdi32/freetype.c
+index 534d41a3dfe..b3309cef504 100644
+--- a/dlls/gdi32/freetype.c
++++ b/dlls/gdi32/freetype.c
+@@ -1002,6 +1002,67 @@ static inline void get_fontsig( FT_Face ft_face, FONTSIGNATURE *fs )
+     }
+ }
+ 
++struct family_names_data
++{
++    LANGID primary_langid;
++    WCHAR *family_name;
++    WCHAR *second_name;
++    BOOL primary_seen;
++    BOOL english_seen;
++};
++
++static BOOL search_family_names_callback( LANGID langid, const WCHAR *str, void *user )
++{
++    struct family_names_data *data = user;
++
++    if (langid == MAKELANGID(LANG_ENGLISH, SUBLANG_DEFAULT))
++    {
++        data->english_seen = TRUE;
++        if (data->primary_langid == langid) data->primary_seen = TRUE;
++
++        if (!data->family_name) data->family_name = strdupW( str );
++        else if (data->primary_langid != langid)
++        {
++            if (data->second_name) RtlFreeHeap( GetProcessHeap(), 0, data->second_name );
++            data->second_name = strdupW( str );
++        }
++    }
++    else if (data->primary_langid == langid)
++    {
++        data->primary_seen = TRUE;
++        if (!data->second_name) data->second_name = data->family_name;
++        else if (data->family_name) RtlFreeHeap( GetProcessHeap(), 0, data->family_name );
++        data->family_name = strdupW( str );
++    }
++    else if (!data->second_name) data->second_name = strdupW( str );
++
++    if (data->family_name && data->second_name && data->primary_seen && data->english_seen)
++        return TRUE;
++    return FALSE;
++}
++
++struct face_name_data
++{
++    WCHAR *face_name;
++    LANGID primary_langid;
++};
++
++static BOOL search_face_name_callback( LANGID langid, const WCHAR *str, void *user )
++{
++    struct face_name_data *data = user;
++
++    if (data->primary_langid == langid)
++    {
++        if (data->face_name) RtlFreeHeap( GetProcessHeap(), 0, data->face_name );
++        data->face_name = strdupW( str );
++        return TRUE;
++    }
++    else if (!data->face_name && langid == MAKELANGID(LANG_ENGLISH, SUBLANG_DEFAULT))
++        data->face_name = strdupW( str );
++
++    return FALSE;
++}
++
+ struct unix_face
+ {
+     FT_Face ft_face;
+@@ -1023,11 +1084,14 @@ static FT_Face new_ft_face( const char *file, void *font_data_ptr, DWORD font_da
+ static struct unix_face *unix_face_create( const char *unix_name, void *font_data_ptr,
+                                            DWORD font_data_size, UINT face_index, DWORD flags )
+ {
++    static const WCHAR space_w[] = {' ',0};
++
+     const struct ttc_sfnt_v1 *ttc_sfnt_v1;
++    const struct tt_name_v0 *tt_name_v0;
+     struct unix_face *This;
+     struct stat st;
+     DWORD face_count;
+-    int fd;
++    int fd, length;
+ 
+     TRACE( "unix_name %s, face_index %u, font_data_ptr %p, font_data_size %u, flags %#x\n",
+            unix_name, face_index, font_data_ptr, font_data_size, flags );
+@@ -1053,20 +1117,55 @@ static struct unix_face *unix_face_create( const char *unix_name, void *font_dat
+         RtlFreeHeap( GetProcessHeap(), 0, This );
+         This = NULL;
+     }
+-    else if (opentype_get_ttc_sfnt_v1( font_data_ptr, font_data_size, face_index, &face_count, &ttc_sfnt_v1 ))
++    else if (opentype_get_ttc_sfnt_v1( font_data_ptr, font_data_size, face_index, &face_count, &ttc_sfnt_v1 ) &&
++             opentype_get_tt_name_v0( font_data_ptr, font_data_size, ttc_sfnt_v1, &tt_name_v0 ))
+     {
++        struct family_names_data family_names;
++        struct face_name_data style_name;
++        struct face_name_data full_name;
++        LANGID primary_langid = system_lcid;
++
+         This->scalable = TRUE;
+         This->num_faces = face_count;
++
++        memset( &family_names, 0, sizeof(family_names) );
++        family_names.primary_langid = primary_langid;
++        opentype_enum_family_names( tt_name_v0, search_family_names_callback, &family_names );
++        This->family_name = family_names.family_name;
++        This->second_name = family_names.second_name;
++
++        memset( &style_name, 0, sizeof(style_name) );
++        style_name.primary_langid = primary_langid;
++        opentype_enum_style_names( tt_name_v0, search_face_name_callback, &style_name );
++        This->style_name = style_name.face_name;
++
++        memset( &full_name, 0, sizeof(full_name) );
++        style_name.primary_langid = primary_langid;
++        opentype_enum_full_names( tt_name_v0, search_face_name_callback, &full_name );
++        This->full_name = full_name.face_name;
++
++        TRACE( "parsed font names family_name %s, second_name %s, primary_seen %d, english_seen %d, "
++               "full_name %s, style_name %s\n",
++               debugstr_w(family_names.family_name), debugstr_w(family_names.second_name),
++               family_names.primary_seen, family_names.english_seen,
++               debugstr_w(full_name.face_name), debugstr_w(style_name.face_name) );
++
++        if (!This->full_name && This->family_name && This->style_name)
++        {
++            length = lstrlenW( This->family_name ) + lstrlenW( space_w ) + lstrlenW( This->style_name ) + 1;
++            This->full_name = RtlAllocateHeap( GetProcessHeap(), 0, length * sizeof(WCHAR) );
++            lstrcpyW( This->full_name, This->family_name );
++            lstrcatW( This->full_name, space_w );
++            lstrcatW( This->full_name, This->style_name );
++            WARN( "full name not found, using %s instead\n", debugstr_w(This->full_name) );
++        }
+     }
+     else
+     {
+         WARN( "unable to parse font, falling back to FreeType\n" );
+         This->scalable = FT_IS_SCALABLE( This->ft_face );
+         This->num_faces = This->ft_face->num_faces;
+-    }
+ 
+-    if (This)
+-    {
+         This->family_name = ft_face_get_family_name( This->ft_face, system_lcid );
+         This->second_name = ft_face_get_family_name( This->ft_face, MAKELANGID(LANG_ENGLISH, SUBLANG_DEFAULT) );
+ 
+@@ -1086,7 +1185,10 @@ static struct unix_face *unix_face_create( const char *unix_name, void *font_dat
+ 
+         This->style_name = ft_face_get_style_name( This->ft_face, system_lcid );
+         This->full_name = ft_face_get_full_name( This->ft_face, system_lcid );
++    }
+ 
++    if (This)
++    {
+         This->ntm_flags = get_ntm_flags( This->ft_face );
+         This->font_version = get_font_version( This->ft_face );
+         if (!This->scalable) get_bitmap_size( This->ft_face, &This->size );
+diff --git a/dlls/gdi32/gdi_private.h b/dlls/gdi32/gdi_private.h
+index b6db25f0fff..aa201b6408a 100644
+--- a/dlls/gdi32/gdi_private.h
++++ b/dlls/gdi32/gdi_private.h
+@@ -416,9 +416,20 @@ extern void font_init(void) DECLSPEC_HIDDEN;
+ /* opentype.c */
+ 
+ struct ttc_sfnt_v1;
++struct tt_name_v0;
+ 
+ extern BOOL opentype_get_ttc_sfnt_v1( const void *data, size_t size, DWORD index, DWORD *count,
+                                       const struct ttc_sfnt_v1 **ttc_sfnt_v1 ) DECLSPEC_HIDDEN;
++extern BOOL opentype_get_tt_name_v0( const void *data, size_t size, const struct ttc_sfnt_v1 *ttc_sfnt_v1,
++                                     const struct tt_name_v0 **tt_name_v0 ) DECLSPEC_HIDDEN;
++
++typedef BOOL ( *opentype_enum_names_cb )(LANGID langid, const WCHAR *str, void *user);
++extern BOOL opentype_enum_family_names( const struct tt_name_v0 *tt_name_v0,
++                                        opentype_enum_names_cb callback, void *user ) DECLSPEC_HIDDEN;
++extern BOOL opentype_enum_style_names( const struct tt_name_v0 *tt_name_v0,
++                                       opentype_enum_names_cb callback, void *user ) DECLSPEC_HIDDEN;
++extern BOOL opentype_enum_full_names( const struct tt_name_v0 *tt_name_v0,
++                                      opentype_enum_names_cb callback, void *user ) DECLSPEC_HIDDEN;
+ 
+ /* gdiobj.c */
+ extern HGDIOBJ alloc_gdi_handle( void *obj, WORD type, const struct gdi_obj_funcs *funcs ) DECLSPEC_HIDDEN;
+diff --git a/dlls/gdi32/opentype.c b/dlls/gdi32/opentype.c
+index 2363439cdc5..441dec7763c 100644
+--- a/dlls/gdi32/opentype.c
++++ b/dlls/gdi32/opentype.c
+@@ -26,6 +26,7 @@
+ 
+ #include "windef.h"
+ #include "winbase.h"
++#include "winnls.h"
+ 
+ #include "wine/debug.h"
+ 
+@@ -40,6 +41,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(font);
+ #define MS_EBSC_TAG MS_MAKE_TAG('E','B','S','C')
+ #define MS_EBDT_TAG MS_MAKE_TAG('E','B','D','T')
+ #define MS_CBDT_TAG MS_MAKE_TAG('C','B','D','T')
++#define MS_NAME_TAG MS_MAKE_TAG('n','a','m','e')
+ 
+ #ifdef WORDS_BIGENDIAN
+ #define GET_BE_WORD(x) (x)
+@@ -115,8 +117,125 @@ struct tt_os2_v1
+     ULONG ulCodePageRange1;
+     ULONG ulCodePageRange2;
+ };
++
++struct tt_namerecord
++{
++    WORD platformID;
++    WORD encodingID;
++    WORD languageID;
++    WORD nameID;
++    WORD length;
++    WORD offset;
++};
++
++struct tt_name_v0
++{
++    WORD format;
++    WORD count;
++    WORD stringOffset;
++    struct tt_namerecord nameRecord[1];
++};
+ #include "poppack.h"
+ 
++enum OPENTYPE_PLATFORM_ID
++{
++    OPENTYPE_PLATFORM_UNICODE = 0,
++    OPENTYPE_PLATFORM_MAC,
++    OPENTYPE_PLATFORM_ISO,
++    OPENTYPE_PLATFORM_WIN,
++    OPENTYPE_PLATFORM_CUSTOM
++};
++
++enum TT_NAME_WIN_ENCODING_ID
++{
++    TT_NAME_WIN_ENCODING_SYMBOL = 0,
++    TT_NAME_WIN_ENCODING_UNICODE_BMP,
++    TT_NAME_WIN_ENCODING_SJIS,
++    TT_NAME_WIN_ENCODING_PRC,
++    TT_NAME_WIN_ENCODING_BIG5,
++    TT_NAME_WIN_ENCODING_WANSUNG,
++    TT_NAME_WIN_ENCODING_JOHAB,
++    TT_NAME_WIN_ENCODING_RESERVED1,
++    TT_NAME_WIN_ENCODING_RESERVED2,
++    TT_NAME_WIN_ENCODING_RESERVED3,
++    TT_NAME_WIN_ENCODING_UNICODE_FULL
++};
++
++enum TT_NAME_UNICODE_ENCODING_ID
++{
++    TT_NAME_UNICODE_ENCODING_1_0 = 0,
++    TT_NAME_UNICODE_ENCODING_1_1,
++    TT_NAME_UNICODE_ENCODING_ISO_10646,
++    TT_NAME_UNICODE_ENCODING_2_0_BMP,
++    TT_NAME_UNICODE_ENCODING_2_0_FULL,
++    TT_NAME_UNICODE_ENCODING_VAR,
++    TT_NAME_UNICODE_ENCODING_FULL,
++};
++
++enum TT_NAME_MAC_ENCODING_ID
++{
++    TT_NAME_MAC_ENCODING_ROMAN = 0,
++    TT_NAME_MAC_ENCODING_JAPANESE,
++    TT_NAME_MAC_ENCODING_TRAD_CHINESE,
++    TT_NAME_MAC_ENCODING_KOREAN,
++    TT_NAME_MAC_ENCODING_ARABIC,
++    TT_NAME_MAC_ENCODING_HEBREW,
++    TT_NAME_MAC_ENCODING_GREEK,
++    TT_NAME_MAC_ENCODING_RUSSIAN,
++    TT_NAME_MAC_ENCODING_RSYMBOL,
++    TT_NAME_MAC_ENCODING_DEVANAGARI,
++    TT_NAME_MAC_ENCODING_GURMUKHI,
++    TT_NAME_MAC_ENCODING_GUJARATI,
++    TT_NAME_MAC_ENCODING_ORIYA,
++    TT_NAME_MAC_ENCODING_BENGALI,
++    TT_NAME_MAC_ENCODING_TAMIL,
++    TT_NAME_MAC_ENCODING_TELUGU,
++    TT_NAME_MAC_ENCODING_KANNADA,
++    TT_NAME_MAC_ENCODING_MALAYALAM,
++    TT_NAME_MAC_ENCODING_SINHALESE,
++    TT_NAME_MAC_ENCODING_BURMESE,
++    TT_NAME_MAC_ENCODING_KHMER,
++    TT_NAME_MAC_ENCODING_THAI,
++    TT_NAME_MAC_ENCODING_LAOTIAN,
++    TT_NAME_MAC_ENCODING_GEORGIAN,
++    TT_NAME_MAC_ENCODING_ARMENIAN,
++    TT_NAME_MAC_ENCODING_SIMPL_CHINESE,
++    TT_NAME_MAC_ENCODING_TIBETAN,
++    TT_NAME_MAC_ENCODING_MONGOLIAN,
++    TT_NAME_MAC_ENCODING_GEEZ,
++    TT_NAME_MAC_ENCODING_SLAVIC,
++    TT_NAME_MAC_ENCODING_VIETNAMESE,
++    TT_NAME_MAC_ENCODING_SINDHI,
++    TT_NAME_MAC_ENCODING_UNINTERPRETED
++};
++
++enum OPENTYPE_NAME_ID
++{
++    OPENTYPE_NAME_COPYRIGHT_NOTICE = 0,
++    OPENTYPE_NAME_FAMILY,
++    OPENTYPE_NAME_SUBFAMILY,
++    OPENTYPE_NAME_UNIQUE_IDENTIFIER,
++    OPENTYPE_NAME_FULLNAME,
++    OPENTYPE_NAME_VERSION_STRING,
++    OPENTYPE_NAME_POSTSCRIPT,
++    OPENTYPE_NAME_TRADEMARK,
++    OPENTYPE_NAME_MANUFACTURER,
++    OPENTYPE_NAME_DESIGNER,
++    OPENTYPE_NAME_DESCRIPTION,
++    OPENTYPE_NAME_VENDOR_URL,
++    OPENTYPE_NAME_DESIGNER_URL,
++    OPENTYPE_NAME_LICENSE_DESCRIPTION,
++    OPENTYPE_NAME_LICENSE_INFO_URL,
++    OPENTYPE_NAME_RESERVED_ID15,
++    OPENTYPE_NAME_TYPOGRAPHIC_FAMILY,
++    OPENTYPE_NAME_TYPOGRAPHIC_SUBFAMILY,
++    OPENTYPE_NAME_COMPATIBLE_FULLNAME,
++    OPENTYPE_NAME_SAMPLE_TEXT,
++    OPENTYPE_NAME_POSTSCRIPT_CID,
++    OPENTYPE_NAME_WWS_FAMILY,
++    OPENTYPE_NAME_WWS_SUBFAMILY
++};
++
+ static BOOL opentype_get_table_ptr( const void *data, size_t size, const struct ttc_sfnt_v1 *ttc_sfnt_v1,
+                                     UINT32 table_tag, const void **table_ptr, UINT32 *table_size )
+ {
+@@ -151,6 +270,329 @@ static BOOL opentype_get_tt_os2_v1( const void *data, size_t size, const struct
+     return opentype_get_table_ptr( data, size, ttc_sfnt_v1, MS_OS_2_TAG, (const void **)tt_os2_v1, &table_size );
+ }
+ 
++static UINT get_name_record_codepage( enum OPENTYPE_PLATFORM_ID platform, USHORT encoding )
++{
++    switch (platform)
++    {
++    case OPENTYPE_PLATFORM_UNICODE:
++        return 0;
++    case OPENTYPE_PLATFORM_MAC:
++        switch (encoding)
++        {
++        case TT_NAME_MAC_ENCODING_ROMAN:
++            return 10000;
++        case TT_NAME_MAC_ENCODING_JAPANESE:
++            return 10001;
++        case TT_NAME_MAC_ENCODING_TRAD_CHINESE:
++            return 10002;
++        case TT_NAME_MAC_ENCODING_KOREAN:
++            return 10003;
++        case TT_NAME_MAC_ENCODING_ARABIC:
++            return 10004;
++        case TT_NAME_MAC_ENCODING_HEBREW:
++            return 10005;
++        case TT_NAME_MAC_ENCODING_GREEK:
++            return 10006;
++        case TT_NAME_MAC_ENCODING_RUSSIAN:
++            return 10007;
++        case TT_NAME_MAC_ENCODING_SIMPL_CHINESE:
++            return 10008;
++        case TT_NAME_MAC_ENCODING_THAI:
++            return 10021;
++        default:
++            FIXME( "encoding %u not handled, platform %d.\n", encoding, platform );
++            break;
++        }
++        break;
++    case OPENTYPE_PLATFORM_WIN:
++        switch (encoding)
++        {
++        case TT_NAME_WIN_ENCODING_SYMBOL:
++        case TT_NAME_WIN_ENCODING_UNICODE_BMP:
++        case TT_NAME_WIN_ENCODING_UNICODE_FULL:
++            return 0;
++        case TT_NAME_WIN_ENCODING_SJIS:
++            return 932;
++        case TT_NAME_WIN_ENCODING_PRC:
++            return 936;
++        case TT_NAME_WIN_ENCODING_BIG5:
++            return 950;
++        case TT_NAME_WIN_ENCODING_WANSUNG:
++            return 20949;
++        case TT_NAME_WIN_ENCODING_JOHAB:
++            return 1361;
++        default:
++            FIXME( "encoding %u not handled, platform %d.\n", encoding, platform );
++            break;
++        }
++        break;
++    default:
++        FIXME( "unknown platform %d\n", platform );
++        break;
++    }
++
++    return 0;
++}
++
++static const LANGID mac_langid_table[] =
++{
++    MAKELANGID(LANG_ENGLISH, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_FRENCH, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_GERMAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_ITALIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_DUTCH, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_SWEDISH, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_SPANISH, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_DANISH, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_PORTUGUESE, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_NORWEGIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_HEBREW, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_JAPANESE, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_ARABIC, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_FINNISH, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_GREEK, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_ICELANDIC, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_MALTESE, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_TURKISH, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_CROATIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_CHINESE_TRADITIONAL, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_URDU, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_HINDI, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_THAI, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_KOREAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_LITHUANIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_POLISH, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_HUNGARIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_ESTONIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_LATVIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_SAMI, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_FAEROESE, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_FARSI, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_RUSSIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_CHINESE_SIMPLIFIED, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_DUTCH, SUBLANG_DUTCH_BELGIAN),
++    MAKELANGID(LANG_IRISH, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_ALBANIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_ROMANIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_CZECH, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_SLOVAK, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_SLOVENIAN, SUBLANG_DEFAULT),
++    0,
++    MAKELANGID(LANG_SERBIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_MACEDONIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_BULGARIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_UKRAINIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_BELARUSIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_UZBEK, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_KAZAK, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_AZERI, SUBLANG_AZERI_CYRILLIC),
++    0,
++    MAKELANGID(LANG_ARMENIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_GEORGIAN, SUBLANG_DEFAULT),
++    0,
++    MAKELANGID(LANG_KYRGYZ, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_TAJIK, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_TURKMEN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_MONGOLIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_MONGOLIAN, SUBLANG_MONGOLIAN_CYRILLIC_MONGOLIA),
++    MAKELANGID(LANG_PASHTO, SUBLANG_DEFAULT),
++    0,
++    MAKELANGID(LANG_KASHMIRI, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_SINDHI, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_TIBETAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_NEPALI, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_SANSKRIT, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_MARATHI, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_BENGALI, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_ASSAMESE, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_GUJARATI, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_PUNJABI, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_ORIYA, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_MALAYALAM, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_KANNADA, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_TAMIL, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_TELUGU, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_SINHALESE, SUBLANG_DEFAULT),
++    0,
++    MAKELANGID(LANG_KHMER, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_LAO, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_VIETNAMESE, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_INDONESIAN, SUBLANG_DEFAULT),
++    0,
++    MAKELANGID(LANG_MALAY, SUBLANG_DEFAULT),
++    0,
++    MAKELANGID(LANG_AMHARIC, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_TIGRIGNA, SUBLANG_DEFAULT),
++    0,
++    0,
++    MAKELANGID(LANG_SWAHILI, SUBLANG_DEFAULT),
++    0,
++    0,
++    0,
++    MAKELANGID(LANG_MALAGASY, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_ESPERANTO, SUBLANG_DEFAULT),
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    MAKELANGID(LANG_WELSH, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_BASQUE, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_CATALAN, SUBLANG_DEFAULT),
++    0,
++    MAKELANGID(LANG_QUECHUA, SUBLANG_DEFAULT),
++    0,
++    0,
++    MAKELANGID(LANG_TATAR, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_UIGHUR, SUBLANG_DEFAULT),
++    0,
++    0,
++    0,
++    MAKELANGID(LANG_GALICIAN, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_AFRIKAANS, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_BRETON, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_INUKTITUT, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_SCOTTISH_GAELIC, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_MANX_GAELIC, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_IRISH, SUBLANG_IRISH_IRELAND),
++    0,
++    0,
++    MAKELANGID(LANG_GREENLANDIC, SUBLANG_DEFAULT),
++    MAKELANGID(LANG_AZERI, SUBLANG_AZERI_LATIN),
++};
++
++static LANGID get_name_record_langid( enum OPENTYPE_PLATFORM_ID platform, USHORT encoding, USHORT language )
++{
++    switch (platform)
++    {
++    case OPENTYPE_PLATFORM_WIN:
++        return language;
++    case OPENTYPE_PLATFORM_MAC:
++        if (language < ARRAY_SIZE(mac_langid_table)) return mac_langid_table[language];
++        WARN( "invalid mac lang id %d\n", language );
++        break;
++    case OPENTYPE_PLATFORM_UNICODE:
++        switch (encoding)
++        {
++        case TT_NAME_UNICODE_ENCODING_1_0:
++        case TT_NAME_UNICODE_ENCODING_ISO_10646:
++        case TT_NAME_UNICODE_ENCODING_2_0_BMP:
++            if (language < ARRAY_SIZE(mac_langid_table)) return mac_langid_table[language];
++            WARN( "invalid unicode lang id %d\n", language );
++            break;
++        default:
++            break;
++        }
++    default:
++        FIXME( "unknown platform %d\n", platform );
++        break;
++    }
++
++    return MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL);
++}
++
++static BOOL opentype_enum_font_names( const struct tt_name_v0 *header, enum OPENTYPE_PLATFORM_ID platform,
++                                      enum OPENTYPE_NAME_ID name, opentype_enum_names_cb callback, void *user )
++{
++    CPTABLEINFO codepage_info;
++    const char *name_data;
++    USHORT *codepage_ptr = NULL, i, name_count, encoding, language, length, offset;
++    USHORT platform_id = GET_BE_WORD( platform ), name_id = GET_BE_WORD( name );
++    LANGID langid;
++    SIZE_T codepage_size;
++    DWORD codepage, len;
++    WCHAR buffer[512];
++    BOOL ret = FALSE;
++
++    switch (GET_BE_WORD( header->format ))
++    {
++    case 0:
++    case 1:
++        break;
++    default:
++        FIXME( "unsupported name format %d\n", GET_BE_WORD( header->format ) );
++        return FALSE;
++    }
++
++    name_data = (const char *)header + GET_BE_WORD( header->stringOffset );
++    name_count = GET_BE_WORD( header->count );
++    for (i = 0; i < name_count; i++)
++    {
++        const struct tt_namerecord *record = &header->nameRecord[i];
++        if (record->nameID != name_id) continue;
++        if (record->platformID != platform_id) continue;
++
++        language = GET_BE_WORD( record->languageID );
++        if (language >= 0x8000)
++        {
++            FIXME( "handle name format 1\n" );
++            continue;
++        }
++
++        encoding = GET_BE_WORD( record->encodingID );
++        length = GET_BE_WORD( record->length );
++        offset = GET_BE_WORD( record->offset );
++
++        codepage = get_name_record_codepage( platform, encoding );
++        langid = get_name_record_langid( platform, encoding, language );
++
++        if (!codepage)
++        {
++            len = min(ARRAY_SIZE(buffer), length / sizeof(WCHAR));
++            while (len--) buffer[len] = GET_BE_WORD( ((WORD *)(name_data + offset))[len] );
++            len = min(ARRAY_SIZE(buffer), length / sizeof(WCHAR));
++        }
++        else
++        {
++            if (!codepage_ptr || codepage != codepage_info.CodePage)
++            {
++                if (codepage_ptr) NtUnmapViewOfSection( GetCurrentProcess(), codepage_ptr );
++                NtGetNlsSectionPtr( 11, codepage, NULL, (void **)&codepage_ptr, &codepage_size );
++                RtlInitCodePageTable( codepage_ptr, &codepage_info );
++            }
++            RtlCustomCPToUnicodeN( &codepage_info, buffer, sizeof(buffer), &len, name_data + offset, length );
++            len /= sizeof(WCHAR);
++        }
++
++        buffer[ARRAY_SIZE(buffer) - 1] = 0;
++        if (len == ARRAY_SIZE(buffer)) WARN("Truncated font name %s -> %s\n", debugstr_an(name_data + offset, length), debugstr_w(buffer));
++        else buffer[len] = 0;
++
++        if ((ret = callback( langid, buffer, user ))) break;
++    }
++
++    if (codepage_ptr) NtUnmapViewOfSection( GetCurrentProcess(), codepage_ptr );
++    return ret;
++}
++
+ BOOL opentype_get_ttc_sfnt_v1( const void *data, size_t size, DWORD index, DWORD *count, const struct ttc_sfnt_v1 **ttc_sfnt_v1 )
+ {
+     const struct ttc_header_v1 *ttc_header_v1 = data;
+@@ -218,3 +660,43 @@ BOOL opentype_get_ttc_sfnt_v1( const void *data, size_t size, DWORD index, DWORD
+ 
+     return TRUE;
+ }
++
++BOOL opentype_get_tt_name_v0( const void *data, size_t size, const struct ttc_sfnt_v1 *ttc_sfnt_v1,
++                              const struct tt_name_v0 **tt_name_v0 )
++{
++    UINT32 table_size = sizeof(**tt_name_v0);
++    return opentype_get_table_ptr( data, size, ttc_sfnt_v1, MS_NAME_TAG, (const void **)tt_name_v0, &table_size );
++}
++
++BOOL opentype_enum_family_names( const struct tt_name_v0 *header, opentype_enum_names_cb callback, void *user )
++{
++    if (opentype_enum_font_names( header, OPENTYPE_PLATFORM_WIN, OPENTYPE_NAME_FAMILY, callback, user ))
++        return TRUE;
++    if (opentype_enum_font_names( header, OPENTYPE_PLATFORM_MAC, OPENTYPE_NAME_FAMILY, callback, user ))
++        return TRUE;
++    if (opentype_enum_font_names( header, OPENTYPE_PLATFORM_UNICODE, OPENTYPE_NAME_FAMILY, callback, user ))
++        return TRUE;
++    return FALSE;
++}
++
++BOOL opentype_enum_style_names( const struct tt_name_v0 *header, opentype_enum_names_cb callback, void *user )
++{
++    if (opentype_enum_font_names( header, OPENTYPE_PLATFORM_WIN, OPENTYPE_NAME_SUBFAMILY, callback, user ))
++        return TRUE;
++    if (opentype_enum_font_names( header, OPENTYPE_PLATFORM_MAC, OPENTYPE_NAME_SUBFAMILY, callback, user ))
++        return TRUE;
++    if (opentype_enum_font_names( header, OPENTYPE_PLATFORM_UNICODE, OPENTYPE_NAME_SUBFAMILY, callback, user ))
++        return TRUE;
++    return FALSE;
++}
++
++BOOL opentype_enum_full_names( const struct tt_name_v0 *header, opentype_enum_names_cb callback, void *user )
++{
++    if (opentype_enum_font_names( header, OPENTYPE_PLATFORM_WIN, OPENTYPE_NAME_FULLNAME, callback, user ))
++        return TRUE;
++    if (opentype_enum_font_names( header, OPENTYPE_PLATFORM_MAC, OPENTYPE_NAME_FULLNAME, callback, user ))
++        return TRUE;
++    if (opentype_enum_font_names( header, OPENTYPE_PLATFORM_UNICODE, OPENTYPE_NAME_FULLNAME, callback, user ))
++        return TRUE;
++    return FALSE;
++}
+-- 
+2.29.2
+

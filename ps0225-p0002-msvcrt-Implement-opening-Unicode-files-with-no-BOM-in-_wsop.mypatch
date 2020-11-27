@@ -1,0 +1,115 @@
+From: Piotr Caban <piotr@codeweavers.com>
+Subject: [PATCH 2/2 v2] msvcrt: Implement opening Unicode files with no BOM in _wsopen_dispatch.
+Message-Id: <25263c53-3bc0-0043-a81b-511add2ecada@codeweavers.com>
+Date: Thu, 26 Nov 2020 15:26:35 +0100
+
+
+Spotted by Alistair Leslie-Hughes.
+
+Signed-off-by: Piotr Caban <piotr@codeweavers.com>
+---
+  dlls/msvcrt/file.c       |  8 ++-----
+  dlls/msvcrt/tests/file.c | 49 ++++++++++++++++++++++++++++++++++++++++
+  2 files changed, 51 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/msvcrt/file.c b/dlls/msvcrt/file.c
+index b3e0b4abeaa..c913f86df89 100644
+--- a/dlls/msvcrt/file.c
++++ b/dlls/msvcrt/file.c
+@@ -2174,17 +2174,15 @@ static int check_bom(HANDLE h, int oflags, BOOL seek)
+     char bom[sizeof(utf8_bom)];
+     DWORD r;
+ 
+-    oflags &= ~(MSVCRT__O_WTEXT|MSVCRT__O_U16TEXT|MSVCRT__O_U8TEXT);
+-
+     if (!ReadFile(h, bom, sizeof(utf8_bom), &r, NULL))
+         return oflags;
+ 
+     if (r==sizeof(utf8_bom) && !memcmp(bom, utf8_bom, sizeof(utf8_bom))) {
+-        oflags |= MSVCRT__O_U8TEXT;
++        oflags = (oflags & ~(MSVCRT__O_WTEXT | MSVCRT__O_U16TEXT)) | MSVCRT__O_U8TEXT;
+     }else if (r>=sizeof(utf16_bom) && !memcmp(bom, utf16_bom, sizeof(utf16_bom))) {
+         if (seek && r>2)
+             SetFilePointer(h, 2, NULL, FILE_BEGIN);
+-        oflags |= MSVCRT__O_U16TEXT;
++        oflags = (oflags & ~(MSVCRT__O_WTEXT | MSVCRT__O_U8TEXT)) | MSVCRT__O_U16TEXT;
+     }else if (seek) {
+         SetFilePointer(h, 0, NULL, FILE_BEGIN);
+     }
+@@ -2284,8 +2282,6 @@ int CDECL MSVCRT__wsopen_dispatch( const MSVCRT_wchar_t* path, int oflags, int s
+           oflags = check_bom(hand, oflags, FALSE);
+           CloseHandle(hand);
+       }
+-      else
+-          oflags &= ~(MSVCRT__O_WTEXT|MSVCRT__O_U16TEXT|MSVCRT__O_U8TEXT);
+   }
+ 
+   hand = CreateFileW(path, access, sharing, &sa, creation, attrib, 0);
+diff --git a/dlls/msvcrt/tests/file.c b/dlls/msvcrt/tests/file.c
+index fc6dacd71ff..a413d674164 100644
+--- a/dlls/msvcrt/tests/file.c
++++ b/dlls/msvcrt/tests/file.c
+@@ -971,6 +971,38 @@ static void test_fgetwc_unicode(void)
+     ok(ch == WEOF, "got %04hx, expected WEOF (unicode)\n", ch);
+     fclose(tempfh);
+ 
++    tempfh = fopen(tempfile, "r,ccs=utf-8");
++    ok(tempfh != NULL, "can't open tempfile\n");
++    for (i = 1; i < ARRAY_SIZE(wchar_text); i++)
++    {
++        ch = fgetwc(tempfh);
++        ok(ch == wchar_text[i],
++                "got %04hx, expected %04x (unicode[%d])\n", ch, wchar_text[i], i-1);
++    }
++    ch = fgetwc(tempfh);
++    ok(ch == WEOF, "got %04hx, expected WEOF (unicode)\n", ch);
++    fclose(tempfh);
++
++    tempfh = fopen(tempfile, "a,ccs=utf-16le");
++    ok(tempfh != NULL, "can't open tempfile\n");
++    ch = fputwc('a', tempfh);
++    ok(ch == 'a', "fputwc returned %x\n", ch);
++    fclose(tempfh);
++
++    tempfh = fopen(tempfile, "a+,ccs=utf-8");
++    ok(tempfh != NULL, "can't open tempfile\n");
++    for (i = 1; i < ARRAY_SIZE(wchar_text); i++)
++    {
++        ch = fgetwc(tempfh);
++        ok(ch == wchar_text[i],
++                "got %04hx, expected %04x (unicode[%d])\n", ch, wchar_text[i], i-1);
++    }
++    ch = fgetwc(tempfh);
++    ok(ch == 'a', "got %04x, expected 'a'\n", ch);
++    ch = fgetwc(tempfh);
++    ok(ch == WEOF, "got %04hx, expected WEOF (unicode)\n", ch);
++    fclose(tempfh);
++
+     tempfh = fopen(tempfile, "wb");
+     ok(tempfh != NULL, "can't open tempfile\n");
+     ret = WideCharToMultiByte(CP_UTF8, 0, wchar_text, ARRAY_SIZE(wchar_text),
+@@ -990,6 +1022,23 @@ static void test_fgetwc_unicode(void)
+     ch = fgetwc(tempfh);
+     ok(ch == WEOF, "got %04hx, expected WEOF (utf8)\n", ch);
+     fclose(tempfh);
++
++    tempfh = fopen(tempfile, "wb");
++    ok(tempfh != NULL, "can't open tempfile\n");
++    fwrite(wchar_text+1, 1, sizeof(wchar_text)-1, tempfh);
++    fclose(tempfh);
++
++    tempfh = fopen(tempfile, "rt,ccs=utf-16le");
++    ok(tempfh != NULL, "can't open tempfile\n");
++    for (i = 1; i < ARRAY_SIZE(wchar_text); i++)
++    {
++        ch = fgetwc(tempfh);
++        ok(ch == wchar_text[i],
++                "got %04hx, expected %04x (unicode[%d])\n", ch, wchar_text[i], i-1);
++    }
++    ch = fgetwc(tempfh);
++    ok(ch == WEOF, "got %04hx, expected WEOF (unicode)\n", ch);
++    fclose(tempfh);
+     unlink(temppath);
+ }
+ 
+

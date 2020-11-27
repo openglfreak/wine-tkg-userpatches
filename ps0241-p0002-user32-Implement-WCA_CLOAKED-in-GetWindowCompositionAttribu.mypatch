@@ -1,0 +1,148 @@
+From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
+Subject: [PATCH 2/6] user32: Implement WCA_CLOAKED in GetWindowCompositionAttribute.
+Message-Id: <7d40ec81cd7f5c21d161b3282ad33ef60f5fef84.1604678337.git.gabrielopcode@gmail.com>
+Date: Fri,  6 Nov 2020 18:03:31 +0200
+In-Reply-To: <c2d924287aa6ead5a30239d694d834427a61cf3c.1604678337.git.gabrielopcode@gmail.com>
+References: <c2d924287aa6ead5a30239d694d834427a61cf3c.1604678337.git.gabrielopcode@gmail.com>
+
+Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
+---
+ dlls/user32/user32.spec |  1 +
+ dlls/user32/win.c       | 43 +++++++++++++++++++++++++++++++++++++++++
+ server/protocol.def     |  8 ++++++++
+ server/window.c         | 26 +++++++++++++++++++++++++
+ 4 files changed, 78 insertions(+)
+
+diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+index 8051ae3..1d87065 100644
+--- a/dlls/user32/user32.spec
++++ b/dlls/user32/user32.spec
+@@ -400,6 +400,7 @@
+ @ stdcall GetUserObjectSecurity (long ptr ptr long ptr)
+ # @ stub GetWinStationInfo
+ @ stdcall GetWindow(long long)
++@ stdcall GetWindowCompositionAttribute(ptr ptr)
+ @ stdcall GetWindowContextHelpId(long)
+ @ stdcall GetWindowDC(long)
+ @ stdcall GetWindowDisplayAffinity(long ptr)
+diff --git a/dlls/user32/win.c b/dlls/user32/win.c
+index 9840a76..6725c14 100644
+--- a/dlls/user32/win.c
++++ b/dlls/user32/win.c
+@@ -4247,6 +4247,49 @@ BOOL WINAPI SetWindowDisplayAffinity(HWND hwnd, DWORD affinity)
+     return FALSE;
+ }
+ 
++/**********************************************************************
++ *              GetWindowCompositionAttribute (USER32.@)
++ */
++BOOL WINAPI GetWindowCompositionAttribute(HWND hwnd, const struct WINCOMPATTRDATA *data)
++{
++    TRACE("(%p, %p)\n", hwnd, data);
++
++    if (!data || !data->pData)
++    {
++        SetLastError(ERROR_NOACCESS);
++        return FALSE;
++    }
++    if (!hwnd || is_broadcast(hwnd))
++    {
++        SetLastError(ERROR_INVALID_HANDLE);
++        return FALSE;
++    }
++
++    switch (data->attribute)
++    {
++    case WCA_CLOAKED:
++        if (data->dataSize < sizeof(DWORD))
++        {
++            SetLastError( ERROR_INSUFFICIENT_BUFFER );
++            return FALSE;
++        }
++        SERVER_START_REQ( get_window_cloaked )
++        {
++            req->handle = wine_server_user_handle( hwnd );
++            if (wine_server_call_err( req )) return FALSE;
++            *(DWORD*)(data->pData) = reply->cloaked;
++        }
++        SERVER_END_REQ;
++        break;
++
++    default:
++        FIXME("unimplemented attribute %d, size %u, for hwnd %p.\n", data->attribute, data->dataSize, hwnd);
++        SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
++        return FALSE;
++    }
++    return TRUE;
++}
++
+ /**********************************************************************
+  *              SetWindowCompositionAttribute (USER32.@)
+  */
+diff --git a/server/protocol.def b/server/protocol.def
+index d96d2e7..1bb4dcb 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -2301,6 +2301,14 @@ enum message_type
+ #define SET_WIN_UNICODE   0x40
+ 
+ 
++/* Get the window's cloaked attribute */
++@REQ(get_window_cloaked)
++    user_handle_t  handle;        /* handle to the window */
++@REPLY
++    unsigned int   cloaked;       /* cloaked attribute (DMW_CLOAKED_*) */
++@END
++
++
+ /* Set the window's cloaked attribute */
+ @REQ(set_window_cloaked)
+     user_handle_t  handle;        /* handle to the window */
+diff --git a/server/window.c b/server/window.c
+index e6fc90c..356995a 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -38,6 +38,7 @@
+ #include "process.h"
+ #include "user.h"
+ #include "unicode.h"
++#include "dwmapi.h"
+ 
+ /* a window property */
+ struct property
+@@ -2172,6 +2173,31 @@ DECL_HANDLER(set_window_info)
+ }
+ 
+ 
++/* get the window's cloaked attribute as DWM_CLOAKED_* value */
++DECL_HANDLER(get_window_cloaked)
++{
++    struct window *win = get_window( req->handle );
++    unsigned int cloaked = 0;
++
++    if (!win)
++    {
++        set_error( STATUS_INVALID_HANDLE );
++        return;
++    }
++    if (!is_desktop_window( win->parent ))
++    {
++        while (!is_desktop_window( win->parent ))
++            win = win->parent;
++        cloaked |= DWM_CLOAKED_INHERITED;
++    }
++
++    if (win->is_cloaked) cloaked |= DWM_CLOAKED_APP;
++    else cloaked = 0;
++
++    reply->cloaked = cloaked;
++}
++
++
+ /* set the window's cloaked attribute */
+ DECL_HANDLER(set_window_cloaked)
+ {
+
+-- 
+2.21.0
+

@@ -1,21 +1,21 @@
 From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
-Subject: [PATCH] ntdll: Implement JobObjectBasicProcessIdList for NtQueryInformationJobObject.
-Message-Id: <c852cd6dffb42d48838a78ae94d5cf647d379d49.1583416343.git.gabrielopcode@gmail.com>
-Date: Thu,  5 Mar 2020 15:52:25 +0200
+Subject: [PATCH resend] ntdll: Implement JobObjectBasicProcessIdList for NtQueryInformationJobObject.
+Message-Id: <e854e9f472588204f87c3abd66cd7898306bfe49.1605274368.git.gabrielopcode@gmail.com>
+Date: Fri, 13 Nov 2020 15:33:54 +0200
 
 Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
 ---
  dlls/kernel32/tests/process.c |  9 ---------
- dlls/ntdll/unix/sync.c        | 28 ++++++++++++++++++++++++++--
+ dlls/ntdll/unix/sync.c        | 26 ++++++++++++++++++++++++--
  server/process.c              | 23 +++++++++++++++++++++++
  server/protocol.def           |  9 +++++++++
- 4 files changed, 58 insertions(+), 11 deletions(-)
+ 4 files changed, 56 insertions(+), 11 deletions(-)
 
 diff --git a/dlls/kernel32/tests/process.c b/dlls/kernel32/tests/process.c
-index 5145965c0a0..7dc4aa4619f 100644
+index 7c6a0ff..afc7126 100644
 --- a/dlls/kernel32/tests/process.c
 +++ b/dlls/kernel32/tests/process.c
-@@ -2754,15 +2754,11 @@ static void test_QueryInformationJobObject(void)
+@@ -2671,15 +2671,11 @@ static void test_QueryInformationJobObject(void)
      pid_list->NumberOfProcessIdsInList  = 42;
      ret = QueryInformationJobObject(job, JobObjectBasicProcessIdList, pid_list,
                                      FIELD_OFFSET(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList[1]), &ret_len);
@@ -31,7 +31,7 @@ index 5145965c0a0..7dc4aa4619f 100644
          expect_eq_d(42, pid_list->NumberOfProcessIdsInList);
      }
  
-@@ -2777,17 +2773,12 @@ static void test_QueryInformationJobObject(void)
+@@ -2694,17 +2690,12 @@ static void test_QueryInformationJobObject(void)
          {
              ULONG_PTR *list = pid_list->ProcessIdList;
  
@@ -50,10 +50,10 @@ index 5145965c0a0..7dc4aa4619f 100644
          }
      }
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
-index d8a8eb526a1..5d0ebf45147 100644
+index bba7af7..e6273f8 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
-@@ -866,10 +866,31 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
+@@ -780,10 +780,32 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
      case JobObjectBasicProcessIdList:
      {
          JOBOBJECT_BASIC_PROCESS_ID_LIST *process = info;
@@ -62,8 +62,9 @@ index d8a8eb526a1..5d0ebf45147 100644
          if (len < sizeof(*process)) return STATUS_INFO_LENGTH_MISMATCH;
 -        memset( process, 0, sizeof(*process) );
 -        if (ret_len) *ret_len = sizeof(*process);
-+        count   = len - FIELD_OFFSET(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList);
-+        count  /= sizeof(process->ProcessIdList[0]);
++
++        count  = len - FIELD_OFFSET(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList);
++        count /= sizeof(process->ProcessIdList[0]);
 +
 +        SERVER_START_REQ( query_job_pids )
 +        {
@@ -87,34 +88,12 @@ index d8a8eb526a1..5d0ebf45147 100644
          return STATUS_SUCCESS;
      }
      case JobObjectExtendedLimitInformation:
-@@ -877,6 +898,7 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
-         JOBOBJECT_EXTENDED_LIMIT_INFORMATION *extended_limit = info;
- 
-         if (len < sizeof(*extended_limit)) return STATUS_INFO_LENGTH_MISMATCH;
-+        FIXME( "stub: %p %u %p %u %p\n", handle, class, info, len, ret_len );
-         memset( extended_limit, 0, sizeof(*extended_limit) );
-         if (ret_len) *ret_len = sizeof(*extended_limit);
-         return STATUS_SUCCESS;
-@@ -886,11 +908,13 @@ NTSTATUS WINAPI NtQueryInformationJobObject( HANDLE handle, JOBOBJECTINFOCLASS c
-         JOBOBJECT_BASIC_LIMIT_INFORMATION *basic_limit = info;
- 
-         if (len < sizeof(*basic_limit)) return STATUS_INFO_LENGTH_MISMATCH;
-+        FIXME( "stub: %p %u %p %u %p\n", handle, class, info, len, ret_len );
-         memset( basic_limit, 0, sizeof(*basic_limit) );
-         if (ret_len) *ret_len = sizeof(*basic_limit);
-         return STATUS_SUCCESS;
-     }
-     default:
-+        FIXME( "stub: %p %u %p %u %p\n", handle, class, info, len, ret_len );
-         return STATUS_NOT_IMPLEMENTED;
-     }
- }
 diff --git a/server/process.c b/server/process.c
-index 49c776fce24..8158fcd4c0b 100644
+index 1786493..5c330bd 100644
 --- a/server/process.c
 +++ b/server/process.c
-@@ -1800,6 +1800,29 @@ DECL_HANDLER(get_job_info)
-     release_object( job );
+@@ -1739,6 +1739,29 @@ DECL_HANDLER(process_in_job)
+     release_object( process );
  }
  
 +/* get a list of the pids associated with the job */
@@ -140,14 +119,14 @@ index 49c776fce24..8158fcd4c0b 100644
 +    }
 +}
 +
- /* terminate all processes associated with the job */
- DECL_HANDLER(terminate_job)
+ /* retrieve information about a job */
+ DECL_HANDLER(get_job_info)
  {
 diff --git a/server/protocol.def b/server/protocol.def
-index 381bd8d8218..a7cb89dc77e 100644
+index a3708f2..4bfe6b2 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -3672,6 +3672,15 @@ struct handle_info
+@@ -3615,6 +3615,15 @@ struct handle_info
  @END
  
  
@@ -163,3 +142,7 @@ index 381bd8d8218..a7cb89dc77e 100644
  /* Set limit flags on a job */
  @REQ(set_job_limits)
      obj_handle_t handle;          /* handle to the job */
+
+-- 
+2.21.0
+

@@ -1,0 +1,47 @@
+From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
+Subject: [PATCH 4/6] user32: Don't consider cloaked windows as foreground candidates.
+Message-Id: <d141a274e2a5d1b7d4260e48e6964890f0a11773.1604678337.git.gabrielopcode@gmail.com>
+Date: Fri,  6 Nov 2020 18:03:33 +0200
+In-Reply-To: <c2d924287aa6ead5a30239d694d834427a61cf3c.1604678337.git.gabrielopcode@gmail.com>
+References: <c2d924287aa6ead5a30239d694d834427a61cf3c.1604678337.git.gabrielopcode@gmail.com>
+
+While manually cloaked windows can be set to foreground, they shouldn't be
+considered as activation candidates when trying to find a window to activate
+(after hiding a window for example).
+
+Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
+---
+ dlls/user32/winpos.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/winpos.c b/dlls/user32/winpos.c
+index 9e5a0c2..24f6208 100644
+--- a/dlls/user32/winpos.c
++++ b/dlls/user32/winpos.c
+@@ -1521,13 +1521,21 @@ void WINAPI SetInternalWindowPos( HWND hwnd, UINT showCmd,
+  */
+ static BOOL can_activate_window( HWND hwnd )
+ {
++    DWORD cloaked = 0;
+     LONG style;
+ 
+     if (!hwnd) return FALSE;
+     style = GetWindowLongW( hwnd, GWL_STYLE );
+     if (!(style & WS_VISIBLE)) return FALSE;
+     if ((style & (WS_POPUP|WS_CHILD)) == WS_CHILD) return FALSE;
+-    return !(style & WS_DISABLED);
++    if (style & WS_DISABLED) return FALSE;
++    SERVER_START_REQ( get_window_cloaked )
++    {
++        req->handle = wine_server_user_handle( hwnd );
++        if (!wine_server_call( req )) cloaked = reply->cloaked;
++    }
++    SERVER_END_REQ;
++    return !cloaked;
+ }
+ 
+ 
+
+-- 
+2.21.0
+

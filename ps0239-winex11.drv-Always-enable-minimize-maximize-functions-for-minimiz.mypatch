@@ -1,0 +1,41 @@
+From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
+Subject: [PATCH v2] winex11.drv: Always enable minimize/maximize functions for minimized windows.
+Message-Id: <9f71cd256bb7cf5f889cf146add4e3906e27c630.1605273936.git.gabrielopcode@gmail.com>
+Date: Fri, 13 Nov 2020 15:26:18 +0200
+
+A window without a minimize or maximize box can still be programmatically
+minimized by the Windows API. However, some WMs will refuse to change the
+state and not allow it to be maximized again, despite it being minimized,
+due to lacking those functions, thus not sending WM_STATE change notifications
+when clicking the minimized window on the taskbar.
+
+Heroes of Might and Magic V does this, for example, when losing focus. It
+minimizes itself. When maximizing it by clicking on the taskbar it won't
+send a WM_STATE change notification (since it was never changed) and fail
+to maximize properly, showing a black screen (the game will still think it
+is minimized).
+
+Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
+---
+ dlls/winex11.drv/window.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 4571739..e2f0623 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -750,6 +750,10 @@ static void set_mwm_hints( struct x11drv_win_data *data, DWORD style, DWORD ex_s
+             if (style & WS_MINIMIZEBOX) mwm_hints.functions |= MWM_FUNC_MINIMIZE;
+             if (style & WS_MAXIMIZEBOX) mwm_hints.functions |= MWM_FUNC_MAXIMIZE;
+             if (style & WS_SYSMENU)     mwm_hints.functions |= MWM_FUNC_CLOSE;
++
++            /* The window can be programmatically minimized even without
++               a minimize box button. Allow the WM to restore it. */
++            if (style & WS_MINIMIZE)    mwm_hints.functions |= MWM_FUNC_MINIMIZE | MWM_FUNC_MAXIMIZE;
+         }
+     }
+ 
+
+-- 
+2.21.0
+

@@ -1,0 +1,42 @@
+From: Arkadiusz Hiler <ahiler@codeweavers.com>
+Subject: [PATCH 1/2] user32: Fix WM_DEVICECHANGE handling.
+Message-Id: <20201125150415.580846-1-ahiler@codeweavers.com>
+Date: Wed, 25 Nov 2020 17:04:14 +0200
+
+WM_DEVICECHANGE's lParam can be either a pointer to a variant of
+DEV_BROADCAST_HDR or an immediate value (usually 0) depending on
+the wParam's value.
+
+This fixes a crash when broadcasting WM_DEVICECHANGE with
+wParam = DBT_DEVNODES_CHANGED, lParam = 0.
+
+Signed-off-by: Arkadiusz Hiler <ahiler@codeweavers.com>
+---
+ dlls/user32/message.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/message.c b/dlls/user32/message.c
+index d8ebbfd32e3..f7ce262f90d 100644
+--- a/dlls/user32/message.c
++++ b/dlls/user32/message.c
+@@ -1023,7 +1023,7 @@ static size_t pack_message( HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
+     case WM_DEVICECHANGE:
+     {
+         DEV_BROADCAST_HDR *header = (DEV_BROADCAST_HDR *)lparam;
+-        push_data( data, header, header->dbch_size );
++        if ((wparam & 0x8000) && header) push_data( data, header, header->dbch_size );
+         return 0;
+     }
+     case WM_WINE_KEYBOARD_LL_HOOK:
+@@ -1426,6 +1426,7 @@ static BOOL unpack_message( HWND hwnd, UINT message, WPARAM *wparam, LPARAM *lpa
+         if (!get_buffer_space( buffer, sizeof(BOOL) )) return FALSE;
+         break;
+     case WM_DEVICECHANGE:
++        if (!(*wparam & 0x8000)) return TRUE;
+         minsize = sizeof(DEV_BROADCAST_HDR);
+         break;
+     case WM_WINE_KEYBOARD_LL_HOOK:
+
+-- 
+2.29.2
+

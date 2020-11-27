@@ -1,0 +1,179 @@
+From: Piotr Caban <piotr@codeweavers.com>
+Subject: [PATCH 1/7] msvcrt: Move btowc implementation to mbcs.c file.
+Message-Id: <392c6b30-ded4-7ed7-f536-322278ea50f4@codeweavers.com>
+Date: Thu, 26 Nov 2020 19:18:57 +0100
+
+Signed-off-by: Piotr Caban <piotr@codeweavers.com>
+---
+  dlls/msvcr100/msvcr100.spec |  2 +-
+  dlls/msvcr110/msvcr110.spec |  2 +-
+  dlls/msvcr120/msvcr120.spec |  2 +-
+  dlls/msvcr80/msvcr80.spec   |  2 +-
+  dlls/msvcr90/msvcr90.spec   |  2 +-
+  dlls/msvcrt/locale.c        | 19 -------------------
+  dlls/msvcrt/mbcs.c          | 19 +++++++++++++++++++
+  dlls/msvcrt/msvcrt.spec     |  2 +-
+  dlls/ucrtbase/ucrtbase.spec |  4 ++--
+  9 files changed, 27 insertions(+), 27 deletions(-)
+
+diff --git a/dlls/msvcr100/msvcr100.spec b/dlls/msvcr100/msvcr100.spec
+index 4afdf0ff9b6..25df4c9e17e 100644
+--- a/dlls/msvcr100/msvcr100.spec
++++ b/dlls/msvcr100/msvcr100.spec
+@@ -1642,7 +1642,7 @@
+ @ cdecl atol(str) MSVCRT_atol
+ @ cdecl bsearch(ptr ptr long long ptr) MSVCRT_bsearch
+ @ cdecl bsearch_s(ptr ptr long long ptr ptr) MSVCRT_bsearch_s
+-@ cdecl btowc(long) MSVCRT_btowc
++@ cdecl btowc(long)
+ @ cdecl calloc(long long) MSVCRT_calloc
+ @ cdecl ceil(double) MSVCRT_ceil
+ @ cdecl -arch=!i386 ceilf(float) MSVCRT_ceilf
+diff --git a/dlls/msvcr110/msvcr110.spec b/dlls/msvcr110/msvcr110.spec
+index f69896c8307..9c70d32c539 100644
+--- a/dlls/msvcr110/msvcr110.spec
++++ b/dlls/msvcr110/msvcr110.spec
+@@ -1999,7 +1999,7 @@
+ @ cdecl atol(str) MSVCRT_atol
+ @ cdecl bsearch(ptr ptr long long ptr) MSVCRT_bsearch
+ @ cdecl bsearch_s(ptr ptr long long ptr ptr) MSVCRT_bsearch_s
+-@ cdecl btowc(long) MSVCRT_btowc
++@ cdecl btowc(long)
+ @ cdecl calloc(long long) MSVCRT_calloc
+ @ cdecl ceil(double) MSVCRT_ceil
+ @ cdecl -arch=!i386 ceilf(float) MSVCRT_ceilf
+diff --git a/dlls/msvcr120/msvcr120.spec b/dlls/msvcr120/msvcr120.spec
+index eb4fab5391a..77021438cb9 100644
+--- a/dlls/msvcr120/msvcr120.spec
++++ b/dlls/msvcr120/msvcr120.spec
+@@ -2035,7 +2035,7 @@
+ @ cdecl -ret64 atoll(str) MSVCRT_atoll
+ @ cdecl bsearch(ptr ptr long long ptr) MSVCRT_bsearch
+ @ cdecl bsearch_s(ptr ptr long long ptr ptr) MSVCRT_bsearch_s
+-@ cdecl btowc(long) MSVCRT_btowc
++@ cdecl btowc(long)
+ @ stub cabs
+ @ stub cabsf
+ @ stub cabsl
+diff --git a/dlls/msvcr80/msvcr80.spec b/dlls/msvcr80/msvcr80.spec
+index 5b3680a503a..56542cbf273 100644
+--- a/dlls/msvcr80/msvcr80.spec
++++ b/dlls/msvcr80/msvcr80.spec
+@@ -1325,7 +1325,7 @@
+ @ cdecl atol(str) MSVCRT_atol
+ @ cdecl bsearch(ptr ptr long long ptr) MSVCRT_bsearch
+ @ cdecl bsearch_s(ptr ptr long long ptr ptr) MSVCRT_bsearch_s
+-@ cdecl btowc(long) MSVCRT_btowc
++@ cdecl btowc(long)
+ @ cdecl calloc(long long) MSVCRT_calloc
+ @ cdecl ceil(double) MSVCRT_ceil
+ @ cdecl -arch=!i386 ceilf(float) MSVCRT_ceilf
+diff --git a/dlls/msvcr90/msvcr90.spec b/dlls/msvcr90/msvcr90.spec
+index a9021a6dc65..b39a72725d9 100644
+--- a/dlls/msvcr90/msvcr90.spec
++++ b/dlls/msvcr90/msvcr90.spec
+@@ -1297,7 +1297,7 @@
+ @ cdecl atol(str) MSVCRT_atol
+ @ cdecl bsearch(ptr ptr long long ptr) MSVCRT_bsearch
+ @ cdecl bsearch_s(ptr ptr long long ptr ptr) MSVCRT_bsearch_s
+-@ cdecl btowc(long) MSVCRT_btowc
++@ cdecl btowc(long)
+ @ cdecl calloc(long long) MSVCRT_calloc
+ @ cdecl ceil(double) MSVCRT_ceil
+ @ cdecl -arch=!i386 ceilf(float) MSVCRT_ceilf
+diff --git a/dlls/msvcrt/locale.c b/dlls/msvcrt/locale.c
+index 73138bfd306..1bc540b717b 100644
+--- a/dlls/msvcrt/locale.c
++++ b/dlls/msvcrt/locale.c
+@@ -988,25 +988,6 @@ int CDECL __crtGetLocaleInfoEx( const WCHAR *locale, LCTYPE type, MSVCRT_wchar_t
+ }
+ #endif
+ 
+-/*********************************************************************
+- *              btowc(MSVCRT.@)
+- */
+-MSVCRT_wint_t CDECL MSVCRT_btowc(int c)
+-{
+-    unsigned char letter = c;
+-    MSVCRT_wchar_t ret;
+-
+-    if(c == MSVCRT_EOF)
+-        return MSVCRT_WEOF;
+-    if(!get_locinfo()->lc_codepage)
+-        return c & 255;
+-    if(!MultiByteToWideChar(get_locinfo()->lc_codepage,
+-                MB_ERR_INVALID_CHARS, (LPCSTR)&letter, 1, &ret, 1))
+-        return MSVCRT_WEOF;
+-
+-    return ret;
+-}
+-
+ /*********************************************************************
+  *              __crtGetStringTypeW(MSVCRT.@)
+  *
+diff --git a/dlls/msvcrt/mbcs.c b/dlls/msvcrt/mbcs.c
+index d4434209a43..89372b145a4 100644
+--- a/dlls/msvcrt/mbcs.c
++++ b/dlls/msvcrt/mbcs.c
+@@ -2436,6 +2436,25 @@ int CDECL MSVCRT_mbtowc(MSVCRT_wchar_t *dst, const char* str, MSVCRT_size_t n)
+     return MSVCRT_mbtowc_l(dst, str, n, NULL);
+ }
+ 
++/*********************************************************************
++ *              btowc(MSVCRT.@)
++ */
++MSVCRT_wint_t CDECL btowc(int c)
++{
++    unsigned char letter = c;
++    MSVCRT_wchar_t ret;
++
++    if(c == MSVCRT_EOF)
++        return MSVCRT_WEOF;
++    if(!get_locinfo()->lc_codepage)
++        return c & 255;
++    if(!MultiByteToWideChar(get_locinfo()->lc_codepage,
++                MB_ERR_INVALID_CHARS, (LPCSTR)&letter, 1, &ret, 1))
++        return MSVCRT_WEOF;
++
++    return ret;
++}
++
+ /*********************************************************************
+  *              mbrtowc(MSVCRT.@)
+  */
+diff --git a/dlls/msvcrt/msvcrt.spec b/dlls/msvcrt/msvcrt.spec
+index 21fe7330113..ea53da539ba 100644
+--- a/dlls/msvcrt/msvcrt.spec
++++ b/dlls/msvcrt/msvcrt.spec
+@@ -1258,7 +1258,7 @@
+ @ cdecl atol(str) MSVCRT_atol
+ @ cdecl bsearch(ptr ptr long long ptr) MSVCRT_bsearch
+ @ cdecl bsearch_s(ptr ptr long long ptr ptr) MSVCRT_bsearch_s
+-@ cdecl btowc(long) MSVCRT_btowc
++@ cdecl btowc(long)
+ @ cdecl calloc(long long) MSVCRT_calloc
+ @ cdecl ceil(double) MSVCRT_ceil
+ @ cdecl -arch=!i386 ceilf(float) MSVCRT_ceilf
+diff --git a/dlls/ucrtbase/ucrtbase.spec b/dlls/ucrtbase/ucrtbase.spec
+index 02bcad8cc8f..1f8fce6a016 100644
+--- a/dlls/ucrtbase/ucrtbase.spec
++++ b/dlls/ucrtbase/ucrtbase.spec
+@@ -1582,7 +1582,7 @@
+ @ cdecl -ret64 _o_atoll(str) MSVCRT_atoll
+ @ cdecl _o_bsearch(ptr ptr long long ptr) MSVCRT_bsearch
+ @ cdecl _o_bsearch_s(ptr ptr long long ptr ptr) MSVCRT_bsearch_s
+-@ cdecl _o_btowc(long) MSVCRT_btowc
++@ cdecl _o_btowc(long) btowc
+ @ cdecl _o_calloc(long long) MSVCRT_calloc
+ @ cdecl _o_cbrt(double) MSVCR120_cbrt
+ @ cdecl _o_cbrtf(float) MSVCR120_cbrtf
+@@ -2176,7 +2176,7 @@
+ @ cdecl -ret64 atoll(str) MSVCRT_atoll
+ @ cdecl bsearch(ptr ptr long long ptr) MSVCRT_bsearch
+ @ cdecl bsearch_s(ptr ptr long long ptr ptr) MSVCRT_bsearch_s
+-@ cdecl btowc(long) MSVCRT_btowc
++@ cdecl btowc(long)
+ @ stub c16rtomb
+ @ stub c32rtomb
+ @ stub cabs
+

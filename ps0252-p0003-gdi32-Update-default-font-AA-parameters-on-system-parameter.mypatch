@@ -1,0 +1,89 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH 3/4] gdi32: Update default font AA parameters on system parameters update.
+Message-Id: <20201127202933.258992-3-pgofman@codeweavers.com>
+Date: Fri, 27 Nov 2020 23:29:32 +0300
+In-Reply-To: <20201127202933.258992-1-pgofman@codeweavers.com>
+References: <20201127202933.258992-1-pgofman@codeweavers.com>
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=45857
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/gdi32/font.c | 33 +++++++++++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/dlls/gdi32/font.c b/dlls/gdi32/font.c
+index cb170c0b862..9a860f103a4 100644
+--- a/dlls/gdi32/font.c
++++ b/dlls/gdi32/font.c
+@@ -42,6 +42,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(font);
+ 
+ static HKEY wine_fonts_key;
+ static HKEY wine_fonts_cache_key;
++static HKEY volatile_parameters_key;
++static HANDLE volatile_parameters_changed_event;
+ 
+ struct font_physdev
+ {
+@@ -97,6 +99,8 @@ static struct font_gamma_ramp font_gamma_ramp;
+ static void add_face_to_cache( struct gdi_font_face *face );
+ static void remove_face_from_cache( struct gdi_font_face *face );
+ 
++static void update_font_options(void);
++
+ static inline WCHAR facename_tolower( WCHAR c )
+ {
+     if (c >= 'A' && c <= 'Z') return c - 'A' + 'a';
+@@ -3739,6 +3743,8 @@ static HFONT CDECL font_SelectFont( PHYSDEV dev, HFONT hfont, UINT *aa_flags )
+             *aa_flags = font->aa_flags;
+             if (!*aa_flags)
+             {
++                update_font_options();
++
+                 if (lf.lfQuality == CLEARTYPE_QUALITY || lf.lfQuality == CLEARTYPE_NATURAL_QUALITY)
+                     *aa_flags = subpixel_orientation;
+                 else
+@@ -3919,6 +3925,9 @@ static void init_font_options(void)
+         antialias_fakes = (wcschr(L"yYtT1", buffer[0]) != NULL);
+     }
+ 
++    font_smoothing = 0;
++    subpixel_orientation = 0;
++
+     if (!RegOpenKeyW( HKEY_CURRENT_USER, L"Control Panel\\Desktop", &key ))
+     {
+         RegOpenKeyW( HKEY_CURRENT_USER, L"Software\\Wine\\Temporary System Parameters\\Control Panel\\Desktop",
+@@ -3965,6 +3974,30 @@ static void init_font_options(void)
+     TRACE("gamma %d\n", font_gamma_ramp.gamma);
+ }
+ 
++static void update_font_options(void)
++{
++    EnterCriticalSection( &font_cs );
++    if (!volatile_parameters_key)
++    {
++        if (RegOpenKeyW( HKEY_CURRENT_USER, L"Software\\Wine\\Temporary System Parameters\\Control Panel\\Desktop",
++                &volatile_parameters_key ))
++            goto done;
++        volatile_parameters_changed_event = CreateEventA( NULL, FALSE, TRUE, NULL );
++    }
++    if (WaitForSingleObject( volatile_parameters_changed_event, 0 ) == WAIT_OBJECT_0)
++    {
++        if (RegNotifyChangeKeyValue( volatile_parameters_key, FALSE,
++                REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_THREAD_AGNOSTIC,
++                volatile_parameters_changed_event, TRUE))
++            ERR("Error registering registry change notification.\n");
++
++        init_font_options();
++    }
++
++done:
++    LeaveCriticalSection( &font_cs );
++}
++
+ 
+ static void FONT_LogFontAToW( const LOGFONTA *fontA, LPLOGFONTW fontW )
+ {
+
+-- 
+2.28.0
+

@@ -292,7 +292,7 @@ index ff5a175027c..2ccc3b1d30e 100644
  }
  
  
-@@ -603,29 +706,39 @@ static WINE_MODREF **grow_module_deps( WINE_MODREF *wm, int count )
+@@ -603,30 +706,39 @@ static WINE_MODREF **grow_module_deps( WINE_MODREF *wm, int count )
   * Find the final function pointer for a forwarded function.
   * The loader_section must be locked while calling this function.
   */
@@ -312,13 +312,14 @@ index ff5a175027c..2ccc3b1d30e 100644
 +    char *name;
  
      if (!end) return NULL;
--    if ((end - forward) * sizeof(WCHAR) > sizeof(buffer) - sizeof(dllW))
+-    if ((end - forward) * sizeof(WCHAR) > sizeof(buffer) - sizeof(L".dll"))
 -    {
--        if (!(mod_name = RtlAllocateHeap( GetProcessHeap(), 0, (end - forward + sizeof(dllW)) * sizeof(WCHAR) )))
+-        if (!(mod_name = RtlAllocateHeap( GetProcessHeap(), 0,
+-                                          (end - forward + sizeof(L".dll")) * sizeof(WCHAR) )))
 -            return NULL;
 -    }
 +
-+    modname_size = (end - forward + sizeof(dllW)) * sizeof(WCHAR);
++    modname_size = (end - forward + sizeof(L".dll")) * sizeof(WCHAR);
 +    if (!(mod_name = buffer = RtlAllocateHeap( GetProcessHeap(), 0, modname_size + strlen( end + 1 ) + 1 )))
 +        return NULL;
 +    name = (char *)buffer + modname_size;
@@ -326,7 +327,7 @@ index ff5a175027c..2ccc3b1d30e 100644
      ascii_to_unicode( mod_name, forward, end - forward );
      mod_name[end - forward] = 0;
      if (!wcschr( mod_name, '.' ))
-         memcpy( mod_name + (end - forward), dllW, sizeof(dllW) );
+         memcpy( mod_name + (end - forward), L".dll", sizeof(L".dll") );
  
 +    strcpy( name, end + 1 );
 +
@@ -337,7 +338,7 @@ index ff5a175027c..2ccc3b1d30e 100644
      {
 -        TRACE( "delay loading %s for '%s'\n", debugstr_w(mod_name), forward );
 +        TRACE( "delay loading %s.\n", debugstr_w(mod_name) );
-         if (load_dll( load_path, mod_name, dllW, 0, &wm ) == STATUS_SUCCESS &&
+         if (load_dll( load_path, mod_name, L".dll", 0, &wm ) == STATUS_SUCCESS &&
              !(wm->ldr.Flags & LDR_DONT_RESOLVE_REFS))
          {
 @@ -636,37 +749,36 @@ static FARPROC find_forwarded_export( HMODULE module, const char *forward, LPCWS
@@ -537,9 +538,9 @@ index ff5a175027c..2ccc3b1d30e 100644
  
      prev = current_modref;
      current_modref = wm;
--    if (!(status = load_dll( load_path, mscoreeW, NULL, 0, &imp ))) wm->deps[0] = imp;
+-    if (!(status = load_dll( load_path, L"mscoree.dll", NULL, 0, &imp ))) wm->deps[0] = imp;
 +    unlock_modref( wm );
-+    if (!(status = load_dll( load_path, mscoreeW, NULL, 0, &imp )))
++    if (!(status = load_dll( load_path, L"mscoree.dll", NULL, 0, &imp )))
 +        wm->deps[0] = imp;
 +
      current_modref = prev;
@@ -927,13 +928,14 @@ index ff5a175027c..2ccc3b1d30e 100644
              {
                  if (last_failed_modref)
                      ERR( "%s failed to initialize, aborting\n",
-@@ -4051,16 +4260,21 @@ static NTSTATUS process_init(void)
+@@ -4051,17 +4260,22 @@ static NTSTATUS process_init(void)
                            &meminfo, sizeof(meminfo), NULL );
      status = build_builtin_module( params->DllPath.Buffer, &nt_name, meminfo.AllocationBase, 0, &wm );
      assert( !status );
 +    unlock_modref( wm );
  
-     if ((status = load_dll( params->DllPath.Buffer, kernel32W, NULL, 0, &wm )) != STATUS_SUCCESS)
+     if ((status = load_dll( params->DllPath.Buffer, L"C:\\windows\\system32\\kernel32.dll",
+                             NULL, 0, &wm )) != STATUS_SUCCESS)
      {
          MESSAGE( "wine: could not load kernel32.dll, status %x\n", status );
          NtTerminateProcess( GetCurrentProcess(), status );
@@ -968,12 +970,6 @@ index ff5a175027c..2ccc3b1d30e 100644
      RemoveEntryList( &wm->ldr.InLoadOrderLinks );
      InsertHeadList( &peb->LdrData->InLoadOrderModuleList, &wm->ldr.InLoadOrderLinks );
      RemoveEntryList( &wm->ldr.InMemoryOrderLinks );
-#     InsertHeadList( &peb->LdrData->InMemoryOrderModuleList, &wm->ldr.InMemoryOrderLinks );
-#+
-#+    unlock_modref( wm );
-# 
-#     RtlCreateUserStack( 0, 0, 0, 0x10000, 0x10000, &stack );
-#     teb->Tib.StackBase = stack.StackBase;
 
 -- 
 2.28.0

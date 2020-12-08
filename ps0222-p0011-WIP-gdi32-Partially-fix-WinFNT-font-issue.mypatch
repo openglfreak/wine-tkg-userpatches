@@ -1,7 +1,7 @@
-From dac52452bcda54a0ac866b4c999f98d7d81b8395 Mon Sep 17 00:00:00 2001
+From 7dfe5729f4e5b015b360cf114f41f7cc5fe4977d Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Fri, 6 Nov 2020 19:53:50 +0100
-Subject: [PATCH 14/16] WIP: gdi32: Partially fix WinFNT font issue.
+Subject: [PATCH 11/11] WIP: gdi32: Partially fix WinFNT font issue.
 
 ---
  dlls/gdi32/font.c       | 24 ++++++++++++++----------
@@ -10,10 +10,10 @@ Subject: [PATCH 14/16] WIP: gdi32: Partially fix WinFNT font issue.
  3 files changed, 29 insertions(+), 25 deletions(-)
 
 diff --git a/dlls/gdi32/font.c b/dlls/gdi32/font.c
-index fcf9aeb5bf1..a796418bf71 100644
+index 4beefc4dc03..9e35ce2968a 100644
 --- a/dlls/gdi32/font.c
 +++ b/dlls/gdi32/font.c
-@@ -861,14 +861,6 @@ static int remove_font( const WCHAR *file, DWORD flags )
+@@ -883,14 +883,6 @@ static int remove_font( const WCHAR *file, DWORD flags )
      return count;
  }
  
@@ -28,7 +28,7 @@ index fcf9aeb5bf1..a796418bf71 100644
  static inline int style_order( const struct gdi_font_face *face )
  {
      switch (face->ntmFlags & (NTM_REGULAR | NTM_BOLD | NTM_ITALIC))
-@@ -888,13 +880,25 @@ static inline int style_order( const struct gdi_font_face *face )
+@@ -910,13 +902,25 @@ static inline int style_order( const struct gdi_font_face *face )
      }
  }
  
@@ -36,7 +36,7 @@ index fcf9aeb5bf1..a796418bf71 100644
 +{
 +    int ret;
 +    if ((ret = style_order(f1) - style_order(f2))) return ret;
-+    if ((ret = wcsicmp( f1->full_name, f2->full_name ))) return ret;
++    if ((ret = facename_compare( f1->full_name, f2->full_name, -1 ))) return ret;
 +    if (f1->scalable && f2->scalable) return 0;
 +    if ((ret = (f1->fs.fsCsb[0] - f2->fs.fsCsb[0]))) return ret;
 +    if ((ret = (f1->size.y_ppem - f2->size.y_ppem))) return ret;
@@ -55,7 +55,7 @@ index fcf9aeb5bf1..a796418bf71 100644
          {
              TRACE( "Already loaded face %s in family %s, original version %x, new version %x\n",
                     debugstr_w(face->full_name), debugstr_w(family->family_name),
-@@ -930,7 +934,7 @@ static BOOL insert_face_in_family_list( struct gdi_font_face *face, struct gdi_f
+@@ -952,7 +956,7 @@ static BOOL insert_face_in_family_list( struct gdi_font_face *face, struct gdi_f
                  return TRUE;
              }
          }
@@ -65,10 +65,10 @@ index fcf9aeb5bf1..a796418bf71 100644
  
      TRACE( "Adding face %s in family %s from %s\n", debugstr_w(face->full_name),
 diff --git a/dlls/gdi32/opentype.c b/dlls/gdi32/opentype.c
-index 5af9145f138..b15ee76e844 100644
+index eb0a93a8a30..87b29c0cda5 100644
 --- a/dlls/gdi32/opentype.c
 +++ b/dlls/gdi32/opentype.c
-@@ -903,20 +903,20 @@ BOOL winfnt_parse_font_face( const void *data, size_t size, DWORD index, DWORD *
+@@ -880,20 +880,20 @@ BOOL winfnt_parse_font_face( const void *data, size_t size, DWORD index, DWORD *
          switch (fnt_header->fi.dfCharSet)
          {
              case ANSI_CHARSET:        fs->fsCsb[0] = FS_LATIN1; break;
@@ -104,7 +104,7 @@ index 5af9145f138..b15ee76e844 100644
          }
  
 diff --git a/dlls/gdi32/tests/font.c b/dlls/gdi32/tests/font.c
-index ade4387c299..c3ffd371629 100644
+index afe1f82fd09..f2743a51406 100644
 --- a/dlls/gdi32/tests/font.c
 +++ b/dlls/gdi32/tests/font.c
 @@ -1001,7 +1001,7 @@ static void test_bitmap_font_metrics(void)

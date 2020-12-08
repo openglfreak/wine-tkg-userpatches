@@ -1,0 +1,51 @@
+From e8b525ad3b4f376b8c34242b26f517bcab41cf6a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 3 Dec 2020 11:52:27 +0100
+Subject: [PATCH 10/12] winhttp: Handle SEC_I_RENEGOTIATE after DecryptMessage.
+
+By performing renegotiation as we should, instead of incorrectly
+returning ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED.
+
+MSDN says we should pass returned SECBUFFER_EXTRA as SECBUFFER_TOKEN,
+so we also do that, although it's usually empty.
+---
+ dlls/winhttp/net.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winhttp/net.c b/dlls/winhttp/net.c
+index 2ba9b2dc65a..ba262a83391 100644
+--- a/dlls/winhttp/net.c
++++ b/dlls/winhttp/net.c
+@@ -454,8 +454,10 @@ DWORD netconn_send( struct netconn *conn, const void *msg, size_t len, int *sent
+ 
+ static DWORD read_ssl_chunk( struct netconn *conn, void *buf, SIZE_T buf_size, SIZE_T *ret_size, BOOL *eof )
+ {
++    const DWORD isc_req_flags = ISC_REQ_ALLOCATE_MEMORY|ISC_REQ_USE_SESSION_KEY|ISC_REQ_CONFIDENTIALITY
++        |ISC_REQ_SEQUENCE_DETECT|ISC_REQ_REPLAY_DETECT|ISC_REQ_USE_SUPPLIED_CREDS;
+     const SIZE_T ssl_buf_size = conn->ssl_sizes.cbHeader+conn->ssl_sizes.cbMaximumMessage+conn->ssl_sizes.cbTrailer;
+-    SecBuffer bufs[4];
++    SecBuffer bufs[4], tmp;
+     SecBufferDesc buf_desc = {SECBUFFER_VERSION, ARRAY_SIZE(bufs), bufs};
+     SSIZE_T size, buf_len;
+     unsigned int i;
+@@ -496,7 +498,16 @@ static DWORD read_ssl_chunk( struct netconn *conn, void *buf, SIZE_T buf_size, S
+ 
+         case SEC_I_RENEGOTIATE:
+             TRACE("renegotiate\n");
+-            return ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED;
++            memset(&tmp, 0, sizeof(tmp));
++            for(i = 0; i < ARRAY_SIZE(bufs); i++) {
++                if(bufs[i].BufferType == SECBUFFER_EXTRA) tmp = bufs[i];
++            }
++            memset(bufs, 0, sizeof(bufs));
++            bufs[0] = tmp;
++            bufs[0].BufferType = SECBUFFER_TOKEN;
++            res = netconn_negotiate(conn, NULL, &conn->ssl_ctx, conn->host->hostname, isc_req_flags, &buf_desc, NULL);
++            if (res != SEC_E_OK) return res;
++            break;
+ 
+         case SEC_I_CONTEXT_EXPIRED:
+             TRACE("context expired\n");
+-- 
+2.29.2
+

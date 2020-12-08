@@ -1,0 +1,38 @@
+From fe67fb9b91bc29fa9691de9ff177d9bc98f6717a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 3 Dec 2020 11:26:56 +0100
+Subject: [PATCH 11/12] secur32: Perform TLS handshake even if input is empty.
+
+Instead of immediately returning even if we don't know how much.
+
+This may be the case if we received SEC_I_RENEGOTIATE status, and in any
+case the handshake will tell us if more data is needed.
+---
+ dlls/secur32/schannel.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/secur32/schannel.c b/dlls/secur32/schannel.c
+index e76a3e46c34..918f4eff8d2 100644
+--- a/dlls/secur32/schannel.c
++++ b/dlls/secur32/schannel.c
+@@ -881,7 +881,7 @@ static SECURITY_STATUS SEC_ENTRY schan_InitializeSecurityContextW(
+             ptr += record_size;
+         }
+ 
+-        if (!expected_size)
++        if (!expected_size && record_size)
+         {
+             TRACE("Expected at least %lu bytes, but buffer only contains %u bytes.\n",
+                     max(6, record_size), buffer->cbBuffer);
+@@ -912,6 +912,8 @@ static SECURITY_STATUS SEC_ENTRY schan_InitializeSecurityContextW(
+     {
+         SecBuffer *buffer = &out_buffers->desc->pBuffers[0];
+         buffer->cbBuffer = 0;
++        /* Nothing to read or to send, but we got SEC_I_CONTINUE_NEEDED, it means missing input */
++        if (!expected_size && ret == SEC_I_CONTINUE_NEEDED) ret = SEC_E_INCOMPLETE_MESSAGE;
+     }
+ 
+     if(ctx->transport.in.offset && ctx->transport.in.offset != pInput->pBuffers[0].cbBuffer) {
+-- 
+2.29.2
+

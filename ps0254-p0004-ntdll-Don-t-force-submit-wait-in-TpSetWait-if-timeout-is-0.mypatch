@@ -1,0 +1,49 @@
+From bb55fd57e11bc1c40a0969366ff6423a72310cac Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 30 Nov 2020 16:48:51 +0100
+Subject: [PATCH 04/12] ntdll: Don't force submit wait in TpSetWait if timeout
+ is 0.
+
+It'll be submitted eventually, no need to force it and it makes support
+for WT_EXECUTEINWAITTHREAD flag harder.
+---
+ dlls/ntdll/threadpool.c | 9 ---------
+ 1 file changed, 9 deletions(-)
+
+diff --git a/dlls/ntdll/threadpool.c b/dlls/ntdll/threadpool.c
+index db645118059..bef9a11905e 100644
+--- a/dlls/ntdll/threadpool.c
++++ b/dlls/ntdll/threadpool.c
+@@ -2941,7 +2941,6 @@ VOID WINAPI TpSetWait( TP_WAIT *wait, HANDLE handle, LARGE_INTEGER *timeout )
+ {
+     struct threadpool_object *this = impl_from_TP_WAIT( wait );
+     ULONGLONG timestamp = TIMEOUT_INFINITE;
+-    BOOL submit_wait = FALSE;
+ 
+     TRACE( "%p %p %p\n", wait, handle, timeout );
+ 
+@@ -2965,11 +2964,6 @@ VOID WINAPI TpSetWait( TP_WAIT *wait, HANDLE handle, LARGE_INTEGER *timeout )
+                 NtQuerySystemTime( &now );
+                 timestamp = now.QuadPart - timestamp;
+             }
+-            else if (!timestamp)
+-            {
+-                submit_wait = TRUE;
+-                handle = NULL;
+-            }
+         }
+ 
+         /* Add wait object back into one of the queues. */
+@@ -2990,9 +2984,6 @@ VOID WINAPI TpSetWait( TP_WAIT *wait, HANDLE handle, LARGE_INTEGER *timeout )
+     }
+ 
+     leave_critical_section( &waitqueue.cs );
+-
+-    if (submit_wait)
+-        tp_object_submit( this, FALSE );
+ }
+ 
+ /***********************************************************************
+-- 
+2.29.2
+

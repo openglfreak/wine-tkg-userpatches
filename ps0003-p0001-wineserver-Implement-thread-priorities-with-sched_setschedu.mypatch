@@ -1,28 +1,20 @@
-From: "Rémi Bernon" <rbernon@codeweavers.com>
-Subject: [PATCH v3 1/2] wineserver: Implement thread priorities with sched_setscheduler / setpriority.
-Message-Id: <20191009090118.25007-1-rbernon@codeweavers.com>
-Date: Wed,  9 Oct 2019 11:01:17 +0200
+commit 6a033150c36bea6d704b7537c219e9b13b4387ec
+Author: Rémi Bernon <rbernon@codeweavers.com>
+Date:   Tue Dec 1 22:49:26 2020 +0100
 
-This does not report permission errors in order to avoid any breaking
-change, only the parameter checks that were already there are returning
-errors.
-
-We only call setpriority on Linux, as unix_tid is a Mach port on Mac OS.
-
-Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
----
- configure.ac        |  19 +++++++
- include/config.h.in |   6 ++
- server/process.c    |  20 ++++++-
- server/thread.c     | 157 ++++++++++++++++++++++++++++++++++++++++++++++------
- server/thread.h     |   1 +
- 5 files changed, 186 insertions(+), 17 deletions(-)
+    server: Implement thread priorities on Linux.
+    
+    This does not report permission errors in order to avoid any breaking
+    change, only the parameter checks that were already there are returning
+    errors.
+    
+    Only call setpriority on Linux, as unix_tid is a Mach port on Mac OS.
 
 diff --git a/configure.ac b/configure.ac
-index cd2c01a3f3d..06d6920973e 100644
+index 020fd19256f..59a8668b609 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -2364,6 +2364,25 @@ then
+@@ -2269,6 +2269,25 @@ then
    AC_DEFINE(HAVE_SCHED_SETAFFINITY, 1, [Define to 1 if you have the `sched_setaffinity' function.])
  fi
  
@@ -48,35 +40,11 @@ index cd2c01a3f3d..06d6920973e 100644
  AC_CACHE_CHECK([for fallocate],wine_cv_have_fallocate,
                  AC_LINK_IFELSE([AC_LANG_PROGRAM(
  [[#define _GNU_SOURCE
-diff --git a/include/config.h.in b/include/config.h.in
-index 853aa3887c5..2222f4823e5 100644
---- a/include/config.h.in
-+++ b/include/config.h.in
-@@ -786,6 +786,9 @@
- /* Define to 1 if you have the `sched_setaffinity' function. */
- #undef HAVE_SCHED_SETAFFINITY
- 
-+/* Define to 1 if you have the `sched_setscheduler' function. */
-+#undef HAVE_SCHED_SETSCHEDULER
-+
- /* Define to 1 if you have the `sched_yield' function. */
- #undef HAVE_SCHED_YIELD
- 
-@@ -810,6 +813,9 @@
- /* Define to 1 if you have the `select' function. */
- #undef HAVE_SELECT
- 
-+/* Define to 1 if you have the `setpriority' function. */
-+#undef HAVE_SETPRIORITY
-+
- /* Define to 1 if you have the `setproctitle' function. */
- #undef HAVE_SETPROCTITLE
- 
 diff --git a/server/process.c b/server/process.c
-index c4f51dcad30..49c776fce24 100644
+index 4a366b4d3b0..e3a905f38e6 100644
 --- a/server/process.c
 +++ b/server/process.c
-@@ -1534,6 +1534,24 @@ DECL_HANDLER(get_process_vm_counters)
+@@ -1495,6 +1495,24 @@ DECL_HANDLER(get_process_vm_counters)
      release_object( process );
  }
  
@@ -101,7 +69,7 @@ index c4f51dcad30..49c776fce24 100644
  static void set_process_affinity( struct process *process, affinity_t affinity )
  {
      struct thread *thread;
-@@ -1559,7 +1577,7 @@ DECL_HANDLER(set_process_info)
+@@ -1520,7 +1538,7 @@ DECL_HANDLER(set_process_info)
  
      if ((process = get_process_from_handle( req->handle, PROCESS_SET_INFORMATION )))
      {
@@ -111,7 +79,7 @@ index c4f51dcad30..49c776fce24 100644
          release_object( process );
      }
 diff --git a/server/thread.c b/server/thread.c
-index 1fb3603f2a7..51a4ca05a22 100644
+index 942a8ff8389..6b53b518d98 100644
 --- a/server/thread.c
 +++ b/server/thread.c
 @@ -38,6 +38,12 @@
@@ -127,15 +95,7 @@ index 1fb3603f2a7..51a4ca05a22 100644
  
  #include "ntstatus.h"
  #define WIN32_NO_STATUS
-@@ -332,6 +338,7 @@ static inline void init_thread_structure( struct thread *thread )
-     thread->state           = RUNNING;
-     thread->exit_code       = 0;
-     thread->priority        = 0;
-+    thread->priority_applied = 0;
-     thread->suspend         = 0;
-     thread->dbg_hidden      = 0;
-     thread->desktop_users   = 0;
-@@ -636,31 +643,167 @@ affinity_t get_thread_affinity( struct thread *thread )
+@@ -592,31 +598,149 @@ affinity_t get_thread_affinity( struct thread *thread )
      return mask;
  }
  
@@ -232,6 +192,9 @@ index 1fb3603f2a7..51a4ca05a22 100644
 +        min = THREAD_PRIORITY_REALTIME_LOWEST;
 +    }
 +
++    if (thread->unix_tid == -1)
++        return 0;
++
 +    if ((priority < min || priority > max) &&
 +        priority != THREAD_PRIORITY_IDLE &&
 +        priority != THREAD_PRIORITY_TIME_CRITICAL)
@@ -241,14 +204,9 @@ index 1fb3603f2a7..51a4ca05a22 100644
 +    }
 +
 +    if (thread->process->priority == priority_class &&
-+        thread->priority == priority &&
-+        thread->priority_applied)
++        thread->priority == priority)
 +        return 0;
-+
 +    thread->priority = priority;
-+    thread->priority_applied = 0;
-+    if (thread->unix_tid == -1)
-+        return 0;
 +
 +#ifdef __linux__
 +    if (priority_class == PROCESS_PRIOCLASS_REALTIME)
@@ -256,20 +214,11 @@ index 1fb3603f2a7..51a4ca05a22 100644
 +#ifdef HAVE_SCHED_SETSCHEDULER
 +        struct sched_param param;
 +        if (sched_getparam( thread->unix_tid, &param ) != 0)
-+        {
-+            thread->priority_applied = 0;
-+            return 0;
-+        }
++            return 0; /* ignore errors for now */
 +
 +        param.sched_priority = get_unix_priority( priority_class, priority );
 +        if (sched_setscheduler( thread->unix_tid, SCHED_RR|SCHED_RESET_ON_FORK, &param ) == 0)
-+        {
-+            thread->priority_applied = 1;
 +            return 0;
-+        }
-+#else
-+        thread->priority_applied = 1;
-+        return 0;
 +#endif
 +    }
 +    else
@@ -277,18 +226,11 @@ index 1fb3603f2a7..51a4ca05a22 100644
 +#ifdef HAVE_SETPRIORITY
 +        if (setpriority( PRIO_PROCESS, thread->unix_tid,
 +                         get_unix_priority( priority_class, priority ) ) == 0)
-+        {
-+            thread->priority_applied = 1;
 +            return 0;
-+        }
-+#else
-+        thread->priority_applied = 1;
-+        return 0;
 +#endif
 +    }
 +#endif
 +
-+    thread->priority_applied = 0;
 +    return 0; /* ignore errors for now */
 +}
 +
@@ -319,7 +261,7 @@ index 1fb3603f2a7..51a4ca05a22 100644
      }
      if (req->mask & SET_THREAD_INFO_AFFINITY)
      {
-@@ -1546,6 +1676,7 @@ DECL_HANDLER(init_thread)
+@@ -1450,6 +1577,7 @@ DECL_HANDLER(init_thread)
              process->unix_pid = -1;  /* can happen with linuxthreads */
          init_thread_context( current );
          generate_debug_event( current, CREATE_THREAD_DEBUG_EVENT, &req->entry );
@@ -328,18 +270,10 @@ index 1fb3603f2a7..51a4ca05a22 100644
      }
      debug_level = max( debug_level, req->debug_level );
 diff --git a/server/thread.h b/server/thread.h
-index 53627631343..936b82b0811 100644
+index 650bc44628d..4eb94b4d03b 100644
 --- a/server/thread.h
 +++ b/server/thread.h
-@@ -89,6 +89,7 @@ struct thread
-     client_ptr_t           entry_point;   /* entry point (in client address space) */
-     affinity_t             affinity;      /* affinity mask */
-     int                    priority;      /* priority level */
-+    int                    priority_applied;    /* priority level successfully applied status */
-     int                    suspend;       /* suspend count */
-     int                    dbg_hidden;    /* hidden from debugger */
-     obj_handle_t           desktop;       /* desktop handle */
-@@ -124,6 +125,7 @@ extern void thread_cancel_apc( struct thread *thread, struct object *owner, enum
+@@ -119,6 +119,7 @@ extern void thread_cancel_apc( struct thread *thread, struct object *owner, enum
  extern int thread_add_inflight_fd( struct thread *thread, int client, int server );
  extern int thread_get_inflight_fd( struct thread *thread, int client );
  extern struct token *thread_get_impersonation_token( struct thread *thread );

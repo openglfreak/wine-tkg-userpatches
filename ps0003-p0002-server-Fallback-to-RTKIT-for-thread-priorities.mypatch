@@ -1,12 +1,11 @@
 commit ebf411c1e5f20c6db7962cea587d6169246078e0
 Author: Rémi Bernon <rbernon@codeweavers.com>
 Date:   Wed Jul 3 10:54:06 2019 +0200
+Subject: [PATCH 2/2] server: Fallback to RTKIT for thread priorities.
 
-    server: Fallback to RTKIT for thread priorities.
-    
-    sched_setscheduler and setpriority usually require elevated privileges
-    to succeed and most Linux distributions ship rtkit daemon with a dbus
-    interface to enable unprivileged control of some scheduling parameters.
+sched_setscheduler and setpriority usually require elevated privileges
+to succeed and most Linux distributions ship rtkit daemon with a dbus
+interface to enable unprivileged control of some scheduling parameters.
 
 diff --git a/configure.ac b/configure.ac
 index 59a8668b609..9457ed3103f 100644
@@ -21,20 +20,6 @@ index 59a8668b609..9457ed3103f 100644
              [WINE_CHECK_SONAME(dbus-1, dbus_connection_close,,[DBUS_CFLAGS=""],[$DBUS_LIBS])],
              [DBUS_CFLAGS=""])])
  fi
-diff --git a/include/config.h.in b/include/config.h.in
-index c131f8f22bc..2cef2dc64dd 100644
---- a/include/config.h.in
-+++ b/include/config.h.in
-@@ -91,6 +91,9 @@
- /* Define to 1 if you have the <cups/ppd.h> header file. */
- #undef HAVE_CUPS_PPD_H
- 
-+/* Define to 1 if you have the <dbus/dbus.h> header file. */
-+#undef HAVE_DBUS_DBUS_H
-+
- /* Define to 1 if you have the <dirent.h> header file. */
- #undef HAVE_DIRENT_H
- 
 diff --git a/server/Makefile.in b/server/Makefile.in
 index 4264e3db108..43be2fe3ddb 100644
 --- a/server/Makefile.in
@@ -130,7 +115,7 @@ index 6b53b518d98..cbabf9c7070 100644
  
  #ifdef __i386__
  static const unsigned int supported_cpus = CPU_FLAG(CPU_x86);
-@@ -598,7 +669,8 @@ affinity_t get_thread_affinity( struct thread *thread )
+@@ -598,7 +670,8 @@ affinity_t get_thread_affinity( struct thread *thread )
      return mask;
  }
  
@@ -140,7 +125,7 @@ index 6b53b518d98..cbabf9c7070 100644
  static int get_unix_priority( int priority_class, int priority )
  {
      switch (priority_class) {
-@@ -718,6 +790,11 @@ int set_thread_priority( struct thread* thread, int priority_class, int priority
+@@ -718,6 +797,11 @@ int set_thread_priority( struct thread* thread, int priority_class, int priority
          param.sched_priority = get_unix_priority( priority_class, priority );
          if (sched_setscheduler( thread->unix_tid, SCHED_RR|SCHED_RESET_ON_FORK, &param ) == 0)
              return 0;
@@ -152,7 +137,7 @@ index 6b53b518d98..cbabf9c7070 100644
  #endif
      }
      else
-@@ -726,6 +803,11 @@ int set_thread_priority( struct thread* thread, int priority_class, int priority
+@@ -726,6 +809,11 @@ int set_thread_priority( struct thread* thread, int priority_class, int priority
          if (setpriority( PRIO_PROCESS, thread->unix_tid,
                           get_unix_priority( priority_class, priority ) ) == 0)
              return 0;

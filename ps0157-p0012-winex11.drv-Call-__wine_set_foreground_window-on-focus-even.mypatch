@@ -1,0 +1,119 @@
+From 908b3b386812d9e9a1a9fcef082acabcc5c60c41 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 16 Jan 2020 17:51:48 +0100
+Subject: [PATCH 12/25] winex11.drv: Call __wine_set_foreground_window on focus
+ events.
+
+This also instroduces a new internal __wine_set_foreground_window user32
+export that takes a timestamp parameter.
+
+This fixes the broken tests, because the WM_TAKE_FOCUS messages have
+a timestamp, but it will not work when the take_focus mode is not used.
+
+Standard focus events do not have a timestamp so we will have to use
+XInput2 focus events to support this case.
+---
+ dlls/user32/focus.c      | 16 ++++++++++++++++
+ dlls/user32/tests/win.c  |  5 -----
+ dlls/user32/user32.spec  |  1 +
+ dlls/winex11.drv/event.c |  6 +++---
+ include/winuser.h        |  1 +
+ 5 files changed, 21 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/user32/focus.c b/dlls/user32/focus.c
+index 2b44c06c16a..ea62638a549 100644
+--- a/dlls/user32/focus.c
++++ b/dlls/user32/focus.c
+@@ -326,6 +326,22 @@ HWND WINAPI SetFocus( HWND hwnd )
+ }
+ 
+ 
++/*******************************************************************
++ *      __wine_set_foreground_window  (USER32.@)
++ *
++ * Internal SetForegroundWindow function to let the graphics driver
++ * update the foreground window.
++ */
++BOOL CDECL __wine_set_foreground_window( HWND hwnd, DWORD time )
++{
++    TRACE( "%p\n", hwnd );
++
++    hwnd = WIN_GetFullHandle( hwnd );
++
++    return set_foreground_window( hwnd, FALSE, time );
++}
++
++
+ /*******************************************************************
+  *		SetForegroundWindow  (USER32.@)
+  */
+diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
+index 264358a02c8..b13734edfeb 100644
+--- a/dlls/user32/tests/win.c
++++ b/dlls/user32/tests/win.c
+@@ -3507,12 +3507,7 @@ static void test_SetForegroundWindow( HWND hwnd )
+     while (PeekMessageA( &msg, 0, 0, 0, PM_REMOVE )) DispatchMessageA( &msg );
+     if (0) check_wnd_state( hwnd2, hwnd2, hwnd2, 0 );
+ 
+-    /* FIXME: these tests are failing because of a race condition
+-     * between internal process focus state applied immediately and
+-     * X11 focus message coming late */
+-    todo_wine
+     ok( GetActiveWindow() == hwnd2, "Expected active window %p, got %p.\n", hwnd2, GetActiveWindow() );
+-    todo_wine
+     ok( GetFocus() == hwnd2, "Expected focus window %p, got %p.\n", hwnd2, GetFocus() );
+ 
+     SetForegroundWindow( hwnd );
+diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+index 8051ae3f767..84795bb41aa 100644
+--- a/dlls/user32/user32.spec
++++ b/dlls/user32/user32.spec
+@@ -835,3 +835,4 @@
+ #
+ @ cdecl __wine_send_input(long ptr)
+ @ cdecl __wine_set_pixel_format(long long)
++@ cdecl __wine_set_foreground_window(long long)
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 07554e054a1..f81028abc06 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -611,7 +611,7 @@ static void set_focus( Display *display, HWND hwnd, Time time )
+     GUITHREADINFO threadinfo;
+ 
+     TRACE( "setting foreground window to %p\n", hwnd );
+-    SetForegroundWindow( hwnd );
++    __wine_set_foreground_window( hwnd, EVENT_x11_time_to_win32_time( time ) );
+ 
+     threadinfo.cbSize = sizeof(threadinfo);
+     GetGUIThreadInfo(0, &threadinfo);
+@@ -818,7 +818,7 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
+         if (!hwnd) hwnd = x11drv_thread_data()->last_focus;
+         if (hwnd && can_activate_window(hwnd)) set_focus( event->display, hwnd, CurrentTime );
+     }
+-    else SetForegroundWindow( hwnd );
++    else __wine_set_foreground_window( hwnd, GetTickCount() );
+     return TRUE;
+ }
+ 
+@@ -864,7 +864,7 @@ static void focus_out( Display *display , HWND hwnd )
+         if (hwnd == GetForegroundWindow())
+         {
+             TRACE( "lost focus, setting fg to desktop\n" );
+-            SetForegroundWindow( GetDesktopWindow() );
++            __wine_set_foreground_window( GetDesktopWindow(), GetTickCount() );
+         }
+     }
+  }
+diff --git a/include/winuser.h b/include/winuser.h
+index 53661f6c788..7c8d63de5b3 100644
+--- a/include/winuser.h
++++ b/include/winuser.h
+@@ -4407,6 +4407,7 @@ WORD        WINAPI SYSTEM_KillSystemTimer( WORD );
+ 
+ #ifdef __WINESRC__
+ WINUSERAPI BOOL CDECL __wine_send_input( HWND hwnd, const INPUT *input, UINT flags );
++WINUSERAPI BOOL CDECL __wine_set_foreground_window( HWND hwnd, DWORD time );
+ #endif
+ 
+ #ifdef __cplusplus
+

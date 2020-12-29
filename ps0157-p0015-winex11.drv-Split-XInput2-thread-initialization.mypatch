@@ -1,0 +1,133 @@
+From c0639805be2785718238d84f0c0f7894aa3693f0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 17 Jan 2020 16:33:11 +0100
+Subject: [PATCH 15/25] winex11.drv: Split XInput2 thread initialization.
+
+And rename the library and function loader to X11DRV_XInput2_Load.
+---
+ dlls/winex11.drv/mouse.c       | 46 +++++++++++++++++++++++-----------
+ dlls/winex11.drv/x11drv.h      |  3 ++-
+ dlls/winex11.drv/x11drv_main.c |  4 ++-
+ 3 files changed, 36 insertions(+), 17 deletions(-)
+
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index dd25f8b172c..aeccda79b83 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -286,6 +286,32 @@ static void update_relative_valuators(XIAnyClassInfo **valuators, int n_valuator
+ #endif
+ 
+ 
++/***********************************************************************
++ *              X11DRV_XInput2_Init
++ */
++void X11DRV_XInput2_Init(void)
++{
++#ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
++    struct x11drv_thread_data *data = x11drv_thread_data();
++    int major = 2, minor = 1;
++
++    if (data->xi2_state != xi_unknown) return;
++
++    if (xinput2_available &&
++        !pXIQueryVersion( data->display, &major, &minor ) && major == 2 && minor > 0)
++    {
++        TRACE( "XInput2 %d.%d available\n", major, minor );
++        data->xi2_state = xi_disabled;
++    }
++    else
++    {
++        data->xi2_state = xi_unavailable;
++        WARN( "XInput 2.1 not available\n" );
++    }
++#endif
++}
++
++
+ /***********************************************************************
+  *              enable_xinput2
+  */
+@@ -298,23 +324,9 @@ void X11DRV_XInput2_Enable(void)
+     unsigned char mask_bits[XIMaskLen(XI_LASTEVENT)];
+     int count;
+ 
+-    if (!xinput2_available) return;
++    TRACE( "state:%d\n", data->xi2_state );
++    if (data->xi2_state != xi_disabled) return;
+ 
+-    if (data->xi2_state == xi_unknown)
+-    {
+-        int major = 2, minor = 1;
+-        if (!pXIQueryVersion( data->display, &major, &minor ) && major == 2 && minor > 0)
+-        {
+-            TRACE( "XInput2 v%d.%d available\n", major, minor );
+-            data->xi2_state = xi_disabled;
+-        }
+-        else
+-        {
+-            data->xi2_state = xi_unavailable;
+-            WARN( "XInput v2.1 not available\n" );
+-        }
+-    }
+-    if (data->xi2_state == xi_unavailable) return;
+     if (!pXIGetClientPointer( data->display, None, &data->xi2_core_pointer )) return;
+ 
+     mask.mask     = mask_bits;
+@@ -350,9 +366,9 @@ void X11DRV_XInput2_Disable(void)
+     struct x11drv_thread_data *data = x11drv_thread_data();
+     XIEventMask mask;
+ 
++    TRACE( "state:%d\n", data->xi2_state );
+     if (data->xi2_state != xi_enabled) return;
+ 
+-    TRACE( "disabling\n" );
+     data->xi2_state = xi_disabled;
+ 
+     mask.mask = NULL;
+@@ -1880,9 +1896,9 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+ 
+ 
+ /***********************************************************************
+- *              X11DRV_XInput2_Init
++ *              X11DRV_XInput2_Load
+  */
+-void X11DRV_XInput2_Init(void)
++void X11DRV_XInput2_Load(void)
+ {
+ #if defined(SONAME_LIBXI) && defined(HAVE_X11_EXTENSIONS_XINPUT2_H)
+     int event, error;
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 121f4ee26ff..8d556a32a73 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -195,6 +195,7 @@ extern BOOL CDECL X11DRV_UnrealizePalette( HPALETTE hpal ) DECLSPEC_HIDDEN;
+ /* X11 driver internal functions */
+ 
+ extern void X11DRV_Xcursor_Init(void) DECLSPEC_HIDDEN;
++extern void X11DRV_XInput2_Load(void) DECLSPEC_HIDDEN;
+ extern void X11DRV_XInput2_Init(void) DECLSPEC_HIDDEN;
+ extern void X11DRV_XInput2_Enable(void) DECLSPEC_HIDDEN;
+ extern void X11DRV_XInput2_Disable(void) DECLSPEC_HIDDEN;
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index 9ec4c7a98f6..43c30ab369c 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -610,7 +610,7 @@ static BOOL process_attach(void)
+ #ifdef SONAME_LIBXCOMPOSITE
+     X11DRV_XComposite_Init();
+ #endif
+-    X11DRV_XInput2_Init();
++    X11DRV_XInput2_Load();
+ 
+ #ifdef HAVE_XKB
+     if (use_xkb) use_xkb = XkbUseExtension( gdi_display, NULL, NULL );
+@@ -702,6 +702,8 @@ struct x11drv_thread_data *x11drv_init_thread_data(void)
+ 
+     if (use_xim) X11DRV_SetupXIM();
+ 
++    X11DRV_XInput2_Init();
++
+     return data;
+ }
+ 
+

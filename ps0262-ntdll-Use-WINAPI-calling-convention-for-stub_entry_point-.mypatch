@@ -1,0 +1,54 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH] ntdll: Use WINAPI calling convention for stub_entry_point().
+Message-Id: <20201229140545.362177-1-pgofman@codeweavers.com>
+Date: Tue, 29 Dec 2020 17:05:45 +0300
+
+Otherwise it ends up being stdcall function in the gcc PE build and
+cdecl in ELF while allocate_stub() currently assumes cdecl.
+
+Fixes missing function details output on x64.
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/ntdll/loader.c | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index efa7d204628..118e85ec2a2 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -332,7 +332,7 @@ static inline BOOL call_dll_entry_point( DLLENTRYPROC proc, void *module,
+  *
+  * Entry point for stub functions.
+  */
+-static void stub_entry_point( const char *dll, const char *name, void *ret_addr )
++static void WINAPI stub_entry_point( const char *dll, const char *name, void *ret_addr )
+ {
+     EXCEPTION_RECORD rec;
+ 
+@@ -443,15 +443,15 @@ static ULONG_PTR allocate_stub( const char *dll, const char *name )
+     stub->name      = name;
+     stub->entry     = stub_entry_point;
+ #else
+-    stub->movq_rdi[0]     = 0x48;  /* movq $dll,%rdi */
+-    stub->movq_rdi[1]     = 0xbf;
++    stub->movq_rdi[0]     = 0x48;  /* movq $dll,%rcx */
++    stub->movq_rdi[1]     = 0xb9;
+     stub->dll             = dll;
+-    stub->movq_rsi[0]     = 0x48;  /* movq $name,%rsi */
+-    stub->movq_rsi[1]     = 0xbe;
++    stub->movq_rsi[0]     = 0x48;  /* movq $name,%rdx */
++    stub->movq_rsi[1]     = 0xba;
+     stub->name            = name;
+-    stub->movq_rsp_rdx[0] = 0x48;  /* movq (%rsp),%rdx */
++    stub->movq_rsp_rdx[0] = 0x4c;  /* movq (%rsp),%r8 */
+     stub->movq_rsp_rdx[1] = 0x8b;
+-    stub->movq_rsp_rdx[2] = 0x14;
++    stub->movq_rsp_rdx[2] = 0x04;
+     stub->movq_rsp_rdx[3] = 0x24;
+     stub->movq_rax[0]     = 0x48;  /* movq $entry, %rax */
+     stub->movq_rax[1]     = 0xb8;
+
+-- 
+2.29.2
+

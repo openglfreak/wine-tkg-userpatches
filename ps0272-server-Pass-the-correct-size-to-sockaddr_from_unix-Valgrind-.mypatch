@@ -1,0 +1,47 @@
+From: Zebediah Figura <z.figura12@gmail.com>
+Subject: [PATCH] server: Pass the correct size to sockaddr_from_unix() (Valgrind).
+Message-Id: <20210101180136.129803-1-z.figura12@gmail.com>
+Date: Fri,  1 Jan 2021 12:01:36 -0600
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=50437
+Signed-off-by: Zebediah Figura <z.figura12@gmail.com>
+---
+ server/sock.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/server/sock.c b/server/sock.c
+index 1ff56f7bbe5..5f207e7f180 100644
+--- a/server/sock.c
++++ b/server/sock.c
+@@ -459,6 +459,7 @@ static void fill_accept_output( struct accept_req *req, struct iosb *iosb )
+ {
+     union unix_sockaddr unix_addr;
+     struct WS_sockaddr *win_addr;
++    unsigned int remote_len;
+     socklen_t unix_len;
+     int fd, size = 0;
+     char *out_data;
+@@ -495,7 +496,7 @@ static void fill_accept_output( struct accept_req *req, struct iosb *iosb )
+         unix_len = sizeof(unix_addr);
+         win_addr = (struct WS_sockaddr *)(out_data + req->recv_len + sizeof(int));
+         if (getsockname( fd, &unix_addr.addr, &unix_len ) < 0 ||
+-            (win_len = sockaddr_from_unix( &unix_addr, win_addr, req->local_len )) < 0)
++            (win_len = sockaddr_from_unix( &unix_addr, win_addr, req->local_len - sizeof(int) )) < 0)
+         {
+             set_win32_error( sock_get_error( errno ) );
+             free( out_data );
+@@ -506,8 +507,9 @@ static void fill_accept_output( struct accept_req *req, struct iosb *iosb )
+ 
+     unix_len = sizeof(unix_addr);
+     win_addr = (struct WS_sockaddr *)(out_data + req->recv_len + req->local_len + sizeof(int));
++    remote_len = iosb->out_size - req->recv_len - req->local_len;
+     if (getpeername( fd, &unix_addr.addr, &unix_len ) < 0 ||
+-        (win_len = sockaddr_from_unix( &unix_addr, win_addr, iosb->out_size - req->recv_len - req->local_len )) < 0)
++        (win_len = sockaddr_from_unix( &unix_addr, win_addr, remote_len - sizeof(int) )) < 0)
+     {
+         set_win32_error( sock_get_error( errno ) );
+         free( out_data );
+
+-- 
+2.29.2
+

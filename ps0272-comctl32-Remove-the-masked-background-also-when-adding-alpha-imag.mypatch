@@ -1,0 +1,46 @@
+From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
+Subject: [PATCH] comctl32: Remove the masked background also when adding alpha images.
+Message-Id: <0d8c75433ffde39e83d9002da4a0611ec1bdea33.1609783425.git.gabrielopcode@gmail.com>
+Date: Mon,  4 Jan 2021 20:04:33 +0200
+
+Fixes a regression introduced by 61b9209221d28d5d02379791ac1316c1fc2ca3b7.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=50454
+Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
+---
+ dlls/comctl32/imagelist.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/dlls/comctl32/imagelist.c b/dlls/comctl32/imagelist.c
+index a6d9c73..170320c 100644
+--- a/dlls/comctl32/imagelist.c
++++ b/dlls/comctl32/imagelist.c
+@@ -290,6 +290,24 @@ static BOOL add_with_alpha( HIMAGELIST himl, HDC hdc, int pos, int count,
+     }
+ 
+     add_dib_bits( himl, pos, count, width, height, info, mask_info, bits, mask_bits );
++
++    if (hbmMask && himl->hbmMask)
++    {
++        HDC hdcTemp = CreateCompatibleDC(0);
++        POINT pt;
++        INT i;
++
++        SelectObject(hdcTemp, hbmMask);
++        for (i = 0; i < count; i++)
++        {
++            imagelist_point_from_index( himl, pos + i, &pt );
++            BitBlt( himl->hdcMask, pt.x, pt.y, width, height, hdcTemp, i * width, 0, SRCCOPY );
++
++            /* Remove the background from the image */
++            BitBlt( himl->hdcImage, pt.x, pt.y, width, height, himl->hdcMask, pt.x, pt.y, 0x220326 ); /* NOTSRCAND */
++        }
++        DeleteDC(hdcTemp);
++    }
+     ret = TRUE;
+ 
+ done:
+
+-- 
+2.29.2
+

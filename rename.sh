@@ -84,8 +84,8 @@ yn() (
     fi
 
     while :; do
-        printf '%s %s ' "$1" "$3" || :
-        IFS=' ' read -r answer || return 1
+        printf '%s %s ' "$1" "$3" >/dev/tty || :
+        IFS=' ' read -r answer </dev/tty || return 1
         case "${answer}" in
             *[![:space:]]*Y*|*[![:space:]]*y*|*Y*[![:space:]]*|*y*[![:space:]]*)
                 :;;
@@ -98,7 +98,7 @@ yn() (
                 # shellcheck disable=SC2015,SC2026
                 [ x''x != x"$2"x ] && return "$2" || :
         esac
-        printf 'Please answer with y, n, or no input\n'
+        printf 'Please answer with y, n, or no input\n' >/dev/tty
     done
 )
 

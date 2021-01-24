@@ -1,0 +1,59 @@
+From 26a0ac54fbba4fea8e1ee2875583906d6b554b82 Mon Sep 17 00:00:00 2001
+From: Huw Davies <huw@codeweavers.com>
+Date: Tue, 30 Jun 2020 14:28:15 +0100
+Subject: [PATCH 08/15] user32: Use the desktop shared data for
+ GetClipCursor().
+
+Signed-off-by: Huw Davies <huw@codeweavers.com>
+---
+ dlls/user32/cursoricon.c | 24 ++++++++++--------------
+ 1 file changed, 10 insertions(+), 14 deletions(-)
+
+diff --git a/dlls/user32/cursoricon.c b/dlls/user32/cursoricon.c
+index eca6dc58c3d..b7e68c02280 100644
+--- a/dlls/user32/cursoricon.c
++++ b/dlls/user32/cursoricon.c
+@@ -2166,32 +2166,28 @@ BOOL WINAPI DECLSPEC_HOTPATCH ClipCursor( const RECT *rect )
+  */
+ BOOL WINAPI DECLSPEC_HOTPATCH GetClipCursor( RECT *rect )
+ {
++    volatile struct desktop_shared_memory *shared = get_desktop_shared_memory();
+     DPI_AWARENESS_CONTEXT context;
+     UINT dpi;
+-    BOOL ret;
+ 
+-    if (!rect) return FALSE;
++    if (!rect || !shared) return FALSE;
+ 
+-    SERVER_START_REQ( set_cursor )
++    SHARED_READ_BEGIN( &shared->seq )
+     {
+-        req->flags = 0;
+-        if ((ret = !wine_server_call( req )))
+-        {
+-            rect->left   = reply->new_clip.left;
+-            rect->top    = reply->new_clip.top;
+-            rect->right  = reply->new_clip.right;
+-            rect->bottom = reply->new_clip.bottom;
+-        }
++        rect->left   = shared->cursor.clip.left;
++        rect->top    = shared->cursor.clip.top;
++        rect->right  = shared->cursor.clip.right;
++        rect->bottom = shared->cursor.clip.bottom;
+     }
+-    SERVER_END_REQ;
++    SHARED_READ_END( &shared->seq );
+ 
+-    if (ret && (dpi = get_thread_dpi()))
++    if ((dpi = get_thread_dpi()))
+     {
+         context = SetThreadDpiAwarenessContext( DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE );
+         *rect = map_dpi_rect( *rect, get_monitor_dpi( MonitorFromRect( rect, MONITOR_DEFAULTTOPRIMARY )), dpi );
+         SetThreadDpiAwarenessContext( context );
+     }
+-    return ret;
++    return TRUE;
+ }
+ 
+ 
+

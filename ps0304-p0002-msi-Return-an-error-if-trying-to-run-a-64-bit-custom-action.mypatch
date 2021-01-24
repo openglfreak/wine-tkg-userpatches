@@ -1,0 +1,39 @@
+From: Zebediah Figura <z.figura12@gmail.com>
+Subject: [PATCH 2/2] msi: Return an error if trying to run a 64-bit custom action in a 32-bit prefix.
+Message-Id: <20210123234242.4050948-2-z.figura12@gmail.com>
+Date: Sat, 23 Jan 2021 17:42:42 -0600
+In-Reply-To: <20210123234242.4050948-1-z.figura12@gmail.com>
+References: <20210123234242.4050948-1-z.figura12@gmail.com>
+
+This matches native behaviour (manually tested).
+
+This allows the Research in Motion (Blackberry) USB and Modem driver to fail
+cleanly instead of hanging, if run in a 32-bit prefix.
+
+Signed-off-by: Zebediah Figura <z.figura12@gmail.com>
+---
+ dlls/msi/custom.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/dlls/msi/custom.c b/dlls/msi/custom.c
+index 7ae7e45af29..fb03958eb11 100644
+--- a/dlls/msi/custom.c
++++ b/dlls/msi/custom.c
+@@ -748,6 +748,13 @@ static msi_custom_action_info *do_msidbCustomActionTypeDll(
+     if (!ret)
+         info->arch = (sizeof(void *) == 8 ? SCS_64BIT_BINARY : SCS_32BIT_BINARY);
+ 
++    if (info->arch == SCS_64BIT_BINARY && sizeof(void *) == 4 && !is_wow64)
++    {
++        ERR("Attempt to run a 64-bit custom action inside a 32-bit WINEPREFIX.\n");
++        free_custom_action_data( info );
++        return NULL;
++    }
++
+     custom_start_server(package, info->arch);
+ 
+     info->handle = CreateThread(NULL, 0, custom_client_thread, info, 0, NULL);
+
+-- 
+2.29.2
+

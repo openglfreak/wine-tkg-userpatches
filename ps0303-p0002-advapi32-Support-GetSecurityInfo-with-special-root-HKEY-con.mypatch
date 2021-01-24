@@ -1,0 +1,91 @@
+From: Zebediah Figura <z.figura12@gmail.com>
+Subject: [PATCH 2/2] advapi32: Support GetSecurityInfo() with special root HKEY constants.
+Message-Id: <20210123233957.4049671-2-z.figura12@gmail.com>
+Date: Sat, 23 Jan 2021 17:39:57 -0600
+In-Reply-To: <20210123233957.4049671-1-z.figura12@gmail.com>
+References: <20210123233957.4049671-1-z.figura12@gmail.com>
+
+This fixes a message box with the ASCOM Platform installer.
+
+Signed-off-by: Zebediah Figura <z.figura12@gmail.com>
+---
+ dlls/advapi32/security.c       | 31 ++++++++++++++++++++++++++++++-
+ dlls/advapi32/tests/security.c |  2 +-
+ 2 files changed, 31 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/advapi32/security.c b/dlls/advapi32/security.c
+index a01791bbf0b..d6b69483f68 100644
+--- a/dlls/advapi32/security.c
++++ b/dlls/advapi32/security.c
+@@ -1467,6 +1467,9 @@ BOOL WINAPI PrivilegedServiceAuditAlarmA( LPCSTR SubsystemName, LPCSTR ServiceNa
+     return TRUE;
+ }
+ 
++#define HKEY_SPECIAL_ROOT_FIRST   HKEY_CLASSES_ROOT
++#define HKEY_SPECIAL_ROOT_LAST    HKEY_DYN_DATA
++
+ /******************************************************************************
+  * GetSecurityInfo [ADVAPI32.@]
+  *
+@@ -1522,17 +1525,43 @@ DWORD WINAPI GetSecurityInfo( HANDLE handle, SE_OBJECT_TYPE type, SECURITY_INFOR
+     }
+     else
+     {
++        HKEY key = NULL;
++
++        if (type == SE_REGISTRY_KEY && (HandleToUlong(handle) >= HandleToUlong(HKEY_SPECIAL_ROOT_FIRST))
++                && (HandleToUlong(handle) <= HandleToUlong(HKEY_SPECIAL_ROOT_LAST)))
++        {
++            REGSAM access = READ_CONTROL;
++            DWORD ret;
++
++            if (SecurityInfo & SACL_SECURITY_INFORMATION)
++                access |= ACCESS_SYSTEM_SECURITY;
++
++            if ((ret = RegOpenKeyExW( handle, L"\\", 0, access, &key )))
++                return ret;
++
++            handle = key;
++        }
++
+         status = NtQuerySecurityObject( handle, SecurityInfo, NULL, 0, &size );
+         if (status != STATUS_SUCCESS && status != STATUS_BUFFER_TOO_SMALL)
++        {
++            RegCloseKey( key );
+             return RtlNtStatusToDosError( status );
++        }
+ 
+-        if (!(sd = LocalAlloc( 0, size ))) return ERROR_NOT_ENOUGH_MEMORY;
++        if (!(sd = LocalAlloc( 0, size )))
++        {
++            RegCloseKey( key );
++            return ERROR_NOT_ENOUGH_MEMORY;
++        }
+ 
+         if ((status = NtQuerySecurityObject( handle, SecurityInfo, sd, size, &size )))
+         {
++            RegCloseKey( key );
+             LocalFree(sd);
+             return RtlNtStatusToDosError( status );
+         }
++        RegCloseKey( key );
+     }
+ 
+     if (ppsidOwner)
+diff --git a/dlls/advapi32/tests/security.c b/dlls/advapi32/tests/security.c
+index 0c1c498bbce..96192973447 100644
+--- a/dlls/advapi32/tests/security.c
++++ b/dlls/advapi32/tests/security.c
+@@ -7889,7 +7889,7 @@ static void test_pseudo_handle_security(void)
+     ok(!ret, "expected failure\n");
+     ok(GetLastError() == ERROR_INVALID_HANDLE, "got error %u\n", GetLastError());
+ 
+-    todo_wine ret = GetSecurityInfo(HKEY_CLASSES_ROOT, SE_REGISTRY_KEY,
++    ret = GetSecurityInfo(HKEY_CLASSES_ROOT, SE_REGISTRY_KEY,
+             DACL_SECURITY_INFORMATION, NULL, NULL, NULL, NULL, &sd_ptr);
+     ok(!ret, "got error %u\n", ret);
+     LocalFree(sd_ptr);
+
+-- 
+2.29.2
+

@@ -1,0 +1,116 @@
+From: Nikolay Sivov <nsivov@codeweavers.com>
+Subject: [PATCH] ntdll: Set EnvironmentSize field for process parameters.
+Message-Id: <20210119113347.1650639-1-nsivov@codeweavers.com>
+Date: Tue, 19 Jan 2021 14:33:47 +0300
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=50405
+Signed-off-by: Nikolay Sivov <nsivov@codeweavers.com>
+---
+ dlls/ntdll/env.c       | 17 ++++++++++++++---
+ dlls/ntdll/tests/env.c | 12 ++++++++++++
+ include/winternl.h     |  1 +
+ 3 files changed, 27 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/env.c b/dlls/ntdll/env.c
+index 5d1b6de5bba..7ccdb281b89 100644
+--- a/dlls/ntdll/env.c
++++ b/dlls/ntdll/env.c
+@@ -715,6 +715,7 @@ void WINAPI RtlSetCurrentEnvironment(PWSTR new_env, PWSTR* old_env)
+ 
+     prev = NtCurrentTeb()->Peb->ProcessParameters->Environment;
+     NtCurrentTeb()->Peb->ProcessParameters->Environment = new_env;
++    NtCurrentTeb()->Peb->ProcessParameters->EnvironmentSize = new_env ? get_env_length(new_env) * sizeof(*new_env) : 0;
+ 
+     RtlReleasePebLock();
+ 
+@@ -1041,7 +1042,11 @@ NTSTATUS WINAPI RtlCreateProcessParametersEx( RTL_USER_PROCESS_PARAMETERS **resu
+         append_unicode_string( &ptr, Desktop, &params->Desktop );
+         append_unicode_string( &ptr, ShellInfo, &params->ShellInfo );
+         append_unicode_string( &ptr, RuntimeInfo, &params->RuntimeInfo );
+-        if (Environment) params->Environment = memcpy( ptr, Environment, env_size );
++        if (Environment)
++        {
++            params->Environment = memcpy( ptr, Environment, env_size );
++            params->EnvironmentSize = env_size;
++        }
+         *result = params;
+         if (!(flags & PROCESS_PARAMS_FLAG_NORMALIZED)) RtlDeNormalizeProcessParams( params );
+     }
+@@ -1194,8 +1199,10 @@ void init_user_process_params(void)
+                                           PROCESS_PARAMS_FLAG_NORMALIZED ))
+             return;
+ 
+-        params->Environment = env;
+         NtCurrentTeb()->Peb->ProcessParameters = params;
++        NtCurrentTeb()->Peb->ProcessParameters->Environment = env;
++        NtCurrentTeb()->Peb->ProcessParameters->EnvironmentSize = env ? get_env_length( env ) * sizeof(*env) : 0;
++
+         RtlFreeUnicodeString( &initial_params.ImagePathName );
+         RtlFreeUnicodeString( &cmdline );
+         RtlReleasePath( load_path );
+@@ -1249,7 +1256,11 @@ void init_user_process_params(void)
+     env_size = data_size - info_size;
+     if ((params->Environment = RtlAllocateHeap( GetProcessHeap(), 0, max( env_size, sizeof(WCHAR) ))))
+     {
+-        if (env_size) memcpy( params->Environment, (char *)info + info_size, env_size );
++        if (env_size)
++        {
++            memcpy( params->Environment, (char *)info + info_size, env_size );
++            NtCurrentTeb()->Peb->ProcessParameters->EnvironmentSize = env_size;
++        }
+         else params->Environment[0] = 0;
+     }
+ 
+diff --git a/dlls/ntdll/tests/env.c b/dlls/ntdll/tests/env.c
+index 4865a0a8e51..2cbbcbb34e1 100644
+--- a/dlls/ntdll/tests/env.c
++++ b/dlls/ntdll/tests/env.c
+@@ -58,6 +58,13 @@ static WCHAR  small_env[] = {'f','o','o','=','t','o','t','o',0,
+                              'n','u','l','=',0,
+                              0};
+ 
++static SIZE_T get_env_size( const WCHAR *env )
++{
++    const WCHAR *end = env;
++    while (*end) end += lstrlenW(end) + 1;
++    return (end + 1 - env) * sizeof( *env );
++}
++
+ static void testQuery(void)
+ {
+     struct test
+@@ -439,6 +446,9 @@ static void test_process_params(void)
+         pos += (str - params->Environment) * sizeof(WCHAR);
+         ok( ((pos + sizeof(void *) - 1) & ~(sizeof(void *) - 1)) == size ||
+             broken( ((pos + 3) & ~3) == size ), "wrong size %lx/%lx\n", pos, size );
++        /* Win8+ uses pointer-sized alignment. */
++        ok( params->EnvironmentSize >= get_env_size( params->Environment ),
++                "Unexpected environment size.\n");
+     }
+     else ok( broken(TRUE), "environment not inside block\n" ); /* <= win2k3 */
+     pRtlDestroyProcessParameters( params );
+@@ -601,6 +611,8 @@ static void test_RtlSetCurrentEnvironment(void)
+     RtlSetCurrentEnvironment(env, &prev);
+     ok(prev == old_env, "got wrong previous env %p\n", prev);
+     ok(NtCurrentTeb()->Peb->ProcessParameters->Environment == env, "got wrong current env\n");
++    ok(NtCurrentTeb()->Peb->ProcessParameters->EnvironmentSize == get_env_size(env),
++            "Unexpected environment size.\n");
+ 
+     check_env_var("testenv1", "unus");
+     check_env_var("testenv2", NULL);
+diff --git a/include/winternl.h b/include/winternl.h
+index a7b0e04aade..5eca36a12b8 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -199,6 +199,7 @@ typedef struct _RTL_USER_PROCESS_PARAMETERS
+     UNICODE_STRING      ShellInfo;
+     UNICODE_STRING      RuntimeInfo;
+     RTL_DRIVE_LETTER_CURDIR DLCurrentDirectory[0x20];
++    ULONG               EnvironmentSize;
+ } RTL_USER_PROCESS_PARAMETERS, *PRTL_USER_PROCESS_PARAMETERS;
+ 
+ /* value for Flags field (FIXME: not the correct name) */
+
+-- 
+2.29.2
+

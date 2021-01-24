@@ -1,0 +1,61 @@
+From: Zebediah Figura <z.figura12@gmail.com>
+Subject: [PATCH 1/2] advapi32/tests: Add some tests for querying the security of pseudo-handles.
+Message-Id: <20210123233957.4049671-1-z.figura12@gmail.com>
+Date: Sat, 23 Jan 2021 17:39:56 -0600
+
+Signed-off-by: Zebediah Figura <z.figura12@gmail.com>
+---
+ dlls/advapi32/tests/security.c | 29 +++++++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+diff --git a/dlls/advapi32/tests/security.c b/dlls/advapi32/tests/security.c
+index 6d2d5f56f1b..0c1c498bbce 100644
+--- a/dlls/advapi32/tests/security.c
++++ b/dlls/advapi32/tests/security.c
+@@ -7871,6 +7871,34 @@ static void test_create_process_token_child(void)
+     }
+ }
+ 
++static void test_pseudo_handle_security(void)
++{
++    char buffer[200];
++    PSECURITY_DESCRIPTOR sd = buffer, *sd_ptr;
++    DWORD size;
++    BOOL ret;
++
++    ret = GetKernelObjectSecurity(GetCurrentProcess(), OWNER_SECURITY_INFORMATION, &sd, sizeof(buffer), &size);
++    ok(ret, "got error %u\n", GetLastError());
++
++    ret = GetKernelObjectSecurity(GetCurrentThread(), OWNER_SECURITY_INFORMATION, &sd, sizeof(buffer), &size);
++    ok(ret, "got error %u\n", GetLastError());
++
++    SetLastError(0xdeadbeef);
++    ret = GetKernelObjectSecurity(HKEY_CLASSES_ROOT, OWNER_SECURITY_INFORMATION, &sd, sizeof(buffer), &size);
++    ok(!ret, "expected failure\n");
++    ok(GetLastError() == ERROR_INVALID_HANDLE, "got error %u\n", GetLastError());
++
++    todo_wine ret = GetSecurityInfo(HKEY_CLASSES_ROOT, SE_REGISTRY_KEY,
++            DACL_SECURITY_INFORMATION, NULL, NULL, NULL, NULL, &sd_ptr);
++    ok(!ret, "got error %u\n", ret);
++    LocalFree(sd_ptr);
++
++    ret = GetSecurityInfo(HKEY_CLASSES_ROOT, SE_KERNEL_OBJECT,
++            DACL_SECURITY_INFORMATION, NULL, NULL, NULL, NULL, &sd_ptr);
++    ok(ret == ERROR_INVALID_HANDLE, "got error %u\n", ret);
++}
++
+ START_TEST(security)
+ {
+     init();
+@@ -7935,6 +7963,7 @@ START_TEST(security)
+     test_BuildSecurityDescriptorW();
+     test_duplicate_handle_access();
+     test_create_process_token();
++    test_pseudo_handle_security();
+ 
+     /* Must be the last test, modifies process token */
+     test_token_security_descriptor();
+
+-- 
+2.29.2
+

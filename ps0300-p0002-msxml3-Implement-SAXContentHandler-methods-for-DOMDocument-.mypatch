@@ -1,0 +1,1193 @@
+From: Jefferson Carpenter <jeffersoncarpenter2@gmail.com>
+#Subject: [PATCH V3 2/2] msxml3: Implement SAXContentHandler methods for DOMDocument mxwriter output.
+Message-Id: <f2727ae3-a8fc-3c5d-8550-5a21975b0248@gmail.com>
+Date: Sat, 23 Jan 2021 02:33:43 +0000
+
+From b9c54a002b1500e28ae8af0e7936889f2b9d978b Mon Sep 17 00:00:00 2001
+From: Jefferson Carpenter <jeffersoncarpenter2@gmail.com>
+Date: Sat, 23 Jan 2021 03:46:31 +0000
+Subject: [PATCH 2/2] msxml3: Implement SAXContentHandler methods for
+ DOMDocument mxwriter output.
+
+Changes from last version:
+
+Added FIXME and return E_NOTIMPL statements to the SAX handler methods
+I did NOT implement: in particular, LexicalHandler, DeclHandler, and
+DTDHandler, as well as IXMWriter::get_output.  This way mxwriter will
+not fail silently when those methods are called and the output is a
+DOMDocument.
+
+Signed-off-by: Jefferson Carpenter <jeffersoncarpenter2@gmail.com>
+---
+ dlls/msxml3/mxwriter.c        | 765 +++++++++++++++++++++++++---------
+ dlls/msxml3/tests/saxreader.c |  62 +--
+ 2 files changed, 591 insertions(+), 236 deletions(-)
+
+diff --git a/dlls/msxml3/mxwriter.c b/dlls/msxml3/mxwriter.c
+index 029e9aac0d0..0a979fbe89a 100644
+--- a/dlls/msxml3/mxwriter.c
++++ b/dlls/msxml3/mxwriter.c
+@@ -142,6 +142,13 @@ typedef enum
+     EscapeText
+ } escape_mode;
+ 
++typedef enum
++{
++    OutputIStream,
++    OutputString,
++    OutputDOMDocument,
++} output_type;
++
+ typedef struct
+ {
+     struct list entry;
+@@ -193,7 +200,11 @@ typedef struct
+        we don't have to close */
+     BSTR element;
+ 
++    IXMLDOMNode *cur_node; /* current node for DOMDocument destination */
++
++    output_type output_ty;
+     IStream *dest;
++    IXMLDOMDocument *dest_doc;
+ 
+     output_buffer buffer;
+ } mxwriter;
+@@ -715,6 +726,32 @@ static HRESULT writer_get_property(const mxwriter *writer, mxwriter_prop propert
+     return S_OK;
+ }
+ 
++static void push_cur_node(mxwriter *writer, IXMLDOMNode *node)
++{
++    if (writer->cur_node) {
++        IXMLDOMNode_Release(writer->cur_node);
++    }
++
++    IXMLDOMNode_AddRef(node);
++    writer->cur_node = node;
++}
++
++static HRESULT pop_cur_node(mxwriter *writer)
++{
++    HRESULT hr;
++    IXMLDOMNode *parent_node = NULL;
++
++    if (!writer->cur_node) return E_INVALIDARG;
++
++    hr = IXMLDOMNode_get_parentNode(writer->cur_node, &parent_node);
++    if (FAILED(hr)) return hr;
++
++    IXMLDOMNode_Release(writer->cur_node);
++    writer->cur_node = parent_node;
++
++    return S_OK;
++}
++
+ static inline mxwriter *impl_from_IMXWriter(IMXWriter *iface)
+ {
+     return CONTAINING_RECORD(iface, mxwriter, IMXWriter_iface);
+@@ -863,6 +900,9 @@ static ULONG WINAPI mxwriter_Release(IMXWriter *iface)
+         free_output_buffer(&This->buffer);
+ 
+         if (This->dest) IStream_Release(This->dest);
++        while (!FAILED(pop_cur_node(This)));
++        if (This->dest_doc) IXMLDOMDocument_Release(This->dest_doc);
++
+         SysFreeString(This->version);
+         SysFreeString(This->encoding);
+ 
+@@ -926,8 +966,14 @@ static HRESULT WINAPI mxwriter_put_output(IMXWriter *iface, VARIANT dest)
+     case VT_EMPTY:
+     {
+         if (This->dest) IStream_Release(This->dest);
++        while (!FAILED(pop_cur_node(This)));
++        if (This->dest_doc) IXMLDOMDocument_Release(This->dest_doc);
++
+         This->dest = NULL;
++        This->dest_doc = NULL;
++
+         reset_output_buffer(This);
++        This->output_ty = OutputString;
+         break;
+     }
+     case VT_UNKNOWN:
+@@ -941,13 +987,41 @@ static HRESULT WINAPI mxwriter_put_output(IMXWriter *iface, VARIANT dest)
+             reset_output_buffer(This);
+ 
+             if (This->dest) IStream_Release(This->dest);
++            while (!FAILED(pop_cur_node(This)));
++            if (This->dest_doc) IXMLDOMDocument_Release(This->dest_doc);
++
+             This->dest = stream;
++            This->dest_doc = NULL;
++            This->output_ty = OutputIStream;
+             break;
+         }
+ 
+         FIXME("unhandled interface type for VT_UNKNOWN destination\n");
+         return E_NOTIMPL;
+     }
++    case VT_DISPATCH:
++    {
++        IXMLDOMDocument *document;
++
++        hr = IDispatch_QueryInterface(V_DISPATCH(&dest), &IID_IXMLDOMDocument, (void**)&document);
++        if (hr == S_OK) {
++            /* Reset output buffer to initial state. */
++            reset_output_buffer(This);
++
++            if (This->dest) IStream_Release(This->dest);
++            while (!FAILED(pop_cur_node(This)));
++            if (This->dest_doc) IXMLDOMDocument_Release(This->dest_doc);
++
++            This->dest = NULL;
++            This->dest_doc = document;
++            push_cur_node(This, (IXMLDOMNode*)document);
++            This->output_ty = OutputDOMDocument;
++            break;
++        }
++
++        FIXME("unhandled interface type for VT_DISPATCH destination\n");
++        return E_NOTIMPL;
++    }
+     default:
+         FIXME("unhandled destination type %s\n", debugstr_variant(&dest));
+         return E_NOTIMPL;
+@@ -971,6 +1045,11 @@ static HRESULT WINAPI mxwriter_get_output(IMXWriter *iface, VARIANT *dest)
+         V_UNKNOWN(dest) = (IUnknown*)This->dest;
+         IStream_AddRef(This->dest);
+     }
++    else if (This->dest_doc)
++    {
++        FIXME("(%p)->(%p)\n", This, dest);
++        return E_NOTIMPL;
++    }
+     else
+     {
+         encoded_buffer *buff;
+@@ -1223,28 +1302,36 @@ static HRESULT WINAPI SAXContentHandler_startDocument(ISAXContentHandler *iface)
+ 
+     TRACE("(%p)\n", This);
+ 
+-    /* If properties have been changed since the last "endDocument" call
+-     * we need to reset the output buffer. If we don't the output buffer
+-     * could end up with multiple XML documents in it, plus this seems to
+-     * be how Windows works.
+-     */
+-    if (This->prop_changed) {
+-        reset_output_buffer(This);
+-        This->prop_changed = FALSE;
+-    }
++    switch (This->output_ty)
++    {
++    case OutputIStream:
++    case OutputString:
++        /* If properties have been changed since the last "endDocument" call
++         * we need to reset the output buffer. If we don't the output buffer
++         * could end up with multiple XML documents in it, plus this seems to
++         * be how Windows works.
++         */
++        if (This->prop_changed) {
++            reset_output_buffer(This);
++            This->prop_changed = FALSE;
++        }
+ 
+-    if (This->props[MXWriter_OmitXmlDecl] == VARIANT_TRUE) return S_OK;
++        if (This->props[MXWriter_OmitXmlDecl] == VARIANT_TRUE) return S_OK;
+ 
+-    write_prolog_buffer(This);
++        write_prolog_buffer(This);
+ 
+-    if (This->dest && This->xml_enc == XmlEncoding_UTF16) {
+-        static const char utf16BOM[] = {0xff,0xfe};
++        if (This->dest && This->xml_enc == XmlEncoding_UTF16) {
++            static const char utf16BOM[] = {0xff,0xfe};
+ 
+-        if (This->props[MXWriter_BOM] == VARIANT_TRUE)
+-            /* Windows passes a NULL pointer as the pcbWritten parameter and
+-             * ignores any error codes returned from this Write call.
+-             */
+-            IStream_Write(This->dest, utf16BOM, sizeof(utf16BOM), NULL);
++            if (This->props[MXWriter_BOM] == VARIANT_TRUE)
++                /* Windows passes a NULL pointer as the pcbWritten parameter and
++                 * ignores any error codes returned from this Write call.
++                 */
++                IStream_Write(This->dest, utf16BOM, sizeof(utf16BOM), NULL);
++        }
++        break;
++    case OutputDOMDocument:
++        break;
+     }
+ 
+     return S_OK;
+@@ -1254,7 +1341,15 @@ static HRESULT WINAPI SAXContentHandler_endDocument(ISAXContentHandler *iface)
+ {
+     mxwriter *This = impl_from_ISAXContentHandler( iface );
+     TRACE("(%p)\n", This);
+-    This->prop_changed = FALSE;
++    switch (This->output_ty)
++    {
++    case OutputIStream:
++    case OutputString:
++        This->prop_changed = FALSE;
++        break;
++    case OutputDOMDocument:
++        break;
++    }
+     return flush_output_buffer(This);
+ }
+ 
+@@ -1333,32 +1428,96 @@ static HRESULT WINAPI SAXContentHandler_startElement(
+         (nQName == -1 && This->class_version == MSXML6))
+         return E_INVALIDARG;
+ 
+-    mxwriter_write_starttag(This, QName, nQName);
++    switch (This->output_ty) {
++    case OutputIStream:
++    case OutputString:
++        mxwriter_write_starttag(This, QName, nQName);
+ 
+-    if (attr)
+-    {
+-        int length, i, escape;
+-        HRESULT hr;
++        if (attr)
++        {
++            int length, i, escape;
++            HRESULT hr;
+ 
+-        hr = ISAXAttributes_getLength(attr, &length);
+-        if (FAILED(hr)) return hr;
++            hr = ISAXAttributes_getLength(attr, &length);
++            if (FAILED(hr)) return hr;
+ 
+-        escape = This->props[MXWriter_DisableEscaping] == VARIANT_FALSE ||
++            escape = This->props[MXWriter_DisableEscaping] == VARIANT_FALSE ||
+             (This->class_version == MSXML4 || This->class_version == MSXML6);
+ 
+-        for (i = 0; i < length; i++)
+-        {
+-            int qname_len = 0, value_len = 0;
+-            const WCHAR *qname, *value;
++            for (i = 0; i < length; i++)
++            {
++                int qname_len = 0, value_len = 0;
++                const WCHAR *qname, *value;
+ 
+-            hr = ISAXAttributes_getQName(attr, i, &qname, &qname_len);
+-            if (FAILED(hr)) return hr;
++                hr = ISAXAttributes_getQName(attr, i, &qname, &qname_len);
++                if (FAILED(hr)) return hr;
++
++                hr = ISAXAttributes_getValue(attr, i, &value, &value_len);
++                if (FAILED(hr)) return hr;
++
++                mxwriter_write_attribute(This, qname, qname_len, value, value_len, escape);
++            }
++        }
++        break;
++    case OutputDOMDocument:
++    {
++        HRESULT hr = S_OK;
++        IXMLDOMElement *element = NULL;
++        BSTR tag_name = NULL;
++
++        tag_name = SysAllocStringLen(QName, nQName);
++        if (!tag_name) {
++            hr = E_OUTOFMEMORY;
++            goto done;
++        }
+ 
+-            hr = ISAXAttributes_getValue(attr, i, &value, &value_len);
++        hr = IXMLDOMDocument_createElement(This->dest_doc, tag_name, &element);
++        if (FAILED(hr)) goto done;
++
++        if (attr) {
++            int length, i;
++            BSTR attribute_name = NULL;
++            VARIANT attribute_value;
++
++            hr = ISAXAttributes_getLength(attr, &length);
+             if (FAILED(hr)) return hr;
+ 
+-            mxwriter_write_attribute(This, qname, qname_len, value, value_len, escape);
++            for (i = 0; i < length; i++)
++            {
++                int qname_len = 0, value_len = 0;
++                const WCHAR *qname, *value;
++
++                hr = ISAXAttributes_getQName(attr, i, &qname, &qname_len);
++                if (FAILED(hr)) return hr;
++
++                hr = ISAXAttributes_getValue(attr, i, &value, &value_len);
++                if (FAILED(hr)) return hr;
++
++                attribute_name = SysAllocStringLen(qname, qname_len);
++                if (!attribute_name) goto done;
++
++                V_VT(&attribute_value) = VT_BSTR;
++                V_BSTR(&attribute_value) = SysAllocStringLen(value, value_len);
++                if (!V_BSTR(&attribute_value)) goto done;
++
++                IXMLDOMElement_setAttribute(element, attribute_name, attribute_value);
++
++                SysFreeString(V_BSTR(&attribute_value));
++                SysFreeString(attribute_name);
++            }
+         }
++
++        hr = IXMLDOMNode_appendChild(This->cur_node, (IXMLDOMNode*)element, NULL);
++        if (FAILED(hr)) goto done;
++
++        push_cur_node(This, (IXMLDOMNode*)element);
++
++    done:
++        if (element) IXMLDOMElement_Release(element);
++        if (tag_name) SysFreeString(tag_name);
++
++        return hr;
++    }
+     }
+ 
+     return S_OK;
+@@ -1382,25 +1541,34 @@ static HRESULT WINAPI SAXContentHandler_endElement(
+          (nQName == -1 && This->class_version == MSXML6))
+         return E_INVALIDARG;
+ 
+-    writer_dec_indent(This);
+-
+-    if (This->element)
++    switch (This->output_ty)
+     {
+-        static const WCHAR closeW[] = {'/','>'};
+-        write_output_buffer(This, closeW, 2);
+-    }
+-    else
+-    {
+-        static const WCHAR closetagW[] = {'<','/'};
+-        static const WCHAR gtW[] = {'>'};
++    case OutputIStream:
++    case OutputString:
++        writer_dec_indent(This);
+ 
+-        write_node_indent(This);
+-        write_output_buffer(This, closetagW, 2);
+-        write_output_buffer(This, QName, nQName);
+-        write_output_buffer(This, gtW, 1);
+-    }
++        if (This->element)
++        {
++            static const WCHAR closeW[] = {'/','>'};
++            write_output_buffer(This, closeW, 2);
++        }
++        else
++        {
++            static const WCHAR closetagW[] = {'<','/'};
++            static const WCHAR gtW[] = {'>'};
+ 
+-    set_element_name(This, NULL, 0);
++            write_node_indent(This);
++            write_output_buffer(This, closetagW, 2);
++            write_output_buffer(This, QName, nQName);
++            write_output_buffer(This, gtW, 1);
++        }
++
++        set_element_name(This, NULL, 0);
++        break;
++    case OutputDOMDocument:
++        pop_cur_node(This);
++        break;
++    }
+ 
+     return S_OK;
+ }
+@@ -1416,25 +1584,54 @@ static HRESULT WINAPI SAXContentHandler_characters(
+ 
+     if (!chars) return E_INVALIDARG;
+ 
+-    close_element_starttag(This);
+-    set_element_name(This, NULL, 0);
++    switch (This->output_ty) {
++    case OutputIStream:
++    case OutputString:
++        close_element_starttag(This);
++        set_element_name(This, NULL, 0);
+ 
+-    if (!This->cdata)
+-        This->text = TRUE;
++        if (!This->cdata)
++            This->text = TRUE;
+ 
+-    if (nchars)
+-    {
+-        if (This->cdata || This->props[MXWriter_DisableEscaping] == VARIANT_TRUE)
+-            write_output_buffer(This, chars, nchars);
+-        else
++        if (nchars)
+         {
+-            int len = nchars;
+-            WCHAR *escaped;
++            if (This->cdata || This->props[MXWriter_DisableEscaping] == VARIANT_TRUE)
++                write_output_buffer(This, chars, nchars);
++            else
++            {
++                int len = nchars;
++                WCHAR *escaped;
+ 
+-            escaped = get_escaped_string(chars, EscapeText, &len);
+-            write_output_buffer(This, escaped, len);
+-            heap_free(escaped);
++                escaped = get_escaped_string(chars, EscapeText, &len);
++                write_output_buffer(This, escaped, len);
++                heap_free(escaped);
++            }
++        }
++        break;
++    case OutputDOMDocument:
++    {
++        HRESULT hr = S_OK;
++        IXMLDOMText *text_node = NULL;
++        BSTR text = NULL;
++
++        text = SysAllocStringLen(chars, nchars);
++        if (!text) {
++            hr = E_OUTOFMEMORY;
++            goto done;
+         }
++
++        hr = IXMLDOMDocument_createTextNode(This->dest_doc, text, &text_node);
++        if (FAILED(hr)) goto done;
++
++        hr = IXMLDOMNode_appendChild(This->cur_node, (IXMLDOMNode*)text_node, NULL);
++        if (FAILED(hr)) goto done;
++
++    done:
++        if (text_node) IXMLDOMText_Release(text_node);
++        if (text) SysFreeString(text);
++
++        return hr;
++    }
+     }
+ 
+     return S_OK;
+@@ -1451,7 +1648,15 @@ static HRESULT WINAPI SAXContentHandler_ignorableWhitespace(
+ 
+     if (!chars) return E_INVALIDARG;
+ 
+-    write_output_buffer(This, chars, nchars);
++    switch (This->output_ty)
++    {
++    case OutputIStream:
++    case OutputString:
++        write_output_buffer(This, chars, nchars);
++        break;
++    case OutputDOMDocument:
++        break;
++    }
+ 
+     return S_OK;
+ }
+@@ -1471,20 +1676,71 @@ static HRESULT WINAPI SAXContentHandler_processingInstruction(
+ 
+     if (!target) return E_INVALIDARG;
+ 
+-    write_node_indent(This);
+-    write_output_buffer(This, openpiW, ARRAY_SIZE(openpiW));
++    switch (This->output_ty) {
++    case OutputIStream:
++    case OutputString:
++        write_node_indent(This);
++        write_output_buffer(This, openpiW, ARRAY_SIZE(openpiW));
++
++        if (*target)
++            write_output_buffer(This, target, ntarget);
+ 
+-    if (*target)
+-        write_output_buffer(This, target, ntarget);
++        if (data && *data && ndata)
++        {
++            write_output_buffer(This, spaceW, 1);
++            write_output_buffer(This, data, ndata);
++        }
+ 
+-    if (data && *data && ndata)
++        write_output_buffer(This, closepiW, ARRAY_SIZE(closepiW));
++        This->newline = TRUE;
++        break;
++    case OutputDOMDocument:
+     {
+-        write_output_buffer(This, spaceW, 1);
+-        write_output_buffer(This, data, ndata);
+-    }
++        HRESULT hr = S_OK;
++        IXMLDOMNode *first_child = NULL;
++        IXMLDOMProcessingInstruction *processing_instruction = NULL;
++        VARIANT ref_node;
++        BSTR target_bstr = NULL;
++        BSTR data_bstr = NULL;
++
++        target_bstr = SysAllocStringLen(target, ntarget);
++        if (!target_bstr) {
++            hr = E_OUTOFMEMORY;
++            goto done;
++        }
++
++        data_bstr = SysAllocStringLen(data, ndata);
++        if (!data_bstr) {
++            hr = E_OUTOFMEMORY;
++            goto done;
++        }
++
++        hr = IXMLDOMDocument_createProcessingInstruction(
++            This->dest_doc, target_bstr, data_bstr, &processing_instruction
++        );
++        if (FAILED(hr)) goto done;
+ 
+-    write_output_buffer(This, closepiW, ARRAY_SIZE(closepiW));
+-    This->newline = TRUE;
++        hr = IXMLDOMDocument_get_firstChild(This->dest_doc, &first_child);
++        if (FAILED(hr)) goto done;
++
++        V_VT(&ref_node) = VT_UNKNOWN;
++        V_UNKNOWN(&ref_node) = (IUnknown*)first_child;
++
++        hr = IXMLDOMDocument_insertBefore(
++            This->dest_doc, (IXMLDOMNode*)processing_instruction, ref_node, NULL
++        );
++        if (FAILED(hr)) goto done;
++
++    done:
++        if (first_child) IXMLDOMNode_Release(first_child);
++        if (processing_instruction)
++            IXMLDOMProcessingInstruction_Release(processing_instruction);
++        if (data_bstr) SysFreeString(data_bstr);
++        if (target_bstr) SysFreeString(target_bstr);
++
++        return hr;
++    }
++    }
+ 
+     return S_OK;
+ }
+@@ -1551,38 +1807,48 @@ static HRESULT WINAPI SAXLexicalHandler_startDTD(ISAXLexicalHandler *iface,
+ 
+     if (!name) return E_INVALIDARG;
+ 
+-    write_output_buffer(This, doctypeW, ARRAY_SIZE(doctypeW));
++    switch (This->output_ty) {
++    case OutputIStream:
++    case OutputString:
++        write_output_buffer(This, doctypeW, ARRAY_SIZE(doctypeW));
+ 
+-    if (*name)
+-    {
+-        write_output_buffer(This, name, name_len);
+-        write_output_buffer(This, spaceW, 1);
+-    }
++        if (*name)
++        {
++            write_output_buffer(This, name, name_len);
++            write_output_buffer(This, spaceW, 1);
++        }
+ 
+-    if (publicId)
+-    {
+-        write_output_buffer(This, publicW, ARRAY_SIZE(publicW));
+-        write_output_buffer_quoted(This, publicId, publicId_len);
++        if (publicId)
++        {
++            write_output_buffer(This, publicW, ARRAY_SIZE(publicW));
++            write_output_buffer_quoted(This, publicId, publicId_len);
+ 
+-        if (!systemId) return E_INVALIDARG;
++            if (!systemId) return E_INVALIDARG;
+ 
+-        if (*publicId)
+-            write_output_buffer(This, spaceW, 1);
++            if (*publicId)
++                write_output_buffer(This, spaceW, 1);
+ 
+-        write_output_buffer_quoted(This, systemId, systemId_len);
++            write_output_buffer_quoted(This, systemId, systemId_len);
+ 
+-        if (*systemId)
+-            write_output_buffer(This, spaceW, 1);
+-    }
+-    else if (systemId)
+-    {
+-        write_output_buffer(This, systemW, ARRAY_SIZE(systemW));
+-        write_output_buffer_quoted(This, systemId, systemId_len);
+-        if (*systemId)
+-            write_output_buffer(This, spaceW, 1);
+-    }
++            if (*systemId)
++                write_output_buffer(This, spaceW, 1);
++        }
++        else if (systemId)
++        {
++            write_output_buffer(This, systemW, ARRAY_SIZE(systemW));
++            write_output_buffer_quoted(This, systemId, systemId_len);
++            if (*systemId)
++                write_output_buffer(This, spaceW, 1);
++        }
+ 
+-    write_output_buffer(This, openintW, ARRAY_SIZE(openintW));
++        write_output_buffer(This, openintW, ARRAY_SIZE(openintW));
++        break;
++    case OutputDOMDocument:
++        FIXME("(%p)->(%s, %s, %s)\n", This, debugstr_wn(name, name_len),
++              debugstr_wn(publicId, publicId_len),
++              debugstr_wn(systemId, systemId_len));
++        return E_NOTIMPL;
++    }
+ 
+     return S_OK;
+ }
+@@ -1594,7 +1860,15 @@ static HRESULT WINAPI SAXLexicalHandler_endDTD(ISAXLexicalHandler *iface)
+ 
+     TRACE("(%p)\n", This);
+ 
+-    write_output_buffer(This, closedtdW, ARRAY_SIZE(closedtdW));
++    switch (This->output_ty) {
++    case OutputIStream:
++    case OutputString:
++        write_output_buffer(This, closedtdW, ARRAY_SIZE(closedtdW));
++        break;
++    case OutputDOMDocument:
++        FIXME("(%p)\n", This);
++        return E_NOTIMPL;
++    }
+ 
+     return S_OK;
+ }
+@@ -1620,9 +1894,17 @@ static HRESULT WINAPI SAXLexicalHandler_startCDATA(ISAXLexicalHandler *iface)
+ 
+     TRACE("(%p)\n", This);
+ 
+-    write_node_indent(This);
+-    write_output_buffer(This, scdataW, ARRAY_SIZE(scdataW));
+-    This->cdata = TRUE;
++    switch (This->output_ty) {
++    case OutputIStream:
++    case OutputString:
++        write_node_indent(This);
++        write_output_buffer(This, scdataW, ARRAY_SIZE(scdataW));
++        This->cdata = TRUE;
++        break;
++    case OutputDOMDocument:
++        FIXME("(%p)\n", This);
++        return E_NOTIMPL;
++    }
+ 
+     return S_OK;
+ }
+@@ -1634,8 +1916,16 @@ static HRESULT WINAPI SAXLexicalHandler_endCDATA(ISAXLexicalHandler *iface)
+ 
+     TRACE("(%p)\n", This);
+ 
+-    write_output_buffer(This, ecdataW, ARRAY_SIZE(ecdataW));
+-    This->cdata = FALSE;
++    switch (This->output_ty) {
++    case OutputIStream:
++    case OutputString:
++        write_output_buffer(This, ecdataW, ARRAY_SIZE(ecdataW));
++        This->cdata = FALSE;
++        break;
++    case OutputDOMDocument:
++        FIXME("(%p)\n", This);
++        return E_NOTIMPL;
++    }
+ 
+     return S_OK;
+ }
+@@ -1650,13 +1940,21 @@ static HRESULT WINAPI SAXLexicalHandler_comment(ISAXLexicalHandler *iface, const
+ 
+     if (!chars) return E_INVALIDARG;
+ 
+-    close_element_starttag(This);
+-    write_node_indent(This);
++    switch (This->output_ty) {
++    case OutputIStream:
++    case OutputString:
++        close_element_starttag(This);
++        write_node_indent(This);
+ 
+-    write_output_buffer(This, copenW, ARRAY_SIZE(copenW));
+-    if (nchars)
+-        write_output_buffer(This, chars, nchars);
+-    write_output_buffer(This, ccloseW, ARRAY_SIZE(ccloseW));
++        write_output_buffer(This, copenW, ARRAY_SIZE(copenW));
++        if (nchars)
++            write_output_buffer(This, chars, nchars);
++        write_output_buffer(This, ccloseW, ARRAY_SIZE(ccloseW));
++        break;
++    case OutputDOMDocument:
++        FIXME("(%p)->(%s)\n", This, debugstr_wn(chars, nchars));
++        return E_NOTIMPL;
++    }
+ 
+     return S_OK;
+ }
+@@ -1706,14 +2004,22 @@ static HRESULT WINAPI SAXDeclHandler_elementDecl(ISAXDeclHandler *iface,
+ 
+     if (!name || !model) return E_INVALIDARG;
+ 
+-    write_output_buffer(This, elementW, ARRAY_SIZE(elementW));
+-    if (n_name) {
+-        write_output_buffer(This, name, n_name);
+-        write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
++    switch (This->output_ty) {
++    case OutputIStream:
++    case OutputString:
++        write_output_buffer(This, elementW, ARRAY_SIZE(elementW));
++        if (n_name) {
++            write_output_buffer(This, name, n_name);
++            write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
++        }
++        if (n_model)
++            write_output_buffer(This, model, n_model);
++        write_output_buffer(This, closetagW, ARRAY_SIZE(closetagW));
++        break;
++    case OutputDOMDocument:
++        FIXME("(%p)->(%s, %s)\n", This, debugstr_wn(name, n_name), debugstr_wn(model, n_model));
++        return E_NOTIMPL;
+     }
+-    if (n_model)
+-        write_output_buffer(This, model, n_model);
+-    write_output_buffer(This, closetagW, ARRAY_SIZE(closetagW));
+ 
+     return S_OK;
+ }
+@@ -1731,31 +2037,41 @@ static HRESULT WINAPI SAXDeclHandler_attributeDecl(ISAXDeclHandler *iface,
+         debugstr_wn(attr, n_attr), n_attr, debugstr_wn(type, n_type), n_type, debugstr_wn(Default, n_default), n_default,
+         debugstr_wn(value, n_value), n_value);
+ 
+-    write_output_buffer(This, attlistW, ARRAY_SIZE(attlistW));
+-    if (n_element) {
+-        write_output_buffer(This, element, n_element);
+-        write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
+-    }
++    switch (This->output_ty) {
++    case OutputIStream:
++    case OutputString:
++        write_output_buffer(This, attlistW, ARRAY_SIZE(attlistW));
++        if (n_element) {
++            write_output_buffer(This, element, n_element);
++            write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
++        }
+ 
+-    if (n_attr) {
+-        write_output_buffer(This, attr, n_attr);
+-        write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
+-    }
++        if (n_attr) {
++            write_output_buffer(This, attr, n_attr);
++            write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
++        }
+ 
+-    if (n_type) {
+-        write_output_buffer(This, type, n_type);
+-        write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
+-    }
++        if (n_type) {
++            write_output_buffer(This, type, n_type);
++            write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
++        }
+ 
+-    if (n_default) {
+-        write_output_buffer(This, Default, n_default);
+-        write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
+-    }
++        if (n_default) {
++            write_output_buffer(This, Default, n_default);
++            write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
++        }
+ 
+-    if (n_value)
+-        write_output_buffer_quoted(This, value, n_value);
++        if (n_value)
++            write_output_buffer_quoted(This, value, n_value);
+ 
+-    write_output_buffer(This, closetagW, ARRAY_SIZE(closetagW));
++        write_output_buffer(This, closetagW, ARRAY_SIZE(closetagW));
++        break;
++    case OutputDOMDocument:
++        FIXME("(%p)->(%s:%d %s:%d %s:%d %s:%d %s:%d)\n", This, debugstr_wn(element, n_element), n_element,
++              debugstr_wn(attr, n_attr), n_attr, debugstr_wn(type, n_type), n_type, debugstr_wn(Default, n_default), n_default,
++              debugstr_wn(value, n_value), n_value);
++        return E_NOTIMPL;
++    }
+ 
+     return S_OK;
+ }
+@@ -1770,16 +2086,25 @@ static HRESULT WINAPI SAXDeclHandler_internalEntityDecl(ISAXDeclHandler *iface,
+ 
+     if (!name || !value) return E_INVALIDARG;
+ 
+-    write_output_buffer(This, entityW, ARRAY_SIZE(entityW));
+-    if (n_name) {
+-        write_output_buffer(This, name, n_name);
+-        write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
+-    }
++    switch (This->output_ty) {
++    case OutputIStream:
++    case OutputString:
++        write_output_buffer(This, entityW, ARRAY_SIZE(entityW));
++        if (n_name) {
++            write_output_buffer(This, name, n_name);
++            write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
++        }
+ 
+-    if (n_value)
+-        write_output_buffer_quoted(This, value, n_value);
++        if (n_value)
++            write_output_buffer_quoted(This, value, n_value);
+ 
+-    write_output_buffer(This, closetagW, ARRAY_SIZE(closetagW));
++        write_output_buffer(This, closetagW, ARRAY_SIZE(closetagW));
++        break;
++    case OutputDOMDocument:
++        FIXME("(%p)->(%s:%d %s:%d)\n", This, debugstr_wn(name, n_name), n_name,
++              debugstr_wn(value, n_value), n_value);
++        return E_NOTIMPL;
++    }
+ 
+     return S_OK;
+ }
+@@ -1795,26 +2120,35 @@ static HRESULT WINAPI SAXDeclHandler_externalEntityDecl(ISAXDeclHandler *iface,
+ 
+     if (!name || !systemId) return E_INVALIDARG;
+ 
+-    write_output_buffer(This, entityW, ARRAY_SIZE(entityW));
+-    if (n_name) {
+-        write_output_buffer(This, name, n_name);
+-        write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
+-    }
++    switch (This->output_ty) {
++    case OutputIStream:
++    case OutputString:
++        write_output_buffer(This, entityW, ARRAY_SIZE(entityW));
++        if (n_name) {
++            write_output_buffer(This, name, n_name);
++            write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
++        }
+ 
+-    if (publicId)
+-    {
+-        write_output_buffer(This, publicW, ARRAY_SIZE(publicW));
+-        write_output_buffer_quoted(This, publicId, n_publicId);
+-        write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
+-        write_output_buffer_quoted(This, systemId, n_systemId);
+-    }
+-    else
+-    {
+-        write_output_buffer(This, systemW, ARRAY_SIZE(systemW));
+-        write_output_buffer_quoted(This, systemId, n_systemId);
+-    }
++        if (publicId)
++        {
++            write_output_buffer(This, publicW, ARRAY_SIZE(publicW));
++            write_output_buffer_quoted(This, publicId, n_publicId);
++            write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
++            write_output_buffer_quoted(This, systemId, n_systemId);
++        }
++        else
++        {
++            write_output_buffer(This, systemW, ARRAY_SIZE(systemW));
++            write_output_buffer_quoted(This, systemId, n_systemId);
++        }
+ 
+-    write_output_buffer(This, closetagW, ARRAY_SIZE(closetagW));
++        write_output_buffer(This, closetagW, ARRAY_SIZE(closetagW));
++        break;
++    case OutputDOMDocument:
++        FIXME("(%p)->(%s:%d %s:%d %s:%d)\n", This, debugstr_wn(name, n_name), n_name,
++              debugstr_wn(publicId, n_publicId), n_publicId, debugstr_wn(systemId, n_systemId), n_systemId);
++        return E_NOTIMPL;
++    }
+ 
+     return S_OK;
+ }
+@@ -2172,37 +2506,46 @@ static HRESULT WINAPI VBSAXContentHandler_startElement(IVBSAXContentHandler *ifa
+ 
+     TRACE("(%s %s %s)\n", debugstr_w(*namespaceURI), debugstr_w(*localName), debugstr_w(*QName));
+ 
+-    mxwriter_write_starttag(This, *QName, SysStringLen(*QName));
++    switch (This->output_ty) {
++    case OutputIStream:
++    case OutputString:
++        mxwriter_write_starttag(This, *QName, SysStringLen(*QName));
+ 
+-    if (attrs)
+-    {
+-        int length, i, escape;
+-        HRESULT hr;
++        if (attrs)
++        {
++            int length, i, escape;
++            HRESULT hr;
+ 
+-        hr = IVBSAXAttributes_get_length(attrs, &length);
+-        if (FAILED(hr)) return hr;
++            hr = IVBSAXAttributes_get_length(attrs, &length);
++            if (FAILED(hr)) return hr;
+ 
+-        escape = This->props[MXWriter_DisableEscaping] == VARIANT_FALSE ||
++            escape = This->props[MXWriter_DisableEscaping] == VARIANT_FALSE ||
+             (This->class_version == MSXML4 || This->class_version == MSXML6);
+ 
+-        for (i = 0; i < length; i++)
+-        {
+-            BSTR qname, value;
++            for (i = 0; i < length; i++)
++            {
++                BSTR qname, value;
+ 
+-            hr = IVBSAXAttributes_getQName(attrs, i, &qname);
+-            if (FAILED(hr)) return hr;
++                hr = IVBSAXAttributes_getQName(attrs, i, &qname);
++                if (FAILED(hr)) return hr;
+ 
+-            hr = IVBSAXAttributes_getValue(attrs, i, &value);
+-            if (FAILED(hr))
+-            {
++                hr = IVBSAXAttributes_getValue(attrs, i, &value);
++                if (FAILED(hr))
++                {
++                    SysFreeString(qname);
++                    return hr;
++                }
++
++                mxwriter_write_attribute(This, qname, SysStringLen(qname), value, SysStringLen(value), escape);
+                 SysFreeString(qname);
+-                return hr;
++                SysFreeString(value);
+             }
+-
+-            mxwriter_write_attribute(This, qname, SysStringLen(qname), value, SysStringLen(value), escape);
+-            SysFreeString(qname);
+-            SysFreeString(value);
+         }
++        break;
++    case OutputDOMDocument:
++        FIXME("(%p)->(%s %s %s)\n", This, debugstr_w(*namespaceURI),
++              debugstr_w(*localName), debugstr_w(*QName));
++        return E_NOTIMPL;
+     }
+ 
+     return S_OK;
+@@ -2326,30 +2669,39 @@ static HRESULT WINAPI SAXDTDHandler_notationDecl(ISAXDTDHandler *iface,
+     if (!name || !n_name)
+         return E_INVALIDARG;
+ 
+-    write_output_buffer(This, notationW, ARRAY_SIZE(notationW));
+-    write_output_buffer(This, name, n_name);
++    switch (This->output_ty) {
++    case OutputIStream:
++    case OutputString:
++        write_output_buffer(This, notationW, ARRAY_SIZE(notationW));
++        write_output_buffer(This, name, n_name);
+ 
+-    if (!publicid && !systemid)
+-        return E_INVALIDARG;
++        if (!publicid && !systemid)
++            return E_INVALIDARG;
+ 
+-    write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
+-    if (publicid)
+-    {
+-        write_output_buffer(This, publicW, ARRAY_SIZE(publicW));
+-        write_output_buffer_quoted(This, publicid, n_publicid);
+-        if (systemid)
++        write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
++        if (publicid)
+         {
+-            write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
++            write_output_buffer(This, publicW, ARRAY_SIZE(publicW));
++            write_output_buffer_quoted(This, publicid, n_publicid);
++            if (systemid)
++            {
++                write_output_buffer(This, spaceW, ARRAY_SIZE(spaceW));
++                write_output_buffer_quoted(This, systemid, n_systemid);
++            }
++        }
++        else
++        {
++            write_output_buffer(This, systemW, ARRAY_SIZE(systemW));
+             write_output_buffer_quoted(This, systemid, n_systemid);
+         }
+-    }
+-    else
+-    {
+-        write_output_buffer(This, systemW, ARRAY_SIZE(systemW));
+-        write_output_buffer_quoted(This, systemid, n_systemid);
+-    }
+ 
+-    write_output_buffer(This, closetagW, ARRAY_SIZE(closetagW));
++        write_output_buffer(This, closetagW, ARRAY_SIZE(closetagW));
++        break;
++    case OutputDOMDocument:
++        TRACE("(%p)->(%s:%d, %s:%d, %s:%d)\n", This, debugstr_wn(name, n_name), n_name,
++              debugstr_wn(publicid, n_publicid), n_publicid, debugstr_wn(systemid, n_systemid), n_systemid);
++        return E_NOTIMPL;
++    }
+ 
+     return S_OK;
+ }
+@@ -2651,7 +3003,10 @@ HRESULT MXWriter_create(MSXML_VERSION version, void **ppObj)
+     This->text = FALSE;
+     This->newline = FALSE;
+ 
++    This->output_ty = OutputString;
+     This->dest = NULL;
++    This->dest_doc = NULL;
++    This->cur_node = NULL;
+ 
+     hr = init_output_buffer(This->xml_enc, &This->buffer);
+     if (hr != S_OK) {
+diff --git a/dlls/msxml3/tests/saxreader.c b/dlls/msxml3/tests/saxreader.c
+index 70556f94615..dc9347eff8e 100644
+--- a/dlls/msxml3/tests/saxreader.c
++++ b/dlls/msxml3/tests/saxreader.c
+@@ -4405,7 +4405,7 @@ static void test_mxwriter_domdoc(void)
+     V_DISPATCH(&dest) = dispatch;
+ 
+     hr = IMXWriter_put_output(writer, dest);
+-    todo_wine EXPECT_HR(hr, S_OK);
++    EXPECT_HR(hr, S_OK);
+ 
+ 
+     /* Provide writer with events */
+@@ -4474,90 +4474,90 @@ static void test_mxwriter_domdoc(void)
+ 
+     /* Assert that it created the correct document */
+     hr = IXMLDOMDocument3_get_documentElement(domdoc, &root);
+-    todo_wine EXPECT_HR(hr, S_OK);
++    EXPECT_HR(hr, S_OK);
+     ok(root != NULL, "root == NULL\n");
+     if (!root) return;
+ 
+     /* <BankAccount> */
+     hr = IXMLDOMElement_get_nodeName(root, &str);
+-    todo_wine EXPECT_HR(hr, S_OK);
+-    todo_wine ok(!lstrcmpW(L"BankAccount", str), "got %s\n", wine_dbgstr_w(str));
++    EXPECT_HR(hr, S_OK);
++    ok(!lstrcmpW(L"BankAccount", str), "got %s\n", wine_dbgstr_w(str));
+     SysFreeString(str);
+ 
+     hr = IXMLDOMElement_get_childNodes(root, &node_list);
+-    todo_wine EXPECT_HR(hr, S_OK);
++    EXPECT_HR(hr, S_OK);
+ 
+     hr = IXMLDOMNodeList_get_length(node_list, &list_length);
+-    todo_wine EXPECT_HR(hr, S_OK);
+-    todo_wine ok(2 == list_length, "list length %i, expected 1\n", list_length);
++    EXPECT_HR(hr, S_OK);
++    ok(2 == list_length, "list length %i, expected 1\n", list_length);
+ 
+     /* <Number */
+     hr = IXMLDOMNodeList_get_item(node_list, 0, &node);
+-    todo_wine EXPECT_HR(hr, S_OK);
++    EXPECT_HR(hr, S_OK);
+ 
+     hr = IXMLDOMNode_get_nodeName(node, &str);
+-    todo_wine EXPECT_HR(hr, S_OK);
+-    todo_wine ok(!lstrcmpW(L"Number", str), "got %s\n", wine_dbgstr_w(str));
++    EXPECT_HR(hr, S_OK);
++    ok(!lstrcmpW(L"Number", str), "got %s\n", wine_dbgstr_w(str));
+     SysFreeString(str);
+ 
+     hr = IXMLDOMNode_get_attributes(node, &attribute_map);
+-    todo_wine EXPECT_HR(hr, S_OK);
++    EXPECT_HR(hr, S_OK);
+ 
+     hr = IXMLDOMNamedNodeMap_get_length(attribute_map, &list_length);
+-    todo_wine EXPECT_HR(hr, S_OK);
+-    todo_wine ok(2 == list_length, "attributes length %i, expected 2\n", list_length);
++    EXPECT_HR(hr, S_OK);
++    ok(2 == list_length, "attributes length %i, expected 2\n", list_length);
+ 
+     /* bank="World Bank" */
+     hr = IXMLDOMNamedNodeMap_get_item(attribute_map, 0, &attribute_node);
+-    todo_wine EXPECT_HR(hr, S_OK);
++    EXPECT_HR(hr, S_OK);
+ 
+     hr = IXMLDOMNode_get_nodeName(attribute_node, &str);
+-    todo_wine EXPECT_HR(hr, S_OK);
+-    todo_wine ok(!lstrcmpW(L"bank", str), "got %s\n", wine_dbgstr_w(str));
++    EXPECT_HR(hr, S_OK);
++    ok(!lstrcmpW(L"bank", str), "got %s\n", wine_dbgstr_w(str));
+     SysFreeString(str);
+ 
+     hr = IXMLDOMNode_get_text(attribute_node, &str);
+-    todo_wine EXPECT_HR(hr, S_OK);
+-    todo_wine ok(!lstrcmpW(L"World Bank", str), "got %s\n", wine_dbgstr_w(str));
++    EXPECT_HR(hr, S_OK);
++    ok(!lstrcmpW(L"World Bank", str), "got %s\n", wine_dbgstr_w(str));
+     SysFreeString(str);
+     IXMLDOMNode_Release(attribute_node);
+ 
+     /* branch="Japan" */
+     hr = IXMLDOMNamedNodeMap_get_item(attribute_map, 1, &attribute_node);
+-    todo_wine EXPECT_HR(hr, S_OK);
++    EXPECT_HR(hr, S_OK);
+ 
+     hr = IXMLDOMNode_get_nodeName(attribute_node, &str);
+-    todo_wine EXPECT_HR(hr, S_OK);
+-    todo_wine ok(!lstrcmpW(L"branch", str), "got %s\n", wine_dbgstr_w(str));
++    EXPECT_HR(hr, S_OK);
++    ok(!lstrcmpW(L"branch", str), "got %s\n", wine_dbgstr_w(str));
+     SysFreeString(str);
+ 
+     hr = IXMLDOMNode_get_text(attribute_node, &str);
+-    todo_wine EXPECT_HR(hr, S_OK);
+-    todo_wine ok(!lstrcmpW(L"Japan", str), "got %s\n", wine_dbgstr_w(str));
++    EXPECT_HR(hr, S_OK);
++    ok(!lstrcmpW(L"Japan", str), "got %s\n", wine_dbgstr_w(str));
+     SysFreeString(str);
+     IXMLDOMNode_Release(attribute_node);
+     IXMLDOMNamedNodeMap_Release(attribute_map);
+ 
+     /* >12345</Number> */
+     hr = IXMLDOMNode_get_text(node, &str);
+-    todo_wine EXPECT_HR(hr, S_OK);
+-    todo_wine ok(!lstrcmpW(L"12345", str), "got %s\n", wine_dbgstr_w(str));
++    EXPECT_HR(hr, S_OK);
++    ok(!lstrcmpW(L"12345", str), "got %s\n", wine_dbgstr_w(str));
+     SysFreeString(str);
+ 
+     IXMLDOMNode_Release(node);
+ 
+     /* <Name>Captain Ahab</Name></BankAccount> */
+     hr = IXMLDOMNodeList_get_item(node_list, 1, &node);
+-    todo_wine EXPECT_HR(hr, S_OK);
++    EXPECT_HR(hr, S_OK);
+ 
+     hr = IXMLDOMNode_get_nodeName(node, &str);
+-    todo_wine EXPECT_HR(hr, S_OK);
+-    todo_wine ok(!lstrcmpW(L"Name", str), "got %s\n", wine_dbgstr_w(str));
++    EXPECT_HR(hr, S_OK);
++    ok(!lstrcmpW(L"Name", str), "got %s\n", wine_dbgstr_w(str));
+     SysFreeString(str);
+ 
+     hr = IXMLDOMNode_get_text(node, &str);
+-    todo_wine EXPECT_HR(hr, S_OK);
+-    todo_wine ok(!lstrcmpW(L"Captain Ahab", str), "got %s\n", wine_dbgstr_w(str));
++    EXPECT_HR(hr, S_OK);
++    ok(!lstrcmpW(L"Captain Ahab", str), "got %s\n", wine_dbgstr_w(str));
+     SysFreeString(str);
+     IXMLDOMNode_Release(node);
+     IXMLDOMNodeList_Release(node_list);
+@@ -4565,7 +4565,7 @@ static void test_mxwriter_domdoc(void)
+ 
+     /* finally test doc output */
+     hr = IXMLDOMDocument3_get_xml(domdoc, &str);
+-    todo_wine EXPECT_HR(hr, S_OK);
++    EXPECT_HR(hr, S_OK);
+     todo_wine ok(
+         !lstrcmpW(
+             L"<?targ type=\"test sheet\" test=\"something\"?>\r\n"
+
+-- 
+2.26.2
+

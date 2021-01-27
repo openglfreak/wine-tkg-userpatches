@@ -1,30 +1,19 @@
 From: Piotr Caban <piotr@codeweavers.com>
-Subject: [PATCH] msvcrt: Improve memmove performance on i386 and x86_64 architectures.
-Message-Id: <b94508dc-e29c-8058-5e34-cd0dbeb823dd@codeweavers.com>
-Date: Thu, 7 Jan 2021 16:20:06 +0100
+Subject: [PATCH v2] msvcrt: Improve memmove performance on i386 and x86_64 architectures.
+Message-Id: <63a894d6-1d11-81f1-f5d9-b66a0fb362b8@codeweavers.com>
+Date: Tue, 26 Jan 2021 19:42:03 +0100
+
 
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=49663
 Signed-off-by: Piotr Caban <piotr@codeweavers.com>
 ---
-
-This implementation is still a little slower than native for small
-buffers. We will probably need to use jump tables to get similar
-speed.
-
-It also affects bug https://bugs.winehq.org/show_bug.cgi?id=49633 but
-the application changed since it was reported.
-
-I'm not sure how long the code-freeze will be. It might be to late for
-this change.
-
-
-   dlls/msvcrt/math.c   |   2 +-
-   dlls/msvcrt/msvcrt.h |   2 +
-   dlls/msvcrt/string.c | 264 ++++++++++++++++++++++++++++++++++++++++++-
-   3 files changed, 266 insertions(+), 2 deletions(-)
+  dlls/msvcrt/math.c   |   2 +-
+  dlls/msvcrt/msvcrt.h |   2 +
+  dlls/msvcrt/string.c | 263 +++++++++++++++++++++++++++++++++++++++++++
+  3 files changed, 266 insertions(+), 1 deletion(-)
 
 diff --git a/dlls/msvcrt/math.c b/dlls/msvcrt/math.c
-index 9f30cb8627f..222522420cc 100644
+index f3146e32bec..3733acf2911 100644
 --- a/dlls/msvcrt/math.c
 +++ b/dlls/msvcrt/math.c
 @@ -64,7 +64,7 @@ typedef int (CDECL *MSVCRT_matherr_func)(struct _exception *);
@@ -50,7 +39,7 @@ index d86056f4c05..c360943b1f0 100644
  #define DBL80_MIN_10_EXP -4951
  
 diff --git a/dlls/msvcrt/string.c b/dlls/msvcrt/string.c
-index 348c36f3ed5..cfccaf13ac8 100644
+index 348c36f3ed5..d335fce4992 100644
 --- a/dlls/msvcrt/string.c
 +++ b/dlls/msvcrt/string.c
 @@ -31,6 +31,7 @@
@@ -61,31 +50,20 @@ index 348c36f3ed5..cfccaf13ac8 100644
  #include "wine/debug.h"
  
  WINE_DEFAULT_DEBUG_CHANNEL(msvcrt);
-@@ -2478,7 +2479,7 @@ int __cdecl memcmp(const void *ptr1, const void *ptr2, size_t n)
- #else
- # define MERGE(w1, sh1, w2, sh2) ((w1 >> sh1) | (w2 << sh2))
- #endif
--void * __cdecl memmove(void *dst, const void *src, size_t n)
-+void * __cdecl memmove_internal(void *dst, const void *src, size_t n)
- {
-     unsigned char *d = dst;
-     const unsigned char *s = src;
-@@ -2574,6 +2575,267 @@ void * __cdecl memmove(void *dst, const void *src, size_t n)
+@@ -2470,6 +2471,259 @@ int __cdecl memcmp(const void *ptr1, const void *ptr2, size_t n)
+     return 0;
  }
- #undef MERGE
  
 +#if defined(__i386__) || defined(__x86_64__)
 +
 +#ifdef __i386__
++
 +#define DEST_REG "%edi"
 +#define SRC_REG "%esi"
 +#define LEN_REG "%ecx"
 +#define TMP_REG "%edx"
 +
 +#define MEMMOVE_INIT \
-+    "movl " __ASM_NAME( "sse2_supported" ) ", %eax\n\t" \
-+    "cmp $0, %eax\n\t" \
-+    "je " __ASM_NAME( "memmove_internal" ) "\n\t" \
 +    "pushl " SRC_REG "\n\t" \
 +    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t") \
 +    "pushl " DEST_REG "\n\t" \
@@ -124,7 +102,8 @@ index 348c36f3ed5..cfccaf13ac8 100644
 +    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
 +#endif
 +
-+__ASM_GLOBAL_FUNC( memmove,
++void * __cdecl sse2_memmove(void *dst, const void *src, size_t n);
++__ASM_GLOBAL_FUNC( sse2_memmove,
 +        MEMMOVE_INIT
 +        "mov " DEST_REG ", " TMP_REG "\n\t" /* check copying direction */
 +        "sub " SRC_REG ", " TMP_REG "\n\t"
@@ -326,16 +305,36 @@ index 348c36f3ed5..cfccaf13ac8 100644
 +        MEMMOVE_CLEANUP
 +        "ret" )
 +
-+#else
-+
-+void * __cdecl memmove(void *dst, const void *src, size_t n)
-+{
-+    return memmove_internal(dst, src, n);
-+}
-+
 +#endif
 +
  /*********************************************************************
-  *                  memcpy   (MSVCRT.@)
+  *                  memmove (MSVCRT.@)
   */
+@@ -2480,10 +2734,18 @@ int __cdecl memcmp(const void *ptr1, const void *ptr2, size_t n)
+ #endif
+ void * __cdecl memmove(void *dst, const void *src, size_t n)
+ {
++#ifdef __x86_64__
++    return sse2_memmove(dst, src, n);
++#else
+     unsigned char *d = dst;
+     const unsigned char *s = src;
+     int sh1;
+ 
++#ifdef __i386__
++    if (sse2_supported)
++        return sse2_memmove(dst, src, n);
++#endif
++
+     if (!n) return dst;
+ 
+     if ((size_t)dst - (size_t)src >= n)
+@@ -2571,6 +2833,7 @@ void * __cdecl memmove(void *dst, const void *src, size_t n)
+         while (n--) *--d = *--s;
+     }
+     return dst;
++#endif
+ }
+ #undef MERGE
+ 
 

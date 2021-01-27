@@ -17,22 +17,20 @@ index 3ac72837ef7..3e9aba05893 100644
 @@ -2387,7 +2387,8 @@ static NTSTATUS get_dll_load_path_search_flags( LPCWSTR module, DWORD flags, WCH
   * Open a file for a new dll. Helper for find_dll_file.
   */
- static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm, void **module,
+ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm, HANDLE *mapping,
 -                               SECTION_IMAGE_INFORMATION *image_info, struct file_id *id )
 +                               SECTION_IMAGE_INFORMATION *image_info, struct file_id *id,
 +                               BOOL loaded_only )
  {
      FILE_BASIC_INFORMATION info;
      OBJECT_ATTRIBUTES attr;
-@@ -2440,6 +2441,14 @@ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm, void
+@@ -2440,6 +2441,12 @@ static NTSTATUS open_dll_file( UNICODE_STRING *nt_name, WINE_MODREF **pwm, void
          }
      }
  
 +    if (loaded_only)
 +    {
 +        NtClose( handle );
-+        NtUnmapViewOfSection( NtCurrentProcess(), *module );
-+        *module = NULL;
 +        return STATUS_DLL_NOT_FOUND;
 +    }
 +
@@ -42,7 +40,7 @@ index 3ac72837ef7..3e9aba05893 100644
 @@ -2664,7 +2673,7 @@ done:
   */
  static NTSTATUS search_dll_file( LPCWSTR paths, LPCWSTR search, UNICODE_STRING *nt_name,
-                                  WINE_MODREF **pwm, void **module, SECTION_IMAGE_INFORMATION *image_info,
+                                  WINE_MODREF **pwm, HANDLE *mapping, SECTION_IMAGE_INFORMATION *image_info,
 -                                 struct file_id *id )
 +                                 struct file_id *id, BOOL loaded_only )
  {
@@ -52,15 +50,15 @@ index 3ac72837ef7..3e9aba05893 100644
          nt_name->Buffer = NULL;
          if ((status = RtlDosPathNameToNtPathName_U_WithStatus( name, nt_name, NULL, NULL ))) goto done;
  
--        status = open_dll_file( nt_name, pwm, module, image_info, id );
-+        status = open_dll_file( nt_name, pwm, module, image_info, id, loaded_only );
+-        status = open_dll_file( nt_name, pwm, mapping, image_info, id );
++        status = open_dll_file( nt_name, pwm, mapping, image_info, id, loaded_only );
          if (status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH) found_image = TRUE;
          else if (status != STATUS_DLL_NOT_FOUND) goto done;
          RtlFreeUnicodeString( nt_name );
 @@ -2720,7 +2729,8 @@ done:
   */
  static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, const WCHAR *default_ext,
-                                UNICODE_STRING *nt_name, WINE_MODREF **pwm, void **module,
+                                UNICODE_STRING *nt_name, WINE_MODREF **pwm, HANDLE *mapping,
 -                               SECTION_IMAGE_INFORMATION *image_info, struct file_id *id )
 +                               SECTION_IMAGE_INFORMATION *image_info, struct file_id *id,
 +                               BOOL loaded_only )
@@ -71,11 +69,11 @@ index 3ac72837ef7..3e9aba05893 100644
      }
  
      if (RtlDetermineDosPathNameType_U( libname ) == RELATIVE_PATH)
--        status = search_dll_file( load_path, libname, nt_name, pwm, module, image_info, id );
-+        status = search_dll_file( load_path, libname, nt_name, pwm, module, image_info, id, loaded_only );
+-        status = search_dll_file( load_path, libname, nt_name, pwm, mapping, image_info, id );
++        status = search_dll_file( load_path, libname, nt_name, pwm, mapping, image_info, id, loaded_only );
      else if (!(status = RtlDosPathNameToNtPathName_U_WithStatus( libname, nt_name, NULL, NULL )))
--        status = open_dll_file( nt_name, pwm, module, image_info, id );
-+        status = open_dll_file( nt_name, pwm, module, image_info, id, loaded_only );
+-        status = open_dll_file( nt_name, pwm, mapping, image_info, id );
++        status = open_dll_file( nt_name, pwm, mapping, image_info, id, loaded_only );
  
      if (status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH) status = STATUS_INVALID_IMAGE_FORMAT;
  
@@ -83,36 +81,27 @@ index 3ac72837ef7..3e9aba05893 100644
  
      TRACE( "looking for %s in %s\n", debugstr_w(libname), debugstr_w(load_path) );
  
--    nts = find_dll_file( load_path, libname, default_ext, &nt_name, pwm, &module, &image_info, &id );
-+    nts = find_dll_file( load_path, libname, default_ext, &nt_name, pwm, &module, &image_info, &id, FALSE );
+-    nts = find_dll_file( load_path, libname, default_ext, &nt_name, pwm, &mapping, &image_info, &id );
++    nts = find_dll_file( load_path, libname, default_ext, &nt_name, pwm, &mapping, &image_info, &id, FALSE );
  
      if (*pwm)  /* found already loaded module */
      {
-@@ -2884,7 +2894,7 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, const WC
-                     LdrUnloadDll( (*pwm)->ldr.DllBase );
-                     nts = STATUS_DLL_NOT_FOUND;
-                     /* map the dll again if it was unmapped */
--                    if (!module && open_dll_file( &nt_name, pwm, &module, &image_info, &id )) break;
-+                    if (!module && open_dll_file( &nt_name, pwm, &module, &image_info, &id, FALSE )) break;
-                 }
-                 if (nts == STATUS_DLL_NOT_FOUND)
-                     nts = load_native_dll( load_path, &nt_name, &module, &image_info, &id, flags, pwm );
 @@ -3005,18 +3015,12 @@ NTSTATUS WINAPI LdrGetDllHandle( LPCWSTR load_path, ULONG flags, const UNICODE_S
  
      if (!load_path) load_path = NtCurrentTeb()->Peb->ProcessParameters->DllPath.Buffer;
  
--    status = find_dll_file( load_path, name->Buffer, L".dll", &nt_name, &wm, &module, &image_info, &id );
+-    status = find_dll_file( load_path, name->Buffer, L".dll", &nt_name, &wm, &mapping, &image_info, &id );
 -
 -    if (wm)
 +    if (!(status = find_dll_file( load_path, name->Buffer, L".dll",
-+            &nt_name, &wm, &module, &image_info, &id, TRUE )))
++            &nt_name, &wm, &mapping, &image_info, &id, TRUE )))
      {
          *base = wm->ldr.DllBase;
          unlock_modref( wm );
      }
 -    else
 -    {
--        if (status == STATUS_SUCCESS) NtUnmapViewOfSection( NtCurrentProcess(), module );
+-        if (status == STATUS_SUCCESS) NtClose( mapping );
 -        status = STATUS_DLL_NOT_FOUND;
 -    }
      RtlFreeUnicodeString( &nt_name );

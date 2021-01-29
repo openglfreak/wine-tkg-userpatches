@@ -1,0 +1,232 @@
+From: Zhiyi Zhang <zzhang@codeweavers.com>
+Subject: [PATCH v2 2/2] gdi32: Create a bitmap of the size of the virtual screen for display DCs.
+Message-Id: <21d1e63f-24d3-a907-4f37-5beb2584dacc@codeweavers.com>
+Date: Fri, 29 Jan 2021 14:36:44 +0800
+
+Fix a bug that WeChat screenshot is black when there is only one monitor.
+
+Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
+---
+ dlls/gdi32/dc.c             | 11 ++++++-
+ dlls/gdi32/driver.c         |  2 +-
+ dlls/gdi32/gdi_private.h    |  5 +++
+ dlls/gdi32/gdiobj.c         | 61 +++++++++++++++++++++++++++++++++++--
+ dlls/gdi32/tests/bitmap.c   |  1 -
+ dlls/user32/tests/monitor.c |  3 --
+ 6 files changed, 74 insertions(+), 9 deletions(-)
+
+diff --git a/dlls/gdi32/dc.c b/dlls/gdi32/dc.c
+index 830fabf6e78..16aea2933aa 100644
+--- a/dlls/gdi32/dc.c
++++ b/dlls/gdi32/dc.c
+@@ -649,7 +649,16 @@ HDC WINAPI CreateDCW( LPCWSTR driver, LPCWSTR device, LPCWSTR output,
+     if (!(dc = alloc_dc_ptr( OBJ_DC ))) return 0;
+     hdc = dc->hSelf;
+ 
+-    dc->hBitmap = GDI_inc_ref_count( GetStockObject( DEFAULT_BITMAP ));
++    if (!lstrcmpiW( driver, L"DISPLAY" ) || is_display_device( driver ) || is_display_device( device ))
++    {
++        dc->display_dc = 1;
++        dc->hBitmap = GDI_inc_ref_count( GetStockObject( DISPLAY_BITMAP ));
++    }
++    else
++    {
++        dc->display_dc = 0;
++        dc->hBitmap = GDI_inc_ref_count( GetStockObject( DEFAULT_BITMAP ));
++    }
+ 
+     TRACE("(driver=%s, device=%s, output=%s): returning %p\n",
+           debugstr_w(driver), debugstr_w(device), debugstr_w(output), dc->hSelf );
+diff --git a/dlls/gdi32/driver.c b/dlls/gdi32/driver.c
+index e146a3a4f85..d59061066a3 100644
+--- a/dlls/gdi32/driver.c
++++ b/dlls/gdi32/driver.c
+@@ -85,7 +85,7 @@ static BOOL (WINAPI *pEnumDisplayMonitors)(HDC, LPRECT, MONITORENUMPROC, LPARAM)
+ static BOOL (WINAPI *pEnumDisplaySettingsW)(LPCWSTR, DWORD, LPDEVMODEW);
+ static HWND (WINAPI *pGetDesktopWindow)(void);
+ static BOOL (WINAPI *pGetMonitorInfoW)(HMONITOR, LPMONITORINFO);
+-static INT (WINAPI *pGetSystemMetrics)(INT);
++INT (WINAPI *pGetSystemMetrics)(INT) = NULL;
+ static DPI_AWARENESS_CONTEXT (WINAPI *pSetThreadDpiAwarenessContext)(DPI_AWARENESS_CONTEXT);
+ 
+ /**********************************************************************
+diff --git a/dlls/gdi32/gdi_private.h b/dlls/gdi32/gdi_private.h
+index 2bf16e8eaf8..13865f37ecc 100644
+--- a/dlls/gdi32/gdi_private.h
++++ b/dlls/gdi32/gdi_private.h
+@@ -47,6 +47,8 @@ typedef struct {
+ 
+ /* extra stock object: default 1x1 bitmap for memory DCs */
+ #define DEFAULT_BITMAP (STOCK_LAST+1)
++/* extra stock object: the bitmap for display DCs */
++#define DISPLAY_BITMAP (STOCK_LAST+2)
+ 
+ struct gdi_obj_funcs
+ {
+@@ -72,6 +74,7 @@ typedef struct tagDC
+     DCHOOKPROC   hookProc;         /* DC hook */
+     BOOL         bounds_enabled:1; /* bounds tracking is enabled */
+     BOOL         path_open:1;      /* path is currently open (only for saved DCs) */
++    BOOL         display_dc:1;     /* Whether this DC is a display DC */
+ 
+     POINT        wnd_org;          /* Window origin */
+     SIZE         wnd_ext;          /* Window extent */
+@@ -761,4 +764,6 @@ extern void CDECL free_heap_bits( struct gdi_image_bits *bits ) DECLSPEC_HIDDEN;
+ 
+ extern HMODULE gdi32_module DECLSPEC_HIDDEN;
+ 
++extern INT (WINAPI *pGetSystemMetrics)( INT ) DECLSPEC_HIDDEN;
++
+ #endif /* __WINE_GDI_PRIVATE_H */
+diff --git a/dlls/gdi32/gdiobj.c b/dlls/gdi32/gdiobj.c
+index 2309fdac582..bda1cf387be 100644
+--- a/dlls/gdi32/gdiobj.c
++++ b/dlls/gdi32/gdiobj.c
+@@ -26,6 +26,7 @@
+ #include "windef.h"
+ #include "winbase.h"
+ #include "wingdi.h"
++#include "winuser.h"
+ #include "winreg.h"
+ #include "winnls.h"
+ #include "winerror.h"
+@@ -101,12 +102,13 @@ static const LOGPEN NullPen  = { PS_NULL,  { 0, 0 }, 0 };
+ static const LOGBRUSH DCBrush = { BS_SOLID, RGB(255,255,255), 0 };
+ static const LOGPEN DCPen     = { PS_SOLID, { 0, 0 }, RGB(0,0,0) };
+ 
+-/* reserve one extra entry for the stock default bitmap */
++/* reserve extra entries for the stock default bitmap and a bitmap for display DCs */
+ /* this is what Windows does too */
+-#define NB_STOCK_OBJECTS (STOCK_LAST+2)
++#define NB_STOCK_OBJECTS (STOCK_LAST+3)
+ 
+ static HGDIOBJ stock_objects[NB_STOCK_OBJECTS];
+ static HGDIOBJ scaled_stock_objects[NB_STOCK_OBJECTS];
++static SIZE display_bitmap_size = { 1, 1 };
+ 
+ static CRITICAL_SECTION gdi_section;
+ static CRITICAL_SECTION_DEBUG critsect_debug =
+@@ -642,6 +644,7 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
+ 
+     stock_objects[DEFAULT_PALETTE] = PALETTE_Init();
+     stock_objects[DEFAULT_BITMAP]  = CreateBitmap( 1, 1, 1, 1, NULL );
++    stock_objects[DISPLAY_BITMAP]  = CreateBitmap( 1, 1, 1, 1, NULL );
+ 
+     /* language-independent stock fonts */
+     stock_objects[OEM_FIXED_FONT]      = CreateFontIndirectW( &OEMFixedFont );
+@@ -1007,6 +1010,9 @@ void GDI_hdc_not_using_object(HGDIOBJ obj, HDC hdc)
+  */
+ HGDIOBJ WINAPI GetStockObject( INT obj )
+ {
++    HBITMAP bitmap;
++    SIZE size;
++
+     if ((obj < 0) || (obj >= NB_STOCK_OBJECTS)) return 0;
+     switch (obj)
+     {
+@@ -1016,6 +1022,32 @@ HGDIOBJ WINAPI GetStockObject( INT obj )
+     case DEFAULT_GUI_FONT:
+         if (get_system_dpi() != 96) return scaled_stock_objects[obj];
+         break;
++    case DISPLAY_BITMAP:
++    {
++        EnterCriticalSection( &gdi_section );
++
++        if (pGetSystemMetrics)
++        {
++            size.cx = pGetSystemMetrics( SM_CXVIRTUALSCREEN );
++            size.cy = pGetSystemMetrics( SM_CYVIRTUALSCREEN );
++            if (size.cx != display_bitmap_size.cx || size.cy != display_bitmap_size.cy)
++            {
++                if ((bitmap = CreateBitmap( size.cx, size.cy, 1, 32, NULL )))
++                {
++                    __wine_make_gdi_object_system( stock_objects[DISPLAY_BITMAP], FALSE );
++                    if (!GDI_get_ref_count( stock_objects[DISPLAY_BITMAP] ))
++                        DeleteObject( stock_objects[DISPLAY_BITMAP] );
++                    stock_objects[DISPLAY_BITMAP] = bitmap;
++                    display_bitmap_size = size;
++                    __wine_make_gdi_object_system( stock_objects[DISPLAY_BITMAP], TRUE );
++                }
++            }
++        }
++
++        bitmap = stock_objects[DISPLAY_BITMAP];
++        LeaveCriticalSection( &gdi_section );
++        return bitmap;
++    }
+     }
+     return stock_objects[obj];
+ }
+@@ -1125,6 +1157,7 @@ HGDIOBJ WINAPI GetCurrentObject(HDC hdc,UINT type)
+ {
+     HGDIOBJ ret = 0;
+     DC * dc = get_dc_ptr( hdc );
++    HBITMAP display_bitmap;
+ 
+     if (!dc) return 0;
+ 
+@@ -1134,7 +1167,29 @@ HGDIOBJ WINAPI GetCurrentObject(HDC hdc,UINT type)
+ 	case OBJ_BRUSH:	 ret = dc->hBrush; break;
+ 	case OBJ_PAL:	 ret = dc->hPalette; break;
+ 	case OBJ_FONT:	 ret = dc->hFont; break;
+-	case OBJ_BITMAP: ret = dc->hBitmap; break;
++	case OBJ_BITMAP:
++        {
++            if (dc->display_dc)
++            {
++                EnterCriticalSection( &gdi_section );
++
++                display_bitmap = GetStockObject( DISPLAY_BITMAP );
++                if (dc->hBitmap != display_bitmap)
++                {
++                    GDI_dec_ref_count( dc->hBitmap );
++                    dc->hBitmap = GDI_inc_ref_count( display_bitmap );
++                }
++
++                ret = dc->hBitmap;
++                LeaveCriticalSection( &gdi_section );
++            }
++            else
++            {
++                ret = dc->hBitmap;
++            }
++
++            break;
++        }
+ 
+ 	/* tests show that OBJ_REGION is explicitly ignored */
+ 	case OBJ_REGION: break;
+diff --git a/dlls/gdi32/tests/bitmap.c b/dlls/gdi32/tests/bitmap.c
+index fe3482671b2..b8071dc2155 100644
+--- a/dlls/gdi32/tests/bitmap.c
++++ b/dlls/gdi32/tests/bitmap.c
+@@ -2783,7 +2783,6 @@ static void test_CreateBitmap(void)
+        "0: %p, 1: %p, 4: %p, 5: %p, curObj1 %p, old1 %p\n",
+        bm, bm1, bm4, bm5, curObj1, old1);
+     ok(bm != bm2 && bm != bm3, "0: %p, 2: %p, 3: %p\n", bm, bm2, bm3);
+-todo_wine
+     ok(bm != curObj2, "0: %p, curObj2 %p\n", bm, curObj2);
+     ok(old2 == 0, "old2 %p\n", old2);
+ 
+diff --git a/dlls/user32/tests/monitor.c b/dlls/user32/tests/monitor.c
+index 926b288da11..adea730f65f 100644
+--- a/dlls/user32/tests/monitor.c
++++ b/dlls/user32/tests/monitor.c
+@@ -2039,13 +2039,10 @@ static void _check_display_dc(INT line, HDC hdc, const DEVMODEA *dm, BOOL allow_
+     if (ret)
+     {
+         ok_(__FILE__, line)(bitmap.bmType == 0, "Expected bmType %d, got %d.\n", 0, bitmap.bmType);
+-        todo_wine
+         ok_(__FILE__, line)(bitmap.bmWidth == GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                 "Expected bmWidth %d, got %d.\n", GetSystemMetrics(SM_CXVIRTUALSCREEN), bitmap.bmWidth);
+-        todo_wine
+         ok_(__FILE__, line)(bitmap.bmHeight == GetSystemMetrics(SM_CYVIRTUALSCREEN),
+                 "Expected bmHeight %d, got %d.\n", GetSystemMetrics(SM_CYVIRTUALSCREEN), bitmap.bmHeight);
+-        todo_wine
+         ok_(__FILE__, line)(bitmap.bmBitsPixel == GetDeviceCaps(hdc, BITSPIXEL),
+                 "Expected bmBitsPixel %d, got %d.\n", GetDeviceCaps(hdc, BITSPIXEL), bitmap.bmBitsPixel);
+         ok_(__FILE__, line)(bitmap.bmWidthBytes == get_bitmap_stride(bitmap.bmWidth, bitmap.bmBitsPixel),
+
+-- 
+2.27.0
+

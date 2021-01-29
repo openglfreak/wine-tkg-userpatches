@@ -1,0 +1,332 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH v2 2/4] wmphoto: Implement class factory for WmpDecoder.
+Message-Id: <20210128121147.1123498-2-rbernon@codeweavers.com>
+Date: Thu, 28 Jan 2021 13:11:45 +0100
+In-Reply-To: <20210128121147.1123498-1-rbernon@codeweavers.com>
+References: <20210128121147.1123498-1-rbernon@codeweavers.com>
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/wmphoto/Makefile.in |  11 +++-
+ dlls/wmphoto/main.c      | 133 ++++++++++++++++++++++++++++++++++++---
+ dlls/wmphoto/unix_lib.c  | 107 +++++++++++++++++++++++++++++++
+ 3 files changed, 240 insertions(+), 11 deletions(-)
+ create mode 100644 dlls/wmphoto/unix_lib.c
+
+diff --git a/dlls/wmphoto/Makefile.in b/dlls/wmphoto/Makefile.in
+index 24e1f49496a..caaab56f758 100644
+--- a/dlls/wmphoto/Makefile.in
++++ b/dlls/wmphoto/Makefile.in
+@@ -1,7 +1,16 @@
+ MODULE = wmphoto.dll
++IMPORTS = windowscodecs uuid ole32 oleaut32 propsys rpcrt4 shlwapi
++PARENTSRC = ../windowscodecs
+ 
+ EXTRADLLFLAGS = -mno-cygwin
++EXTRAINCL = $(JXRLIB_CFLAGS)
+ 
+-C_SRCS = main.c
++C_SRCS = \
++	decoder.c \
++	main.c \
++	palette.c \
++	unix_iface.c \
++	unix_lib.c \
++	wincodecs_common.c
+ 
+ IDL_SRCS = wmphoto.idl
+diff --git a/dlls/wmphoto/main.c b/dlls/wmphoto/main.c
+index d3a926e7704..9477df4a1cf 100644
+--- a/dlls/wmphoto/main.c
++++ b/dlls/wmphoto/main.c
+@@ -1,5 +1,6 @@
+ /*
+  * Copyright 2017 Vincent Povirk for CodeWeavers
++ * Copyright 2020 Rémi Bernon for CodeWeavers
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -17,25 +18,127 @@
+  */
+ 
+ #include <stdarg.h>
++#include <stdio.h>
++#include <string.h>
++#include <setjmp.h>
++
++#define COBJMACROS
+ 
+ #include "windef.h"
+ #include "winbase.h"
++#include "winternl.h"
+ #include "objbase.h"
+ #include "rpcproxy.h"
++#include "wincodecsdk.h"
+ 
++#include "wincodecs_private.h"
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(wincodecs);
+ 
+-static HINSTANCE WMPHOTO_hInstance;
++HRESULT create_instance(const CLSID *clsid, const IID *iid, void **ppv)
++{
++    return CoCreateInstance(clsid, NULL, CLSCTX_INPROC_SERVER, iid, ppv);
++}
++
++HRESULT get_decoder_info(REFCLSID clsid, IWICBitmapDecoderInfo **info)
++{
++    IWICImagingFactory* factory;
++    IWICComponentInfo *compinfo;
++    HRESULT hr;
++
++    hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
++                          &IID_IWICImagingFactory, (void **)&factory);
++    if (FAILED(hr))
++        return hr;
++
++    hr = IWICImagingFactory_CreateComponentInfo(factory, clsid, &compinfo);
++    if (FAILED(hr))
++    {
++        IWICImagingFactory_Release(factory);
++        return hr;
++    }
++
++    hr = IWICComponentInfo_QueryInterface(compinfo, &IID_IWICBitmapDecoderInfo,
++        (void **)info);
++
++    IWICComponentInfo_Release(compinfo);
++    IWICImagingFactory_Release(factory);
++    return hr;
++}
++
++struct class_factory
++{
++    IClassFactory IClassFactory_iface;
++};
++
++static HRESULT WINAPI wmp_class_factory_QueryInterface(IClassFactory *iface, REFIID iid, void **out)
++{
++    TRACE("iface %p, iid %s, out %p.\n", iface, debugstr_guid(iid), out);
++
++    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IClassFactory))
++    {
++        *out = iface;
++        IClassFactory_AddRef(iface);
++        return S_OK;
++    }
++
++    *out = NULL;
++    FIXME("%s not implemented.\n", debugstr_guid(iid));
++    return E_NOINTERFACE;
++}
++
++static ULONG WINAPI wmp_class_factory_AddRef(IClassFactory *iface) { return 2; }
+ 
+-BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
++static ULONG WINAPI wmp_class_factory_Release(IClassFactory *iface) { return 1; }
++
++static HRESULT WINAPI wmp_class_factory_CreateInstance(IClassFactory *iface, IUnknown *outer, REFIID iid, void **out)
++{
++    struct decoder_info decoder_info;
++    struct decoder *decoder;
++    HRESULT hr;
++
++    TRACE("iface %p, outer %p, iid %s, out %p.\n", iface, outer, debugstr_guid(iid), out);
++
++    *out = NULL;
++    if (outer) return CLASS_E_NOAGGREGATION;
++
++    hr = get_unix_decoder(&CLSID_WICWmpDecoder, &decoder_info, &decoder);
++
++    if (SUCCEEDED(hr))
++        hr = CommonDecoder_CreateInstance(decoder, &decoder_info, iid, out);
++
++    return hr;
++}
++
++static HRESULT WINAPI wmp_class_factory_LockServer(IClassFactory *iface, BOOL lock)
++{
++    FIXME("iface %p, lock %d, stub!\n", iface, lock);
++    return S_OK;
++}
++
++static const IClassFactoryVtbl wmp_class_factory_vtbl =
++{
++    wmp_class_factory_QueryInterface,
++    wmp_class_factory_AddRef,
++    wmp_class_factory_Release,
++    wmp_class_factory_CreateInstance,
++    wmp_class_factory_LockServer,
++};
++
++static struct class_factory wmp_class_factory = {{&wmp_class_factory_vtbl}};
++
++HMODULE windowscodecs_module = 0;
++
++BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
+ {
+-    switch (fdwReason)
++    TRACE("instance %p, reason %d, reserved %p\n", instance, reason, reserved);
++
++    switch (reason)
+     {
+     case DLL_PROCESS_ATTACH:
+-        WMPHOTO_hInstance = hinstDLL;
+-        DisableThreadLibraryCalls(hinstDLL);
++        windowscodecs_module = instance;
++        DisableThreadLibraryCalls(instance);
+         break;
+     case DLL_WINE_PREATTACH:
+         return FALSE; /* prefer native version */
+@@ -49,18 +152,28 @@ HRESULT WINAPI DllCanUnloadNow(void)
+     return S_FALSE;
+ }
+ 
+-HRESULT WINAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID * ppv)
++HRESULT WINAPI DllGetClassObject(REFCLSID clsid, REFIID iid, LPVOID *out)
+ {
+-    FIXME("wmphoto: stub\n");
+-    return E_NOTIMPL;
++    struct class_factory *factory;
++
++    TRACE("clsid %s, iid %s, out %p.\n", debugstr_guid(clsid), debugstr_guid(iid), out);
++
++    if (IsEqualGUID(clsid, &CLSID_WICWmpDecoder)) factory = &wmp_class_factory;
++    else
++    {
++        FIXME("%s not implemented.\n", debugstr_guid(clsid));
++        return CLASS_E_CLASSNOTAVAILABLE;
++    }
++
++    return IClassFactory_QueryInterface(&factory->IClassFactory_iface, iid, out);
+ }
+ 
+ HRESULT WINAPI DllRegisterServer(void)
+ {
+-    return __wine_register_resources( WMPHOTO_hInstance );
++    return __wine_register_resources( windowscodecs_module );
+ }
+ 
+ HRESULT WINAPI DllUnregisterServer(void)
+ {
+-    return __wine_unregister_resources( WMPHOTO_hInstance );
++    return __wine_unregister_resources( windowscodecs_module );
+ }
+diff --git a/dlls/wmphoto/unix_lib.c b/dlls/wmphoto/unix_lib.c
+new file mode 100644
+index 00000000000..d8108bfc584
+--- /dev/null
++++ b/dlls/wmphoto/unix_lib.c
+@@ -0,0 +1,107 @@
++/*
++ * unix_lib.c - This is the Unix side of the Unix interface.
++ *
++ * Copyright 2020 Esme Povirk
++ * Copyright 2020 Rémi Bernon for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++#include "wine/port.h"
++
++#include <stdarg.h>
++
++#define NONAMELESSUNION
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "windef.h"
++#include "winternl.h"
++#include "winbase.h"
++#include "objbase.h"
++
++#include "wincodecs_private.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(wincodecs);
++
++#include "wincodecs_common.h"
++
++static const struct win32_funcs *win32_funcs;
++
++HRESULT CDECL stream_getsize(IStream *stream, ULONGLONG *size)
++{
++    return win32_funcs->stream_getsize(stream, size);
++}
++
++HRESULT CDECL stream_read(IStream *stream, void *buffer, ULONG read, ULONG *bytes_read)
++{
++    return win32_funcs->stream_read(stream, buffer, read, bytes_read);
++}
++
++HRESULT CDECL stream_seek(IStream *stream, LONGLONG ofs, DWORD origin, ULONGLONG *new_position)
++{
++    return win32_funcs->stream_seek(stream, ofs, origin, new_position);
++}
++
++HRESULT CDECL stream_write(IStream *stream, const void *buffer, ULONG write, ULONG *bytes_written)
++{
++    return win32_funcs->stream_write(stream, buffer, write, bytes_written);
++}
++
++HRESULT CDECL decoder_create(const CLSID *decoder_clsid, struct decoder_info *info, struct decoder **result)
++{
++    FIXME("decoder_clsid %s, info %p, result %p, stub!\n", debugstr_guid(decoder_clsid), info, result);
++    return E_NOTIMPL;
++}
++
++HRESULT CDECL encoder_create(const CLSID *encoder_clsid, struct encoder_info *info, struct encoder **result)
++{
++    FIXME("encoder_clsid %s, info %p, result %p, stub!\n", debugstr_guid(encoder_clsid), info, result);
++    return E_NOTIMPL;
++}
++
++static const struct unix_funcs unix_funcs = {
++    decoder_create,
++    decoder_initialize,
++    decoder_get_frame_info,
++    decoder_copy_pixels,
++    decoder_get_metadata_blocks,
++    decoder_get_color_context,
++    decoder_destroy,
++    encoder_create,
++    encoder_initialize,
++    encoder_get_supported_format,
++    encoder_create_frame,
++    encoder_write_lines,
++    encoder_commit_frame,
++    encoder_commit_file,
++    encoder_destroy
++};
++
++NTSTATUS CDECL __wine_init_unix_lib( HMODULE module, DWORD reason, const void *ptr_in, void *ptr_out )
++{
++    if (reason != DLL_PROCESS_ATTACH) return STATUS_SUCCESS;
++
++    win32_funcs = ptr_in;
++
++    *(const struct unix_funcs **)ptr_out = &unix_funcs;
++    return STATUS_SUCCESS;
++}
+
+-- 
+2.30.0
+

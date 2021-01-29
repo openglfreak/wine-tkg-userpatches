@@ -1,0 +1,614 @@
+From: Giovanni Mascellani <gmascellani@codeweavers.com>
+Subject: [PATCH 4/4] ntdll: Detect timezone from host TZ setting.
+Message-Id: <20210128140032.316892-4-gmascellani@codeweavers.com>
+Date: Thu, 28 Jan 2021 15:00:32 +0100
+In-Reply-To: <20210128140032.316892-1-gmascellani@codeweavers.com>
+References: <20210128140032.316892-1-gmascellani@codeweavers.com>
+
+Signed-off-by: Giovanni Mascellani <gmascellani@codeweavers.com>
+---
+ dlls/ntdll/unix/system.c       | 451 +++++++++++++++------------------
+ dlls/ntdll/unix/unix_private.h |  25 ++
+ 2 files changed, 224 insertions(+), 252 deletions(-)
+
+diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
+index a889b2e020c..5801308d4cb 100644
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -2,6 +2,7 @@
+  * System information APIs
+  *
+  * Copyright 1996-1998 Marcus Meissner
++ * Copyright 2021 Giovanni Mascellani for CodeWeavers
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -30,6 +31,7 @@
+ #include <stdlib.h>
+ #include <errno.h>
+ #include <assert.h>
++#include <libgen.h>
+ #ifdef HAVE_SYS_TIME_H
+ # include <sys/time.h>
+ #endif
+@@ -1673,117 +1675,6 @@ static void get_performance_info( SYSTEM_PERFORMANCE_INFORMATION *info )
+     info->TotalCommitLimit    = (totalram + totalswap) / page_size;
+ }
+ 
+-
+-/* calculate the mday of dst change date, so that for instance Sun 5 Oct 2007
+- * (last Sunday in October of 2007) becomes Sun Oct 28 2007
+- *
+- * Note: year, day and month must be in unix format.
+- */
+-static int weekday_to_mday(int year, int day, int mon, int day_of_week)
+-{
+-    struct tm date;
+-    time_t tmp;
+-    int wday, mday;
+-
+-    /* find first day in the month matching week day of the date */
+-    memset(&date, 0, sizeof(date));
+-    date.tm_year = year;
+-    date.tm_mon = mon;
+-    date.tm_mday = -1;
+-    date.tm_wday = -1;
+-    do
+-    {
+-        date.tm_mday++;
+-        tmp = mktime(&date);
+-    } while (date.tm_wday != day_of_week || date.tm_mon != mon);
+-
+-    mday = date.tm_mday;
+-
+-    /* find number of week days in the month matching week day of the date */
+-    wday = 1; /* 1 - 1st, ...., 5 - last */
+-    while (wday < day)
+-    {
+-        struct tm *tm;
+-
+-        date.tm_mday += 7;
+-        tmp = mktime(&date);
+-        tm = localtime(&tmp);
+-        if (tm->tm_mon != mon)
+-            break;
+-        mday = tm->tm_mday;
+-        wday++;
+-    }
+-
+-    return mday;
+-}
+-
+-static BOOL match_tz_date( const RTL_SYSTEM_TIME *st, const RTL_SYSTEM_TIME *reg_st )
+-{
+-    WORD wDay;
+-
+-    if (st->wMonth != reg_st->wMonth) return FALSE;
+-    if (!st->wMonth) return TRUE; /* no transition dates */
+-    wDay = reg_st->wDay;
+-    if (!reg_st->wYear) /* date in a day-of-week format */
+-        wDay = weekday_to_mday(st->wYear - 1900, reg_st->wDay, reg_st->wMonth - 1, reg_st->wDayOfWeek);
+-
+-    return (st->wDay == wDay &&
+-            st->wHour == reg_st->wHour &&
+-            st->wMinute == reg_st->wMinute &&
+-            st->wSecond == reg_st->wSecond &&
+-            st->wMilliseconds == reg_st->wMilliseconds);
+-}
+-
+-static BOOL match_tz_info( const RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi,
+-                           const RTL_DYNAMIC_TIME_ZONE_INFORMATION *reg_tzi )
+-{
+-    return (tzi->Bias == reg_tzi->Bias &&
+-            match_tz_date(&tzi->StandardDate, &reg_tzi->StandardDate) &&
+-            match_tz_date(&tzi->DaylightDate, &reg_tzi->DaylightDate));
+-}
+-
+-static BOOL match_past_tz_bias( time_t past_time, LONG past_bias )
+-{
+-    LONG bias;
+-    struct tm *tm;
+-    if (!past_time) return TRUE;
+-
+-    tm = gmtime( &past_time );
+-    bias = (LONG)(mktime(tm) - past_time) / 60;
+-    return bias == past_bias;
+-}
+-
+-static BOOL match_tz_name( const char *tz_name, const RTL_DYNAMIC_TIME_ZONE_INFORMATION *reg_tzi )
+-{
+-    static const struct {
+-        WCHAR key_name[32];
+-        const char *short_name;
+-        time_t past_time;
+-        LONG past_bias;
+-    }
+-    mapping[] =
+-    {
+-        { {'N','o','r','t','h',' ','K','o','r','e','a',' ','S','t','a','n','d','a','r','d',' ','T','i','m','e',0 },
+-          "KST", 1451606400 /* 2016-01-01 00:00:00 UTC */, -510 },
+-        { {'K','o','r','e','a',' ','S','t','a','n','d','a','r','d',' ','T','i','m','e',0 },
+-          "KST", 1451606400 /* 2016-01-01 00:00:00 UTC */, -540 },
+-        { {'T','o','k','y','o',' ','S','t','a','n','d','a','r','d',' ','T','i','m','e',0 },
+-          "JST" },
+-        { {'Y','a','k','u','t','s','k',' ','S','t','a','n','d','a','r','d',' ','T','i','m','e',0 },
+-          "+09" }, /* YAKST was used until tzdata 2016f */
+-    };
+-    unsigned int i;
+-
+-    if (reg_tzi->DaylightDate.wMonth) return TRUE;
+-    for (i = 0; i < ARRAY_SIZE(mapping); i++)
+-    {
+-        if (!wcscmp( mapping[i].key_name, reg_tzi->TimeZoneKeyName ))
+-            return !strcmp( mapping[i].short_name, tz_name )
+-                && match_past_tz_bias( mapping[i].past_time, mapping[i].past_bias );
+-    }
+-    return TRUE;
+-}
+-
+ static BOOL reg_query_value( HKEY key, LPCWSTR name, DWORD type, void *data, DWORD count )
+ {
+     char buf[256];
+@@ -1802,6 +1693,47 @@ static BOOL reg_query_value( HKEY key, LPCWSTR name, DWORD type, void *data, DWO
+     return TRUE;
+ }
+ 
++static BOOL reg_query_value_dyn(HKEY key, LPCWSTR name, DWORD type, void **ret)
++{
++    UNICODE_STRING nameW;
++    void *buf = NULL, *new_buf;
++    ULONG buf_len = 0;
++    ULONG res_len;
++    NTSTATUS res;
++    KEY_VALUE_PARTIAL_INFORMATION *info;
++
++    nameW.Buffer = (WCHAR*) name;
++    nameW.Length = wcslen(name) * sizeof(WCHAR);
++
++    /* We might need to retry more than once if somebody changes the
++       key between the attempts. */
++    while (1)
++    {
++        res = NtQueryValueKey(key, &nameW, KeyValuePartialInformation, buf, buf_len, &res_len);
++        if (res != STATUS_BUFFER_OVERFLOW && res != STATUS_BUFFER_TOO_SMALL)
++            break;
++        buf_len = res_len;
++        new_buf = realloc(buf, buf_len);
++        if (!new_buf)
++        {
++            free(buf);
++            return FALSE;
++        }
++        buf = new_buf;
++    }
++
++    info = (KEY_VALUE_PARTIAL_INFORMATION*) buf;
++    if (res != STATUS_SUCCESS || info->Type != type)
++    {
++        free(buf);
++        return FALSE;
++    }
++
++    memmove(buf, info->Data, info->DataLength);
++    *ret = buf;
++    return TRUE;
++}
++
+ static void find_reg_tz_info(RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, const char* tz_name, int year)
+ {
+     static const WCHAR stdW[] = { 'S','t','d',0 };
+@@ -1809,6 +1741,7 @@ static void find_reg_tz_info(RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, const char*
+     static const WCHAR mui_stdW[] = { 'M','U','I','_','S','t','d',0 };
+     static const WCHAR mui_dltW[] = { 'M','U','I','_','D','l','t',0 };
+     static const WCHAR tziW[] = { 'T','Z','I',0 };
++    static const WCHAR olsonW[] = { 'O','l','s','o','n',' ','n','a','m','e','s',0 };
+     static const WCHAR Time_ZonesW[] = { 'M','a','c','h','i','n','e','\\',
+         'S','o','f','t','w','a','r','e','\\',
+         'M','i','c','r','o','s','o','f','t','\\',
+@@ -1822,12 +1755,18 @@ static void find_reg_tz_info(RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, const char*
+     OBJECT_ATTRIBUTES attr;
+     UNICODE_STRING nameW;
+     WCHAR yearW[16];
++    WCHAR *tz_nameW;
+     char buffer[128];
+     KEY_BASIC_INFORMATION *info = (KEY_BASIC_INFORMATION *)buffer;
+ 
++    TRACE("tzi %p, tz_name %s, year %d\n", tzi, tz_name, year);
++
+     sprintf( buffer, "%u", year );
+     ascii_to_unicode( yearW, buffer, strlen(buffer) + 1 );
+ 
++    tz_nameW = malloc((strlen(tz_name) + 1) * sizeof(tz_nameW[0]));
++    ascii_to_unicode(tz_nameW, tz_name, strlen(tz_name) + 1);
++
+     nameW.Buffer = (WCHAR *)Time_ZonesW;
+     nameW.Length = sizeof(Time_ZonesW) - sizeof(WCHAR);
+     InitializeObjectAttributes( &attr, &nameW, 0, 0, NULL );
+@@ -1845,12 +1784,28 @@ static void find_reg_tz_info(RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, const char*
+             RTL_SYSTEM_TIME dlt_date;
+         } tz_data;
+         BOOL is_dynamic = FALSE;
++        WCHAR *olson_names;
++        WCHAR *state = NULL, *token;
++        static const WCHAR spaceW[] = { ' ',0 };
+ 
+         nameW.Buffer = info->Name;
+         nameW.Length = info->NameLength;
+         attr.RootDirectory = key;
+         if (NtOpenKey( &subkey, KEY_READ, &attr )) continue;
+ 
++        if (!reg_query_value_dyn(subkey, olsonW, REG_SZ, (void**) &olson_names))
++            goto next;
++        for (token = wcstok(olson_names, spaceW, &state);
++             token != NULL;
++             token = wcstok(NULL, spaceW, &state))
++        {
++            if (wcscmp(token, tz_nameW) == 0)
++                break;
++        }
++        free(olson_names);
++        if (token == NULL)
++            goto next;
++
+         memset( &reg_tzi, 0, sizeof(reg_tzi) );
+         memcpy(reg_tzi.TimeZoneKeyName, nameW.Buffer, nameW.Length);
+         reg_tzi.TimeZoneKeyName[nameW.Length/sizeof(WCHAR)] = 0;
+@@ -1881,178 +1836,171 @@ static void find_reg_tz_info(RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, const char*
+         reg_tzi.StandardDate = tz_data.std_date;
+         reg_tzi.DaylightDate = tz_data.dlt_date;
+ 
+-        TRACE("%s: bias %d\n", debugstr_us(&nameW), reg_tzi.Bias);
+-        TRACE("std (d/m/y): %u/%02u/%04u day of week %u %u:%02u:%02u.%03u bias %d\n",
+-              reg_tzi.StandardDate.wDay, reg_tzi.StandardDate.wMonth,
+-              reg_tzi.StandardDate.wYear, reg_tzi.StandardDate.wDayOfWeek,
+-              reg_tzi.StandardDate.wHour, reg_tzi.StandardDate.wMinute,
+-              reg_tzi.StandardDate.wSecond, reg_tzi.StandardDate.wMilliseconds,
+-              reg_tzi.StandardBias);
+-        TRACE("dst (d/m/y): %u/%02u/%04u day of week %u %u:%02u:%02u.%03u bias %d\n",
+-              reg_tzi.DaylightDate.wDay, reg_tzi.DaylightDate.wMonth,
+-              reg_tzi.DaylightDate.wYear, reg_tzi.DaylightDate.wDayOfWeek,
+-              reg_tzi.DaylightDate.wHour, reg_tzi.DaylightDate.wMinute,
+-              reg_tzi.DaylightDate.wSecond, reg_tzi.DaylightDate.wMilliseconds,
+-              reg_tzi.DaylightBias);
+-
+-        if (match_tz_info( tzi, &reg_tzi ) && match_tz_name( tz_name, &reg_tzi ))
+-        {
+-            *tzi = reg_tzi;
+-            NtClose( subkey );
+-            NtClose( key );
+-            return;
+-        }
++        *tzi = reg_tzi;
++        NtClose( subkey );
++        NtClose( key );
++        free(tz_nameW);
++        return;
++
+     next:
+         NtClose( subkey );
+     }
+     NtClose( key );
++    free(tz_nameW);
+ 
+     if (idx == 1) return;  /* registry info not initialized yet */
+ 
+-    FIXME("Can't find matching timezone information in the registry for "
+-          "%s, bias %d, std (d/m/y): %u/%02u/%04u, dlt (d/m/y): %u/%02u/%04u\n",
+-          tz_name, tzi->Bias,
+-          tzi->StandardDate.wDay, tzi->StandardDate.wMonth, tzi->StandardDate.wYear,
+-          tzi->DaylightDate.wDay, tzi->DaylightDate.wMonth, tzi->DaylightDate.wYear);
++    FIXME("Can't find matching timezone information in the registry for %s\n", tz_name);
+ }
+ 
+-static time_t find_dst_change(unsigned long min, unsigned long max, int *is_dst)
++/* This function can return either a relative or absolute path to a tz
++   data file. */
++static char *get_tz_setting(void)
+ {
+-    time_t start;
+-    struct tm *tm;
++    char *tz;
++    FILE *fin;
+ 
+-    start = min;
+-    tm = localtime(&start);
+-    *is_dst = !tm->tm_isdst;
+-    TRACE("starting date isdst %d, %s", !*is_dst, ctime(&start));
++    tz = getenv("TZ");
++    if (tz)
++        tz = strdup(tz);
++    if (tz)
++        return tz;
+ 
+-    while (min <= max)
++    tz = realpath("/etc/localtime", NULL);
++    if (tz)
++        return tz;
++
++    /* /etc/timezone is available on Debian and maybe other Linux
++       systems. */
++    fin = fopen("/etc/timezone", "r");
++    if (fin)
+     {
+-        time_t pos = (min + max) / 2;
+-        tm = localtime(&pos);
++        ssize_t read_len;
++        size_t tz_len = 0;
+ 
+-        if (tm->tm_isdst != *is_dst)
+-            min = pos + 1;
+-        else
+-            max = pos - 1;
++        tz = NULL;
++        read_len = getline(&tz, &tz_len, fin);
++        if (read_len > 0 && tz[read_len - 1] == '\n')
++            tz[read_len - 1] = '\0';
++        fclose(fin);
++        if (read_len >= 0)
++            return tz;
++        free(tz);
+     }
+-    return min;
++
++    /* /etc/LOCALTIME is available on Solaris. */
++    fin = fopen("/etc/LOCALTIME", "r");
++    if (fin)
++    {
++        ssize_t read_len;
++        size_t tz_len = 0;
++
++        for (tz = NULL; (read_len = getline(&tz, &tz_len, fin)) >= 0;)
++        {
++            if (read_len >= 3 && tz[0] == 'T' && tz[1] == 'Z' && tz[2] == '=')
++            {
++                if (tz[read_len - 1] == '\n')
++                    tz[read_len - 1] = '\0';
++                /* -2 instead of -3 because we also want to move the
++                    terminator. */
++                memmove(tz, &tz[3], read_len-2);
++                fclose(fin);
++                return tz;
++            }
++        }
++        fclose(fin);
++        free(tz);
++    }
++
++    /* No good, let us assume UTC. */
++    return strdup("UTC");
++}
++
++/* Check if a path points to a plausible zoneinfo directory by
++   checking if it contains a file named tzdata.zi. */
++static int check_tzdir(const char *dir)
++{
++    int dir_fd = -1, fd = -1, ret = 0;
++    struct stat stat;
++
++    dir_fd = open(dir, O_PATH | O_DIRECTORY);
++    if (dir_fd < 0)
++        goto end;
++
++    fd = openat(dir_fd, "tzdata.zi", O_PATH);
++    if (fd < 0)
++        goto end;
++
++    if (fstat(fd, &stat) != 0)
++        goto end;
++
++    ret = S_ISREG(stat.st_mode);
++
++ end:
++    close(fd);
++    close(dir_fd);
++    return ret;
+ }
+ 
+ static void get_timezone_info( RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi )
+ {
+     static pthread_mutex_t tz_mutex = PTHREAD_MUTEX_INITIALIZER;
+     static RTL_DYNAMIC_TIME_ZONE_INFORMATION cached_tzi;
+-    static int current_year = -1, current_bias = 65535;
+-    struct tm *tm;
+-    char tz_name[16];
+-    time_t year_start, year_end, tmp, dlt = 0, std = 0;
+-    int is_dst, bias;
++    static int current_year = -1;
++    struct tm tm;
++    char *tz;
++    time_t now;
+ 
+-    mutex_lock( &tz_mutex );
++    now = time(NULL);
++    tm = *localtime(&now);
+ 
+-    year_start = time(NULL);
+-    tm = gmtime(&year_start);
+-    bias = (LONG)(mktime(tm) - year_start) / 60;
+-
+-    tm = localtime(&year_start);
+-    if (current_year == tm->tm_year && current_bias == bias)
++    mutex_lock(&tz_mutex);
++    if (tm.tm_year == current_year)
+     {
+         *tzi = cached_tzi;
+-        mutex_unlock( &tz_mutex );
++        mutex_unlock(&tz_mutex);
+         return;
+     }
+ 
+-    memset(tzi, 0, sizeof(*tzi));
+-    if (!strftime(tz_name, sizeof(tz_name), "%Z", tm)) {
+-        /* not enough room or another error */
+-        tz_name[0] = '\0';
+-    }
+-
+-    TRACE("tz data will be valid through year %d, bias %d\n", tm->tm_year + 1900, bias);
+-    current_year = tm->tm_year;
+-    current_bias = bias;
+-
+-    tzi->Bias = bias;
+-
+-    tm->tm_isdst = 0;
+-    tm->tm_mday = 1;
+-    tm->tm_mon = tm->tm_hour = tm->tm_min = tm->tm_sec = tm->tm_wday = tm->tm_yday = 0;
+-    year_start = mktime(tm);
+-    TRACE("year_start: %s", ctime(&year_start));
++    current_year = tm.tm_year;
+ 
+-    tm->tm_mday = tm->tm_wday = tm->tm_yday = 0;
+-    tm->tm_mon = 12;
+-    tm->tm_hour = 23;
+-    tm->tm_min = tm->tm_sec = 59;
+-    year_end = mktime(tm);
+-    TRACE("year_end: %s", ctime(&year_end));
+-
+-    tmp = find_dst_change(year_start, year_end, &is_dst);
+-    if (is_dst)
+-        dlt = tmp;
+-    else
+-        std = tmp;
+-
+-    tmp = find_dst_change(tmp, year_end, &is_dst);
+-    if (is_dst)
+-        dlt = tmp;
++    tz = get_tz_setting();
++    if (!tz)
++    {
++        ERR("cannot malloc\n");
++        memset(&cached_tzi, 0, sizeof(cached_tzi));
++    }
+     else
+-        std = tmp;
++    {
++        if (tz[0] == '/')
++        {
++            /* Absoute path: find the part relative to the zoneinfo
++               directory. */
++            char *dir = strdup(tz);
++            if (!dir)
++            {
++                ERR("cannot malloc\n");
++                memset(&cached_tzi, 0, sizeof(cached_tzi));
++                goto end;
++            }
++            for (dir = dirname(dir); strcmp(dir, "/") != 0; dir = dirname(dir))
++            {
++                if (check_tzdir(dir))
++                {
++                    memmove(tz, &tz[strlen(dir) + 1], strlen(tz) - strlen(dir));
++                    break;
++                }
++            }
++            free(dir);
++        }
++        find_reg_tz_info(&cached_tzi, tz, tm.tm_year);
++    }
+ 
+-    TRACE("std: %s", ctime(&std));
+-    TRACE("dlt: %s", ctime(&dlt));
++ end:
++    *tzi = cached_tzi;
++    mutex_unlock(&tz_mutex);
+ 
+-    if (dlt == std || !dlt || !std)
+-        TRACE("there is no daylight saving rules in this time zone\n");
+-    else
+-    {
+-        tmp = dlt - tzi->Bias * 60;
+-        tm = gmtime(&tmp);
+-        TRACE("dlt gmtime: %s", asctime(tm));
+-
+-        tzi->DaylightBias = -60;
+-        tzi->DaylightDate.wYear = tm->tm_year + 1900;
+-        tzi->DaylightDate.wMonth = tm->tm_mon + 1;
+-        tzi->DaylightDate.wDayOfWeek = tm->tm_wday;
+-        tzi->DaylightDate.wDay = tm->tm_mday;
+-        tzi->DaylightDate.wHour = tm->tm_hour;
+-        tzi->DaylightDate.wMinute = tm->tm_min;
+-        tzi->DaylightDate.wSecond = tm->tm_sec;
+-        tzi->DaylightDate.wMilliseconds = 0;
+-
+-        TRACE("daylight (d/m/y): %u/%02u/%04u day of week %u %u:%02u:%02u.%03u bias %d\n",
+-            tzi->DaylightDate.wDay, tzi->DaylightDate.wMonth,
+-            tzi->DaylightDate.wYear, tzi->DaylightDate.wDayOfWeek,
+-            tzi->DaylightDate.wHour, tzi->DaylightDate.wMinute,
+-            tzi->DaylightDate.wSecond, tzi->DaylightDate.wMilliseconds,
+-            tzi->DaylightBias);
+-
+-        tmp = std - tzi->Bias * 60 - tzi->DaylightBias * 60;
+-        tm = gmtime(&tmp);
+-        TRACE("std gmtime: %s", asctime(tm));
+-
+-        tzi->StandardBias = 0;
+-        tzi->StandardDate.wYear = tm->tm_year + 1900;
+-        tzi->StandardDate.wMonth = tm->tm_mon + 1;
+-        tzi->StandardDate.wDayOfWeek = tm->tm_wday;
+-        tzi->StandardDate.wDay = tm->tm_mday;
+-        tzi->StandardDate.wHour = tm->tm_hour;
+-        tzi->StandardDate.wMinute = tm->tm_min;
+-        tzi->StandardDate.wSecond = tm->tm_sec;
+-        tzi->StandardDate.wMilliseconds = 0;
+-
+-        TRACE("standard (d/m/y): %u/%02u/%04u day of week %u %u:%02u:%02u.%03u bias %d\n",
+-            tzi->StandardDate.wDay, tzi->StandardDate.wMonth,
+-            tzi->StandardDate.wYear, tzi->StandardDate.wDayOfWeek,
+-            tzi->StandardDate.wHour, tzi->StandardDate.wMinute,
+-            tzi->StandardDate.wSecond, tzi->StandardDate.wMilliseconds,
+-            tzi->StandardBias);
+-    }
+-
+-    find_reg_tz_info(tzi, tz_name, current_year + 1900);
+-    cached_tzi = *tzi;
+-    mutex_unlock( &tz_mutex );
++    free(tz);
+ }
+ 
+ static DWORD translate_object_index(DWORD index)
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index f8f50d0ab27..4e1ba13e6f9 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -466,6 +466,30 @@ static inline int ntdll_wcsnicmp( const WCHAR *str1, const WCHAR *str2, int n )
+     return ret;
+ }
+ 
++static inline int ntdll_wcstok_helper( WCHAR c, const WCHAR *delim )
++{
++    for (; *delim != 0; delim++)
++        if (c == *delim)
++            return 1;
++    return 0;
++}
++
++static inline WCHAR *ntdll_wcstok( WCHAR *str, const WCHAR *delim, WCHAR **state )
++{
++    WCHAR *ret;
++
++    if (!str)
++        str = *state;
++    for (; *str != 0 && ntdll_wcstok_helper(*str, delim); str++);
++    if (*str == 0)
++        return NULL;
++    ret = str;
++    for (; *str != 0 && !ntdll_wcstok_helper(*str, delim); str++);
++    *(str++) = 0;
++    *state = str;
++    return ret;
++}
++
+ #define wcslen(str)        ntdll_wcslen(str)
+ #define wcscpy(dst,src)    ntdll_wcscpy(dst,src)
+ #define wcscat(dst,src)    ntdll_wcscat(dst,src)
+@@ -476,6 +500,7 @@ static inline int ntdll_wcsnicmp( const WCHAR *str1, const WCHAR *str2, int n )
+ #define wcspbrk(str,ac)    ntdll_wcspbrk(str,ac)
+ #define wcsicmp(s1, s2)    ntdll_wcsicmp(s1,s2)
+ #define wcsnicmp(s1, s2,n) ntdll_wcsnicmp(s1,s2,n)
++#define wcstok(s1,s2,s3)   ntdll_wcstok(s1,s2,s3)
+ #define wcsupr(str)        ntdll_wcsupr(str)
+ #define towupper(c)        ntdll_towupper(c)
+ #define towlower(c)        ntdll_towlower(c)
+
+-- 
+2.30.0
+

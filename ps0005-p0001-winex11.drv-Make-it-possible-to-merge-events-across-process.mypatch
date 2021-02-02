@@ -18,7 +18,7 @@ diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index d056373a480..b262f2033b1 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -410,22 +410,50 @@ static inline BOOL call_event_handler( Display *display, XEvent *event )
+@@ -410,27 +410,55 @@ static inline BOOL call_event_handler( Display *display, XEvent *event )
      return ret;
  }
  
@@ -58,8 +58,12 @@ index d056373a480..b262f2033b1 100644
 +    struct x11drv_thread_data *thread_data = x11drv_thread_data();
 +    XEvent event, *next = &event, *prev = &thread_data->prev_event;
      int count = 0;
-     BOOL queued = FALSE;
+     BOOL queued = FALSE, overlay_enabled = FALSE;
 -    enum event_merge_action action = MERGE_DISCARD;
+     ULONG_PTR overlay_filter = QS_KEY | QS_MOUSEBUTTON | QS_MOUSEMOVE;
+ 
+     if (WaitForSingleObject(steam_overlay_event, 0) == WAIT_OBJECT_0)
+         overlay_enabled = TRUE;
  
 -    prev_event.type = 0;
 -    while (XCheckIfEvent( display, &event, filter, (char *)arg ))
@@ -69,6 +73,7 @@ index d056373a480..b262f2033b1 100644
 +    while (XCheckIfEvent( display, next, filter, (char *)arg ))
      {
          count++;
+         if (overlay_enabled && filter_event( display, &event, (char *)overlay_filter )) continue;
 -        if (XFilterEvent( &event, None ))
 +        if (XFilterEvent( next, None ))
          {

@@ -1,0 +1,174 @@
+From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
+Subject: [PATCH v3] gdi32: Fail in ExtTextOut if count is larger than INT_MAX.
+Message-Id: <968db33116bff6835f82d6b039e558fd69e1b260.1612282980.git.gabrielopcode@gmail.com>
+Date: Tue,  2 Feb 2021 18:25:15 +0200
+
+Some applications pass values like -1 and crash when BIDI_Reorder can't
+allocate the memory.
+
+Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
+---
+ dlls/gdi32/font.c           |  3 ++
+ dlls/gdi32/tests/dib.c      | 15 ++++++++-
+ dlls/gdi32/tests/font.c     |  2 ++
+ dlls/gdi32/tests/metafile.c | 61 ++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 79 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/gdi32/font.c b/dlls/gdi32/font.c
+index 74ca482..de50bf0 100644
+--- a/dlls/gdi32/font.c
++++ b/dlls/gdi32/font.c
+@@ -5823,6 +5823,8 @@ BOOL WINAPI ExtTextOutA( HDC hdc, INT x, INT y, UINT flags,
+     BOOL ret;
+     LPINT lpDxW = NULL;
+ 
++    if (count > INT_MAX) return FALSE;
++
+     if (flags & ETO_GLYPH_INDEX)
+         return ExtTextOutW( hdc, x, y, flags, lprect, (LPCWSTR)str, count, lpDx );
+ 
+@@ -5932,6 +5934,7 @@ BOOL WINAPI ExtTextOutW( HDC hdc, INT x, INT y, UINT flags,
+     static int quietfixme = 0;
+ 
+     if (!dc) return FALSE;
++    if (count > INT_MAX) return FALSE;
+ 
+     align = dc->textAlign;
+     breakRem = dc->breakRem;
+diff --git a/dlls/gdi32/tests/dib.c b/dlls/gdi32/tests/dib.c
+index d16cb0d..bdc3d9e 100644
+--- a/dlls/gdi32/tests/dib.c
++++ b/dlls/gdi32/tests/dib.c
+@@ -3020,8 +3020,9 @@ static void draw_text_2( HDC hdc, const BITMAPINFO *bmi, BYTE *bits, BOOL aa )
+     static const char str[] = "Hello Wine";
+     POINT origin, g_org;
+     static const BYTE vals[4] = { 0x00, 0x00, 0x00, 0x00 };
++    COLORREF bk_color, text_color;
+     TEXTMETRICA tm;
+-    COLORREF text_color;
++    RECT rect;
+ 
+     for(i = 0; i < dib_size; i++)
+         bits[i] = vals[i % 4];
+@@ -3116,6 +3117,18 @@ static void draw_text_2( HDC hdc, const BITMAPINFO *bmi, BYTE *bits, BOOL aa )
+     diy_hash = hash_dib( hdc, bmi, bits );
+     ok( !strcmp( eto_hash, diy_hash ), "hash mismatch - aa %d\n", aa );
+ 
++    bk_color = GetBkColor( hdc );
++    SetBkColor( hdc, RGB(128,64,32) );
++
++    SetRect( &rect, 0, 0, bmi->bmiHeader.biWidth, bmi->bmiHeader.biHeight );
++    ret = ExtTextOutA( hdc, 10, 100, ETO_OPAQUE, &rect, str, -1, NULL );
++    ok( !ret, "ExtTextOutA succeeded\n" );
++
++    diy_hash = hash_dib( hdc, bmi, bits );
++    ok( !strcmp( eto_hash, diy_hash ), "hash mismatch - aa %d\n", aa );
++
++    SetBkColor( hdc, bk_color );
++
+     HeapFree( GetProcessHeap(), 0, diy_hash );
+     HeapFree( GetProcessHeap(), 0, eto_hash );
+ 
+diff --git a/dlls/gdi32/tests/font.c b/dlls/gdi32/tests/font.c
+index 461eecf..3e1f1e9 100644
+--- a/dlls/gdi32/tests/font.c
++++ b/dlls/gdi32/tests/font.c
+@@ -6916,6 +6916,8 @@ static void test_bitmap_font_glyph_index(void)
+             hBmpPrev = SelectObject(hdc, hBmp[j]);
+             switch (j) {
+             case 0:
++                ret = ExtTextOutW(hdc, 0, 0, 0, NULL, text, -1, NULL);
++                ok(!ret, "ExtTextOutW succeeded\n");
+                 ret = ExtTextOutW(hdc, 0, 0, 0, NULL, text, lstrlenW(text), NULL);
+                 break;
+             case 1:
+diff --git a/dlls/gdi32/tests/metafile.c b/dlls/gdi32/tests/metafile.c
+index 8dae908..7773faa 100644
+--- a/dlls/gdi32/tests/metafile.c
++++ b/dlls/gdi32/tests/metafile.c
+@@ -158,6 +158,28 @@ static int CALLBACK eto_emf_enum_proc(HDC hdc, HANDLETABLE *handle_table,
+     return 1;
+ }
+ 
++static int CALLBACK eto_emf_enum_proc2(HDC hdc, HANDLETABLE *handle_table,
++    const ENHMETARECORD *emr, int n_objs, LPARAM param)
++{
++    if (!hdc) return 1;
++
++    switch (emr->iType)
++    {
++    case EMR_HEADER:
++    case EMR_LINETO:
++        emr_processed = TRUE;
++        break;
++    case EMR_EXTTEXTOUTA:
++    case EMR_EXTTEXTOUTW:
++        ok(0, "Unexpected ExtTextOut record\n");
++        break;
++    default:
++        break;
++    }
++
++    return 1;
++}
++
+ static void test_ExtTextOut(void)
+ {
+     HWND hwnd;
+@@ -222,7 +244,13 @@ static void test_ExtTextOut(void)
+     ret = ExtTextOutA(hdcMetafile, 0, 40, 0, NULL, text, lstrlenA(text), NULL);
+     ok( ret, "ExtTextOutA error %d\n", GetLastError());
+ 
+-    /* 4. test with unmatched BeginPath/EndPath calls */
++    /* 4. pass -1 to length */
++    SetLastError(0xdeadbeef);
++    ret = ExtTextOutA(hdcMetafile, 0, 0, 0, &rc, text, -1, NULL);
++    ok( !ret, "ExtTextOutA succeeded\n");
++    ok( GetLastError() == 0xdeadbeef, "ExtTextOutA error %d\n", GetLastError());
++
++    /* 5. test with unmatched BeginPath/EndPath calls */
+     ret = BeginPath(hdcMetafile);
+     ok( ret, "BeginPath error %d\n", GetLastError());
+     ret = BeginPath(hdcMetafile);
+@@ -275,6 +303,37 @@ static void test_ExtTextOut(void)
+     ok(EnumEnhMetaFile(NULL, hMetafile, eto_emf_enum_proc, dx, NULL),
+        "A null hdc does not require a valid rc\n");
+ 
++    ret = DeleteEnhMetaFile(hMetafile);
++    ok( ret, "DeleteEnhMetaFile error %d\n", GetLastError());
++
++    /* Invalid lengths don't get recorded on EMFs */
++    /* NOTE: With Windows-format Metafiles, ExtTextOutA with -1 length crashes on Windows */
++    hFont = CreateFontIndirectA(&orig_lf);
++    ok(hFont != 0, "CreateFontIndirectA error %d\n", GetLastError());
++
++    hdcMetafile = CreateEnhMetaFileA(hdcDisplay, NULL, NULL, NULL);
++    ok(hdcMetafile != 0, "CreateEnhMetaFileA error %d\n", GetLastError());
++
++    hFont = SelectObject(hdcMetafile, hFont);
++    LineTo(hdcMetafile, 0, 0);  /* make sure at least one valid record */
++
++    SetLastError(0xdeadbeef);
++    ret = ExtTextOutA(hdcMetafile, 0, 0, 0, &rc, text, -1, NULL);
++    ok( !ret, "ExtTextOutA succeeded\n");
++    ok( GetLastError() == 0xdeadbeef, "ExtTextOutA error %d\n", GetLastError());
++
++    hFont = SelectObject(hdcMetafile, hFont);
++    ret = DeleteObject(hFont);
++    ok( ret, "DeleteObject error %d\n", GetLastError());
++
++    hMetafile = CloseEnhMetaFile(hdcMetafile);
++    ok(hMetafile != 0, "CloseEnhMetaFile error %d\n", GetLastError());
++
++    emr_processed = FALSE;
++    ret = EnumEnhMetaFile(hdcDisplay, hMetafile, eto_emf_enum_proc2, NULL, &rc);
++    ok( ret, "EnumEnhMetaFile error %d\n", GetLastError());
++    ok(emr_processed, "EnumEnhMetaFile couldn't find a valid record\n");
++
+     ret = DeleteEnhMetaFile(hMetafile);
+     ok( ret, "DeleteEnhMetaFile error %d\n", GetLastError());
+     ret = ReleaseDC(hwnd, hdcDisplay);
+
+-- 
+2.30.0
+

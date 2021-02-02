@@ -1,0 +1,516 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH] mscoree: Improve non-neutral assembly lookup logic.
+Message-Id: <20210202082518.1671644-1-rbernon@codeweavers.com>
+Date: Tue,  2 Feb 2021 09:25:18 +0100
+
+And neutral logic too, and the combinations with custom privatePath
+config.
+
+This fixes a crash with Mafia III launcher, when it tries to load its
+localized strings from culture-specific assemblies to display its
+warning popup message.
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/mscoree/metahost.c                 |  75 ++++++--
+ dlls/mscoree/tests/loadpaths.dll.cs     |  33 ++++
+ dlls/mscoree/tests/loadpaths.exe.config |   8 +
+ dlls/mscoree/tests/loadpaths.exe.cs     |  28 +++
+ dlls/mscoree/tests/mscoree.c            | 226 ++++++++++++++++++++++++
+ dlls/mscoree/tests/resource.rc          |   9 +
+ 6 files changed, 360 insertions(+), 19 deletions(-)
+ create mode 100644 dlls/mscoree/tests/loadpaths.dll.cs
+ create mode 100644 dlls/mscoree/tests/loadpaths.exe.config
+ create mode 100644 dlls/mscoree/tests/loadpaths.exe.cs
+
+diff --git a/dlls/mscoree/metahost.c b/dlls/mscoree/metahost.c
+index a3ed1534753..d9b599fadc7 100644
+--- a/dlls/mscoree/metahost.c
++++ b/dlls/mscoree/metahost.c
+@@ -29,6 +29,7 @@
+ #include "winreg.h"
+ #include "winternl.h"
+ #include "ole2.h"
++#include "shlwapi.h"
+ 
+ #include "corerror.h"
+ #include "cor.h"
+@@ -87,6 +88,7 @@ typedef void (CDECL *MonoProfilerRuntimeShutdownBeginCallback) (MonoProfiler *pr
+ MonoImage* (CDECL *mono_assembly_get_image)(MonoAssembly *assembly);
+ MonoAssembly* (CDECL *mono_assembly_load_from)(MonoImage *image, const char *fname, MonoImageOpenStatus *status);
+ const char* (CDECL *mono_assembly_name_get_name)(MonoAssemblyName *aname);
++const char* (CDECL *mono_assembly_name_get_culture)(MonoAssemblyName *aname);
+ MonoAssembly* (CDECL *mono_assembly_open)(const char *filename, MonoImageOpenStatus *status);
+ void (CDECL *mono_callspec_set_assembly)(MonoAssembly *assembly);
+ MonoClass* (CDECL *mono_class_from_mono_type)(MonoType *type);
+@@ -193,6 +195,7 @@ static HRESULT load_mono(LPCWSTR mono_path)
+         LOAD_MONO_FUNCTION(mono_assembly_get_image);
+         LOAD_MONO_FUNCTION(mono_assembly_load_from);
+         LOAD_MONO_FUNCTION(mono_assembly_name_get_name);
++        LOAD_MONO_FUNCTION(mono_assembly_name_get_culture);
+         LOAD_MONO_FUNCTION(mono_assembly_open);
+         LOAD_MONO_FUNCTION(mono_config_parse);
+         LOAD_MONO_FUNCTION(mono_class_from_mono_type);
+@@ -1651,24 +1654,48 @@ HRESULT get_file_from_strongname(WCHAR* stringnameW, WCHAR* assemblies_path, int
+     return hr;
+ }
+ 
++static MonoAssembly* mono_assembly_try_load(WCHAR *path)
++{
++    MonoAssembly *result = NULL;
++    MonoImageOpenStatus stat;
++    char *pathA;
++
++    if (!(pathA = WtoA(path))) return NULL;
++
++    result = mono_assembly_open(pathA, &stat);
++    HeapFree(GetProcessHeap(), 0, pathA);
++
++    if (result) TRACE("found: %s\n", debugstr_w(path));
++    return result;
++}
++
+ static MonoAssembly* CDECL mono_assembly_preload_hook_fn(MonoAssemblyName *aname, char **assemblies_path, void *user_data)
+ {
+     HRESULT hr;
+     MonoAssembly *result=NULL;
+     char *stringname=NULL;
+     const char *assemblyname;
+-    LPWSTR stringnameW;
+-    int stringnameW_size;
++    const char *culture;
++    LPWSTR stringnameW, cultureW;
++    int stringnameW_size, cultureW_size;
+     WCHAR path[MAX_PATH];
+     char *pathA;
+     MonoImageOpenStatus stat;
+     DWORD search_flags;
+     int i;
+     static const WCHAR dotdllW[] = {'.','d','l','l',0};
+-    static const WCHAR slashW[] = {'\\',0};
++    static const WCHAR dotexeW[] = {'.','e','x','e',0};
+ 
+     stringname = mono_stringify_assembly_name(aname);
+     assemblyname = mono_assembly_name_get_name(aname);
++    culture = mono_assembly_name_get_culture(aname);
++    if (culture)
++    {
++        cultureW_size = MultiByteToWideChar(CP_UTF8, 0, culture, -1, NULL, 0);
++        cultureW = HeapAlloc(GetProcessHeap(), 0, cultureW_size * sizeof(WCHAR));
++        if (cultureW) MultiByteToWideChar(CP_UTF8, 0, culture, -1, cultureW, cultureW_size);
++    }
++    else cultureW = NULL;
+ 
+     TRACE("%s\n", debugstr_a(stringname));
+ 
+@@ -1684,26 +1711,34 @@ static MonoAssembly* CDECL mono_assembly_preload_hook_fn(MonoAssemblyName *aname
+             MultiByteToWideChar(CP_UTF8, 0, assemblyname, -1, stringnameW, stringnameW_size);
+             for (i = 0; private_path[i] != NULL; i++)
+             {
++                /* This is the lookup order used in Mono */
++                /* 1st try: [culture]/[name].dll (culture may be empty) */
+                 wcscpy(path, private_path[i]);
+-                wcscat(path, slashW);
+-                wcscat(path, stringnameW);
++                if (cultureW) PathAppendW(path, cultureW);
++                PathAppendW(path, stringnameW);
+                 wcscat(path, dotdllW);
+-                pathA = WtoA(path);
+-                if (pathA)
+-                {
+-                    result = mono_assembly_open(pathA, &stat);
+-                    if (result)
+-                    {
+-                        TRACE("found: %s\n", debugstr_w(path));
+-                        HeapFree(GetProcessHeap(), 0, pathA);
+-                        HeapFree(GetProcessHeap(), 0, stringnameW);
+-                        mono_free(stringname);
+-                        return result;
+-                    }
+-                    HeapFree(GetProcessHeap(), 0, pathA);
+-                }
++                result = mono_assembly_try_load(path);
++                if (result) break;
++
++                /* 2nd try: [culture]/[name].exe (culture may be empty) */
++                wcscpy(path + wcslen(path) - wcslen(dotdllW), dotexeW);
++                result = mono_assembly_try_load(path);
++                if (result) break;
++
++                /* 3rd try: [culture]/[name]/[name].dll (culture may be empty) */
++                path[wcslen(path) - wcslen(dotexeW)] = 0;
++                PathAppendW(path, stringnameW);
++                wcscat(path, dotdllW);
++                result = mono_assembly_try_load(path);
++                if (result) break;
++
++                /* 4th try: [culture]/[name]/[name].exe (culture may be empty) */
++                wcscpy(path + wcslen(path) - wcslen(dotdllW), dotexeW);
++                result = mono_assembly_try_load(path);
++                if (result) break;
+             }
+             HeapFree(GetProcessHeap(), 0, stringnameW);
++            if (result) goto done;
+         }
+     }
+ 
+@@ -1745,6 +1780,8 @@ static MonoAssembly* CDECL mono_assembly_preload_hook_fn(MonoAssemblyName *aname
+     else
+         TRACE("skipping Windows GAC search due to override setting\n");
+ 
++done:
++    if (cultureW) HeapFree(GetProcessHeap(), 0, cultureW);
+     mono_free(stringname);
+ 
+     return result;
+diff --git a/dlls/mscoree/tests/loadpaths.dll.cs b/dlls/mscoree/tests/loadpaths.dll.cs
+new file mode 100644
+index 00000000000..99732b011d8
+--- /dev/null
++++ b/dlls/mscoree/tests/loadpaths.dll.cs
+@@ -0,0 +1,33 @@
++/*
++ * Copyright 2021 Rémi Bernon for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++using System.Reflection;
++
++#if NEUTRAL
++[assembly: AssemblyCulture("")]
++#else
++[assembly: AssemblyCulture("en")]
++#endif
++
++namespace LoadPaths
++{
++    public class Test2
++    {
++        public int Foo() { return 0; }
++    }
++}
+diff --git a/dlls/mscoree/tests/loadpaths.exe.config b/dlls/mscoree/tests/loadpaths.exe.config
+new file mode 100644
+index 00000000000..be6d9fb95cd
+--- /dev/null
++++ b/dlls/mscoree/tests/loadpaths.exe.config
+@@ -0,0 +1,8 @@
++<?xml version="1.0" encoding="utf-8"?>
++<configuration>
++  <runtime>
++    <assemblyBinding xmlns="urn:schemas-microsoft-com:asm.v1">
++      <probing privatePath="private"/>
++    </assemblyBinding>
++  </runtime>
++</configuration>
+diff --git a/dlls/mscoree/tests/loadpaths.exe.cs b/dlls/mscoree/tests/loadpaths.exe.cs
+new file mode 100644
+index 00000000000..22c32603c59
+--- /dev/null
++++ b/dlls/mscoree/tests/loadpaths.exe.cs
+@@ -0,0 +1,28 @@
++/*
++ * Copyright 2021 Rémi Bernon for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++namespace LoadPaths
++{
++    public static class Test
++    {
++        static int Main(string[] args)
++        {
++	     return new Test2().Foo();
++        }
++    }
++}
+diff --git a/dlls/mscoree/tests/mscoree.c b/dlls/mscoree/tests/mscoree.c
+index 26c06246a94..4be3da8c731 100644
+--- a/dlls/mscoree/tests/mscoree.c
++++ b/dlls/mscoree/tests/mscoree.c
+@@ -538,6 +538,229 @@ static void test_createinstance(void)
+     }
+ }
+ 
++static BOOL write_resource(const WCHAR *resource, const WCHAR *filename)
++{
++    HANDLE file;
++    HRSRC rsrc;
++    void *data;
++    DWORD size;
++    BOOL ret;
++
++    rsrc = FindResourceW(GetModuleHandleW(NULL), resource, MAKEINTRESOURCEW(RT_RCDATA));
++    if (!rsrc) return FALSE;
++
++    data = LockResource(LoadResource(GetModuleHandleA(NULL), rsrc));
++    if (!data) return FALSE;
++
++    size = SizeofResource(GetModuleHandleA(NULL), rsrc);
++    if (!size) return FALSE;
++
++    file = CreateFileW(filename, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
++    if (file == INVALID_HANDLE_VALUE) return FALSE;
++
++    ret = WriteFile(file, data, size, &size, NULL);
++    CloseHandle(file);
++    return ret;
++}
++
++static BOOL compile_cs(const WCHAR *source, const WCHAR *target, const WCHAR *type, const WCHAR *args)
++{
++    static const WCHAR *csc = L"C:\\windows\\Microsoft.NET\\Framework\\v2.0.50727\\csc.exe";
++    WCHAR cmdline[2 * MAX_PATH + 74];
++    PROCESS_INFORMATION pi;
++    STARTUPINFOW si = { 0 };
++    BOOL ret;
++
++    if (!PathFileExistsW(csc))
++    {
++        skip("Can't find csc.exe\n");
++        return FALSE;
++    }
++
++    swprintf(cmdline, ARRAY_SIZE(cmdline), L"%s /t:%s %s /out:\"%s\" \"%s\"", csc, type, args, target, source);
++
++    si.cb = sizeof(si);
++    ret = CreateProcessW(csc, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
++    ok(ret, "Could not create process: %u\n", GetLastError());
++
++    wait_child_process(pi.hProcess);
++    CloseHandle(pi.hThread);
++    CloseHandle(pi.hProcess);
++
++    ret = PathFileExistsW(target);
++    ok(ret, "Compilation failed\n");
++
++    return ret;
++}
++
++static void test_loadpaths_execute(const WCHAR *exe_name, const WCHAR *dll_name, const WCHAR *cfg_name,
++                                   const WCHAR *dll_dest, BOOL expect_failure, BOOL todo)
++{
++    WCHAR tmp[MAX_PATH], tmpdir[MAX_PATH], tmpexe[MAX_PATH], tmpcfg[MAX_PATH], tmpdll[MAX_PATH];
++    PROCESS_INFORMATION pi;
++    STARTUPINFOW si = { 0 };
++    WCHAR *ptr, *end;
++    DWORD exit_code = 0xdeadbeef;
++    LUID id;
++    BOOL ret;
++
++    GetTempPathW(MAX_PATH, tmp);
++    ret = AllocateLocallyUniqueId(&id);
++    ok(ret, "AllocateLocallyUniqueId failed: %u\n", GetLastError());
++    ret = GetTempFileNameW(tmp, L"loadpaths", id.LowPart, tmpdir);
++    ok(ret, "GetTempFileNameW failed: %u\n", GetLastError());
++
++    ret = CreateDirectoryW(tmpdir, NULL);
++    ok(ret, "CreateDirectoryW(%s) failed: %u\n", debugstr_w(tmpdir), GetLastError());
++
++    wcscpy(tmpexe, tmpdir);
++    PathAppendW(tmpexe, exe_name);
++    ret = CopyFileW(exe_name, tmpexe, FALSE);
++    ok(ret, "CopyFileW(%s) failed: %u\n", debugstr_w(tmpexe), GetLastError());
++
++    if (cfg_name)
++    {
++        wcscpy(tmpcfg, tmpdir);
++        PathAppendW(tmpcfg, cfg_name);
++        ret = CopyFileW(cfg_name, tmpcfg, FALSE);
++        ok(ret, "CopyFileW(%s) failed: %u\n", debugstr_w(tmpcfg), GetLastError());
++    }
++
++    ptr = tmpdir + wcslen(tmpdir);
++    PathAppendW(tmpdir, dll_dest);
++    while (*ptr && (ptr = wcschr(ptr + 1, '\\')))
++    {
++        *ptr = '\0';
++        ret = CreateDirectoryW(tmpdir, NULL);
++        ok(ret, "CreateDirectoryW(%s) failed: %u\n", debugstr_w(tmpdir), GetLastError());
++        *ptr = '\\';
++    }
++
++    wcscpy(tmpdll, tmpdir);
++    if ((ptr = wcsrchr(tmpdir, '\\'))) *ptr = '\0';
++
++    ret = CopyFileW(dll_name, tmpdll, FALSE);
++    ok(ret, "CopyFileW(%s) failed: %u\n", debugstr_w(tmpdll), GetLastError());
++
++    si.cb = sizeof(si);
++    ret = CreateProcessW(tmpexe, tmpexe, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
++    ok(ret, "CreateProcessW(%s) failed: %u\n", debugstr_w(tmpexe), GetLastError());
++
++    if (expect_failure) ret = WaitForSingleObject(pi.hProcess, 500);
++    else
++    {
++        ret = WaitForSingleObject(pi.hProcess, 5000);
++        ok(ret == WAIT_OBJECT_0, "%s: WaitForSingleObject returned %d: %u\n", debugstr_w(dll_dest), ret, GetLastError());
++    }
++
++    GetExitCodeProcess(pi.hProcess, &exit_code);
++    if (ret == WAIT_TIMEOUT) TerminateProcess(pi.hProcess, 0xdeadbeef);
++    CloseHandle(pi.hThread);
++    CloseHandle(pi.hProcess);
++
++    if (expect_failure) todo_wine_if(todo) ok(exit_code != 0, "%s: Succeeded to execute process\n", debugstr_w(dll_dest));
++    else ok(exit_code == 0, "%s: Failed to execute process\n", debugstr_w(dll_dest));
++
++    /* sometimes the failing process never returns, in which case cleaning up won't work */
++    if (ret == WAIT_TIMEOUT && expect_failure) return;
++
++    if (cfg_name)
++    {
++        ret = DeleteFileW(tmpcfg);
++        ok(ret, "DeleteFileW(%s) failed: %u\n", debugstr_w(tmpcfg), GetLastError());
++    }
++    ret = DeleteFileW(tmpdll);
++    ok(ret, "DeleteFileW(%s) failed: %u\n", debugstr_w(tmpdll), GetLastError());
++    ret = DeleteFileW(tmpexe);
++    ok(ret, "DeleteFileW(%s) failed: %u\n", debugstr_w(tmpexe), GetLastError());
++
++    end = tmpdir + wcslen(tmp);
++    ptr = tmpdir + wcslen(tmpdir) - 1;
++    while (ptr > end && (ptr = wcsrchr(tmpdir, '\\')))
++    {
++        ret = RemoveDirectoryW(tmpdir);
++        ok(ret, "RemoveDirectoryW(%s) failed: %u\n", debugstr_w(tmpdir), GetLastError());
++        *ptr = '\0';
++    }
++}
++
++static void test_loadpaths(BOOL neutral)
++{
++    static const WCHAR *loadpaths[] = {L"", L"en", L"libloadpaths", L"en\\libloadpaths"};
++    static const WCHAR *dll_source = L"loadpaths.dll.cs";
++    static const WCHAR *dll_name = L"libloadpaths.dll";
++    static const WCHAR *exe_source = L"loadpaths.exe.cs";
++    static const WCHAR *exe_name = L"loadpaths.exe";
++    static const WCHAR *cfg_name = L"loadpaths.exe.config";
++    WCHAR tmp[MAX_PATH];
++    BOOL ret;
++    int i;
++
++    DeleteFileW(dll_source);
++    ret = write_resource(dll_source, dll_source);
++    ok(ret, "Could not write resource: %u\n", GetLastError());
++    DeleteFileW(dll_name);
++    ret = compile_cs(dll_source, dll_name, L"library", neutral ? L"-define:NEUTRAL" : L"");
++    if (!ret) return;
++    ret = DeleteFileW(dll_source);
++    ok(ret, "DeleteFileW failed: %u\n", GetLastError());
++
++    DeleteFileW(exe_source);
++    ret = write_resource(exe_source, exe_source);
++    ok(ret, "Could not write resource: %u\n", GetLastError());
++    DeleteFileW(exe_name);
++    ret = compile_cs(exe_source, exe_name, L"exe", L"/reference:libloadpaths.dll");
++    if (!ret) return;
++    ret = DeleteFileW(exe_source);
++    ok(ret, "DeleteFileW failed: %u\n", GetLastError());
++
++    DeleteFileW(cfg_name);
++    ret = write_resource(cfg_name, cfg_name);
++    ok(ret, "Could not write resource: %u\n", GetLastError());
++
++    for (i = 0; i < ARRAY_SIZE(loadpaths); ++i)
++    {
++        const WCHAR *path = loadpaths[i];
++        BOOL expect_failure = neutral ? wcsstr(path, L"en") != NULL
++                                      : wcsstr(path, L"en") == NULL;
++
++        wcscpy(tmp, path);
++        PathAppendW(tmp, dll_name);
++        test_loadpaths_execute(exe_name, dll_name, NULL, tmp, expect_failure, !neutral && !*path);
++
++        wcscpy(tmp, L"private");
++        if (*path) PathAppendW(tmp, path);
++        PathAppendW(tmp, dll_name);
++
++        test_loadpaths_execute(exe_name, dll_name, NULL, tmp, TRUE, FALSE);
++        test_loadpaths_execute(exe_name, dll_name, cfg_name, tmp, expect_failure, FALSE);
++
++        /* exe name for dll should work too */
++        if (*path)
++        {
++            wcscpy(tmp, path);
++            PathAppendW(tmp, dll_name);
++            wcscpy(tmp + wcslen(tmp) - 4, L".exe");
++            test_loadpaths_execute(exe_name, dll_name, NULL, tmp, expect_failure, FALSE);
++        }
++
++        wcscpy(tmp, L"private");
++        if (*path) PathAppendW(tmp, path);
++        PathAppendW(tmp, dll_name);
++        wcscpy(tmp + wcslen(tmp) - 4, L".exe");
++
++        test_loadpaths_execute(exe_name, dll_name, NULL, tmp, TRUE, FALSE);
++        test_loadpaths_execute(exe_name, dll_name, cfg_name, tmp, expect_failure, FALSE);
++    }
++
++    ret = DeleteFileW(cfg_name);
++    ok(ret, "DeleteFileW failed: %u\n", GetLastError());
++    ret = DeleteFileW(exe_name);
++    ok(ret, "DeleteFileW failed: %u\n", GetLastError());
++    ret = DeleteFileW(dll_name);
++    ok(ret, "DeleteFileW failed: %u\n", GetLastError());
++}
++
+ static void test_createdomain(void)
+ {
+     static const WCHAR test_name[] = {'t','e','s','t',0};
+@@ -650,5 +873,8 @@ START_TEST(mscoree)
+         test_createdomain();
+     }
+ 
++    test_loadpaths(FALSE);
++    test_loadpaths(TRUE);
++
+     FreeLibrary(hmscoree);
+ }
+diff --git a/dlls/mscoree/tests/resource.rc b/dlls/mscoree/tests/resource.rc
+index 9a1b89f6569..34516f744a0 100644
+--- a/dlls/mscoree/tests/resource.rc
++++ b/dlls/mscoree/tests/resource.rc
+@@ -28,3 +28,12 @@ comtest_exe.manifest RCDATA comtest_exe.manifest
+ 
+ /* @makedep: comtest_dll.manifest */
+ comtest_dll.manifest RCDATA comtest_dll.manifest
++
++/* @makedep: loadpaths.exe.cs */
++loadpaths.exe.cs RCDATA loadpaths.exe.cs
++
++/* @makedep: loadpaths.dll.cs */
++loadpaths.dll.cs RCDATA loadpaths.dll.cs
++
++/* @makedep: loadpaths.exe.config */
++loadpaths.exe.config RCDATA loadpaths.exe.config
+
+-- 
+2.30.0
+

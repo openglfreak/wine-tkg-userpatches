@@ -1,0 +1,58 @@
+From: Louis Lenders <xerox.xerox2000x@gmail.com>
+Subject: [PATCH] Add RtlDosPathNameToRelativeNtPathName_U
+Message-Id: <20210201175953.6137-1-xerox.xerox2000x@gmail.com>
+Date: Mon,  1 Feb 2021 18:59:53 +0100
+
+Trying to get scoop running in wine, turned out it needs robocopy.exe. As wine lacks robocopy, i had to fall
+back to native robocopy, in this case from windows 8.1. Then one gets crash below.
+
+Call from 7BC2C17A to unimplemented function ntdll.dll.RtlDosPathNameToRelativeNtPathName_U, aborting
+wine: Unimplemented function ntdll.dll.RtlDosPathNameToRelativeNtPathName_U called at address 7BC2C17A (thread 0024), starting debugger...
+
+So I added similar code as for RtlDosPathNameToNtPathName_U --> RtlDosPathNameToNtPathName_U_WithStatus
+and that makes robocopy  work
+
+Signed-off-by: Louis Lenders <xerox.xerox2000x@gmail.com>
+---
+ dlls/ntdll/ntdll.spec |  1 +
+ dlls/ntdll/path.c     | 11 +++++++++++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+index 740030f2066..bfdf61f1e7a 100644
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -605,6 +605,7 @@
+ # @ stub RtlDosApplyFileIsolationRedirection_Ustr
+ @ stdcall RtlDosPathNameToNtPathName_U(wstr ptr ptr ptr)
+ @ stdcall RtlDosPathNameToNtPathName_U_WithStatus(wstr ptr ptr ptr)
++@ stdcall RtlDosPathNameToRelativeNtPathName_U(wstr ptr ptr ptr)
+ @ stdcall RtlDosPathNameToRelativeNtPathName_U_WithStatus(wstr ptr ptr ptr)
+ @ stdcall RtlDosSearchPath_U(wstr wstr wstr long ptr ptr)
+ # @ stub RtlDosSearchPath_Ustr
+diff --git a/dlls/ntdll/path.c b/dlls/ntdll/path.c
+index 86760f178e1..0262c1db18e 100644
+--- a/dlls/ntdll/path.c
++++ b/dlls/ntdll/path.c
+@@ -263,6 +263,17 @@ NTSTATUS WINAPI RtlDosPathNameToRelativeNtPathName_U_WithStatus(const WCHAR *dos
+     return RtlDosPathNameToNtPathName_U_WithStatus(dos_path, ntpath, file_part, NULL);
+ }
+ 
++/**************************************************************************
++ *        RtlDosPathNameToRelativeNtPathName_U [NTDLL.@]
++ *
++ * See RtlDosPathNameToRelativeNtPathName_U_WithStatus
++ */
++BOOLEAN WINAPI RtlDosPathNameToRelativeNtPathName_U(const WCHAR *dos_path,
++    UNICODE_STRING *ntpath, WCHAR **file_part, RTL_RELATIVE_NAME *relative)
++{
++    return RtlDosPathNameToRelativeNtPathName_U_WithStatus(dos_path, ntpath, file_part, relative) == STATUS_SUCCESS;
++}
++
+ /**************************************************************************
+  *        RtlReleaseRelativeName [NTDLL.@]
+  */
+
+-- 
+2.30.0
+

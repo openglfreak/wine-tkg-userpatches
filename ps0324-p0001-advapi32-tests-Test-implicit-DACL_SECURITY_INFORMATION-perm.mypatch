@@ -1,0 +1,70 @@
+From: Dmitry Timoshkov <dmitry@baikal.ru>
+Subject: [PATCH 1/2] advapi32/tests: Test implicit DACL_SECURITY_INFORMATION permission on a registry key.
+Message-Id: <20210202174032.503d0128864d3ce865701715@baikal.ru>
+Date: Tue, 2 Feb 2021 17:40:32 +0300
+
+Signed-off-by: Dmitry Timoshkov <dmitry@baikal.ru>
+---
+ dlls/advapi32/tests/security.c | 38 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+diff --git a/dlls/advapi32/tests/security.c b/dlls/advapi32/tests/security.c
+index 020e69277e0..91c49378e7f 100644
+--- a/dlls/advapi32/tests/security.c
++++ b/dlls/advapi32/tests/security.c
+@@ -7878,6 +7878,43 @@ static void test_create_process_token_child(void)
+     }
+ }
+ 
++static void test_regkey_security(void)
++{
++    HKEY hkey;
++    DWORD ret;
++    PSECURITY_DESCRIPTOR sd;
++    ACL *dacl;
++
++    ret = RegCreateKeyA(HKEY_CURRENT_USER, "Software\\Winetest", &hkey);
++    ok(ret == ERROR_SUCCESS, "expected ERROR_SUCCESS, got %d\n", ret);
++    RegCloseKey(hkey);
++
++    ret = RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Winetest", 0, KEY_QUERY_VALUE, &hkey);
++    ok(ret == ERROR_SUCCESS, "got %u\n", ret);
++
++    ret = get_obj_access(hkey);
++    ok(ret == KEY_QUERY_VALUE, "got %#x\n", ret);
++
++    sd = NULL;
++    dacl = NULL;
++    ret = GetSecurityInfo(hkey, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION, NULL, NULL, &dacl, NULL, &sd);
++todo_wine
++    ok(ret == ERROR_SUCCESS, "got %u\n", ret);
++todo_wine
++    ok(sd != NULL, "sd should not be NULL\n");
++todo_wine
++    ok(dacl != NULL, "dacl should not be NULL\n");
++
++    ret = SetSecurityInfo(hkey, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION, NULL, NULL, dacl, NULL);
++todo_wine
++    ok(ret == ERROR_SUCCESS, "got %u\n", ret);
++
++    LocalFree(sd);
++
++    RegDeleteKeyW(hkey, L"");
++    RegCloseKey(hkey);
++}
++
+ START_TEST(security)
+ {
+     init();
+@@ -7940,6 +7977,7 @@ START_TEST(security)
+     test_duplicate_handle_access();
+     test_create_process_token();
+     test_pseudo_handle_security();
++    test_regkey_security();
+ 
+     /* Must be the last test, modifies process token */
+     test_token_security_descriptor();
+
+-- 
+2.29.2
+

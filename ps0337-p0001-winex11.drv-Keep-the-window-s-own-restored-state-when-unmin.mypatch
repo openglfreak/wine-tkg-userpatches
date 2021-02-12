@@ -1,0 +1,127 @@
+From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
+Subject: [PATCH resend 1/2] winex11.drv: Keep the window's own restored state when unminimized, if it was fullscreen before.
+Message-Id: <1b42798a3161b0b9a808f2897366da428444f97d.1612880782.git.gabrielopcode@gmail.com>
+Date: Tue,  9 Feb 2021 16:31:04 +0200
+
+Fixes a regression introduced by commit
+82c6ec3a32f44e8b3e0cc88b7f10e0c0d7fa1b89, which caused the WM_ACTIVATEAPP
+to be sent while the window is minimized, if it has been clicked on in the
+taskbar to be restored.
+
+According to the Extended Window Manager Hints spec, WMs remove the
+NET_WM_STATE_FULLSCREEN state when restored, they use the previous
+size of the window (not the fullscreen). This caused the WM_SYSCOMMAND
+SC_RESTORE message's ShowWindow to revert the window back to its original
+(non-fullscreen) size, instead of being restored to fullscreen, breaking
+some apps like Heroes of Might and Magic V.
+
+We have to override the X server's window state here to match Windows
+behavior and restore it back to fullscreen.
+
+Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
+---
+
+read_net_wm_states is when X11 changes some state from outside Wine and
+sends it a notification that it did; then Wine has to update its own wm
+states to match the X server (so it's properly integrated).
+
+However, in this case, since the WM clears the fullscreen state on
+minimization, we must not do that, because Windows doesn't—and more, when
+the window is restored from minimized, we must ignore the X11 state changes
+and force it back to what Wine had (usually fullscreen unless it gets hooked
+by the app, then we keep what the app changed, which is fine). This is to
+match Windows behavior, which differs from X11, and apps rely on.
+
+ dlls/winex11.drv/event.c  | 14 ++++++++++++++
+ dlls/winex11.drv/window.c | 12 +++++++++++-
+ dlls/winex11.drv/x11drv.h |  1 +
+ 3 files changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index d21d2a7..cbbc9c2 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -1296,6 +1296,8 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event, BOOL updat
+ 
+     if (data->iconic && data->wm_state == NormalState)  /* restore window */
+     {
++        DWORD old_state = data->net_wm_state;
++
+         data->iconic = FALSE;
+         read_net_wm_states( event->display, data );
+         if ((style & WS_CAPTION) == WS_CAPTION && (data->net_wm_state & (1 << NET_WM_STATE_MAXIMIZED)))
+@@ -1313,9 +1315,21 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event, BOOL updat
+         {
+             if (style & (WS_MINIMIZE | WS_MAXIMIZE))
+             {
++                /* if the window was fullscreen before minimized, we have to keep its
++                   state and restore it to the fullscreen state, because WMs remove the
++                   fullscreen state when minimized, so we can't use the X server state. */
++                BOOL keep_state = (style & WS_MINIMIZE) && (old_state & (1 << NET_WM_STATE_FULLSCREEN));
++
++                if (keep_state)
++                    data->keep_fs_state = TRUE;
+                 TRACE( "restoring win %p/%lx\n", data->hwnd, data->whole_window );
+                 release_win_data( data );
+                 SendMessageW( hwnd, WM_SYSCOMMAND, SC_RESTORE, 0 );
++                if (keep_state && (data = get_win_data( hwnd )))
++                {
++                    data->keep_fs_state = FALSE;
++                    release_win_data( data );
++                }
+                 return;
+             }
+             TRACE( "not restoring win %p/%lx style %08x\n", data->hwnd, data->whole_window, style );
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index baaa30d..1399429 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1082,6 +1082,11 @@ void read_net_wm_states( Display* display, struct x11drv_win_data *data )
+     if (!maximized_horz)
+         new_state &= ~(1 << NET_WM_STATE_MAXIMIZED);
+ 
++    /* WMs remove it when minimizing a window. Keep track of it internally,
++       so we can restore it properly when the time comes to check for it. */
++    if ((data->net_wm_state & (1 << NET_WM_STATE_FULLSCREEN)) && data->iconic)
++        new_state |= 1 << NET_WM_STATE_FULLSCREEN;
++
+     data->net_wm_state = new_state;
+ }
+ 
+@@ -2456,6 +2461,11 @@ void CDECL X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, UINT swp_flags
+         if (event_type != ConfigureNotify && event_type != PropertyNotify &&
+             event_type != GravityNotify && event_type != ReparentNotify)
+             event_type = 0;  /* ignore other events */
++
++        /* if we keep the Wine window's restored state, we pretend it's
++           not an event, so that it's synced properly with the X server. */
++        if (data->keep_fs_state && !(new_style & WS_MINIMIZE))
++            event_type = 0;
+     }
+ 
+     if (data->mapped && event_type != ReparentNotify)
+@@ -2552,7 +2562,7 @@ UINT CDECL X11DRV_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp )
+         }
+         goto done;
+     }
+-    if (!data->managed || !data->mapped || data->iconic || data->off_desktop) goto done;
++    if (!data->managed || !data->mapped || data->iconic || data->off_desktop || data->keep_fs_state) goto done;
+ 
+     /* only fetch the new rectangle if the ShowWindow was a result of a window manager event */
+ 
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 4585597..c60cf77 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -574,6 +574,7 @@ struct x11drv_win_data
+     BOOL        use_alpha : 1;  /* does window use an alpha channel? */
+     BOOL        off_desktop : 1;/* is window on another WM desktop? */
+     BOOL        shell_cloak : 1;/* the shell is (un)cloaking the window */
++    BOOL        keep_fs_state : 1; /* don't override the window state when restoring from an event, if fullscreen */
+     int         wm_state;       /* current value of the WM_STATE property */
+     DWORD       net_wm_state;   /* bit mask of active x11drv_net_wm_state values */
+     Window      embedder;       /* window id of embedder */
+
+-- 
+2.30.0
+

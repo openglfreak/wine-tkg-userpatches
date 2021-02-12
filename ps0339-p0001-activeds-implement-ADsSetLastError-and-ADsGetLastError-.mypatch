@@ -1,0 +1,241 @@
+From: Damjan Jovanovic <damjan.jov@gmail.com>
+Subject: [PATCH 1/6] activeds: implement ADsSetLastError() and ADsGetLastError()
+Message-Id: <CAJm2B-n=baRucfY=JPO0ESNrV2QS89qYpFb=TGjk2eVrdg=rSw@mail.gmail.com>
+Date: Sun, 7 Feb 2021 17:55:17 +0200
+
+Signed-off-by: Damjan Jovanovic <damjan.jov@gmail.com>
+---
+ dlls/activeds/activeds_main.c  | 90 ++++++++++++++++++++++++++++++++--
+ dlls/activeds/tests/activeds.c | 69 ++++++++++++++++++++++++++
+ include/adshlp.h               |  2 +
+ 3 files changed, 157 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/activeds/activeds_main.c b/dlls/activeds/activeds_main.c
+index 1b22da67653..75dd312c729 100644
+--- a/dlls/activeds/activeds_main.c
++++ b/dlls/activeds/activeds_main.c
+@@ -40,11 +40,21 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(activeds);
+ 
++static DWORD tls_idx;
++
++struct activeds_tls_data {
++    DWORD last_err;
++    WCHAR *last_error;
++    WCHAR *last_provider;
++};
++
+ /*****************************************************
+  * DllMain
+  */
+ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+ {
++    struct activeds_tls_data *tls;
++
+     TRACE("(%p, %d, %p)\n",hinstDLL, fdwReason, lpvReserved);
+ 
+     switch(fdwReason)
+@@ -53,6 +63,16 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+         return FALSE;  /* prefer native version */
+     case DLL_PROCESS_ATTACH:
+         DisableThreadLibraryCalls( hinstDLL );
++        tls_idx = TlsAlloc();
++        break;
++    case DLL_PROCESS_DETACH:
++        tls = TlsGetValue(tls_idx);
++        if (tls != NULL)
++        {
++            HeapFree(GetProcessHeap(), 0, tls->last_error);
++            HeapFree(GetProcessHeap(), 0, tls->last_provider);
++            HeapFree(GetProcessHeap(), 0, tls);
++        }
+         break;
+     }
+     return TRUE;
+@@ -232,9 +252,39 @@ HRESULT WINAPI ADsOpenObject(LPCWSTR path, LPCWSTR user, LPCWSTR password, DWORD
+ /*****************************************************
+  * ADsSetLastError    [ACTIVEDS.12]
+  */
+-VOID WINAPI ADsSetLastError(DWORD dwErr, LPWSTR pszError, LPWSTR pszProvider)
++VOID WINAPI ADsSetLastError(DWORD dwErr, LPCWSTR pszError, LPCWSTR pszProvider)
+ {
+-    FIXME("(%d,%p,%p)!stub\n", dwErr, pszError, pszProvider);
++    struct activeds_tls_data *tls;
++
++    TRACE("(%d,%s,%s)\n", dwErr, debugstr_w(pszError), debugstr_w(pszProvider));
++
++    tls = TlsGetValue(tls_idx);
++    if (tls == NULL)
++    {
++        tls = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*tls));
++        if (tls == NULL)
++            return;
++        TlsSetValue(tls_idx, tls);
++    }
++    tls->last_err = dwErr;
++
++    HeapFree(GetProcessHeap(), 0, tls->last_error);
++    tls->last_error = NULL;
++    if (pszError == NULL)
++        pszError = L"";
++    tls->last_error = HeapAlloc(GetProcessHeap(), 0, (lstrlenW(pszError)+1) * sizeof(WCHAR));
++    if (tls->last_error == NULL)
++        return;
++    lstrcpyW(tls->last_error, pszError);
++
++    HeapFree(GetProcessHeap(), 0, tls->last_provider);
++    tls->last_provider = NULL;
++    if (pszProvider == NULL)
++        pszProvider = L"";
++    tls->last_provider = HeapAlloc(GetProcessHeap(), 0, (lstrlenW(pszProvider)+1) * sizeof(WCHAR));
++    if (tls->last_provider == NULL)
++        return;
++    lstrcpyW(tls->last_provider, pszProvider);
+ }
+ 
+ /*****************************************************
+@@ -242,8 +292,40 @@ VOID WINAPI ADsSetLastError(DWORD dwErr, LPWSTR pszError, LPWSTR pszProvider)
+  */
+ HRESULT WINAPI ADsGetLastError(LPDWORD perror, LPWSTR errorbuf, DWORD errorbuflen, LPWSTR namebuf, DWORD namebuflen)
+ {
+-    FIXME("(%p,%p,%d,%p,%d)!stub\n", perror, errorbuf, errorbuflen, namebuf, namebuflen);
+-    return E_NOTIMPL;
++    struct activeds_tls_data *tls;
++    LPCWSTR last_error;
++    LPCWSTR last_provider;
++
++    TRACE("(%p,%p,%d,%p,%d)\n", perror, errorbuf, errorbuflen, namebuf, namebuflen);
++
++    if (errorbuf == NULL || namebuf == NULL)
++        return E_POINTER;
++    tls = TlsGetValue(tls_idx);
++    if (tls == NULL)
++    {
++        if (GetLastError() == 0)
++        {
++            *perror = NO_ERROR;
++            if (errorbuflen > 0) errorbuf[0] = 0;
++            if (namebuflen > 0) namebuf[0] = 0;
++            return S_OK;
++        }
++        else
++            return HRESULT_FROM_WIN32(GetLastError());
++    }
++
++    last_error = tls->last_error;
++    if (last_error == NULL)
++        last_error = L"";
++    last_provider = tls->last_provider;
++    if (last_provider == NULL)
++        last_provider = L"";
++    *perror = tls->last_err;
++    wcsncpy(errorbuf, last_error, errorbuflen);
++    if (errorbuflen > 0) errorbuf[errorbuflen - 1] = 0;
++    wcsncpy(namebuf, last_provider, namebuflen);
++    if (namebuflen > 0) namebuf[namebuflen - 1] = 0;
++    return S_OK;
+ }
+ 
+ /*****************************************************
+diff --git a/dlls/activeds/tests/activeds.c b/dlls/activeds/tests/activeds.c
+index c2dc3d58c4b..c542faea8a0 100644
+--- a/dlls/activeds/tests/activeds.c
++++ b/dlls/activeds/tests/activeds.c
+@@ -161,12 +161,81 @@ static void test_Pathname(void)
+     IADsPathname_Release(path);
+ }
+ 
++#define EXPECT_LAST_ERR(err,error,provider) _expect_last_err(err, error, provider, __LINE__)
++static void _expect_last_err(DWORD err, const WCHAR *error, const WCHAR *provider, int line)
++{
++    HRESULT hr;
++    DWORD last_err;
++    WCHAR last_error[MAX_PATH];
++    WCHAR last_provider[MAX_PATH];
++
++    hr = ADsGetLastError(&last_err, last_error, MAX_PATH, last_provider, MAX_PATH);
++    ok_(__FILE__,line)(SUCCEEDED(hr), "ADsGetLastError() failed with 0x%08x\n", hr);
++    ok_(__FILE__,line)(last_err == err, "unexpected last err %d\n", last_err);
++    ok_(__FILE__,line)(!lstrcmpW(last_error, error), "unexpected last error %s\n", wine_dbgstr_w(last_error));
++    ok_(__FILE__,line)(!lstrcmpW(last_provider, provider), "unexpected last provider %s\n", wine_dbgstr_w(last_provider));
++}
++
++static void test_LastError(void)
++{
++    HRESULT hr;
++    DWORD last_err;
++    WCHAR last_error[MAX_PATH];
++    WCHAR last_provider[MAX_PATH];
++    WCHAR *large_str;
++
++    ADsSetLastError(NO_ERROR, NULL, NULL);
++    EXPECT_LAST_ERR(NO_ERROR, L"", L"");
++
++    ADsSetLastError(ERROR_OUTOFMEMORY, NULL, NULL);
++    EXPECT_LAST_ERR(ERROR_OUTOFMEMORY, L"", L"");
++
++    ADsSetLastError(HRESULT_FROM_WIN32(ERROR_OUTOFMEMORY), NULL, NULL);
++    EXPECT_LAST_ERR(HRESULT_FROM_WIN32(ERROR_OUTOFMEMORY), L"", L"");
++
++    /* SetLastError() and ADsSetLastError() do not affect each other */
++    SetLastError(NO_ERROR);
++    ADsSetLastError(ERROR_OUTOFMEMORY, NULL, NULL);
++    ok(GetLastError() == NO_ERROR, "unexpected GetLastError() = %d\n", GetLastError());
++    EXPECT_LAST_ERR(ERROR_OUTOFMEMORY, L"", L"");
++    SetLastError(ERROR_INVALID_HANDLE);
++    EXPECT_LAST_ERR(ERROR_OUTOFMEMORY, L"", L"");
++
++    /* The error/provider buffers are mandatory, even when they were previously set to NULL... */
++    ADsSetLastError(ERROR_OUTOFMEMORY, NULL, NULL);
++    hr = ADsGetLastError(&last_err, last_error, MAX_PATH, NULL, 0);
++    ok(hr == E_POINTER, "unexpected hr 0x%08x\n", hr);
++    hr = ADsGetLastError(&last_err, NULL, 0, last_provider, MAX_PATH);
++    ok(hr == E_POINTER, "unexpected hr 0x%08x\n", hr);
++
++    /* ... but non-NULL buffers with short sizes are silently trimmed. */
++    ADsSetLastError(ERROR_OUTOFMEMORY, L"no mem", L"wine");
++    hr = ADsGetLastError(&last_err, last_error, 0, last_provider, 0);
++    ok(hr == S_OK, "unexpected hr 0x%08x\n", hr);
++    hr = ADsGetLastError(&last_err, last_error, 3, last_provider, 2);
++    ok(hr == S_OK, "unexpected hr 0x%08x\n", hr);
++    ok(!lstrcmpW(last_error, L"no"), "unexpected value %s\n", wine_dbgstr_w(last_error));
++    ok(!lstrcmpW(last_provider, L"w"), "unexpected value %s\n", wine_dbgstr_w(last_provider));
++
++    /* Does not internally trim long strings */
++    large_str = HeapAlloc(GetProcessHeap(), 0, 0x10000 * sizeof(WCHAR));
++    ok(large_str != NULL, "no memory\n");
++    memset(large_str, 'a', 0x10000 * sizeof(WCHAR));
++    large_str[0x10000 - 1] = 0;
++    ADsSetLastError(NO_ERROR, NULL, large_str);
++    hr = ADsGetLastError(&last_err, last_error, MAX_PATH, large_str, 0x10000);
++    ok(SUCCEEDED(hr), "ADsGetLastError() failed with 0x%08x\n", hr);
++    ok(lstrlenW(large_str) == 0x10000 - 1, "string length %d\n", lstrlenW(large_str));
++    HeapFree(GetProcessHeap(), 0, large_str);
++}
++
+ START_TEST(activeds)
+ {
+     CoInitialize(NULL);
+ 
+     test_Pathname();
+     test_ADsBuildVarArrayStr();
++    test_LastError();
+ 
+     CoUninitialize();
+ }
+diff --git a/include/adshlp.h b/include/adshlp.h
+index dac57857edb..5233fc50f66 100644
+--- a/include/adshlp.h
++++ b/include/adshlp.h
+@@ -27,7 +27,9 @@ HRESULT WINAPI ADsBuildEnumerator(IADsContainer*,IEnumVARIANT**);
+ HRESULT WINAPI ADsBuildVarArrayStr(LPWSTR*,DWORD,VARIANT*);
+ HRESULT WINAPI ADsEnumerateNext(IEnumVARIANT*,ULONG,VARIANT*,ULONG*);
+ HRESULT WINAPI ADsGetObject(LPCWSTR,REFIID,VOID**);
++HRESULT WINAPI ADsGetLastError(LPDWORD lpError, LPWSTR lpErrorBuf, DWORD dwErrorBufLen, LPWSTR lpNameBuf, DWORD dwNameBufLen);
+ HRESULT WINAPI ADsOpenObject(LPCWSTR,LPCWSTR,LPCWSTR,DWORD,REFIID,VOID**);
++VOID    WINAPI ADsSetLastError(DWORD dwErr, LPCWSTR pszError, LPCWSTR pszProvider);
+ LPWSTR  WINAPI AllocADsStr(LPWSTR);
+ BOOL    WINAPI FreeADsMem(LPVOID);
+ BOOL    WINAPI FreeADsStr(LPWSTR);
+

@@ -1,0 +1,2263 @@
+From 97f0a382655325c0dee3dc4ac4edfaa8cc442f62 Mon Sep 17 00:00:00 2001
+From: Zebediah Figura <z.figura12@gmail.com>
+Date: Sun, 7 Feb 2021 21:41:14 +0100
+Subject: [PATCH] wdfldr.sys: Initial implementation
+
+---
+ configure.ac                     |    1 +
+ dlls/wdfldr.sys/Makefile.in      |    6 +
+ dlls/wdfldr.sys/wdfldr.sys.spec  |   10 +
+ dlls/wdfldr.sys/wdfldr_main.c    | 1016 ++++++++++++++++++++++++++++++
+ dlls/wdfldr.sys/wdfldr_private.h |   66 ++
+ include/Makefile.in              |   10 +
+ include/ddk/wdf.h                |   35 +
+ include/ddk/wdfchildlist.h       |   60 ++
+ include/ddk/wdfdevice.h          |  120 ++++
+ include/ddk/wdfdriver.h          |   46 ++
+ include/ddk/wdffuncenum.h        |  480 ++++++++++++++
+ include/ddk/wdfglobals.h         |   33 +
+ include/ddk/wdfio.h              |   65 ++
+ include/ddk/wdfobject.h          |   71 +++
+ include/ddk/wdftimer.h           |   34 +
+ include/ddk/wdftypes.h           |   44 ++
+ include/ddk/wdm.h                |    7 +
+ 17 files changed, 2104 insertions(+)
+ create mode 100644 dlls/wdfldr.sys/Makefile.in
+ create mode 100644 dlls/wdfldr.sys/wdfldr.sys.spec
+ create mode 100644 dlls/wdfldr.sys/wdfldr_main.c
+ create mode 100644 dlls/wdfldr.sys/wdfldr_private.h
+ create mode 100644 include/ddk/wdf.h
+ create mode 100644 include/ddk/wdfchildlist.h
+ create mode 100644 include/ddk/wdfdevice.h
+ create mode 100644 include/ddk/wdfdriver.h
+ create mode 100644 include/ddk/wdffuncenum.h
+ create mode 100644 include/ddk/wdfglobals.h
+ create mode 100644 include/ddk/wdfio.h
+ create mode 100644 include/ddk/wdfobject.h
+ create mode 100644 include/ddk/wdftimer.h
+ create mode 100644 include/ddk/wdftypes.h
+
+diff --git a/configure.ac b/configure.ac
+index 0926c70691d..e3b084bcc03 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -3917,6 +3917,7 @@ WINE_CONFIG_MAKEFILE(dlls/wbemdisp/tests)
+ WINE_CONFIG_MAKEFILE(dlls/wbemprox)
+ WINE_CONFIG_MAKEFILE(dlls/wbemprox/tests)
+ WINE_CONFIG_MAKEFILE(dlls/wbemuuid)
++WINE_CONFIG_MAKEFILE(dlls/wdfldr.sys)
+ WINE_CONFIG_MAKEFILE(dlls/wdscore)
+ WINE_CONFIG_MAKEFILE(dlls/webservices)
+ WINE_CONFIG_MAKEFILE(dlls/webservices/tests)
+diff --git a/dlls/wdfldr.sys/Makefile.in b/dlls/wdfldr.sys/Makefile.in
+new file mode 100644
+index 00000000000..92f4e69ee6b
+--- /dev/null
++++ b/dlls/wdfldr.sys/Makefile.in
+@@ -0,0 +1,6 @@
++MODULE    = wdfldr.sys
++IMPORTS   = hal ntoskrnl
++EXTRADLLFLAGS = -Wl,--subsystem,native -mno-cygwin
++
++C_SRCS = \
++	wdfldr_main.c
+diff --git a/dlls/wdfldr.sys/wdfldr.sys.spec b/dlls/wdfldr.sys/wdfldr.sys.spec
+new file mode 100644
+index 00000000000..51c5e2ba7d7
+--- /dev/null
++++ b/dlls/wdfldr.sys/wdfldr.sys.spec
+@@ -0,0 +1,10 @@
++@ stub DllInitialize
++@ stub DllUnload
++@ stub WdfLdrDiagnosticsValueByNameAsULONG
++@ stub WdfLdrQueryInterface
++@ stub WdfRegisterClassLibrary
++@ stub WdfRegisterLibrary
++@ stdcall WdfVersionBind(ptr ptr ptr ptr)
++@ stub WdfVersionBindClass
++@ stdcall WdfVersionUnbind(ptr ptr ptr)
++@ stub WdfVersionUnbindClass
+diff --git a/dlls/wdfldr.sys/wdfldr_main.c b/dlls/wdfldr.sys/wdfldr_main.c
+new file mode 100644
+index 00000000000..4b5a2ca1af0
+--- /dev/null
++++ b/dlls/wdfldr.sys/wdfldr_main.c
+@@ -0,0 +1,1016 @@
++/*
++ * Windows Device Framework implementation
++ *
++ * Copyright 2020 Zebediah Figura for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdarg.h>
++#include <stdlib.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "winternl.h"
++#include "ddk/wdm.h"
++#include "ddk/wdf.h"
++#include "wine/debug.h"
++#include "wine/list.h"
++#include "wdfldr_private.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(wdf);
++
++DECLARE_CRITICAL_SECTION(driver_list_cs);
++
++static struct list driver_list = LIST_INIT(driver_list);
++
++static const char *debugstr_us(const UNICODE_STRING *us)
++{
++    if (!us)
++        return "<null>";
++    return debugstr_wn(us->Buffer, us->Length / sizeof(WCHAR));
++}
++
++static void wdf_object_init(struct wdf_object *object, wdf_object_destroy_cb destroy,
++        struct wdf_object *parent, const WDF_OBJECT_ATTRIBUTES *attr)
++{
++    if (attr)
++    {
++        if (attr->EvtCleanupCallback)
++            FIXME("Ignoring cleanup callback %p.\n", attr->EvtCleanupCallback);
++        if (attr->EvtDestroyCallback)
++            FIXME("Ignoring destroy callback %p.\n", attr->EvtDestroyCallback);
++        if (attr->ParentObject)
++            FIXME("Ignoring parent %p.\n", attr->ParentObject);
++
++        object->type = attr->ContextTypeInfo;
++        if (object->type)
++        {
++            size_t context_size = object->type->ContextSize;
++            if (attr->ContextSizeOverride)
++                context_size = attr->ContextSizeOverride;
++            object->ctx = calloc(1, context_size);
++        }
++    }
++
++    object->refcount = 1;
++    object->destroy = destroy;
++    if (parent)
++    {
++        object->parent = parent;
++        // fixme: sync
++        list_add_tail(&parent->children, &object->child_entry);
++    }
++    list_init(&object->children);
++}
++
++static ULONG wdf_object_decref(struct wdf_object *object)
++{
++    ULONG refcount = InterlockedDecrement(&object->refcount);
++
++    TRACE("%p decreasing refcount to %u.\n", object, refcount);
++
++    if (!refcount)
++    {
++        struct wdf_object *child, *cursor;
++
++        // fixme: sync on parent
++        if (object->parent)
++            list_remove(&object->child_entry);
++
++        // fixme: sync on child
++        LIST_FOR_EACH_ENTRY_SAFE(child, cursor, &object->children, struct wdf_object, child_entry)
++            wdf_object_decref(child);
++    }
++
++    object->destroy(object);
++
++    return refcount;
++}
++
++struct wdf_string *wdf_string_from_handle(WDFSTRING string)
++{
++    return (struct wdf_string *)string;
++}
++
++struct wdf_string
++{
++    struct wdf_object header;
++    UNICODE_STRING us;
++};
++
++static void wdf_string_destroy(struct wdf_object *object)
++{
++    struct wdf_string *string = CONTAINING_RECORD(object, struct wdf_string, header);
++
++    RtlFreeUnicodeString(&string->us);
++    free(string);
++}
++
++static NTSTATUS wdf_string_set(struct wdf_string *string, const UNICODE_STRING *us)
++{
++    RtlFreeUnicodeString(&string->us);
++    return RtlDuplicateUnicodeString(0, us, &string->us);
++}
++
++static NTSTATUS WINAPI wdf_StringCreate(WDF_DRIVER_GLOBALS *globals, const UNICODE_STRING *us,
++        WDF_OBJECT_ATTRIBUTES *attr, WDFSTRING *handle)
++{
++    struct wdf_string *string;
++    NTSTATUS ret;
++
++    FIXME("globals %p, us %s, attr %p, handle %p, stub!\n", globals, debugstr_us(us), attr, handle);
++
++    if (!(string = calloc(1, sizeof(*string))))
++        return STATUS_NO_MEMORY;
++    wdf_object_init(&string->header, wdf_string_destroy, NULL, attr);
++    if (us && (ret = RtlDuplicateUnicodeString(0, us, &string->us)))
++    {
++        wdf_object_decref(&string->header);
++        return ret;
++    }
++
++    if (handle)
++        *handle = (WDFSTRING)string;
++    return STATUS_SUCCESS;
++}
++
++static void WINAPI wdf_StringGetUnicodeString(WDF_DRIVER_GLOBALS *globals,
++        WDFSTRING string_handle, UNICODE_STRING *us)
++{
++    struct wdf_string *string = wdf_string_from_handle(string_handle);
++
++    FIXME("globals %p, string %p, us %p, stub!\n", globals, string, us);
++
++    // fixme: is this correct?
++    *us = string->us;
++}
++
++struct wdf_key
++{
++    struct wdf_object header;
++    HANDLE hkey;
++};
++
++struct wdf_key *wdf_key_from_handle(WDFKEY key)
++{
++    return (struct wdf_key *)key;
++}
++
++static void wdf_key_destroy(struct wdf_object *object)
++{
++    struct wdf_key *key = CONTAINING_RECORD(object, struct wdf_key, header);
++
++    CloseHandle(key->hkey);
++    free(key);
++}
++
++static NTSTATUS wdf_key_create(const WDF_OBJECT_ATTRIBUTES *attr, HANDLE hkey, WDFKEY *handle)
++{
++    struct wdf_key *key;
++
++    if (!(key = calloc(1, sizeof(*key))))
++        return STATUS_NO_MEMORY;
++    wdf_object_init(&key->header, wdf_key_destroy, NULL, attr);
++    key->hkey = hkey;
++
++    if (handle)
++        *handle = (WDFKEY)key;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS WINAPI wdf_RegistryQueryString(WDF_DRIVER_GLOBALS *globals, WDFKEY key_handle,
++        const UNICODE_STRING *value, WDFSTRING string_handle)
++{
++    struct wdf_string *string = wdf_string_from_handle(string_handle);
++    struct wdf_key *key = wdf_key_from_handle(key_handle);
++    KEY_VALUE_PARTIAL_INFORMATION *info, *new_buffer;
++    UNICODE_STRING us;
++    ULONG size = 32;
++    NTSTATUS ret;
++
++    FIXME("globals %p, key %p, value %s, string %p, stub!\n", globals, key, debugstr_us(value), string);
++
++    if (!(info = malloc(size)))
++        return STATUS_NO_MEMORY;
++
++    while ((ret = NtQueryValueKey(key->hkey, value, KeyValuePartialInformation,
++            info, size, &size)) == STATUS_BUFFER_OVERFLOW)
++    {
++        if (!(new_buffer = realloc(info, size)))
++        {
++            free(info);
++            return STATUS_NO_MEMORY;
++        }
++        info = new_buffer;
++    }
++    if (ret)
++    {
++        free(info);
++        return ret;
++    }
++
++    if (info->Type != REG_SZ)
++    {
++        free(info);
++        return STATUS_OBJECT_TYPE_MISMATCH;
++    }
++    us.Buffer = (WCHAR *)&info->Data;
++    us.MaximumLength = us.Length = info->DataLength;
++    ret = wdf_string_set(string, &us);
++    free(info);
++    return ret;
++}
++
++static void WINAPI wdf_RegistryClose(WDF_DRIVER_GLOBALS *globals, WDFKEY key_handle)
++{
++    struct wdf_key *key = wdf_key_from_handle(key_handle);
++
++    FIXME("globals %p, key %p, stub!\n", globals, key);
++
++    wdf_object_decref(&key->header);
++}
++
++struct wdf_spinlock
++{
++    struct wdf_object header;
++    KSPIN_LOCK lock;
++    KIRQL irql;
++};
++
++struct wdf_spinlock *wdf_spinlock_from_handle(WDFSPINLOCK spinlock)
++{
++    return (struct wdf_spinlock *)spinlock;
++}
++
++static void wdf_spinlock_destroy(struct wdf_object *object)
++{
++    struct wdf_spinlock *spinlock = CONTAINING_RECORD(object, struct wdf_spinlock, header);
++
++    free(spinlock);
++}
++
++static NTSTATUS WINAPI wdf_SpinLockCreate(WDF_DRIVER_GLOBALS *globals,
++        WDF_OBJECT_ATTRIBUTES *attr, WDFSPINLOCK *handle)
++{
++    struct wdf_spinlock *spinlock;
++
++    FIXME("globals %p, attr %p, handle %p, stub!\n", globals, attr, handle);
++
++    if (!(spinlock = calloc(1, sizeof(*spinlock))))
++        return STATUS_NO_MEMORY;
++    wdf_object_init(&spinlock->header, wdf_spinlock_destroy, NULL, attr);
++    KeInitializeSpinLock(&spinlock->lock);
++
++    if (handle)
++        *handle = (WDFSPINLOCK)spinlock;
++    return STATUS_SUCCESS;
++}
++
++static void WINAPI wdf_SpinLockAcquire(WDF_DRIVER_GLOBALS *globals, WDFSPINLOCK spinlock_handle)
++{
++    struct wdf_spinlock *spinlock = wdf_spinlock_from_handle(spinlock_handle);
++
++    FIXME("globals %p, spinlock %p, stub!\n", globals, spinlock);
++
++    KeAcquireSpinLock(&spinlock->lock, &spinlock->irql);
++}
++
++static void WINAPI wdf_SpinLockRelease(WDF_DRIVER_GLOBALS *globals, WDFSPINLOCK spinlock_handle)
++{
++    struct wdf_spinlock *spinlock = wdf_spinlock_from_handle(spinlock_handle);
++
++    FIXME("globals %p, spinlock %p, stub!\n", globals, spinlock);
++
++    KeReleaseSpinLock(&spinlock->lock, spinlock->irql);
++}
++
++struct wdf_driver
++{
++    struct wdf_object header;
++    WDF_DRIVER_GLOBALS globals;
++    struct list entry;
++    DRIVER_OBJECT *driver_obj;
++    PFN_WDF_DRIVER_DEVICE_ADD add_device;
++    PFN_WDF_DRIVER_UNLOAD unload;
++};
++
++struct WDFDEVICE_INIT
++{
++    DEVICE_OBJECT *device_obj;
++    DEVICE_OBJECT *pdo;
++    DEVICE_TYPE type;
++    ULONG characteristics;
++    WDF_PNPPOWER_EVENT_CALLBACKS pnp_power_callbacks;
++    WDF_CHILD_LIST_CONFIG child_list_config;
++    WDF_OBJECT_ATTRIBUTES child_list_attr;
++
++    unsigned int is_fdo : 1;
++    unsigned int exclusive : 1;
++};
++
++struct device_interface
++{
++    GUID class;
++    UNICODE_STRING refstr;
++    UNICODE_STRING symlink;
++};
++
++struct wdf_device
++{
++    struct wdf_object header;
++    struct WDFDEVICE_INIT params;
++    DEVICE_OBJECT *attached_device;
++    struct wdf_child_list *default_child_list;
++
++    struct device_interface *interfaces;
++    unsigned int interface_count;
++};
++
++struct wdf_child_list
++{
++    struct wdf_object header;
++    WDF_CHILD_LIST_CONFIG config;
++};
++
++static struct wdf_driver *wdf_driver_from_globals(WDF_DRIVER_GLOBALS *globals)
++{
++    return CONTAINING_RECORD(globals, struct wdf_driver, globals);
++}
++
++static struct wdf_driver *wdf_driver_from_handle(WDFDRIVER driver)
++{
++    return (struct wdf_driver *)driver;
++}
++
++static struct wdf_driver *wdf_driver_from_driver_object(const DRIVER_OBJECT *driver_obj)
++{
++    struct wdf_driver *driver;
++
++    EnterCriticalSection(&driver_list_cs);
++    LIST_FOR_EACH_ENTRY(driver, &driver_list, struct wdf_driver, entry)
++    {
++        if (driver->driver_obj == driver_obj)
++        {
++            LeaveCriticalSection(&driver_list_cs);
++            return driver;
++        }
++    }
++    LeaveCriticalSection(&driver_list_cs);
++    return NULL;
++}
++
++static NTSTATUS WINAPI wdf_driver_add_device(DRIVER_OBJECT *driver_obj, DEVICE_OBJECT *device_obj)
++{
++    struct wdf_driver *driver = wdf_driver_from_driver_object(driver_obj);
++    struct WDFDEVICE_INIT params = {0};
++    NTSTATUS ret;
++
++    TRACE("driver %p, device_obj %p.\n", driver, device_obj);
++
++    params.pdo = device_obj;
++    params.is_fdo = 1;
++
++    TRACE("Calling add device callback %p.\n", driver->add_device);
++    ret = driver->add_device(driver->globals.Driver, &params);
++    TRACE("Callback returned %#x.\n", ret);
++
++    if (!NT_SUCCESS(ret))
++        return ret;
++
++    if (params.device_obj)
++        params.device_obj->Flags &= ~DO_DEVICE_INITIALIZING;
++
++    return ret;
++}
++
++static void wdf_driver_destroy(struct wdf_object *object)
++{
++    struct wdf_driver *driver = CONTAINING_RECORD(object, struct wdf_driver, header);
++
++    driver->globals.Driver = NULL;
++}
++
++static void WINAPI wdf_driver_unload(DRIVER_OBJECT *driver_obj)
++{
++    struct wdf_driver *driver = wdf_driver_from_driver_object(driver_obj);
++
++    TRACE("driver %p.\n", driver);
++
++    if (driver->unload)
++        driver->unload(driver->globals.Driver);
++
++    wdf_object_decref(&driver->header);
++}
++
++static NTSTATUS wdf_pdo_pnp(struct wdf_device *device, IRP *irp)
++{
++    IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
++    NTSTATUS ret = irp->IoStatus.Status;
++
++    switch (stack->MinorFunction)
++    {
++        default:
++            FIXME("Unhandled minor function %#x.\n", stack->MinorFunction);
++    }
++
++    irp->IoStatus.Status = ret;
++    IoCompleteRequest(irp, IO_NO_INCREMENT);
++    return ret;
++}
++
++static NTSTATUS WINAPI start_device_completion_cb(DEVICE_OBJECT *device_obj, IRP *irp, void *context)
++{
++    struct wdf_device *device = device_obj->DeviceExtension;
++    PFN_WDF_DEVICE_PREPARE_HARDWARE prepare_hardware = device->params.pnp_power_callbacks.EvtDevicePrepareHardware;
++    PFN_WDF_DEVICE_D0_ENTRY d0_entry = device->params.pnp_power_callbacks.EvtDeviceD0Entry;
++    PFN_WDF_DEVICE_D0_ENTRY_POST_INTERRUPTS_ENABLED d0_post_entry
++            = device->params.pnp_power_callbacks.EvtDeviceD0EntryPostInterruptsEnabled;
++    PFN_WDF_CHILD_LIST_SCAN_FOR_CHILDREN scan_children = device->default_child_list->config.EvtChildListScanForChildren;
++    NTSTATUS status;
++    unsigned int i;
++
++    if (prepare_hardware)
++    {
++        TRACE("Calling prepare hardware callback %p.\n", prepare_hardware);
++        status = prepare_hardware((void *)device, (void *)0xdead, (void *)0xbeef);
++        TRACE("Callback returned %#x.\n", status);
++    }
++
++    if (d0_entry)
++    {
++        TRACE("Calling D0 entry callback %p.\n", d0_entry);
++        status = d0_entry((void *)device, WdfPowerDeviceD3Final);
++        TRACE("Callback returned %#x.\n", status);
++    }
++
++    if (d0_post_entry)
++    {
++        TRACE("Calling D0 post-entry callback %p.\n", d0_post_entry);
++        status = d0_post_entry((void *)device, WdfPowerDeviceD3Final);
++        TRACE("Callback returned %#x.\n", status);
++    }
++
++    if (scan_children)
++    {
++        TRACE("Calling scan children callback %p.\n", scan_children);
++        scan_children((void *)device->default_child_list);
++        TRACE("Callback returned.\n");
++    }
++
++    for (i = 0; i < device->interface_count; ++i)
++        IoSetDeviceInterfaceState(&device->interfaces[i].symlink, TRUE);
++
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS wdf_fdo_pnp(struct wdf_device *device, IRP *irp)
++{
++    IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
++
++    switch (stack->MinorFunction)
++    {
++        case IRP_MN_START_DEVICE:
++            IoCopyCurrentIrpStackLocationToNext(irp);
++            FIXME("current %p next %p\n", IoGetCurrentIrpStackLocation(irp)->DeviceObject, IoGetNextIrpStackLocation(irp)->DeviceObject);
++            IoSetCompletionRoutine(irp, start_device_completion_cb, NULL, TRUE, TRUE, TRUE);
++            FIXME("%p\n", device->params.pdo);
++            return IoCallDriver(device->params.pdo, irp);
++
++        default:
++            irp->IoStatus.Status = STATUS_SUCCESS;
++            IoCopyCurrentIrpStackLocationToNext(irp);
++            return IoCallDriver(device->params.pdo, irp);
++    }
++}
++
++static NTSTATUS WINAPI wdf_driver_pnp(DEVICE_OBJECT *device_obj, IRP *irp)
++{
++    IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
++    struct wdf_device *device = device_obj->DeviceExtension;
++
++    TRACE("device %p, irp %p, minor function %#x.\n", device, irp, stack->MinorFunction);
++
++    if (device->params.is_fdo)
++        return wdf_fdo_pnp(device, irp);
++    return wdf_pdo_pnp(device, irp);
++}
++
++static NTSTATUS wdf_pdo_power(struct wdf_device *device, IRP *irp)
++{
++    IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
++    NTSTATUS ret = irp->IoStatus.Status;
++
++    switch (stack->MinorFunction)
++    {
++        default:
++            FIXME("Unhandled minor function %#x.\n", stack->MinorFunction);
++    }
++
++    irp->IoStatus.Status = ret;
++    IoCompleteRequest(irp, IO_NO_INCREMENT);
++    return ret;
++}
++
++static NTSTATUS wdf_fdo_power(struct wdf_device *device, IRP *irp)
++{
++    IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
++
++    switch (stack->MinorFunction)
++    {
++        default:
++            irp->IoStatus.Status = STATUS_SUCCESS;
++            IoCopyCurrentIrpStackLocationToNext(irp);
++            return IoCallDriver(device->params.pdo, irp);
++    }
++}
++
++static NTSTATUS WINAPI wdf_driver_power(DEVICE_OBJECT *device_obj, IRP *irp)
++{
++    IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
++    struct wdf_device *device = device_obj->DeviceExtension;
++
++    TRACE("device %p, irp %p, minor function %#x.\n", device, irp, stack->MinorFunction);
++
++    if (device->params.is_fdo)
++        return wdf_fdo_power(device, irp);
++    return wdf_pdo_power(device, irp);
++}
++
++static NTSTATUS WINAPI wdf_DriverCreate(WDF_DRIVER_GLOBALS *globals, DRIVER_OBJECT *driver_obj,
++        const UNICODE_STRING *path, WDF_OBJECT_ATTRIBUTES *attr, WDF_DRIVER_CONFIG *config, WDFDRIVER *handle)
++{
++    struct wdf_driver *driver = wdf_driver_from_globals(globals);
++    int len;
++
++    TRACE("globals %p, driver_obj %p, path %s, attr %p, config %p, handle %p.\n",
++            globals, driver_obj, debugstr_us(path), attr, config, handle);
++
++    TRACE("Add device %p, unload %p, flags %#x, tag %#x.\n", config->EvtDriverDeviceAdd,
++            config->EvtDriverUnload, config->DriverInitFlags, config->DriverPoolTag);
++
++    wdf_object_init(&driver->header, wdf_driver_destroy, NULL, attr);
++    driver->add_device = config->EvtDriverDeviceAdd;
++    driver->unload = config->EvtDriverUnload;
++
++    if (!(config->DriverInitFlags & WdfDriverInitNoDispatchOverride))
++    {
++        if (config->DriverInitFlags & WdfDriverInitNonPnpDriver)
++        {
++            driver_obj->DriverExtension->AddDevice = NULL;
++            driver_obj->DriverUnload = config->EvtDriverUnload ? wdf_driver_unload : NULL;
++        }
++        else
++        {
++            driver_obj->DriverExtension->AddDevice = wdf_driver_add_device;
++            driver_obj->DriverUnload = wdf_driver_unload;
++            globals->DisplaceDriverUnload = TRUE;
++        }
++
++        driver_obj->MajorFunction[IRP_MJ_PNP] = wdf_driver_pnp;
++        driver_obj->MajorFunction[IRP_MJ_POWER] = wdf_driver_power;
++    }
++
++    if (config->EvtDriverUnload)
++        globals->DisplaceDriverUnload = TRUE;
++
++    memset(globals->DriverName, 0, sizeof(globals->DriverName));
++    for (len = path->Length / sizeof(WCHAR); len > 0; --len)
++    {
++        if (path->Buffer[len - 1] == '\\')
++            break;
++    }
++    RtlUnicodeToMultiByteN(globals->DriverName, sizeof(globals->DriverName), NULL,
++            path->Buffer + len, path->Length - len * sizeof(WCHAR));
++
++    memcpy(&globals->DriverTag, globals->DriverName, sizeof(globals->DriverTag));
++    globals->Driver = (void *)driver;
++    globals->DriverFlags |= config->DriverInitFlags;
++
++    if (handle)
++        *handle = globals->Driver;
++
++    return STATUS_SUCCESS;
++}
++
++// fixme zf: check the wdf source...
++static DRIVER_OBJECT * WINAPI wdf_DriverWdmGetDriverObject(WDF_DRIVER_GLOBALS *globals, WDFDRIVER driver_handle)
++{
++    struct wdf_driver *driver = wdf_driver_from_handle(driver_handle);
++
++    TRACE("globals %p, driver %p.\n", globals, driver);
++
++    return driver->driver_obj;
++}
++
++static NTSTATUS WINAPI wdf_DeviceInitAssignWdmIrpPreprocessCallback(WDF_DRIVER_GLOBALS *globals, PWDFDEVICE_INIT params,
++        PFN_WDFDEVICE_WDM_IRP_PREPROCESS preprocess, UCHAR major_function, UCHAR *minor_functions, ULONG count)
++{
++    FIXME("globals %p, params %p, preprocess %p, major_function %#x, minor_functions %p, count %u, stub!\n",
++            globals, params, preprocess, major_function, minor_functions, count);
++    return STATUS_SUCCESS;
++}
++
++static void WINAPI wdf_DeviceInitSetDeviceType(WDF_DRIVER_GLOBALS *globals, PWDFDEVICE_INIT params, DEVICE_TYPE type)
++{
++    TRACE("globals %p, params %p, type %#x.\n", globals, params, type);
++
++    params->type = type;
++}
++
++static void WINAPI wdf_DeviceInitSetExclusive(WDF_DRIVER_GLOBALS *globals, PWDFDEVICE_INIT params, BOOLEAN exclusive)
++{
++    TRACE("globals %p, params %p, exclusive %u.\n", globals, params, exclusive);
++
++    params->exclusive = exclusive;
++}
++
++static void WINAPI wdf_DeviceInitSetFileObjectConfig(WDF_DRIVER_GLOBALS *globals,
++        PWDFDEVICE_INIT params, WDF_FILEOBJECT_CONFIG *config, WDF_OBJECT_ATTRIBUTES *attr)
++{
++    FIXME("globals %p, params %p, config %p, attr %p, stub!\n", globals, params, config, attr);
++}
++
++static void WINAPI wdf_DeviceInitSetIoType(WDF_DRIVER_GLOBALS *globals, PWDFDEVICE_INIT params, WDF_DEVICE_IO_TYPE type)
++{
++    FIXME("globals %p, params %p, type %#x, stub!\n", globals, params, type);
++}
++
++static void WINAPI wdf_DeviceInitSetPnpPowerEventCallbacks(WDF_DRIVER_GLOBALS *globals,
++        PWDFDEVICE_INIT params, WDF_PNPPOWER_EVENT_CALLBACKS *callbacks)
++{
++    TRACE("globals %p, params %p, callbacks %p.\n", globals, params, callbacks);
++
++    params->pnp_power_callbacks = *callbacks;
++}
++
++static void WINAPI wdf_DeviceInitSetRequestAttributes(WDF_DRIVER_GLOBALS *globals,
++        PWDFDEVICE_INIT params, WDF_OBJECT_ATTRIBUTES *attr)
++{
++    FIXME("globals %p, params %p, attr %p, stub!\n", globals, params, attr);
++}
++
++static void WINAPI wdf_FdoInitSetDefaultChildListConfig(WDF_DRIVER_GLOBALS *globals,
++        PWDFDEVICE_INIT params, WDF_CHILD_LIST_CONFIG *config, WDF_OBJECT_ATTRIBUTES *attr)
++{
++    TRACE("globals %p, params %p, config %p, attr %p.\n", globals, params, config, attr);
++
++    if (attr)
++        params->child_list_attr = *attr;
++    params->child_list_config = *config;
++}
++
++static struct wdf_device *wdf_device_from_handle(WDFDEVICE handle)
++{
++    return (struct wdf_device *)handle;
++}
++
++static struct device_interface *wdf_device_find_interface(struct wdf_device *device,
++        const GUID *class, const UNICODE_STRING *refstr)
++{
++    unsigned int i;
++
++    for (i = 0; i < device->interface_count; ++i)
++    {
++        if (!IsEqualGUID(class, &device->interfaces[i].class))
++            continue;
++
++        if ((!refstr && !device->interfaces[i].refstr.Length)
++                || (refstr && RtlEqualUnicodeString(refstr, &device->interfaces[i].refstr, FALSE)))
++            return &device->interfaces[i];
++    }
++    return NULL;
++}
++
++static void wdf_device_destroy(struct wdf_object *object)
++{
++    struct wdf_device *device = CONTAINING_RECORD(object, struct wdf_device, header);
++
++    if (device->attached_device)
++        IoDetachDevice(device->attached_device);
++    IoDeleteDevice(device->params.device_obj);
++
++    free(device);
++}
++
++static void wdf_child_list_destroy(struct wdf_object *object)
++{
++    struct wdf_child_list *list = CONTAINING_RECORD(object, struct wdf_child_list, header);
++
++    free(list);
++}
++
++static struct wdf_child_list *wdf_child_list_create(const WDF_CHILD_LIST_CONFIG *config,
++        struct wdf_device *device, const WDF_OBJECT_ATTRIBUTES *attr)
++{
++    struct wdf_child_list *list;
++
++    if (!(list = calloc(1, sizeof(*list))))
++        return NULL;
++    wdf_object_init(&list->header, wdf_child_list_destroy, &device->header, attr);
++    list->config = *config;
++    return list;
++}
++
++static NTSTATUS WINAPI wdf_DeviceCreate(WDF_DRIVER_GLOBALS *globals, PWDFDEVICE_INIT *params_ptr,
++        WDF_OBJECT_ATTRIBUTES *attr, WDFDEVICE *handle)
++{
++    struct wdf_driver *driver = wdf_driver_from_globals(globals);
++    PWDFDEVICE_INIT params = *params_ptr;
++    struct wdf_device *device;
++    DEVICE_OBJECT *device_obj;
++    NTSTATUS ret;
++
++    TRACE("globals %p, params %p, attr %p, handle %p.\n", globals, params, attr, handle);
++
++    ret = IoCreateDevice(driver->driver_obj, sizeof(*device), NULL, params->type,
++            params->characteristics, params->exclusive, &device_obj);
++    if (!NT_SUCCESS(ret))
++        return ret;
++
++    device = device_obj->DeviceExtension;
++
++    wdf_object_init(&device->header, wdf_device_destroy, &driver->header, attr);
++    device->params = *params;
++    device->params.device_obj = device_obj;
++
++    if (params->is_fdo)
++    {
++        device->default_child_list = wdf_child_list_create(&params->child_list_config,
++                device, &params->child_list_attr);
++        device->attached_device = IoAttachDeviceToDeviceStack(device_obj, params->pdo);
++    }
++
++    if (handle)
++        *handle = (WDFDEVICE)device;
++
++    *params_ptr = NULL;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS WINAPI wdf_DeviceCreateDeviceInterface(WDF_DRIVER_GLOBALS *globals,
++        WDFDEVICE handle, const GUID *class, const UNICODE_STRING *refstr)
++{
++    struct device_interface *interfaces, *interface;
++    struct wdf_device *device = (void *)handle;
++    UNICODE_STRING dup_refstr;
++    NTSTATUS status;
++
++    TRACE("globals %p, device %p, class %s, refstr %s.\n",
++            globals, device, debugstr_guid(class), debugstr_us(refstr));
++
++    if (refstr && (status = RtlDuplicateUnicodeString(1, refstr, &dup_refstr)))
++        return status;
++
++    if (!(interfaces = realloc(device->interfaces,
++            (device->interface_count + 1) * sizeof(*interfaces))))
++    {
++        RtlFreeUnicodeString(&dup_refstr);
++        return STATUS_NO_MEMORY;
++    }
++
++    device->interfaces = interfaces;
++    interface = &device->interfaces[device->interface_count++];
++    if (refstr)
++        interface->refstr = dup_refstr;
++    else
++        memset(&interface->refstr, 0, sizeof(interface->refstr));
++    interface->class = *class;
++
++    return IoRegisterDeviceInterface(device->params.device_obj, class,
++            &interface->refstr, &interface->symlink);
++}
++
++static NTSTATUS WINAPI wdf_DeviceOpenRegistryKey(WDF_DRIVER_GLOBALS *globals, WDFDEVICE device_handle,
++        ULONG type, ACCESS_MASK access, WDF_OBJECT_ATTRIBUTES *attr, WDFKEY *handle)
++{
++    struct wdf_device *device = wdf_device_from_handle(device_handle);
++    NTSTATUS ret;
++    HANDLE hkey;
++
++    FIXME("globals %p, device %p, type %#x, access %#x, attr %p, handle %p, stub!\n",
++            globals, device, type, access, attr, handle);
++
++    if ((ret = IoOpenDeviceRegistryKey(device->params.device_obj, type, access, &hkey)))
++        return ret;
++
++    return wdf_key_create(attr, hkey, handle);
++}
++
++static NTSTATUS WINAPI wdf_DeviceRetrieveDeviceInterfaceString(WDF_DRIVER_GLOBALS *globals,
++        WDFDEVICE device_handle, const GUID *class, const UNICODE_STRING *refstr, WDFSTRING string_handle)
++{
++    struct wdf_device *device = wdf_device_from_handle(device_handle);
++    struct wdf_string *string = wdf_string_from_handle(string_handle);
++    struct device_interface *interface;
++
++    FIXME("globals %p, device %p, class %s, refstr %s, string %p, stub!\n",
++            globals, device, debugstr_guid(class), debugstr_us(refstr), string);
++
++    if ((interface = wdf_device_find_interface(device, class, refstr)))
++        return wdf_string_set(string, &interface->symlink);
++    return STATUS_OBJECT_NAME_NOT_FOUND;
++}
++
++static void WINAPI wdf_DeviceSetBusInformationForChildren(WDF_DRIVER_GLOBALS *globals,
++        WDFDEVICE handle, PNP_BUS_INFORMATION *info)
++{
++    FIXME("globals %p, handle %p, info %p, stub!\n", globals, handle, info);
++
++    TRACE("guid %s, type %u, number %u.\n", debugstr_guid(&info->BusTypeGuid), info->LegacyBusType, info->BusNumber);
++}
++
++static void WINAPI wdf_DeviceSetDeviceInterfaceState(WDF_DRIVER_GLOBALS *globals,
++        WDFDEVICE device_handle, const GUID *class, const UNICODE_STRING *refstr, BOOLEAN enable)
++{
++    struct wdf_device *device = wdf_device_from_handle(device_handle);
++    struct device_interface *interface;
++
++    FIXME("globals %p, class %s, refstr %s, enable %u, stub!\n",
++            globals, debugstr_guid(class), debugstr_us(refstr), enable);
++
++    if ((interface = wdf_device_find_interface(device, class, refstr)))
++        IoSetDeviceInterfaceState(&interface->symlink, enable);
++}
++
++// fixme zf: check this too...
++static DEVICE_OBJECT * WINAPI wdf_DeviceWdmGetDeviceObject(WDF_DRIVER_GLOBALS *globals, WDFDEVICE device_handle)
++{
++    struct wdf_device *device = wdf_device_from_handle(device_handle);
++
++    TRACE("globals %p, device %p.\n", globals, device);
++
++    return device->params.device_obj;
++}
++
++static void * FASTCALL wdf_ObjectGetTypedContextWorker(WDF_DRIVER_GLOBALS *globals,
++        WDFOBJECT handle, const WDF_OBJECT_CONTEXT_TYPE_INFO *type)
++{
++    struct wdf_object *object = handle;
++
++    TRACE("globals %p, handle %p, type %p.\n", globals, handle, type);
++
++    if (object->type == type)
++        return object->ctx;
++
++    WARN("Object type %p does not match requested type %p.\n", object->type, type);
++    return NULL;
++}
++
++struct wdf_timer
++{
++    struct wdf_object header;
++};
++
++static void wdf_timer_destroy(struct wdf_object *object)
++{
++    struct wdf_timer *timer = CONTAINING_RECORD(object, struct wdf_timer, header);
++
++    free(timer);
++}
++
++static NTSTATUS WINAPI wdf_TimerCreate(WDF_DRIVER_GLOBALS *globals, WDF_TIMER_CONFIG *config,
++        WDF_OBJECT_ATTRIBUTES *attr, WDFTIMER *handle)
++{
++    struct wdf_timer *timer;
++
++    FIXME("globals %p, config %p, attr %p, handle %p, stub!\n", globals, config, attr, handle);
++
++    if (!(timer = calloc(1, sizeof(*timer))))
++        return STATUS_NO_MEMORY;
++    wdf_object_init(&timer->header, wdf_timer_destroy, NULL, attr);
++
++    if (handle)
++        *handle = (WDFTIMER)timer;
++    return STATUS_SUCCESS;
++}
++
++struct wdf_queue
++{
++    struct wdf_object header;
++};
++
++static void wdf_queue_destroy(struct wdf_object *object)
++{
++    struct wdf_queue *queue = CONTAINING_RECORD(object, struct wdf_queue, header);
++
++    free(queue);
++}
++
++static NTSTATUS WINAPI wdf_IoQueueCreate(WDF_DRIVER_GLOBALS *globals, WDFDEVICE device_handle,
++        WDF_IO_QUEUE_CONFIG *config, WDF_OBJECT_ATTRIBUTES *attr, WDFQUEUE *handle)
++{
++    struct wdf_device *device = wdf_device_from_handle(device_handle);
++    struct wdf_queue *queue;
++
++    FIXME("globals %p, device %p, config %p, attr %p, handle %p, stub!\n",
++            globals, device, config, attr, handle);
++
++    FIXME("default %d\n", config->DefaultQueue);
++
++    if (!(queue = calloc(1, sizeof(*queue))))
++        return STATUS_NO_MEMORY;
++    wdf_object_init(&queue->header, wdf_queue_destroy, &device->header, attr);
++
++    if (handle)
++        *handle = (WDFQUEUE)queue;
++    return STATUS_SUCCESS;
++}
++
++NTSTATUS WINAPI WdfVersionBind(DRIVER_OBJECT *driver_obj, UNICODE_STRING *path,
++        WDF_BIND_INFO *bind_info, WDF_COMPONENT_GLOBALS **globals)
++{
++    struct wdf_driver *driver;
++
++    TRACE("driver_obj %p, path %s, bind_info %p, globals %p.\n",
++            driver_obj, debugstr_us(path), bind_info, globals);
++
++    if (bind_info->Size != sizeof(WDF_BIND_INFO))
++    {
++        FIXME("Unexpected size %u.\n", bind_info->Size);
++        return STATUS_NOT_IMPLEMENTED;
++    }
++
++    TRACE("component %s, version %u.%u.%u, count %u.\n", debugstr_w(bind_info->Component),
++            bind_info->Version.Major, bind_info->Version.Minor, bind_info->Version.Build,
++            bind_info->FuncCount);
++
++    if (!(driver = calloc(1, sizeof(*driver))))
++        return STATUS_NO_MEMORY;
++    driver->driver_obj = driver_obj;
++    *globals = &driver->globals;
++
++    EnterCriticalSection(&driver_list_cs);
++    list_add_tail(&driver_list, &driver->entry);
++    LeaveCriticalSection(&driver_list_cs);
++
++    for (int i = 0; i < bind_info->FuncCount; ++i)
++        bind_info->FuncTable[i] = (void *)(ULONG_PTR)i;
++
++#define X(func) bind_info->FuncTable[Wdf ## func ## TableIndex] = (void *)wdf_ ## func
++    X(DeviceCreate);
++    X(DeviceCreateDeviceInterface);
++    X(DeviceInitAssignWdmIrpPreprocessCallback);
++    X(DeviceInitSetDeviceType);
++    X(DeviceInitSetExclusive);
++    X(DeviceInitSetFileObjectConfig);
++    X(DeviceInitSetIoType);
++    X(DeviceInitSetPnpPowerEventCallbacks);
++    X(DeviceInitSetRequestAttributes);
++    X(DeviceOpenRegistryKey);
++    X(DeviceRetrieveDeviceInterfaceString);
++    X(DeviceSetBusInformationForChildren);
++    X(DeviceSetDeviceInterfaceState);
++    X(DeviceWdmGetDeviceObject);
++    X(DriverCreate);
++    X(DriverWdmGetDriverObject);
++    X(FdoInitSetDefaultChildListConfig);
++    X(IoQueueCreate);
++    X(ObjectGetTypedContextWorker);
++    X(RegistryClose);
++    X(RegistryQueryString);
++    X(SpinLockAcquire);
++    X(SpinLockCreate);
++    X(SpinLockRelease);
++    X(StringCreate);
++    X(StringGetUnicodeString);
++    X(TimerCreate);
++#undef X
++
++    return STATUS_SUCCESS;
++}
++
++NTSTATUS WINAPI WdfVersionUnbind(UNICODE_STRING *path, WDF_BIND_INFO *bind_info, WDF_COMPONENT_GLOBALS *globals)
++{
++    struct wdf_driver *driver = wdf_driver_from_globals(globals);
++
++    TRACE("path %s, bind_info %p, globals %p.\n", debugstr_us(path), bind_info, globals);
++
++    if (globals->Driver)
++        wdf_object_decref(&driver->header);
++
++    EnterCriticalSection(&driver_list_cs);
++    list_remove(&driver->entry);
++    LeaveCriticalSection(&driver_list_cs);
++
++    free(driver);
++    return STATUS_SUCCESS;
++}
++
++NTSTATUS WINAPI DriverEntry(DRIVER_OBJECT *driver, UNICODE_STRING *path)
++{
++    ERR("driver %p, path %s, unexpected call!\n", driver, debugstr_w(path->Buffer));
++    return STATUS_SUCCESS;
++}
+diff --git a/dlls/wdfldr.sys/wdfldr_private.h b/dlls/wdfldr.sys/wdfldr_private.h
+new file mode 100644
+index 00000000000..0d83e63bf65
+--- /dev/null
++++ b/dlls/wdfldr.sys/wdfldr_private.h
+@@ -0,0 +1,66 @@
++/*
++ * Windows Device Framework private and internal definitions
++ *
++ * Copyright 2020 Zebediah Figura for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef __WINE_WDFLDR_PRIVATE_H
++#define __WINE_WDFLDR_PRIVATE_H
++
++typedef ULONG WDF_MAJOR_VERSION, WDF_MINOR_VERSION, WDF_BUILD_NUMBER;
++typedef WDF_DRIVER_GLOBALS WDF_COMPONENT_GLOBALS;
++
++typedef struct _WDF_VERSION
++{
++    WDF_MAJOR_VERSION Major;
++    WDF_MINOR_VERSION Minor;
++    WDF_BUILD_NUMBER Build;
++} WDF_VERSION;
++
++typedef struct _WDF_BIND_INFO
++{
++    ULONG Size;
++    WCHAR *Component;
++    WDF_VERSION Version;
++    ULONG FuncCount;
++    WDFFUNC *FuncTable;
++    void *Module;
++} WDF_BIND_INFO;
++
++#define DECLARE_CRITICAL_SECTION(cs) \
++    static CRITICAL_SECTION cs; \
++    static CRITICAL_SECTION_DEBUG cs##_debug = \
++    { 0, 0, &cs, { &cs##_debug.ProcessLocksList, &cs##_debug.ProcessLocksList }, \
++      0, 0, { (DWORD_PTR)(__FILE__ ": " # cs) }}; \
++    static CRITICAL_SECTION cs = { &cs##_debug, -1, 0, 0, 0, 0 };
++
++struct wdf_object;
++
++typedef void (*wdf_object_destroy_cb)(struct wdf_object *object);
++
++struct wdf_object
++{
++    LONG refcount;
++    wdf_object_destroy_cb destroy;
++    struct wdf_object *parent;
++    struct list children;
++    struct list child_entry;
++    const WDF_OBJECT_CONTEXT_TYPE_INFO *type;
++    void *ctx;
++};
++
++#endif
+diff --git a/include/Makefile.in b/include/Makefile.in
+index cbfe8cc92ba..44391f7b779 100644
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -199,6 +199,16 @@ SOURCES = \
+ 	ddk/usbdlib.h \
+ 	ddk/usbioctl.h \
+ 	ddk/usbiodef.h \
++	ddk/wdf.h \
++	ddk/wdfchildlist.h \
++	ddk/wdfdevice.h \
++	ddk/wdfdriver.h \
++	ddk/wdffuncenum.h \
++	ddk/wdfglobals.h \
++	ddk/wdfio.h \
++	ddk/wdfobject.h \
++	ddk/wdftimer.h \
++	ddk/wdftypes.h \
+ 	ddk/wdm.h \
+ 	ddk/winddiui.h \
+ 	ddk/winsplp.h \
+diff --git a/include/ddk/wdf.h b/include/ddk/wdf.h
+new file mode 100644
+index 00000000000..f0d3b3e0cb9
+--- /dev/null
++++ b/include/ddk/wdf.h
+@@ -0,0 +1,35 @@
++/*
++ * Copyright (C) 2020 Zebediah Figura for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef _WDF_H_
++#define _WDF_H_
++
++typedef void (WINAPI *WDFFUNC)(void);
++
++#include "wdftypes.h"
++
++#include "wdfchildlist.h"
++#include "wdfdevice.h"
++#include "wdfdriver.h"
++#include "wdffuncenum.h"
++#include "wdfglobals.h"
++#include "wdfio.h"
++#include "wdfobject.h"
++#include "wdftimer.h"
++
++#endif
+diff --git a/include/ddk/wdfchildlist.h b/include/ddk/wdfchildlist.h
+new file mode 100644
+index 00000000000..61884000f45
+--- /dev/null
++++ b/include/ddk/wdfchildlist.h
+@@ -0,0 +1,60 @@
++/*
++ * Copyright (C) 2020 Zebediah Figura for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef _WDFCHILDLIST_H_
++#define _WDFCHILDLIST_H_
++
++typedef struct _WDF_CHILD_IDENTIFICATION_DESCRIPTION_HEADER
++{
++    ULONG IdentificationDescriptionSize;
++} WDF_CHILD_IDENTIFICATION_DESCRIPTION_HEADER, *PWDF_CHILD_IDENTIFICATION_DESCRIPTION_HEADER;
++
++typedef struct _WDF_CHILD_ADDRESS_DESCRIPTION_HEADER
++{
++    ULONG AddressDescriptionSize;
++} WDF_CHILD_ADDRESS_DESCRIPTION_HEADER, *PWDF_CHILD_ADDRESS_DESCRIPTION_HEADER;
++
++typedef void (WINAPI *PFN_WDF_CHILD_LIST_ADDRESS_DESCRIPTION_CLEANUP)(WDFCHILDLIST list, WDF_CHILD_ADDRESS_DESCRIPTION_HEADER *desc);
++typedef void (WINAPI *PFN_WDF_CHILD_LIST_ADDRESS_DESCRIPTION_COPY)(WDFCHILDLIST list, WDF_CHILD_ADDRESS_DESCRIPTION_HEADER *desc1, WDF_CHILD_ADDRESS_DESCRIPTION_HEADER *desc2);
++typedef NTSTATUS (WINAPI *PFN_WDF_CHILD_LIST_ADDRESS_DESCRIPTION_DUPLICATE)(WDFCHILDLIST list, WDF_CHILD_ADDRESS_DESCRIPTION_HEADER *src, WDF_CHILD_ADDRESS_DESCRIPTION_HEADER *dst);
++typedef NTSTATUS (WINAPI *PFN_WDF_CHILD_LIST_CREATE_DEVICE)(WDFCHILDLIST list, WDF_CHILD_IDENTIFICATION_DESCRIPTION_HEADER *desc, PWDFDEVICE_INIT init);
++typedef BOOLEAN (WINAPI *PFN_WDF_CHILD_LIST_DEVICE_REENUMERATED)(WDFCHILDLIST list, WDFDEVICE device, WDF_CHILD_ADDRESS_DESCRIPTION_HEADER *old_addr, WDF_CHILD_ADDRESS_DESCRIPTION_HEADER *new_addr);
++typedef void (WINAPI *PFN_WDF_CHILD_LIST_SCAN_FOR_CHILDREN)(WDFCHILDLIST list);
++typedef void (WINAPI *PFN_WDF_CHILD_LIST_IDENTIFICATION_DESCRIPTION_CLEANUP)(WDFCHILDLIST list, WDF_CHILD_IDENTIFICATION_DESCRIPTION_HEADER *desc);
++typedef void (WINAPI *PFN_WDF_CHILD_LIST_IDENTIFICATION_DESCRIPTION_COPY)(WDFCHILDLIST list, WDF_CHILD_IDENTIFICATION_DESCRIPTION_HEADER *desc1, WDF_CHILD_IDENTIFICATION_DESCRIPTION_HEADER *desc2);
++typedef BOOLEAN (WINAPI *PFN_WDF_CHILD_LIST_IDENTIFICATION_DESCRIPTION_COMPARE)(WDFCHILDLIST list, WDF_CHILD_IDENTIFICATION_DESCRIPTION_HEADER *src, WDF_CHILD_IDENTIFICATION_DESCRIPTION_HEADER *dst);
++typedef NTSTATUS (WINAPI *PFN_WDF_CHILD_LIST_IDENTIFICATION_DESCRIPTION_DUPLICATE)(WDFCHILDLIST list, WDF_CHILD_IDENTIFICATION_DESCRIPTION_HEADER *src, WDF_CHILD_IDENTIFICATION_DESCRIPTION_HEADER *dst);
++
++typedef struct _WDF_CHILD_LIST_CONFIG
++{
++    ULONG Size;
++    ULONG IdentificationDescriptionSize;
++    ULONG AddressDescriptionSize;
++    PFN_WDF_CHILD_LIST_CREATE_DEVICE EvtChildListCreateDevice;
++    PFN_WDF_CHILD_LIST_SCAN_FOR_CHILDREN EvtChildListScanForChildren;
++    PFN_WDF_CHILD_LIST_IDENTIFICATION_DESCRIPTION_COPY EvtChildListIdentificationDescriptionCopy;
++    PFN_WDF_CHILD_LIST_IDENTIFICATION_DESCRIPTION_DUPLICATE EvtChildListIdentificationDescriptionDuplicate;
++    PFN_WDF_CHILD_LIST_IDENTIFICATION_DESCRIPTION_CLEANUP EvtChildListIdentificationDescriptionCleanup;
++    PFN_WDF_CHILD_LIST_IDENTIFICATION_DESCRIPTION_COMPARE EvtChildListIdentificationDescriptionCompare;
++    PFN_WDF_CHILD_LIST_ADDRESS_DESCRIPTION_COPY EvtChildListAddressDescriptionCopy;
++    PFN_WDF_CHILD_LIST_ADDRESS_DESCRIPTION_DUPLICATE EvtChildListAddressDescriptionDuplicate;
++    PFN_WDF_CHILD_LIST_ADDRESS_DESCRIPTION_CLEANUP EvtChildListAddressDescriptionCleanup;
++    PFN_WDF_CHILD_LIST_DEVICE_REENUMERATED EvtChildListDeviceReenumerated;
++} WDF_CHILD_LIST_CONFIG, *PWDF_CHILD_LIST_CONFIG;
++
++#endif
+diff --git a/include/ddk/wdfdevice.h b/include/ddk/wdfdevice.h
+new file mode 100644
+index 00000000000..9a1c4a99cdf
+--- /dev/null
++++ b/include/ddk/wdfdevice.h
+@@ -0,0 +1,120 @@
++/*
++ * Copyright (C) 2020 Zebediah Figura for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef _WDFDEVICE_H_
++#define _WDFDEVICE_H_
++
++typedef enum _WDF_POWER_DEVICE_STATE
++{
++    WdfPowerDeviceInvalid = 0,
++    WdfPowerDeviceD0 = 1,
++    WdfPowerDeviceD1 = 2,
++    WdfPowerDeviceD2 = 3,
++    WdfPowerDeviceD3 = 4,
++    WdfPowerDeviceD3Final = 5,
++    WdfPowerDevicePrepareForHibernation = 6,
++    WdfPowerDeviceMaximum = 7,
++} WDF_POWER_DEVICE_STATE, *PWDF_POWER_DEVICE_STATE;
++
++typedef enum _WDF_SPECIAL_FILE_TYPE
++{
++    WdfSpecialFileUndefined = 0,
++    WdfSpecialFilePaging = 1,
++    WdfSpecialFileHibernation = 2,
++    WdfSpecialFileDump = 3,
++    WdfSpecialFileBoot = 4,
++    WdfSpecialFileMax = 5,
++} WDF_SPECIAL_FILE_TYPE, *PWDF_SPECIAL_FILE_TYPE;
++
++typedef NTSTATUS (WINAPI *PFN_WDF_DEVICE_D0_ENTRY)(WDFDEVICE device, WDF_POWER_DEVICE_STATE prev_state);
++typedef NTSTATUS (WINAPI *PFN_WDF_DEVICE_D0_ENTRY_POST_INTERRUPTS_ENABLED)(WDFDEVICE device, WDF_POWER_DEVICE_STATE prev_state);
++typedef NTSTATUS (WINAPI *PFN_WDF_DEVICE_D0_EXIT)(WDFDEVICE device, WDF_POWER_DEVICE_STATE prev_state);
++typedef NTSTATUS (WINAPI *PFN_WDF_DEVICE_D0_EXIT_PRE_INTERRUPTS_DISABLED)(WDFDEVICE device, WDF_POWER_DEVICE_STATE prev_state);
++typedef NTSTATUS (WINAPI *PFN_WDF_DEVICE_PREPARE_HARDWARE)(WDFDEVICE device, WDFCMRESLIST raw_resources, WDFCMRESLIST translated_resources);
++typedef NTSTATUS (WINAPI *PFN_WDF_DEVICE_QUERY_REMOVE)(WDFDEVICE device);
++typedef NTSTATUS (WINAPI *PFN_WDF_DEVICE_QUERY_STOP)(WDFDEVICE device);
++typedef void (WINAPI *PFN_WDF_DEVICE_RELATIONS_QUERY)(WDFDEVICE device, DEVICE_RELATION_TYPE type);
++typedef NTSTATUS (WINAPI *PFN_WDF_DEVICE_RELEASE_HARDWARE)(WDFDEVICE device, WDFCMRESLIST translated_resources);
++typedef void (WINAPI *PFN_WDF_DEVICE_SELF_MANAGED_IO_CLEANUP)(WDFDEVICE device);
++typedef NTSTATUS (WINAPI *PFN_WDF_DEVICE_SELF_MANAGED_IO_FLUSH)(WDFDEVICE device);
++typedef NTSTATUS (WINAPI *PFN_WDF_DEVICE_SELF_MANAGED_IO_INIT)(WDFDEVICE device);
++typedef NTSTATUS (WINAPI *PFN_WDF_DEVICE_SELF_MANAGED_IO_RESTART)(WDFDEVICE device);
++typedef NTSTATUS (WINAPI *PFN_WDF_DEVICE_SELF_MANAGED_IO_SUSPEND)(WDFDEVICE device);
++typedef void (WINAPI *PFN_WDF_DEVICE_SURPRISE_REMOVAL)(WDFDEVICE device);
++typedef void (WINAPI *PFN_WDF_DEVICE_USAGE_NOTIFICATION)(WDFDEVICE device, WDF_SPECIAL_FILE_TYPE type, BOOLEAN in_path);
++typedef NTSTATUS (WINAPI *PFN_WDF_DEVICE_USAGE_NOTIFICATION_EX)(WDFDEVICE device, WDF_SPECIAL_FILE_TYPE type, BOOLEAN in_path);
++
++typedef struct _WDF_PNPPOWER_EVENT_CALLBACKS
++{
++    ULONG Size;
++    PFN_WDF_DEVICE_D0_ENTRY EvtDeviceD0Entry;
++    PFN_WDF_DEVICE_D0_ENTRY_POST_INTERRUPTS_ENABLED EvtDeviceD0EntryPostInterruptsEnabled;
++    PFN_WDF_DEVICE_D0_EXIT EvtDeviceD0Exit;
++    PFN_WDF_DEVICE_D0_EXIT_PRE_INTERRUPTS_DISABLED EvtDeviceD0ExitPreInterruptsDisabled;
++    PFN_WDF_DEVICE_PREPARE_HARDWARE EvtDevicePrepareHardware;
++    PFN_WDF_DEVICE_RELEASE_HARDWARE EvtDeviceReleaseHardware;
++    PFN_WDF_DEVICE_SELF_MANAGED_IO_CLEANUP EvtDeviceSelfManagedIoCleanup;
++    PFN_WDF_DEVICE_SELF_MANAGED_IO_FLUSH EvtDeviceSelfManagedIoFlush;
++    PFN_WDF_DEVICE_SELF_MANAGED_IO_INIT EvtDeviceSelfManagedIoInit;
++    PFN_WDF_DEVICE_SELF_MANAGED_IO_SUSPEND EvtDeviceSelfManagedIoSuspend;
++    PFN_WDF_DEVICE_SELF_MANAGED_IO_RESTART EvtDeviceSelfManagedIoRestart;
++    PFN_WDF_DEVICE_SURPRISE_REMOVAL EvtDeviceSurpriseRemoval;
++    PFN_WDF_DEVICE_QUERY_REMOVE EvtDeviceQueryRemove;
++    PFN_WDF_DEVICE_QUERY_STOP EvtDeviceQueryStop;
++    PFN_WDF_DEVICE_USAGE_NOTIFICATION EvtDeviceUsageNotification;
++    PFN_WDF_DEVICE_RELATIONS_QUERY EvtDeviceRelationsQuery;
++    PFN_WDF_DEVICE_USAGE_NOTIFICATION_EX EvtDeviceUsageNotificationEx;
++} WDF_PNPPOWER_EVENT_CALLBACKS, *PWDF_PNPPOWER_EVENT_CALLBACKS;
++
++typedef enum _WDF_FILEOBJECT_CLASS
++{
++    WdfFileObjectInvalid = 0,
++    WdfFileObjectNotRequired = 1,
++    WdfFileObjectWdfCanUseFsContext = 2,
++    WdfFileObjectWdfCanUseFsContext2 = 3,
++    WdfFileObjectWdfCannotUseFsContexts = 4,
++    WdfFileObjectCanBeOptional = 0x80000000,
++} WDF_FILEOBJECT_CLASS, *PWDF_FILEOBJECT_CLASS;
++
++typedef void (WINAPI *PFN_WDF_DEVICE_FILE_CREATE)(WDFDEVICE device, WDFREQUEST request, WDFFILEOBJECT file);
++typedef void (WINAPI *PFN_WDF_FILE_CLEANUP)(WDFFILEOBJECT file);
++typedef void (WINAPI *PFN_WDF_FILE_CLOSE)(WDFFILEOBJECT file);
++
++typedef struct _WDF_FILEOBJECT_CONFIG
++{
++    ULONG Size;
++    PFN_WDF_DEVICE_FILE_CREATE EvtDeviceFileCreate;
++    PFN_WDF_FILE_CLOSE EvtFileClose;
++    PFN_WDF_FILE_CLEANUP EvtFileCleanup;
++    WDF_TRI_STATE AutoForwardCleanupClose;
++    WDF_FILEOBJECT_CLASS FileObjectClass;
++} WDF_FILEOBJECT_CONFIG, *PWDF_FILEOBJECT_CONFIG;
++
++typedef enum _WDF_DEVICE_IO_TYPE
++{
++    WdfDeviceIoUndefined = 0,
++    WdfDeviceIoNeither = 1,
++    WdfDeviceIoBuffered = 2,
++    WdfDeviceIoDirect = 3,
++    WdfDeviceIoBufferedOrDirect = 4,
++    WdfDeviceIoMaximum = 5,
++} WDF_DEVICE_IO_TYPE, *PWDF_DEVICE_IO_TYPE;
++
++typedef NTSTATUS (WINAPI *PFN_WDFDEVICE_WDM_IRP_PREPROCESS)(WDFDEVICE device, IRP *irp);
++
++#endif
+diff --git a/include/ddk/wdfdriver.h b/include/ddk/wdfdriver.h
+new file mode 100644
+index 00000000000..48e98f10a50
+--- /dev/null
++++ b/include/ddk/wdfdriver.h
+@@ -0,0 +1,46 @@
++/*
++ * Copyright (C) 2020 Zebediah Figura for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef _WDFDRIVER_H_
++#define _WDFDRIVER_H_
++
++typedef NTSTATUS (WINAPI EVT_WDF_DRIVER_DEVICE_ADD)(WDFDRIVER, PWDFDEVICE_INIT);
++typedef EVT_WDF_DRIVER_DEVICE_ADD *PFN_WDF_DRIVER_DEVICE_ADD;
++
++typedef void (WINAPI EVT_WDF_DRIVER_UNLOAD)(WDFDRIVER);
++typedef EVT_WDF_DRIVER_UNLOAD *PFN_WDF_DRIVER_UNLOAD;
++
++typedef enum _WDF_DRIVER_INIT_FLAGS
++{
++    WdfDriverInitNonPnpDriver       = 0x01,
++    WdfDriverInitNoDispatchOverride = 0x02,
++    WdfVerifyOn                     = 0x04,
++    WdfVerifierOn                   = 0x08,
++    WdfDriverInitCompanion          = 0x10,
++} WDF_DRIVER_INIT_FLAGS;
++
++typedef struct _WDF_DRIVER_CONFIG
++{
++    ULONG Size;
++    PFN_WDF_DRIVER_DEVICE_ADD EvtDriverDeviceAdd;
++    PFN_WDF_DRIVER_UNLOAD EvtDriverUnload;
++    ULONG DriverInitFlags;
++    ULONG DriverPoolTag;
++} WDF_DRIVER_CONFIG, *PWDF_DRIVER_CONFIG;
++
++#endif
+diff --git a/include/ddk/wdffuncenum.h b/include/ddk/wdffuncenum.h
+new file mode 100644
+index 00000000000..b95316915a2
+--- /dev/null
++++ b/include/ddk/wdffuncenum.h
+@@ -0,0 +1,480 @@
++/*
++ * Copyright (C) 2020 Zebediah Figura for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef _WDFFUNCENUM_H_
++#define _WDFFUNCENUM_H_
++
++typedef enum _WDFFUNCENUM
++{
++    WdfChildListCreateTableIndex = 0,
++    WdfChildListGetDeviceTableIndex = 1,
++    WdfChildListRetrievePdoTableIndex = 2,
++    WdfChildListRetrieveAddressDescriptionTableIndex = 3,
++    WdfChildListBeginScanTableIndex = 4,
++    WdfChildListEndScanTableIndex = 5,
++    WdfChildListBeginIterationTableIndex = 6,
++    WdfChildListRetrieveNextDeviceTableIndex = 7,
++    WdfChildListEndIterationTableIndex = 8,
++    WdfChildListAddOrUpdateChildDescriptionAsPresentTableIndex = 9,
++    WdfChildListUpdateChildDescriptionAsMissingTableIndex = 10,
++    WdfChildListUpdateAllChildDescriptionsAsPresentTableIndex = 11,
++    WdfChildListRequestChildEjectTableIndex = 12,
++    WdfCollectionCreateTableIndex = 13,
++    WdfCollectionGetCountTableIndex = 14,
++    WdfCollectionAddTableIndex = 15,
++    WdfCollectionRemoveTableIndex = 16,
++    WdfCollectionRemoveItemTableIndex = 17,
++    WdfCollectionGetItemTableIndex = 18,
++    WdfCollectionGetFirstItemTableIndex = 19,
++    WdfCollectionGetLastItemTableIndex = 20,
++    WdfCommonBufferCreateTableIndex = 21,
++    WdfCommonBufferGetAlignedVirtualAddressTableIndex = 22,
++    WdfCommonBufferGetAlignedLogicalAddressTableIndex = 23,
++    WdfCommonBufferGetLengthTableIndex = 24,
++    WdfControlDeviceInitAllocateTableIndex = 25,
++    WdfControlDeviceInitSetShutdownNotificationTableIndex = 26,
++    WdfControlFinishInitializingTableIndex = 27,
++    WdfDeviceGetDeviceStateTableIndex = 28,
++    WdfDeviceSetDeviceStateTableIndex = 29,
++    WdfWdmDeviceGetWdfDeviceHandleTableIndex = 30,
++    WdfDeviceWdmGetDeviceObjectTableIndex = 31,
++    WdfDeviceWdmGetAttachedDeviceTableIndex = 32,
++    WdfDeviceWdmGetPhysicalDeviceTableIndex = 33,
++    WdfDeviceWdmDispatchPreprocessedIrpTableIndex = 34,
++    WdfDeviceAddDependentUsageDeviceObjectTableIndex = 35,
++    WdfDeviceAddRemovalRelationsPhysicalDeviceTableIndex = 36,
++    WdfDeviceRemoveRemovalRelationsPhysicalDeviceTableIndex = 37,
++    WdfDeviceClearRemovalRelationsDevicesTableIndex = 38,
++    WdfDeviceGetDriverTableIndex = 39,
++    WdfDeviceRetrieveDeviceNameTableIndex = 40,
++    WdfDeviceAssignMofResourceNameTableIndex = 41,
++    WdfDeviceGetIoTargetTableIndex = 42,
++    WdfDeviceGetDevicePnpStateTableIndex = 43,
++    WdfDeviceGetDevicePowerStateTableIndex = 44,
++    WdfDeviceGetDevicePowerPolicyStateTableIndex = 45,
++    WdfDeviceAssignS0IdleSettingsTableIndex = 46,
++    WdfDeviceAssignSxWakeSettingsTableIndex = 47,
++    WdfDeviceOpenRegistryKeyTableIndex = 48,
++    WdfDeviceSetSpecialFileSupportTableIndex = 49,
++    WdfDeviceSetCharacteristicsTableIndex = 50,
++    WdfDeviceGetCharacteristicsTableIndex = 51,
++    WdfDeviceGetAlignmentRequirementTableIndex = 52,
++    WdfDeviceSetAlignmentRequirementTableIndex = 53,
++    WdfDeviceInitFreeTableIndex = 54,
++    WdfDeviceInitSetPnpPowerEventCallbacksTableIndex = 55,
++    WdfDeviceInitSetPowerPolicyEventCallbacksTableIndex = 56,
++    WdfDeviceInitSetPowerPolicyOwnershipTableIndex = 57,
++    WdfDeviceInitRegisterPnpStateChangeCallbackTableIndex = 58,
++    WdfDeviceInitRegisterPowerStateChangeCallbackTableIndex = 59,
++    WdfDeviceInitRegisterPowerPolicyStateChangeCallbackTableIndex = 60,
++    WdfDeviceInitSetIoTypeTableIndex = 61,
++    WdfDeviceInitSetExclusiveTableIndex = 62,
++    WdfDeviceInitSetPowerNotPageableTableIndex = 63,
++    WdfDeviceInitSetPowerPageableTableIndex = 64,
++    WdfDeviceInitSetPowerInrushTableIndex = 65,
++    WdfDeviceInitSetDeviceTypeTableIndex = 66,
++    WdfDeviceInitAssignNameTableIndex = 67,
++    WdfDeviceInitAssignSDDLStringTableIndex = 68,
++    WdfDeviceInitSetDeviceClassTableIndex = 69,
++    WdfDeviceInitSetCharacteristicsTableIndex = 70,
++    WdfDeviceInitSetFileObjectConfigTableIndex = 71,
++    WdfDeviceInitSetRequestAttributesTableIndex = 72,
++    WdfDeviceInitAssignWdmIrpPreprocessCallbackTableIndex = 73,
++    WdfDeviceInitSetIoInCallerContextCallbackTableIndex = 74,
++    WdfDeviceCreateTableIndex = 75,
++    WdfDeviceSetStaticStopRemoveTableIndex = 76,
++    WdfDeviceCreateDeviceInterfaceTableIndex = 77,
++    WdfDeviceSetDeviceInterfaceStateTableIndex = 78,
++    WdfDeviceRetrieveDeviceInterfaceStringTableIndex = 79,
++    WdfDeviceCreateSymbolicLinkTableIndex = 80,
++    WdfDeviceQueryPropertyTableIndex = 81,
++    WdfDeviceAllocAndQueryPropertyTableIndex = 82,
++    WdfDeviceSetPnpCapabilitiesTableIndex = 83,
++    WdfDeviceSetPowerCapabilitiesTableIndex = 84,
++    WdfDeviceSetBusInformationForChildrenTableIndex = 85,
++    WdfDeviceIndicateWakeStatusTableIndex = 86,
++    WdfDeviceSetFailedTableIndex = 87,
++    WdfDeviceStopIdleNoTrackTableIndex = 88,
++    WdfDeviceResumeIdleNoTrackTableIndex = 89,
++    WdfDeviceGetFileObjectTableIndex = 90,
++    WdfDeviceEnqueueRequestTableIndex = 91,
++    WdfDeviceGetDefaultQueueTableIndex = 92,
++    WdfDeviceConfigureRequestDispatchingTableIndex = 93,
++    WdfDmaEnablerCreateTableIndex = 94,
++    WdfDmaEnablerGetMaximumLengthTableIndex = 95,
++    WdfDmaEnablerGetMaximumScatterGatherElementsTableIndex = 96,
++    WdfDmaEnablerSetMaximumScatterGatherElementsTableIndex = 97,
++    WdfDmaTransactionCreateTableIndex = 98,
++    WdfDmaTransactionInitializeTableIndex = 99,
++    WdfDmaTransactionInitializeUsingRequestTableIndex = 100,
++    WdfDmaTransactionExecuteTableIndex = 101,
++    WdfDmaTransactionReleaseTableIndex = 102,
++    WdfDmaTransactionDmaCompletedTableIndex = 103,
++    WdfDmaTransactionDmaCompletedWithLengthTableIndex = 104,
++    WdfDmaTransactionDmaCompletedFinalTableIndex = 105,
++    WdfDmaTransactionGetBytesTransferredTableIndex = 106,
++    WdfDmaTransactionSetMaximumLengthTableIndex = 107,
++    WdfDmaTransactionGetRequestTableIndex = 108,
++    WdfDmaTransactionGetCurrentDmaTransferLengthTableIndex = 109,
++    WdfDmaTransactionGetDeviceTableIndex = 110,
++    WdfDpcCreateTableIndex = 111,
++    WdfDpcEnqueueTableIndex = 112,
++    WdfDpcCancelTableIndex = 113,
++    WdfDpcGetParentObjectTableIndex = 114,
++    WdfDpcWdmGetDpcTableIndex = 115,
++    WdfDriverCreateTableIndex = 116,
++    WdfDriverGetRegistryPathTableIndex = 117,
++    WdfDriverWdmGetDriverObjectTableIndex = 118,
++    WdfDriverOpenParametersRegistryKeyTableIndex = 119,
++    WdfWdmDriverGetWdfDriverHandleTableIndex = 120,
++    WdfDriverRegisterTraceInfoTableIndex = 121,
++    WdfDriverRetrieveVersionStringTableIndex = 122,
++    WdfDriverIsVersionAvailableTableIndex = 123,
++    WdfFdoInitWdmGetPhysicalDeviceTableIndex = 124,
++    WdfFdoInitOpenRegistryKeyTableIndex = 125,
++    WdfFdoInitQueryPropertyTableIndex = 126,
++    WdfFdoInitAllocAndQueryPropertyTableIndex = 127,
++    WdfFdoInitSetEventCallbacksTableIndex = 128,
++    WdfFdoInitSetFilterTableIndex = 129,
++    WdfFdoInitSetDefaultChildListConfigTableIndex = 130,
++    WdfFdoQueryForInterfaceTableIndex = 131,
++    WdfFdoGetDefaultChildListTableIndex = 132,
++    WdfFdoAddStaticChildTableIndex = 133,
++    WdfFdoLockStaticChildListForIterationTableIndex = 134,
++    WdfFdoRetrieveNextStaticChildTableIndex = 135,
++    WdfFdoUnlockStaticChildListFromIterationTableIndex = 136,
++    WdfFileObjectGetFileNameTableIndex = 137,
++    WdfFileObjectGetFlagsTableIndex = 138,
++    WdfFileObjectGetDeviceTableIndex = 139,
++    WdfFileObjectWdmGetFileObjectTableIndex = 140,
++    WdfInterruptCreateTableIndex = 141,
++    WdfInterruptQueueDpcForIsrTableIndex = 142,
++    WdfInterruptSynchronizeTableIndex = 143,
++    WdfInterruptAcquireLockTableIndex = 144,
++    WdfInterruptReleaseLockTableIndex = 145,
++    WdfInterruptEnableTableIndex = 146,
++    WdfInterruptDisableTableIndex = 147,
++    WdfInterruptWdmGetInterruptTableIndex = 148,
++    WdfInterruptGetInfoTableIndex = 149,
++    WdfInterruptSetPolicyTableIndex = 150,
++    WdfInterruptGetDeviceTableIndex = 151,
++    WdfIoQueueCreateTableIndex = 152,
++    WdfIoQueueGetStateTableIndex = 153,
++    WdfIoQueueStartTableIndex = 154,
++    WdfIoQueueStopTableIndex = 155,
++    WdfIoQueueStopSynchronouslyTableIndex = 156,
++    WdfIoQueueGetDeviceTableIndex = 157,
++    WdfIoQueueRetrieveNextRequestTableIndex = 158,
++    WdfIoQueueRetrieveRequestByFileObjectTableIndex = 159,
++    WdfIoQueueFindRequestTableIndex = 160,
++    WdfIoQueueRetrieveFoundRequestTableIndex = 161,
++    WdfIoQueueDrainSynchronouslyTableIndex = 162,
++    WdfIoQueueDrainTableIndex = 163,
++    WdfIoQueuePurgeSynchronouslyTableIndex = 164,
++    WdfIoQueuePurgeTableIndex = 165,
++    WdfIoQueueReadyNotifyTableIndex = 166,
++    WdfIoTargetCreateTableIndex = 167,
++    WdfIoTargetOpenTableIndex = 168,
++    WdfIoTargetCloseForQueryRemoveTableIndex = 169,
++    WdfIoTargetCloseTableIndex = 170,
++    WdfIoTargetStartTableIndex = 171,
++    WdfIoTargetStopTableIndex = 172,
++    WdfIoTargetGetStateTableIndex = 173,
++    WdfIoTargetGetDeviceTableIndex = 174,
++    WdfIoTargetQueryTargetPropertyTableIndex = 175,
++    WdfIoTargetAllocAndQueryTargetPropertyTableIndex = 176,
++    WdfIoTargetQueryForInterfaceTableIndex = 177,
++    WdfIoTargetWdmGetTargetDeviceObjectTableIndex = 178,
++    WdfIoTargetWdmGetTargetPhysicalDeviceTableIndex = 179,
++    WdfIoTargetWdmGetTargetFileObjectTableIndex = 180,
++    WdfIoTargetWdmGetTargetFileHandleTableIndex = 181,
++    WdfIoTargetSendReadSynchronouslyTableIndex = 182,
++    WdfIoTargetFormatRequestForReadTableIndex = 183,
++    WdfIoTargetSendWriteSynchronouslyTableIndex = 184,
++    WdfIoTargetFormatRequestForWriteTableIndex = 185,
++    WdfIoTargetSendIoctlSynchronouslyTableIndex = 186,
++    WdfIoTargetFormatRequestForIoctlTableIndex = 187,
++    WdfIoTargetSendInternalIoctlSynchronouslyTableIndex = 188,
++    WdfIoTargetFormatRequestForInternalIoctlTableIndex = 189,
++    WdfIoTargetSendInternalIoctlOthersSynchronouslyTableIndex = 190,
++    WdfIoTargetFormatRequestForInternalIoctlOthersTableIndex = 191,
++    WdfMemoryCreateTableIndex = 192,
++    WdfMemoryCreatePreallocatedTableIndex = 193,
++    WdfMemoryGetBufferTableIndex = 194,
++    WdfMemoryAssignBufferTableIndex = 195,
++    WdfMemoryCopyToBufferTableIndex = 196,
++    WdfMemoryCopyFromBufferTableIndex = 197,
++    WdfLookasideListCreateTableIndex = 198,
++    WdfMemoryCreateFromLookasideTableIndex = 199,
++    WdfDeviceMiniportCreateTableIndex = 200,
++    WdfDriverMiniportUnloadTableIndex = 201,
++    WdfObjectGetTypedContextWorkerTableIndex = 202,
++    WdfObjectAllocateContextTableIndex = 203,
++    WdfObjectContextGetObjectTableIndex = 204,
++    WdfObjectReferenceActualTableIndex = 205,
++    WdfObjectDereferenceActualTableIndex = 206,
++    WdfObjectCreateTableIndex = 207,
++    WdfObjectDeleteTableIndex = 208,
++    WdfObjectQueryTableIndex = 209,
++    WdfPdoInitAllocateTableIndex = 210,
++    WdfPdoInitSetEventCallbacksTableIndex = 211,
++    WdfPdoInitAssignDeviceIDTableIndex = 212,
++    WdfPdoInitAssignInstanceIDTableIndex = 213,
++    WdfPdoInitAddHardwareIDTableIndex = 214,
++    WdfPdoInitAddCompatibleIDTableIndex = 215,
++    WdfPdoInitAddDeviceTextTableIndex = 216,
++    WdfPdoInitSetDefaultLocaleTableIndex = 217,
++    WdfPdoInitAssignRawDeviceTableIndex = 218,
++    WdfPdoMarkMissingTableIndex = 219,
++    WdfPdoRequestEjectTableIndex = 220,
++    WdfPdoGetParentTableIndex = 221,
++    WdfPdoRetrieveIdentificationDescriptionTableIndex = 222,
++    WdfPdoRetrieveAddressDescriptionTableIndex = 223,
++    WdfPdoUpdateAddressDescriptionTableIndex = 224,
++    WdfPdoAddEjectionRelationsPhysicalDeviceTableIndex = 225,
++    WdfPdoRemoveEjectionRelationsPhysicalDeviceTableIndex = 226,
++    WdfPdoClearEjectionRelationsDevicesTableIndex = 227,
++    WdfDeviceAddQueryInterfaceTableIndex = 228,
++    WdfRegistryOpenKeyTableIndex = 229,
++    WdfRegistryCreateKeyTableIndex = 230,
++    WdfRegistryCloseTableIndex = 231,
++    WdfRegistryWdmGetHandleTableIndex = 232,
++    WdfRegistryRemoveKeyTableIndex = 233,
++    WdfRegistryRemoveValueTableIndex = 234,
++    WdfRegistryQueryValueTableIndex = 235,
++    WdfRegistryQueryMemoryTableIndex = 236,
++    WdfRegistryQueryMultiStringTableIndex = 237,
++    WdfRegistryQueryUnicodeStringTableIndex = 238,
++    WdfRegistryQueryStringTableIndex = 239,
++    WdfRegistryQueryULongTableIndex = 240,
++    WdfRegistryAssignValueTableIndex = 241,
++    WdfRegistryAssignMemoryTableIndex = 242,
++    WdfRegistryAssignMultiStringTableIndex = 243,
++    WdfRegistryAssignUnicodeStringTableIndex = 244,
++    WdfRegistryAssignStringTableIndex = 245,
++    WdfRegistryAssignULongTableIndex = 246,
++    WdfRequestCreateTableIndex = 247,
++    WdfRequestCreateFromIrpTableIndex = 248,
++    WdfRequestReuseTableIndex = 249,
++    WdfRequestChangeTargetTableIndex = 250,
++    WdfRequestFormatRequestUsingCurrentTypeTableIndex = 251,
++    WdfRequestWdmFormatUsingStackLocationTableIndex = 252,
++    WdfRequestSendTableIndex = 253,
++    WdfRequestGetStatusTableIndex = 254,
++    WdfRequestMarkCancelableTableIndex = 255,
++    WdfRequestUnmarkCancelableTableIndex = 256,
++    WdfRequestIsCanceledTableIndex = 257,
++    WdfRequestCancelSentRequestTableIndex = 258,
++    WdfRequestIsFrom32BitProcessTableIndex = 259,
++    WdfRequestSetCompletionRoutineTableIndex = 260,
++    WdfRequestGetCompletionParamsTableIndex = 261,
++    WdfRequestAllocateTimerTableIndex = 262,
++    WdfRequestCompleteTableIndex = 263,
++    WdfRequestCompleteWithPriorityBoostTableIndex = 264,
++    WdfRequestCompleteWithInformationTableIndex = 265,
++    WdfRequestGetParametersTableIndex = 266,
++    WdfRequestRetrieveInputMemoryTableIndex = 267,
++    WdfRequestRetrieveOutputMemoryTableIndex = 268,
++    WdfRequestRetrieveInputBufferTableIndex = 269,
++    WdfRequestRetrieveOutputBufferTableIndex = 270,
++    WdfRequestRetrieveInputWdmMdlTableIndex = 271,
++    WdfRequestRetrieveOutputWdmMdlTableIndex = 272,
++    WdfRequestRetrieveUnsafeUserInputBufferTableIndex = 273,
++    WdfRequestRetrieveUnsafeUserOutputBufferTableIndex = 274,
++    WdfRequestSetInformationTableIndex = 275,
++    WdfRequestGetInformationTableIndex = 276,
++    WdfRequestGetFileObjectTableIndex = 277,
++    WdfRequestProbeAndLockUserBufferForReadTableIndex = 278,
++    WdfRequestProbeAndLockUserBufferForWriteTableIndex = 279,
++    WdfRequestGetRequestorModeTableIndex = 280,
++    WdfRequestForwardToIoQueueTableIndex = 281,
++    WdfRequestGetIoQueueTableIndex = 282,
++    WdfRequestRequeueTableIndex = 283,
++    WdfRequestStopAcknowledgeTableIndex = 284,
++    WdfRequestWdmGetIrpTableIndex = 285,
++    WdfIoResourceRequirementsListSetSlotNumberTableIndex = 286,
++    WdfIoResourceRequirementsListSetInterfaceTypeTableIndex = 287,
++    WdfIoResourceRequirementsListAppendIoResListTableIndex = 288,
++    WdfIoResourceRequirementsListInsertIoResListTableIndex = 289,
++    WdfIoResourceRequirementsListGetCountTableIndex = 290,
++    WdfIoResourceRequirementsListGetIoResListTableIndex = 291,
++    WdfIoResourceRequirementsListRemoveTableIndex = 292,
++    WdfIoResourceRequirementsListRemoveByIoResListTableIndex = 293,
++    WdfIoResourceListCreateTableIndex = 294,
++    WdfIoResourceListAppendDescriptorTableIndex = 295,
++    WdfIoResourceListInsertDescriptorTableIndex = 296,
++    WdfIoResourceListUpdateDescriptorTableIndex = 297,
++    WdfIoResourceListGetCountTableIndex = 298,
++    WdfIoResourceListGetDescriptorTableIndex = 299,
++    WdfIoResourceListRemoveTableIndex = 300,
++    WdfIoResourceListRemoveByDescriptorTableIndex = 301,
++    WdfCmResourceListAppendDescriptorTableIndex = 302,
++    WdfCmResourceListInsertDescriptorTableIndex = 303,
++    WdfCmResourceListGetCountTableIndex = 304,
++    WdfCmResourceListGetDescriptorTableIndex = 305,
++    WdfCmResourceListRemoveTableIndex = 306,
++    WdfCmResourceListRemoveByDescriptorTableIndex = 307,
++    WdfStringCreateTableIndex = 308,
++    WdfStringGetUnicodeStringTableIndex = 309,
++    WdfObjectAcquireLockTableIndex = 310,
++    WdfObjectReleaseLockTableIndex = 311,
++    WdfWaitLockCreateTableIndex = 312,
++    WdfWaitLockAcquireTableIndex = 313,
++    WdfWaitLockReleaseTableIndex = 314,
++    WdfSpinLockCreateTableIndex = 315,
++    WdfSpinLockAcquireTableIndex = 316,
++    WdfSpinLockReleaseTableIndex = 317,
++    WdfTimerCreateTableIndex = 318,
++    WdfTimerStartTableIndex = 319,
++    WdfTimerStopTableIndex = 320,
++    WdfTimerGetParentObjectTableIndex = 321,
++    WdfUsbTargetDeviceCreateTableIndex = 322,
++    WdfUsbTargetDeviceRetrieveInformationTableIndex = 323,
++    WdfUsbTargetDeviceGetDeviceDescriptorTableIndex = 324,
++    WdfUsbTargetDeviceRetrieveConfigDescriptorTableIndex = 325,
++    WdfUsbTargetDeviceQueryStringTableIndex = 326,
++    WdfUsbTargetDeviceAllocAndQueryStringTableIndex = 327,
++    WdfUsbTargetDeviceFormatRequestForStringTableIndex = 328,
++    WdfUsbTargetDeviceGetNumInterfacesTableIndex = 329,
++    WdfUsbTargetDeviceSelectConfigTableIndex = 330,
++    WdfUsbTargetDeviceWdmGetConfigurationHandleTableIndex = 331,
++    WdfUsbTargetDeviceRetrieveCurrentFrameNumberTableIndex = 332,
++    WdfUsbTargetDeviceSendControlTransferSynchronouslyTableIndex = 333,
++    WdfUsbTargetDeviceFormatRequestForControlTransferTableIndex = 334,
++    WdfUsbTargetDeviceIsConnectedSynchronousTableIndex = 335,
++    WdfUsbTargetDeviceResetPortSynchronouslyTableIndex = 336,
++    WdfUsbTargetDeviceCyclePortSynchronouslyTableIndex = 337,
++    WdfUsbTargetDeviceFormatRequestForCyclePortTableIndex = 338,
++    WdfUsbTargetDeviceSendUrbSynchronouslyTableIndex = 339,
++    WdfUsbTargetDeviceFormatRequestForUrbTableIndex = 340,
++    WdfUsbTargetPipeGetInformationTableIndex = 341,
++    WdfUsbTargetPipeIsInEndpointTableIndex = 342,
++    WdfUsbTargetPipeIsOutEndpointTableIndex = 343,
++    WdfUsbTargetPipeGetTypeTableIndex = 344,
++    WdfUsbTargetPipeSetNoMaximumPacketSizeCheckTableIndex = 345,
++    WdfUsbTargetPipeWriteSynchronouslyTableIndex = 346,
++    WdfUsbTargetPipeFormatRequestForWriteTableIndex = 347,
++    WdfUsbTargetPipeReadSynchronouslyTableIndex = 348,
++    WdfUsbTargetPipeFormatRequestForReadTableIndex = 349,
++    WdfUsbTargetPipeConfigContinuousReaderTableIndex = 350,
++    WdfUsbTargetPipeAbortSynchronouslyTableIndex = 351,
++    WdfUsbTargetPipeFormatRequestForAbortTableIndex = 352,
++    WdfUsbTargetPipeResetSynchronouslyTableIndex = 353,
++    WdfUsbTargetPipeFormatRequestForResetTableIndex = 354,
++    WdfUsbTargetPipeSendUrbSynchronouslyTableIndex = 355,
++    WdfUsbTargetPipeFormatRequestForUrbTableIndex = 356,
++    WdfUsbInterfaceGetInterfaceNumberTableIndex = 357,
++    WdfUsbInterfaceGetNumEndpointsTableIndex = 358,
++    WdfUsbInterfaceGetDescriptorTableIndex = 359,
++    WdfUsbInterfaceSelectSettingTableIndex = 360,
++    WdfUsbInterfaceGetEndpointInformationTableIndex = 361,
++    WdfUsbTargetDeviceGetInterfaceTableIndex = 362,
++    WdfUsbInterfaceGetConfiguredSettingIndexTableIndex = 363,
++    WdfUsbInterfaceGetNumConfiguredPipesTableIndex = 364,
++    WdfUsbInterfaceGetConfiguredPipeTableIndex = 365,
++    WdfUsbTargetPipeWdmGetPipeHandleTableIndex = 366,
++    WdfVerifierDbgBreakPointTableIndex = 367,
++    WdfVerifierKeBugCheckTableIndex = 368,
++    WdfWmiProviderCreateTableIndex = 369,
++    WdfWmiProviderGetDeviceTableIndex = 370,
++    WdfWmiProviderIsEnabledTableIndex = 371,
++    WdfWmiProviderGetTracingHandleTableIndex = 372,
++    WdfWmiInstanceCreateTableIndex = 373,
++    WdfWmiInstanceRegisterTableIndex = 374,
++    WdfWmiInstanceDeregisterTableIndex = 375,
++    WdfWmiInstanceGetDeviceTableIndex = 376,
++    WdfWmiInstanceGetProviderTableIndex = 377,
++    WdfWmiInstanceFireEventTableIndex = 378,
++    WdfWorkItemCreateTableIndex = 379,
++    WdfWorkItemEnqueueTableIndex = 380,
++    WdfWorkItemGetParentObjectTableIndex = 381,
++    WdfWorkItemFlushTableIndex = 382,
++    WdfCommonBufferCreateWithConfigTableIndex = 383,
++    WdfDmaEnablerGetFragmentLengthTableIndex = 384,
++    WdfDmaEnablerWdmGetDmaAdapterTableIndex = 385,
++    WdfUsbInterfaceGetNumSettingsTableIndex = 386,
++    WdfDeviceRemoveDependentUsageDeviceObjectTableIndex = 387,
++    WdfDeviceGetSystemPowerActionTableIndex = 388,
++    WdfInterruptSetExtendedPolicyTableIndex = 389,
++    WdfIoQueueAssignForwardProgressPolicyTableIndex = 390,
++    WdfPdoInitAssignContainerIDTableIndex = 391,
++    WdfPdoInitAllowForwardingRequestToParentTableIndex = 392,
++    WdfRequestMarkCancelableExTableIndex = 393,
++    WdfRequestIsReservedTableIndex = 394,
++    WdfRequestForwardToParentDeviceIoQueueTableIndex = 395,
++    WdfCxDeviceInitAllocateTableIndex = 396,
++    WdfCxDeviceInitAssignWdmIrpPreprocessCallbackTableIndex = 397,
++    WdfCxDeviceInitSetIoInCallerContextCallbackTableIndex = 398,
++    WdfCxDeviceInitSetRequestAttributesTableIndex = 399,
++    WdfCxDeviceInitSetFileObjectConfigTableIndex = 400,
++    WdfDeviceWdmDispatchIrpTableIndex = 401,
++    WdfDeviceWdmDispatchIrpToIoQueueTableIndex = 402,
++    WdfDeviceInitSetRemoveLockOptionsTableIndex = 403,
++    WdfDeviceConfigureWdmIrpDispatchCallbackTableIndex = 404,
++    WdfDmaEnablerConfigureSystemProfileTableIndex = 405,
++    WdfDmaTransactionInitializeUsingOffsetTableIndex = 406,
++    WdfDmaTransactionGetTransferInfoTableIndex = 407,
++    WdfDmaTransactionSetChannelConfigurationCallbackTableIndex = 408,
++    WdfDmaTransactionSetTransferCompleteCallbackTableIndex = 409,
++    WdfDmaTransactionSetImmediateExecutionTableIndex = 410,
++    WdfDmaTransactionAllocateResourcesTableIndex = 411,
++    WdfDmaTransactionSetDeviceAddressOffsetTableIndex = 412,
++    WdfDmaTransactionFreeResourcesTableIndex = 413,
++    WdfDmaTransactionCancelTableIndex = 414,
++    WdfDmaTransactionWdmGetTransferContextTableIndex = 415,
++    WdfInterruptQueueWorkItemForIsrTableIndex = 416,
++    WdfInterruptTryToAcquireLockTableIndex = 417,
++    WdfIoQueueStopAndPurgeTableIndex = 418,
++    WdfIoQueueStopAndPurgeSynchronouslyTableIndex = 419,
++    WdfIoTargetPurgeTableIndex = 420,
++    WdfUsbTargetDeviceCreateWithParametersTableIndex = 421,
++    WdfUsbTargetDeviceQueryUsbCapabilityTableIndex = 422,
++    WdfUsbTargetDeviceCreateUrbTableIndex = 423,
++    WdfUsbTargetDeviceCreateIsochUrbTableIndex = 424,
++    WdfDeviceWdmAssignPowerFrameworkSettingsTableIndex = 425,
++    WdfDmaTransactionStopSystemTransferTableIndex = 426,
++    WdfCxVerifierKeBugCheckTableIndex = 427,
++    WdfInterruptReportActiveTableIndex = 428,
++    WdfInterruptReportInactiveTableIndex = 429,
++    WdfDeviceInitSetReleaseHardwareOrderOnFailureTableIndex = 430,
++    WdfGetTriageInfoTableIndex = 431,
++    WdfDeviceInitSetIoTypeExTableIndex = 432,
++    WdfDeviceQueryPropertyExTableIndex = 433,
++    WdfDeviceAllocAndQueryPropertyExTableIndex = 434,
++    WdfDeviceAssignPropertyTableIndex = 435,
++    WdfFdoInitQueryPropertyExTableIndex = 436,
++    WdfFdoInitAllocAndQueryPropertyExTableIndex = 437,
++    WdfDeviceStopIdleActualTableIndex = 438,
++    WdfDeviceResumeIdleActualTableIndex = 439,
++    WdfDeviceGetSelfIoTargetTableIndex = 440,
++    WdfDeviceInitAllowSelfIoTargetTableIndex = 441,
++    WdfIoTargetSelfAssignDefaultIoQueueTableIndex = 442,
++    WdfDeviceOpenDevicemapKeyTableIndex = 443,
++    WdfDmaTransactionSetSingleTransferRequirementTableIndex = 444,
++    WdfCxDeviceInitSetPnpPowerEventCallbacksTableIndex = 445,
++    WdfFileObjectGetInitiatorProcessIdTableIndex = 446,
++    WdfRequestGetRequestorProcessIdTableIndex = 447,
++    WdfDeviceRetrieveCompanionTargetTableIndex = 448,
++    WdfCompanionTargetSendTaskSynchronouslyTableIndex = 449,
++    WdfCompanionTargetWdmGetCompanionProcessTableIndex = 450,
++    WdfDriverOpenPersistentStateRegistryKeyTableIndex = 451,
++    WdfDriverErrorReportApiMissingTableIndex = 452,
++    WdfFunctionTableNumEntries = 453,
++} WDFFUNCENUM;
++
++#endif
+diff --git a/include/ddk/wdfglobals.h b/include/ddk/wdfglobals.h
+new file mode 100644
+index 00000000000..522e96ea5ef
+--- /dev/null
++++ b/include/ddk/wdfglobals.h
+@@ -0,0 +1,33 @@
++/*
++ * Copyright (C) 2020 Zebediah Figura for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef _WDFGLOBALS_H_
++#define _WDFGLOBALS_H_
++
++#define WDF_DRIVER_GLOBALS_NAME_LEN (32)
++
++typedef struct _WDF_DRIVER_GLOBALS
++{
++    WDFDRIVER Driver;
++    ULONG DriverFlags;
++    ULONG DriverTag;
++    char DriverName[WDF_DRIVER_GLOBALS_NAME_LEN];
++    BOOLEAN DisplaceDriverUnload;
++} WDF_DRIVER_GLOBALS, *PWDF_DRIVER_GLOBALS;
++
++#endif
+diff --git a/include/ddk/wdfio.h b/include/ddk/wdfio.h
+new file mode 100644
+index 00000000000..0aa9aa0033e
+--- /dev/null
++++ b/include/ddk/wdfio.h
+@@ -0,0 +1,65 @@
++/*
++ * Copyright (C) 2020 Zebediah Figura for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef _WDFIO_H_
++#define _WDFIO_H_
++
++typedef enum _WDF_IO_QUEUE_DISPATCH_TYPE
++{
++    WdfIoQueueDispatchInvalid = 0,
++    WdfIoQueueDispatchSequential,
++    WdfIoQueueDispatchParallel,
++    WdfIoQueueDispatchManual,
++    WdfIoQueueDispatchMax,
++} WDF_IO_QUEUE_DISPATCH_TYPE;
++
++typedef void (WINAPI *PFN_WDF_IO_QUEUE_IO_CANCELED_ON_QUEUE)(WDFQUEUE queue, WDFREQUEST request);
++typedef void (WINAPI *PFN_WDF_IO_QUEUE_IO_DEFAULT)(WDFQUEUE queue, WDFREQUEST request);
++typedef void (WINAPI *PFN_WDF_IO_QUEUE_IO_DEVICE_CONTROL)(WDFQUEUE queue, WDFREQUEST request, size_t out_len, size_t in_len, ULONG code);
++typedef void (WINAPI *PFN_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL)(WDFQUEUE queue, WDFREQUEST request, size_t out_len, size_t in_len, ULONG code);
++typedef void (WINAPI *PFN_WDF_IO_QUEUE_IO_READ)(WDFQUEUE queue, WDFREQUEST request, size_t len);
++typedef void (WINAPI *PFN_WDF_IO_QUEUE_IO_RESUME)(WDFQUEUE queue, WDFREQUEST request);
++typedef void (WINAPI *PFN_WDF_IO_QUEUE_IO_STOP)(WDFQUEUE queue, WDFREQUEST request, ULONG flags);
++typedef void (WINAPI *PFN_WDF_IO_QUEUE_IO_WRITE)(WDFQUEUE queue, WDFREQUEST request, size_t len);
++
++typedef struct _WDF_IO_QUEUE_CONFIG
++{
++    ULONG Size;
++    WDF_IO_QUEUE_DISPATCH_TYPE DispatchType;
++    WDF_TRI_STATE PowerManaged;
++    BOOLEAN AllowZeroLengthRequests;
++    BOOLEAN DefaultQueue;
++    PFN_WDF_IO_QUEUE_IO_DEFAULT EvtIoDefault;
++    PFN_WDF_IO_QUEUE_IO_READ EvtIoRead;
++    PFN_WDF_IO_QUEUE_IO_WRITE EvtIoWrite;
++    PFN_WDF_IO_QUEUE_IO_DEVICE_CONTROL EvtIoDeviceControl;
++    PFN_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL EvtIoInternalDeviceControl;
++    PFN_WDF_IO_QUEUE_IO_STOP EvtIoStop;
++    PFN_WDF_IO_QUEUE_IO_RESUME EvtIoResume;
++    PFN_WDF_IO_QUEUE_IO_CANCELED_ON_QUEUE EvtIoCanceledOnQueue;
++    union
++    {
++        struct
++        {
++            ULONG NumberOfPresentedRequests;
++        } Parallel;
++    } Settings;
++    WDFDRIVER Driver;
++} WDF_IO_QUEUE_CONFIG, *PWDF_IO_QUEUE_CONFIG;
++
++#endif
+diff --git a/include/ddk/wdfobject.h b/include/ddk/wdfobject.h
+new file mode 100644
+index 00000000000..9a5e1399c37
+--- /dev/null
++++ b/include/ddk/wdfobject.h
+@@ -0,0 +1,71 @@
++/*
++ * Copyright (C) 2020 Zebediah Figura for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef _WDFOBJECT_H_
++#define _WDFOBJECT_H_
++
++typedef enum _WDF_EXECUTION_LEVEL
++{
++    WdfExecutionLevelInvalid = 0,
++    WdfExecutionLevelInheritFromParent,
++    WdfExecutionLevelPassive,
++    WdfExecutionLevelDispatch,
++} WDF_EXECUTION_LEVEL;
++
++typedef enum _WDF_SYNCHRONIZATION_SCOPE
++{
++    WdfSynchronizationScopeInvalid = 0,
++    WdfSynchronizationScopeInheritFromParent,
++    WdfSynchronizationScopeDevice,
++    WdfSynchronizationScopeQueue,
++    WdfSynchronizationScopeNone,
++} WDF_SYNCHRONIZATION_SCOPE;
++
++typedef struct _WDF_OBJECT_CONTEXT_TYPE_INFO WDF_OBJECT_CONTEXT_TYPE_INFO, *PWDF_OBJECT_CONTEXT_TYPE_INFO;
++typedef const WDF_OBJECT_CONTEXT_TYPE_INFO *PCWDF_OBJECT_CONTEXT_TYPE_INFO;
++
++typedef void (WINAPI EVT_WDF_OBJECT_CONTEXT_CLEANUP)(WDFOBJECT);
++typedef EVT_WDF_OBJECT_CONTEXT_CLEANUP *PFN_WDF_OBJECT_CONTEXT_CLEANUP;
++
++typedef void (WINAPI EVT_WDF_OBJECT_CONTEXT_DESTROY)(WDFOBJECT);
++typedef EVT_WDF_OBJECT_CONTEXT_DESTROY *PFN_WDF_OBJECT_CONTEXT_DESTROY;
++
++typedef const WDF_OBJECT_CONTEXT_TYPE_INFO *(__cdecl *PFN_GET_UNIQUE_CONTEXT_TYPE)(void);
++
++struct _WDF_OBJECT_CONTEXT_TYPE_INFO
++{
++    ULONG Size;
++    char *ContextName;
++    size_t ContextSize;
++    const struct _WDF_OBJECT_CONTEXT_TYPE_INFO *UniqueType;
++    PFN_GET_UNIQUE_CONTEXT_TYPE EvtDriverGetUniqueContextType;
++};
++
++typedef struct _WDF_OBJECT_ATTRIBUTES
++{
++    ULONG Size;
++    PFN_WDF_OBJECT_CONTEXT_CLEANUP EvtCleanupCallback;
++    PFN_WDF_OBJECT_CONTEXT_DESTROY EvtDestroyCallback;
++    WDF_EXECUTION_LEVEL ExecutionLevel;
++    WDF_SYNCHRONIZATION_SCOPE SynchronizationScope;
++    WDFOBJECT ParentObject;
++    size_t ContextSizeOverride;
++    const WDF_OBJECT_CONTEXT_TYPE_INFO *ContextTypeInfo;
++} WDF_OBJECT_ATTRIBUTES, *PWDF_OBJECT_ATTRIBUTES;
++
++#endif
+diff --git a/include/ddk/wdftimer.h b/include/ddk/wdftimer.h
+new file mode 100644
+index 00000000000..6aa029bcaf4
+--- /dev/null
++++ b/include/ddk/wdftimer.h
+@@ -0,0 +1,34 @@
++/*
++ * Copyright (C) 2020 Zebediah Figura
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef _WDFTIMER_H_
++#define _WDFTIMER_H_
++
++typedef void (WINAPI *PFN_WDF_TIMER)(WDFTIMER timer);
++
++typedef struct _WDF_TIMER_CONFIG
++{
++    ULONG Size;
++    PFN_WDF_TIMER EvtTimerFunc;
++    ULONG Period;
++    BOOLEAN AutomaticSerialization;
++    ULONG TolerableDelay;
++    BOOLEAN DECLSPEC_ALIGN(8) UseHighResolutionTimer;
++} WDF_TIMER_CONFIG, *PWDF_TIMER_CONFIG;
++
++#endif
+diff --git a/include/ddk/wdftypes.h b/include/ddk/wdftypes.h
+new file mode 100644
+index 00000000000..16117630b42
+--- /dev/null
++++ b/include/ddk/wdftypes.h
+@@ -0,0 +1,44 @@
++/*
++ * Copyright (C) 2020 Zebediah Figura for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef _WDFTYPES_H_
++#define _WDFTYPES_H_
++
++typedef HANDLE WDFOBJECT, *PWDFOBJECT;
++DECLARE_HANDLE(WDFCHILDLIST);
++DECLARE_HANDLE(WDFCMRESLIST);
++DECLARE_HANDLE(WDFDEVICE);
++DECLARE_HANDLE(WDFDRIVER);
++DECLARE_HANDLE(WDFFILEOBJECT);
++DECLARE_HANDLE(WDFKEY);
++DECLARE_HANDLE(WDFQUEUE);
++DECLARE_HANDLE(WDFREQUEST);
++DECLARE_HANDLE(WDFSPINLOCK);
++DECLARE_HANDLE(WDFSTRING);
++DECLARE_HANDLE(WDFTIMER);
++
++typedef struct WDFDEVICE_INIT *PWDFDEVICE_INIT;
++
++typedef enum _WDF_TRI_STATE
++{
++    WdfFalse = FALSE,
++    WdfTrue = TRUE,
++    WdfUseDefault = 2,
++} WDF_TRI_STATE, *PWDF_TRI_STATE;
++
++#endif
+diff --git a/include/ddk/wdm.h b/include/ddk/wdm.h
+index c0b97e243aa..c9ba3139d5e 100644
+--- a/include/ddk/wdm.h
++++ b/include/ddk/wdm.h
+@@ -752,6 +752,13 @@ typedef enum _INTERFACE_TYPE {
+   MaximumInterfaceType
+ } INTERFACE_TYPE, *PINTERFACE_TYPE;
+ 
++typedef struct _PNP_BUS_INFORMATION
++{
++    GUID BusTypeGuid;
++    INTERFACE_TYPE LegacyBusType;
++    ULONG BusNumber;
++} PNP_BUS_INFORMATION, *PPNP_BUS_INFORMATION;
++
+ typedef LARGE_INTEGER PHYSICAL_ADDRESS, *PPHYSICAL_ADDRESS;
+ 
+ #define IO_RESOURCE_PREFERRED             0x01
+-- 
+2.30.0
+

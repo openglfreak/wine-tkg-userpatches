@@ -1,0 +1,174 @@
+From: Akihiro Sagawa <sagawa.aki@gmail.com>
+Subject: [PATCH 1/3] ntdll: ObjectName should also be used in NtUnloadKey.
+Message-Id: <20210212202221.9724.375B48EC@gmail.com>
+Date: Fri, 12 Feb 2021 20:30:12 +0900
+
+Signed-off-by: Akihiro Sagawa <sagawa.aki@gmail.com>
+---
+ dlls/kernelbase/registry.c     |  9 ++-------
+ dlls/ntdll/unix/registry.c     |  8 +++++++-
+ include/wine/server_protocol.h |  7 +++++--
+ server/protocol.def            |  4 +++-
+ server/registry.c              | 17 +++++++++++++----
+ server/request.h               |  5 +++--
+ server/trace.c                 |  4 +++-
+ 7 files changed, 36 insertions(+), 18 deletions(-)
+
+diff --git a/dlls/kernelbase/registry.c b/dlls/kernelbase/registry.c
+index 574bf2f56b7..d06a9723edf 100644
+--- a/dlls/kernelbase/registry.c
++++ b/dlls/kernelbase/registry.c
+@@ -2350,22 +2350,17 @@ LSTATUS WINAPI RegRestoreKeyA( HKEY hkey, LPCSTR lpFile, DWORD dwFlags )
+ LSTATUS WINAPI RegUnLoadKeyW( HKEY hkey, LPCWSTR lpSubKey )
+ {
+     DWORD ret;
+-    HKEY shkey;
+     OBJECT_ATTRIBUTES attr;
+     UNICODE_STRING subkey;
+ 
+     TRACE("(%p,%s)\n",hkey, debugstr_w(lpSubKey));
+ 
+-    ret = RegOpenKeyExW( hkey, lpSubKey, 0, MAXIMUM_ALLOWED, &shkey );
+-    if( ret )
+-        return ERROR_INVALID_PARAMETER;
++    if (!(hkey = get_special_root_hkey( hkey, 0 ))) return ERROR_INVALID_HANDLE;
+ 
+     RtlInitUnicodeString(&subkey, lpSubKey);
+-    InitializeObjectAttributes(&attr, &subkey, OBJ_CASE_INSENSITIVE, shkey, NULL);
++    InitializeObjectAttributes(&attr, &subkey, OBJ_CASE_INSENSITIVE, hkey, NULL);
+     ret = RtlNtStatusToDosError(NtUnloadKey(&attr));
+ 
+-    RegCloseKey(shkey);
+-
+     return ret;
+ }
+ 
+diff --git a/dlls/ntdll/unix/registry.c b/dlls/ntdll/unix/registry.c
+index f94c8ff98ee..0925631138f 100644
+--- a/dlls/ntdll/unix/registry.c
++++ b/dlls/ntdll/unix/registry.c
+@@ -676,9 +676,15 @@ NTSTATUS WINAPI NtUnloadKey( OBJECT_ATTRIBUTES *attr )
+ 
+     TRACE( "(%p)\n", attr );
+ 
++    if (!attr || !attr->ObjectName) return STATUS_ACCESS_VIOLATION;
++    if (attr->Length != sizeof(*attr)) return STATUS_INVALID_PARAMETER;
++    if (attr->ObjectName->Length & 1) return STATUS_OBJECT_NAME_INVALID;
++
+     SERVER_START_REQ( unload_registry )
+     {
+-        req->hkey = wine_server_obj_handle( attr->RootDirectory );
++        req->parent     = wine_server_obj_handle( attr->RootDirectory );
++        req->attributes = attr->Attributes;
++        wine_server_add_data( req, attr->ObjectName->Buffer, attr->ObjectName->Length );
+         ret = wine_server_call(req);
+     }
+     SERVER_END_REQ;
+diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
+index 9b9626c1c84..b60e8afa364 100644
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -2346,7 +2346,10 @@ struct load_registry_reply
+ struct unload_registry_request
+ {
+     struct request_header __header;
+-    obj_handle_t hkey;
++    obj_handle_t parent;
++    unsigned int attributes;
++    /* VARARG(name,unicode_str); */
++    char __pad_20[4];
+ };
+ struct unload_registry_reply
+ {
+@@ -6265,7 +6268,7 @@ union generic_reply
+ 
+ /* ### protocol_version begin ### */
+ 
+-#define SERVER_PROTOCOL_VERSION 683
++#define SERVER_PROTOCOL_VERSION 684
+ 
+ /* ### protocol_version end ### */
+ 
+diff --git a/server/protocol.def b/server/protocol.def
+index caed5c37352..855afae3df0 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -1803,7 +1803,9 @@ struct process_info
+ 
+ /* UnLoad a registry branch from a file */
+ @REQ(unload_registry)
+-    obj_handle_t hkey;         /* root key to unload to */
++    obj_handle_t parent;       /* handle to the parent key */
++    unsigned int attributes;   /* object attributes */
++    VARARG(name,unicode_str);  /* key name */
+ @END
+ 
+ 
+diff --git a/server/registry.c b/server/registry.c
+index 76ef7aeb65d..9b9295b1b68 100644
+--- a/server/registry.c
++++ b/server/registry.c
+@@ -2244,7 +2244,9 @@ DECL_HANDLER(load_registry)
+ 
+ DECL_HANDLER(unload_registry)
+ {
+-    struct key *key;
++    struct key *key, *parent;
++    struct unicode_str name;
++    unsigned int access = 0;
+ 
+     if (!thread_single_check_privilege( current, &SeRestorePrivilege ))
+     {
+@@ -2252,10 +2254,17 @@ DECL_HANDLER(unload_registry)
+         return;
+     }
+ 
+-    if ((key = get_hkey_obj( req->hkey, 0 )))
++    if (!is_wow64_thread( current )) access = (access & ~KEY_WOW64_32KEY) | KEY_WOW64_64KEY;
++
++    if ((parent = get_parent_hkey_obj( req->parent )))
+     {
+-        delete_key( key, 1 );     /* FIXME */
+-        release_object( key );
++        get_req_path( &name, !req->parent );
++        if ((key = open_key( parent, &name, access, req->attributes )))
++        {
++            delete_key( key, 1 );     /* FIXME */
++            release_object( key );
++        }
++        release_object( parent );
+     }
+ }
+ 
+diff --git a/server/request.h b/server/request.h
+index d1bfd746f39..98b85c2d904 100644
+--- a/server/request.h
++++ b/server/request.h
+@@ -1235,8 +1235,9 @@ C_ASSERT( FIELD_OFFSET(struct delete_key_value_request, hkey) == 12 );
+ C_ASSERT( sizeof(struct delete_key_value_request) == 16 );
+ C_ASSERT( FIELD_OFFSET(struct load_registry_request, file) == 12 );
+ C_ASSERT( sizeof(struct load_registry_request) == 16 );
+-C_ASSERT( FIELD_OFFSET(struct unload_registry_request, hkey) == 12 );
+-C_ASSERT( sizeof(struct unload_registry_request) == 16 );
++C_ASSERT( FIELD_OFFSET(struct unload_registry_request, parent) == 12 );
++C_ASSERT( FIELD_OFFSET(struct unload_registry_request, attributes) == 16 );
++C_ASSERT( sizeof(struct unload_registry_request) == 24 );
+ C_ASSERT( FIELD_OFFSET(struct save_registry_request, hkey) == 12 );
+ C_ASSERT( FIELD_OFFSET(struct save_registry_request, file) == 16 );
+ C_ASSERT( sizeof(struct save_registry_request) == 24 );
+diff --git a/server/trace.c b/server/trace.c
+index 8984b75590d..a236d2a5199 100644
+--- a/server/trace.c
++++ b/server/trace.c
+@@ -2408,7 +2408,9 @@ static void dump_load_registry_request( const struct load_registry_request *req
+ 
+ static void dump_unload_registry_request( const struct unload_registry_request *req )
+ {
+-    fprintf( stderr, " hkey=%04x", req->hkey );
++    fprintf( stderr, " parent=%04x", req->parent );
++    fprintf( stderr, ", attributes=%08x", req->attributes );
++    dump_varargs_unicode_str( ", name=", cur_size );
+ }
+ 
+ static void dump_save_registry_request( const struct save_registry_request *req )
+

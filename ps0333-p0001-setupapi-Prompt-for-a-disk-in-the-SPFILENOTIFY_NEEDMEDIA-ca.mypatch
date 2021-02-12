@@ -1,0 +1,104 @@
+From 4e1e3db01f37b4090243d0f43c829a85738a0195 Mon Sep 17 00:00:00 2001
+From: Zebediah Figura <z.figura12@gmail.com>
+Date: Wed, 6 Jan 2021 16:16:17 -0600
+Subject: [PATCH 1/1] setupapi: Prompt for a disk in the SPFILENOTIFY_NEEDMEDIA
+ callback.
+
+On multiple occasions I have seen installers, for reasons unrelated to
+NEEDMEDIA handling, fail to copy files. After 3e5c9798a this results in a
+live-lock as setupapi repeatedly calls the default NEEDMEDIA callback. This
+patch is an attempt to make such a failure more obvious, as well as to match
+native behaviour.
+---
+ dlls/setupapi/queue.c | 59 +++++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 55 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/setupapi/queue.c b/dlls/setupapi/queue.c
+index 7d8d6cf296d..f75f83fb295 100644
+--- a/dlls/setupapi/queue.c
++++ b/dlls/setupapi/queue.c
+@@ -1775,6 +1775,33 @@ void WINAPI SetupTermDefaultQueueCallback( PVOID context )
+     HeapFree( GetProcessHeap(), 0, context );
+ }
+ 
++static DWORD prompt_flags_from_media_flags( DWORD media_flags )
++{
++    DWORD ret = IDF_CHECKFIRST;
++
++    if (media_flags & SP_COPY_NOBROWSE)
++        ret |= IDF_NOBROWSE;
++    if (media_flags & SP_COPY_NOSKIP)
++        ret |= IDF_NOSKIP;
++    if (media_flags & SP_COPY_WARNIFSKIP)
++        ret |= IDF_WARNIFSKIP;
++
++    return ret;
++}
++
++static UINT fileop_from_prompt_ret( UINT ret )
++{
++    switch (ret)
++    {
++        case DPROMPT_SUCCESS: return FILEOP_NEWPATH;
++        case DPROMPT_CANCEL: return FILEOP_ABORT;
++        case DPROMPT_SKIPFILE: return FILEOP_SKIP;
++        default:
++            ERR("prompt returned %u\n", ret);
++            return FILEOP_ABORT;
++    }
++}
++
+ 
+ /***********************************************************************
+  *            SetupDefaultQueueCallbackA   (SETUPAPI.@)
+@@ -1832,9 +1859,21 @@ UINT WINAPI SetupDefaultQueueCallbackA( PVOID context, UINT notification,
+     case SPFILENOTIFY_NEEDMEDIA:
+     {
+         const SOURCE_MEDIA_A *media = (const SOURCE_MEDIA_A *)param1;
++        DWORD flags = prompt_flags_from_media_flags( media->Flags );
++
+         TRACE( "need media %s %s\n", debugstr_a(media->SourcePath), debugstr_a(media->SourceFile) );
+-        strcpy( (char *)param2, media->SourcePath );
+-        return FILEOP_DOIT;
++
++        /* Never prompt when the source is a DLL resource; the DLL may likely
++         * be missing. */
++        if (media->SourceFile[0] == '@')
++        {
++            strcpy( (char *)param2, media->SourcePath );
++            return FILEOP_DOIT;
++        }
++
++        return fileop_from_prompt_ret( SetupPromptForDiskA( ctx->owner, NULL,
++                media->Description, media->SourcePath, media->SourceFile, media->Tagfile,
++                flags, (char *)param2, MAX_PATH, NULL ) );
+     }
+     default:
+         FIXME( "notification %d params %lx,%lx\n", notification, param1, param2 );
+@@ -1901,9 +1940,21 @@ UINT WINAPI SetupDefaultQueueCallbackW( PVOID context, UINT notification,
+     case SPFILENOTIFY_NEEDMEDIA:
+     {
+         const SOURCE_MEDIA_W *media = (const SOURCE_MEDIA_W *)param1;
++        DWORD flags = prompt_flags_from_media_flags( media->Flags );
++
+         TRACE( "need media %s %s\n", debugstr_w(media->SourcePath), debugstr_w(media->SourceFile) );
+-        lstrcpyW( (WCHAR *)param2, media->SourcePath );
+-        return FILEOP_DOIT;
++
++        /* Never prompt when the source is a DLL resource; the DLL may likely
++         * be missing. */
++        if (media->SourceFile[0] == '@')
++        {
++            wcscpy( (WCHAR *)param2, media->SourcePath );
++            return FILEOP_DOIT;
++        }
++
++        return fileop_from_prompt_ret( SetupPromptForDiskW( ctx->owner, NULL,
++                media->Description, media->SourcePath, media->SourceFile, media->Tagfile,
++                flags, (WCHAR *)param2, MAX_PATH, NULL ) );
+     }
+     default:
+         FIXME( "notification %d params %lx,%lx\n", notification, param1, param2 );
+-- 
+2.11.4.GIT
+

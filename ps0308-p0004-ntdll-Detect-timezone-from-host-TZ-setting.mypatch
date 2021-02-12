@@ -1,18 +1,18 @@
 From: Giovanni Mascellani <gmascellani@codeweavers.com>
-Subject: [PATCH 4/4] ntdll: Detect timezone from host TZ setting.
-Message-Id: <20210128140032.316892-4-gmascellani@codeweavers.com>
-Date: Thu, 28 Jan 2021 15:00:32 +0100
-In-Reply-To: <20210128140032.316892-1-gmascellani@codeweavers.com>
-References: <20210128140032.316892-1-gmascellani@codeweavers.com>
+Subject: [PATCH v2 4/4] ntdll: Detect timezone from host TZ setting.
+Message-Id: <20210205121101.965272-4-gmascellani@codeweavers.com>
+Date: Fri,  5 Feb 2021 13:11:01 +0100
+In-Reply-To: <20210205121101.965272-1-gmascellani@codeweavers.com>
+References: <20210205121101.965272-1-gmascellani@codeweavers.com>
 
 Signed-off-by: Giovanni Mascellani <gmascellani@codeweavers.com>
 ---
- dlls/ntdll/unix/system.c       | 451 +++++++++++++++------------------
+ dlls/ntdll/unix/system.c       | 456 +++++++++++++++------------------
  dlls/ntdll/unix/unix_private.h |  25 ++
- 2 files changed, 224 insertions(+), 252 deletions(-)
+ 2 files changed, 229 insertions(+), 252 deletions(-)
 
 diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
-index a889b2e020c..5801308d4cb 100644
+index a889b2e020c..8fa536a6732 100644
 --- a/dlls/ntdll/unix/system.c
 +++ b/dlls/ntdll/unix/system.c
 @@ -2,6 +2,7 @@
@@ -253,7 +253,7 @@ index a889b2e020c..5801308d4cb 100644
          memset( &reg_tzi, 0, sizeof(reg_tzi) );
          memcpy(reg_tzi.TimeZoneKeyName, nameW.Buffer, nameW.Length);
          reg_tzi.TimeZoneKeyName[nameW.Length/sizeof(WCHAR)] = 0;
-@@ -1881,178 +1836,171 @@ static void find_reg_tz_info(RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, const char*
+@@ -1881,181 +1836,178 @@ static void find_reg_tz_info(RTL_DYNAMIC_TIME_ZONE_INFORMATION *tzi, const char*
          reg_tzi.StandardDate = tz_data.std_date;
          reg_tzi.DaylightDate = tz_data.dlt_date;
  
@@ -309,22 +309,22 @@ index a889b2e020c..5801308d4cb 100644
 -    struct tm *tm;
 +    char *tz;
 +    FILE *fin;
- 
--    start = min;
--    tm = localtime(&start);
--    *is_dst = !tm->tm_isdst;
--    TRACE("starting date isdst %d, %s", !*is_dst, ctime(&start));
++
 +    tz = getenv("TZ");
 +    if (tz)
 +        tz = strdup(tz);
 +    if (tz)
 +        return tz;
  
--    while (min <= max)
+-    start = min;
+-    tm = localtime(&start);
+-    *is_dst = !tm->tm_isdst;
+-    TRACE("starting date isdst %d, %s", !*is_dst, ctime(&start));
 +    tz = realpath("/etc/localtime", NULL);
 +    if (tz)
 +        return tz;
-+
+ 
+-    while (min <= max)
 +    /* /etc/timezone is available on Debian and maybe other Linux
 +       systems. */
 +    fin = fopen("/etc/timezone", "r");
@@ -379,17 +379,22 @@ index a889b2e020c..5801308d4cb 100644
 +}
 +
 +/* Check if a path points to a plausible zoneinfo directory by
-+   checking if it contains a file named tzdata.zi. */
++   checking if it contains a file named zone.tab. */
 +static int check_tzdir(const char *dir)
 +{
 +    int dir_fd = -1, fd = -1, ret = 0;
 +    struct stat stat;
 +
-+    dir_fd = open(dir, O_PATH | O_DIRECTORY);
++#ifdef __linux__
++    const int flags = O_PATH;
++#else
++    const int flags = 0;
++#endif
++    dir_fd = open(dir, flags | O_DIRECTORY);
 +    if (dir_fd < 0)
 +        goto end;
 +
-+    fd = openat(dir_fd, "tzdata.zi", O_PATH);
++    fd = openat(dir_fd, "zone.tab", flags);
 +    if (fd < 0)
 +        goto end;
 +
@@ -413,19 +418,19 @@ index a889b2e020c..5801308d4cb 100644
 -    char tz_name[16];
 -    time_t year_start, year_end, tmp, dlt = 0, std = 0;
 -    int is_dst, bias;
+-
+-    mutex_lock( &tz_mutex );
 +    static int current_year = -1;
 +    struct tm tm;
 +    char *tz;
 +    time_t now;
  
--    mutex_lock( &tz_mutex );
-+    now = time(NULL);
-+    tm = *localtime(&now);
- 
 -    year_start = time(NULL);
 -    tm = gmtime(&year_start);
 -    bias = (LONG)(mktime(tm) - year_start) / 60;
--
++    now = time(NULL);
++    tm = *localtime(&now);
+ 
 -    tm = localtime(&year_start);
 -    if (current_year == tm->tm_year && current_bias == bias)
 +    mutex_lock(&tz_mutex);
@@ -448,14 +453,14 @@ index a889b2e020c..5801308d4cb 100644
 -    current_bias = bias;
 -
 -    tzi->Bias = bias;
--
++    current_year = tm.tm_year;
+ 
 -    tm->tm_isdst = 0;
 -    tm->tm_mday = 1;
 -    tm->tm_mon = tm->tm_hour = tm->tm_min = tm->tm_sec = tm->tm_wday = tm->tm_yday = 0;
 -    year_start = mktime(tm);
 -    TRACE("year_start: %s", ctime(&year_start));
-+    current_year = tm.tm_year;
- 
+-
 -    tm->tm_mday = tm->tm_wday = tm->tm_yday = 0;
 -    tm->tm_mon = 12;
 -    tm->tm_hour = 23;
@@ -564,9 +569,12 @@ index a889b2e020c..5801308d4cb 100644
 +    free(tz);
  }
  
- static DWORD translate_object_index(DWORD index)
+-
+ /******************************************************************************
+  *              NtQuerySystemInformation  (NTDLL.@)
+  */
 diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
-index f8f50d0ab27..4e1ba13e6f9 100644
+index 7820f67f2ab..784391da971 100644
 --- a/dlls/ntdll/unix/unix_private.h
 +++ b/dlls/ntdll/unix/unix_private.h
 @@ -466,6 +466,30 @@ static inline int ntdll_wcsnicmp( const WCHAR *str1, const WCHAR *str2, int n )

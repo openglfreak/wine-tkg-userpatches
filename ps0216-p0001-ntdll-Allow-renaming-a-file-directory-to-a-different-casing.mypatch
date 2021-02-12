@@ -41,10 +41,10 @@ index d12a3ff..361930c 100644
          {
              FILE_RENAME_INFORMATION *info = ptr;
 +            size_t unix_len, casing_len = 0;
-             UNICODE_STRING name_str;
+             UNICODE_STRING name_str, nt_name = { 0 };
              OBJECT_ATTRIBUTES attr;
              char *unix_name;
-@@ -4345,13 +4346,49 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4345,15 +4346,51 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
              if (io->u.Status != STATUS_SUCCESS && io->u.Status != STATUS_NO_SUCH_FILE)
                  break;
  
@@ -87,14 +87,18 @@ index d12a3ff..361930c 100644
              {
 -                req->handle   = wine_server_obj_handle( handle );
 -                req->rootdir  = wine_server_obj_handle( attr.RootDirectory );
+-                req->namelen  = nt_name.Length;
 -                req->link     = FALSE;
 -                req->replace  = info->ReplaceIfExists;
+-                wine_server_add_data( req, nt_name.Buffer, nt_name.Length );
 -                wine_server_add_data( req, unix_name, strlen(unix_name) );
 +                req->handle     = wine_server_obj_handle( handle );
 +                req->rootdir    = wine_server_obj_handle( attr.RootDirectory );
++                req->namelen    = nt_name.Length;
 +                req->link       = FALSE;
 +                req->replace    = info->ReplaceIfExists;
 +                req->casing_len = casing_len;
++                wine_server_add_data( req, nt_name.Buffer, nt_name.Length );
 +                wine_server_add_data( req, unix_name, unix_len );
                  io->u.Status = wine_server_call( req );
              }
@@ -106,9 +110,9 @@ index edb59b0..060e713 100644
 @@ -2448,7 +2448,8 @@ static void set_fd_disposition( struct fd *fd, int unlink )
  
  /* set new name for the fd */
- static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr,
--                         data_size_t len, int create_link, int replace )
-+                         data_size_t len, unsigned int casing_len, int create_link,
+ static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr, data_size_t len,
+-                         struct unicode_str nt_name, int create_link, int replace )
++                         struct unicode_str nt_name, unsigned int casing_len, int create_link,
 +                         int replace )
  {
      struct inode *inode;
@@ -216,12 +220,14 @@ index edb59b0..060e713 100644
      }
  
      if (create_link)
-@@ -2847,7 +2880,8 @@ DECL_HANDLER(set_fd_name_info)
+@@ -2879,8 +2912,9 @@ DECL_HANDLER(set_fd_name_info)
  
      if ((fd = get_handle_fd_obj( current->process, req->handle, 0 )))
      {
--        set_fd_name( fd, root_fd, get_req_data(), get_req_data_size(), req->link, req->replace );
-+        set_fd_name( fd, root_fd, get_req_data(), get_req_data_size() - req->casing_len,
+-        set_fd_name( fd, root_fd, (const char *)get_req_data() + req->namelen,
+-                     get_req_data_size() - req->namelen, nt_name, req->link, req->replace );
++        set_fd_name( fd, root_fd, (const char *)get_req_data() + req->namelen,
++                     get_req_data_size() - req->namelen - req->casing_len, nt_name,
 +                     req->casing_len, req->link, req->replace );
          release_object( fd );
      }
@@ -231,9 +237,9 @@ index 846d2e1..a5a7168 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
 @@ -3499,7 +3499,8 @@ struct handle_info
-     obj_handle_t rootdir;         /* root directory */
      int          link;            /* link instead of renaming */
      int          replace;         /* replace an existing file? */
+     VARARG(name,unicode_str,namelen); /* NT name */
 -    VARARG(filename,string);      /* new file name */
 +    unsigned int casing_len;      /* optional length of filename with actual casing (w/o path) */
 +    VARARG(filename,string);      /* new file name; casing_len chars are appended to this, if any */

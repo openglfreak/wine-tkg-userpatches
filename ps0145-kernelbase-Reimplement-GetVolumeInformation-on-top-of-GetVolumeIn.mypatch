@@ -1,17 +1,23 @@
 From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
-#Subject: [PATCH v3 resend 4/4] kernelbase: Reimplement GetVolumeInformation on top of GetVolumeInformationByHandle.
-Message-Id: <CAEU2+vr5jGk7KCy2R1oXT9vZ04U2OXG5rK-mzFFYtLhqok+DUQ@mail.gmail.com>
-Date: Tue, 8 Sep 2020 14:02:32 -0600
+#Subject: [PATCH v6 5/5] kernelbase: Reimplement GetVolumeInformation on top of GetVolumeInformationByHandle.
+Message-Id: <CAEU2+vrAcFN5oXJvunL0umLXW4W0je0K41cEfEtPkAkDre=StQ@mail.gmail.com>
+Date: Sat, 6 Feb 2021 11:26:05 -0700
 
 This patch removes the volume querying information duplication in
 kernelbase by re-implementing GetVolumeInformation using
 GetVolumeInformationByHandle (itself implemented with
 NtQueryVolumeInformationFile).
 
+v6: No change
+v5: Rebase against 1b1b6c5f7d28768feb853eefd015aa714b819ed4
+v4: Reordered (no content change)
+v3: No change
+v2: Reordered (no content change)
+
 Best,
 Erich
 
-From b2b78f771ea781668504204b5ce0595500edf012 Mon Sep 17 00:00:00 2001
+From ca214462c58c706ada239bb11a39bb44fa7f6541 Mon Sep 17 00:00:00 2001
 From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
 Date: Fri, 15 May 2020 22:07:10 -0600
 Subject: kernelbase: Reimplement GetVolumeInformation on top of
@@ -20,14 +26,14 @@ Subject: kernelbase: Reimplement GetVolumeInformation on top of
 Signed-off-by: Erich E. Hoover <erich.e.hoover@gmail.com>
 ---
  dlls/kernel32/tests/volume.c |  40 +++
- dlls/kernelbase/volume.c     | 597 +------------------------------------------
- 2 files changed, 46 insertions(+), 591 deletions(-)
+ dlls/kernelbase/volume.c     | 595 +----------------------------------
+ 2 files changed, 46 insertions(+), 589 deletions(-)
 
 diff --git a/dlls/kernel32/tests/volume.c b/dlls/kernel32/tests/volume.c
-index ead06764a11..7db5f14feca 100644
+index 5199a4992d8..6f8884c7bc8 100644
 --- a/dlls/kernel32/tests/volume.c
 +++ b/dlls/kernel32/tests/volume.c
-@@ -1491,6 +1491,8 @@ static void test_GetVolumeInformationByHandle(void)
+@@ -1522,6 +1522,8 @@ static void test_GetVolumeInformationByHandle(void)
      FILE_FS_VOLUME_INFORMATION *volume_info = (void *)buffer;
      DWORD serial, filename_len, flags;
      WCHAR label[20], fsname[20];
@@ -36,13 +42,13 @@ index ead06764a11..7db5f14feca 100644
      IO_STATUS_BLOCK io;
      HANDLE file;
      NTSTATUS status;
-@@ -1547,6 +1549,44 @@ static void test_GetVolumeInformationByHandle(void)
+@@ -1578,6 +1580,44 @@ static void test_GetVolumeInformationByHandle(void)
              "expected label length %u, got %u\n", volume_info->VolumeLabelLength / sizeof(WCHAR), wcslen( label ));
  
      CloseHandle( file );
 +
 +    /* get the unique volume name for the windows drive  */
-+    ret = pGetVolumeNameForVolumeMountPointA(Root_Slash, volume, MAX_PATH);
++    ret = GetVolumeNameForVolumeMountPointA(Root_Slash, volume, MAX_PATH);
 +    ok(ret == TRUE, "GetVolumeNameForVolumeMountPointA failed\n");
 +
 +    /* try again with unique volume name */
@@ -82,11 +88,11 @@ index ead06764a11..7db5f14feca 100644
  
  START_TEST(volume)
 diff --git a/dlls/kernelbase/volume.c b/dlls/kernelbase/volume.c
-index 53cc0d49b65..3c4e2fd2ec1 100644
+index 7daf9c98823..3c4e2fd2ec1 100644
 --- a/dlls/kernelbase/volume.c
 +++ b/dlls/kernelbase/volume.c
 @@ -149,500 +149,6 @@ static DWORD get_mountmgr_drive_type( LPCWSTR root )
-    return data.type;
+     return data.type;
  }
  
 -/* get the label by reading it from a file at the root of the filesystem */
@@ -586,7 +592,7 @@ index 53cc0d49b65..3c4e2fd2ec1 100644
  
  /***********************************************************************
   *           GetVolumeInformationW   (kernelbase.@)
-@@ -658,9 +162,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetVolumeInformationW( LPCWSTR root, LPWSTR label,
+@@ -656,9 +162,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetVolumeInformationW( LPCWSTR root, LPWSTR label,
      UNICODE_STRING nt_name;
      IO_STATUS_BLOCK io;
      OBJECT_ATTRIBUTES attr;
@@ -596,7 +602,7 @@ index 53cc0d49b65..3c4e2fd2ec1 100644
      BOOL ret = FALSE;
  
      if (!root) root = L"\\";
-@@ -683,8 +185,6 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetVolumeInformationW( LPCWSTR root, LPWSTR label,
+@@ -681,8 +185,6 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetVolumeInformationW( LPCWSTR root, LPWSTR label,
          goto done;
      }
  
@@ -605,7 +611,7 @@ index 53cc0d49b65..3c4e2fd2ec1 100644
      attr.Length = sizeof(attr);
      attr.RootDirectory = 0;
      attr.Attributes = OBJ_CASE_INSENSITIVE;
-@@ -692,99 +192,14 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetVolumeInformationW( LPCWSTR root, LPWSTR label,
+@@ -690,99 +192,14 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetVolumeInformationW( LPCWSTR root, LPWSTR label,
      attr.SecurityDescriptor = NULL;
      attr.SecurityQualityOfService = NULL;
  
@@ -711,3 +717,7 @@ index 53cc0d49b65..3c4e2fd2ec1 100644
  
  done:
      RtlFreeUnicodeString( &nt_name );
+
+-- 
+2.17.1
+

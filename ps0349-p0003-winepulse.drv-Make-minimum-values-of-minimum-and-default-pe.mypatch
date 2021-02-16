@@ -1,0 +1,87 @@
+From 7e0c68821790d3f61d6263395273bbf860b00428 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Sat, 13 Feb 2021 00:49:05 +0100
+Subject: [PATCH 3/6] winepulse.drv: Make minimum values of minimum and default
+ period configurable.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/winepulse.drv/mmdevdrv.c | 48 ++++++++++++++++++++++++++++++++---
+ 1 file changed, 44 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/winepulse.drv/mmdevdrv.c b/dlls/winepulse.drv/mmdevdrv.c
+index b0bccb3c4a2..ffa5e9ada98 100644
+--- a/dlls/winepulse.drv/mmdevdrv.c
++++ b/dlls/winepulse.drv/mmdevdrv.c
+@@ -483,12 +483,48 @@ static void convert_channel_map(const pa_channel_map *pa_map, WAVEFORMATEXTENSIB
+     fmt->dwChannelMask = pa_mask;
+ }
+ 
++static inline int parse_envar_reftime(const char *name, REFERENCE_TIME *out) {
++    char *envar, *endptr = 0;
++    long long value;
++
++    envar = getenv(name);
++    if (!envar || !*envar)
++        return 0;
++
++    errno = 0;
++    value = strtoll(envar, &endptr, 0);
++    if (value == 0 && errno != 0)
++        return -1;
++    if (endptr == envar || *endptr != '\0')
++        return -1;
++
++    if (value != (REFERENCE_TIME)value)
++        return -1;
++
++    *out = (REFERENCE_TIME)value;
++    return 1;
++}
++
++static inline int parse_envar_reftime_with_status(const char *name, REFERENCE_TIME *out, const char *msg) {
++    int status = parse_envar_reftime(name, out);
++    switch (status) {
++        case 1:
++            MESSAGE(msg, *out);
++            break;
++        case -1:
++            MESSAGE("Failed to parse %s.\n", name);
++            break;
++    }
++    return status;
++}
++
+ static void pulse_probe_settings(pa_mainloop *ml, pa_context *ctx, int render, WAVEFORMATEXTENSIBLE *fmt) {
+     WAVEFORMATEX *wfx = &fmt->Format;
+     pa_stream *stream;
+     pa_channel_map map;
+     pa_sample_spec ss;
+     pa_buffer_attr attr;
++    REFERENCE_TIME min_minimum_period = MinimumPeriod, min_default_period = DefaultPeriod;
+     int ret;
+     unsigned int length = 0;
+ 
+@@ -536,11 +572,15 @@ static void pulse_probe_settings(pa_mainloop *ml, pa_context *ctx, int render, W
+     if (length)
+         pulse_def_period[!render] = pulse_min_period[!render] = pa_bytes_to_usec(10 * length, &ss);
+ 
+-    if (pulse_min_period[!render] < MinimumPeriod)
+-        pulse_min_period[!render] = MinimumPeriod;
++    parse_envar_reftime_with_status("STAGING_PULSE_MINMIN_PERIOD", &min_minimum_period,
++                                    "PulseAudio minimum min_period set to %ld.\n");
++    if (pulse_min_period[!render] < min_minimum_period)
++        pulse_min_period[!render] = min_minimum_period;
+ 
+-    if (pulse_def_period[!render] < DefaultPeriod)
+-        pulse_def_period[!render] = DefaultPeriod;
++    parse_envar_reftime_with_status("STAGING_PULSE_MINDEF_PERIOD", &min_default_period,
++                                    "PulseAudio minimum def_period set to %ld.\n");
++    if (pulse_def_period[!render] < min_default_period)
++        pulse_def_period[!render] = min_default_period;
+ 
+     wfx->wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+     wfx->cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+-- 
+2.30.1
+

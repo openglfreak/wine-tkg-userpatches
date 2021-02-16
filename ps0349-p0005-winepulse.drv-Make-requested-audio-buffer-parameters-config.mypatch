@@ -1,0 +1,78 @@
+From 78b17af21a21ed76d81e8a6f75edc9c38a9d94c2 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Sat, 13 Feb 2021 02:12:04 +0100
+Subject: [PATCH 5/6] winepulse.drv: Make requested audio buffer parameters
+ configurable.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/winepulse.drv/mmdevdrv.c | 47 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 47 insertions(+)
+
+diff --git a/dlls/winepulse.drv/mmdevdrv.c b/dlls/winepulse.drv/mmdevdrv.c
+index fd986165372..056311e192e 100644
+--- a/dlls/winepulse.drv/mmdevdrv.c
++++ b/dlls/winepulse.drv/mmdevdrv.c
+@@ -1439,12 +1439,59 @@ static DWORD WINAPI pulse_timer_cb(void *user)
+     return 0;
+ }
+ 
++static inline int parse_envar_uint_or_minusone(const char *name, unsigned int *out) {
++    char *envar, *endptr = 0;
++    unsigned long value;
++
++    envar = getenv(name);
++    if (!envar || !*envar)
++        return 0;
++
++    errno = 0;
++    value = (unsigned long)strtol(envar, &endptr, 0);
++    if (value != -1U) {
++        errno = 0;
++        value = strtoul(envar, &endptr, 0);
++    }
++    if (value == 0 && errno != 0)
++        return -1;
++    if (endptr == envar || *endptr != '\0')
++        return -1;
++
++    if (value != (unsigned int)value && value != -1U)
++        return -1;
++
++    *out = (unsigned int)value;
++    return 1;
++}
++
++static inline void parse_pulse_envar(const char *name, unsigned int *out, const pa_sample_spec *sspec, const char *attr_name) {
++    unsigned int env_val;
++    switch (parse_envar_uint_or_minusone(name, &env_val)) {
++        case 0:
++            break;
++        case 1:
++            *out = env_val == -1U ? -1U : pa_usec_to_bytes((env_val - 1) / 10 + 1, sspec);
++            MESSAGE("PulseAudio %s set to %dus.\n", attr_name, (env_val - 1) / 10 + 1);
++            break;
++        case -1:
++            MESSAGE("Failed to parse %s.\n", name);
++            break;
++    }
++}
++
+ static inline void fill_attr(ACImpl *This, pa_buffer_attr *attr, UINT32 period_bytes) {
+     /* PulseAudio will fill in correct values */
+     attr->minreq = attr->fragsize = period_bytes;
+     attr->tlength = period_bytes * 3;
+     attr->maxlength = This->bufsize_frames * pa_frame_size(&This->ss);
+     attr->prebuf = pa_frame_size(&This->ss);
++
++    parse_pulse_envar("STAGING_PULSE_MINREQ", &attr->minreq, &This->ss, "minreq");
++    parse_pulse_envar("STAGING_PULSE_FRAGSIZE", &attr->fragsize, &This->ss, "fragsize");
++    parse_pulse_envar("STAGING_PULSE_TLENGTH", &attr->tlength, &This->ss, "tlength");
++    parse_pulse_envar("STAGING_PULSE_MAXLENGTH", &attr->maxlength, &This->ss, "maxlength");
++    parse_pulse_envar("STAGING_PULSE_PREBUF", &attr->prebuf, &This->ss, "prebuf");
+ }
+ 
+ static HRESULT pulse_stream_connect(ACImpl *This, UINT32 period_bytes) {
+-- 
+2.30.1
+

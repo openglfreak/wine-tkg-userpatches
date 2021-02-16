@@ -1,0 +1,46 @@
+From bf6bb309b891135b419fc46031d4397e3989d05f Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Sat, 13 Feb 2021 01:24:42 +0100
+Subject: [PATCH 4/6] winepulse.drv: Move the filling of the pa_buffer_attr
+ struct to a new function.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/winepulse.drv/mmdevdrv.c | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/winepulse.drv/mmdevdrv.c b/dlls/winepulse.drv/mmdevdrv.c
+index ffa5e9ada98..fd986165372 100644
+--- a/dlls/winepulse.drv/mmdevdrv.c
++++ b/dlls/winepulse.drv/mmdevdrv.c
+@@ -1439,6 +1439,14 @@ static DWORD WINAPI pulse_timer_cb(void *user)
+     return 0;
+ }
+ 
++static inline void fill_attr(ACImpl *This, pa_buffer_attr *attr, UINT32 period_bytes) {
++    /* PulseAudio will fill in correct values */
++    attr->minreq = attr->fragsize = period_bytes;
++    attr->tlength = period_bytes * 3;
++    attr->maxlength = This->bufsize_frames * pa_frame_size(&This->ss);
++    attr->prebuf = pa_frame_size(&This->ss);
++}
++
+ static HRESULT pulse_stream_connect(ACImpl *This, UINT32 period_bytes) {
+     int ret;
+     char buffer[64];
+@@ -1465,11 +1473,7 @@ static HRESULT pulse_stream_connect(ACImpl *This, UINT32 period_bytes) {
+     pa_stream_set_buffer_attr_callback(This->stream, pulse_attr_update, This);
+     pa_stream_set_moved_callback(This->stream, pulse_attr_update, This);
+ 
+-    /* PulseAudio will fill in correct values */
+-    attr.minreq = attr.fragsize = period_bytes;
+-    attr.tlength = period_bytes * 3;
+-    attr.maxlength = This->bufsize_frames * pa_frame_size(&This->ss);
+-    attr.prebuf = pa_frame_size(&This->ss);
++    fill_attr(This, &attr, period_bytes);
+     dump_attr(&attr);
+ 
+     /* If device name is given use exactly the specified device */
+-- 
+2.30.1
+

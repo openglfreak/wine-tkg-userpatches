@@ -1,0 +1,58 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH] plugplay: Broadcast WM_DEVICECHANGE message asynchronously.
+Message-Id: <20210215194200.2361615-1-rbernon@codeweavers.com>
+Date: Mon, 15 Feb 2021 20:42:00 +0100
+
+It may otherwise trigger a nasty race condition, where:
+
+1) For explorer.exe to register the CLSID_ShellWindows classes, it
+   needs RpcSS service to be started,
+
+2) services.exe may start WinePlugPlay service group first, waiting for
+   its startup to complete,
+
+3) during startup and early device enumeration, hidclass.sys may call
+   IoSetDeviceInterfaceState, which calls plugplay_send_event [1],
+
+4) plugplay_send_event tries to broadcast a WM_DEVICECHANGE message with
+   BSF_QUERY, waiting for the individual threads to reply,
+
+5) which times-out because window threads are waiting on explorer.exe
+   to create its desktop window and reply to the WM_NULL SendMessage.
+
+This happens more likely as there is threads with message queues
+being started, each waiting on the desktop window to reply. Usually
+explorer.exe is able to reply to some messages with the implicit
+message processing while creating its window, but not all of them.
+
+[1] Not completely sure how, it looks like some RPC too, but before
+    RpcSs is started?
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+
+Not sure if this is right, but sending it at least for the description
+of the race condition.
+
+ programs/plugplay/main.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/programs/plugplay/main.c b/programs/plugplay/main.c
+index 19e02286312..1156cb9f036 100644
+--- a/programs/plugplay/main.c
++++ b/programs/plugplay/main.c
+@@ -142,8 +142,8 @@ void __cdecl plugplay_send_event( DWORD code, const BYTE *data, unsigned int siz
+     struct listener *listener;
+     struct event *event;
+ 
+-    BroadcastSystemMessageW( BSF_FORCEIFHUNG | BSF_QUERY, NULL, WM_DEVICECHANGE, code, (LPARAM)data );
+-    BroadcastSystemMessageW( BSF_FORCEIFHUNG | BSF_QUERY, NULL, WM_DEVICECHANGE, DBT_DEVNODES_CHANGED, 0 );
++    BroadcastSystemMessageW( 0, NULL, WM_DEVICECHANGE, code, (LPARAM)data );
++    BroadcastSystemMessageW( 0, NULL, WM_DEVICECHANGE, DBT_DEVNODES_CHANGED, 0 );
+ 
+     EnterCriticalSection( &plugplay_cs );
+ 
+
+-- 
+2.30.0
+

@@ -1,13 +1,17 @@
 From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
-#Subject: [PATCH v6 5/5] kernelbase: Reimplement GetVolumeInformation on top of GetVolumeInformationByHandle.
-Message-Id: <CAEU2+vrAcFN5oXJvunL0umLXW4W0je0K41cEfEtPkAkDre=StQ@mail.gmail.com>
-Date: Sat, 6 Feb 2021 11:26:05 -0700
+Subject: [PATCH v8] kernelbase: Reimplement GetVolumeInformation on top of GetVolumeInformationByHandle.
+Message-Id: <CAEU2+vp1gupkNTtdt7quwFv1ea3Ab-xaB8DiEmwNm132tDv2og@mail.gmail.com>
+Date: Mon, 15 Feb 2021 18:37:20 -0700
 
 This patch removes the volume querying information duplication in
 kernelbase by re-implementing GetVolumeInformation using
 GetVolumeInformationByHandle (itself implemented with
-NtQueryVolumeInformationFile).
+NtQueryVolumeInformationFile).  Many thanks to Zeb for additional
+testing and suggestions.
 
+v8: Fall back to SYNCHRONIZE (no GENERIC_READ) with slash on failure
+v7: Fix Root_Slash to always use the correct drive letter and don't
+use FILE_LIST_DIRECTORY
 v6: No change
 v5: Rebase against 1b1b6c5f7d28768feb853eefd015aa714b819ed4
 v4: Reordered (no content change)
@@ -17,7 +21,7 @@ v2: Reordered (no content change)
 Best,
 Erich
 
-From ca214462c58c706ada239bb11a39bb44fa7f6541 Mon Sep 17 00:00:00 2001
+From 8036866f533b10d4305ff27e3f3b6ad45c164886 Mon Sep 17 00:00:00 2001
 From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
 Date: Fri, 15 May 2020 22:07:10 -0600
 Subject: kernelbase: Reimplement GetVolumeInformation on top of
@@ -25,24 +29,41 @@ Subject: kernelbase: Reimplement GetVolumeInformation on top of
 
 Signed-off-by: Erich E. Hoover <erich.e.hoover@gmail.com>
 ---
- dlls/kernel32/tests/volume.c |  40 +++
- dlls/kernelbase/volume.c     | 595 +----------------------------------
- 2 files changed, 46 insertions(+), 589 deletions(-)
+ dlls/kernel32/tests/volume.c |  48 +++
+ dlls/kernelbase/volume.c     | 584 +----------------------------------
+ 2 files changed, 54 insertions(+), 578 deletions(-)
 
 diff --git a/dlls/kernel32/tests/volume.c b/dlls/kernel32/tests/volume.c
-index 5199a4992d8..6f8884c7bc8 100644
+index 5199a4992d8..26bfb1723d4 100644
 --- a/dlls/kernel32/tests/volume.c
 +++ b/dlls/kernel32/tests/volume.c
-@@ -1522,6 +1522,8 @@ static void test_GetVolumeInformationByHandle(void)
+@@ -1521,8 +1521,12 @@ static void test_GetVolumeInformationByHandle(void)
+     FILE_FS_ATTRIBUTE_INFORMATION *attr_info = (void *)buffer;
      FILE_FS_VOLUME_INFORMATION *volume_info = (void *)buffer;
      DWORD serial, filename_len, flags;
++    char windowsdir[MAX_PATH+10];
      WCHAR label[20], fsname[20];
 +    char Root_Slash[]="C:\\";
 +    char volume[MAX_PATH+1];
      IO_STATUS_BLOCK io;
++    UINT result;
      HANDLE file;
      NTSTATUS status;
-@@ -1578,6 +1580,44 @@ static void test_GetVolumeInformationByHandle(void)
+     BOOL ret;
+@@ -1533,6 +1537,12 @@ static void test_GetVolumeInformationByHandle(void)
+         return;
+     }
+ 
++    /* get windows drive letter and update strings for testing */
++    result = GetWindowsDirectoryA(windowsdir, sizeof(windowsdir));
++    ok(result < sizeof(windowsdir), "windowsdir is abnormally long!\n");
++    ok(result != 0, "GetWindowsDirectory: error %d\n", GetLastError());
++    Root_Slash[0] = windowsdir[0];
++
+     file = CreateFileA( "C:/windows", 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+             OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL );
+     ok(file != INVALID_HANDLE_VALUE, "failed to open file, error %u\n", GetLastError());
+@@ -1578,6 +1588,44 @@ static void test_GetVolumeInformationByHandle(void)
              "expected label length %u, got %u\n", volume_info->VolumeLabelLength / sizeof(WCHAR), wcslen( label ));
  
      CloseHandle( file );
@@ -88,7 +109,7 @@ index 5199a4992d8..6f8884c7bc8 100644
  
  START_TEST(volume)
 diff --git a/dlls/kernelbase/volume.c b/dlls/kernelbase/volume.c
-index 7daf9c98823..3c4e2fd2ec1 100644
+index 7daf9c98823..a2241d8fc7e 100644
 --- a/dlls/kernelbase/volume.c
 +++ b/dlls/kernelbase/volume.c
 @@ -149,500 +149,6 @@ static DWORD get_mountmgr_drive_type( LPCWSTR root )
@@ -611,15 +632,10 @@ index 7daf9c98823..3c4e2fd2ec1 100644
      attr.Length = sizeof(attr);
      attr.RootDirectory = 0;
      attr.Attributes = OBJ_CASE_INSENSITIVE;
-@@ -690,99 +192,14 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetVolumeInformationW( LPCWSTR root, LPWSTR label,
-     attr.SecurityDescriptor = NULL;
-     attr.SecurityQualityOfService = NULL;
+@@ -695,94 +197,20 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetVolumeInformationW( LPCWSTR root, LPWSTR label,
+                          FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT );
+     nt_name.Length += sizeof(WCHAR);
  
--    nt_name.Length -= sizeof(WCHAR);  /* without trailing slash */
--    status = NtOpenFile( &handle, GENERIC_READ | SYNCHRONIZE, &attr, &io, FILE_SHARE_READ | FILE_SHARE_WRITE,
--                         FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT );
--    nt_name.Length += sizeof(WCHAR);
--
 -    if (status == STATUS_SUCCESS)
 -    {
 -        BYTE superblock[SUPERBLOCK_SIZE];
@@ -659,22 +675,22 @@ index 7daf9c98823..3c4e2fd2ec1 100644
 -        goto fill_fs_info;
 -    }
 -    else
--    {
--        TRACE( "cannot open device %s: %x\n", debugstr_w(nt_name.Buffer), status );
--        if (status == STATUS_ACCESS_DENIED)
--            MESSAGE( "wine: Read access denied for device %s, FS volume label and serial are not available.\n", debugstr_w(nt_name.Buffer) );
--    }
++    if (status)
+     {
+         TRACE( "cannot open device %s: %x\n", debugstr_w(nt_name.Buffer), status );
+         if (status == STATUS_ACCESS_DENIED)
+             MESSAGE( "wine: Read access denied for device %s, FS volume label and serial are not available.\n", debugstr_w(nt_name.Buffer) );
++        status = NtOpenFile( &handle, SYNCHRONIZE, &attr, &io, 0,
++                                      FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT );
+     }
 -    /* we couldn't open the device, fallback to default strategy */
 -
 -    if (!set_ntstatus( NtOpenFile( &handle, SYNCHRONIZE, &attr, &io, 0,
 -                                   FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT )))
 -        goto done;
--
+ 
 -    status = NtQueryVolumeInformationFile( handle, &io, &info, sizeof(info), FileFsDeviceInformation );
 -    NtClose( handle );
-+    status = NtOpenFile( &handle, SYNCHRONIZE | FILE_LIST_DIRECTORY, &attr, &io,
-+                         FILE_SHARE_READ | FILE_SHARE_WRITE,
-+                         FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT );
      if (!set_ntstatus( status )) goto done;
  
 -    if (info.DeviceType == FILE_DEVICE_CD_ROM_FILE_SYSTEM) type = FS_ISO9660;

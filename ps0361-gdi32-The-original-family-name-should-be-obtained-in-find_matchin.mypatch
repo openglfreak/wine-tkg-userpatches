@@ -1,0 +1,82 @@
+From: "Haidong Yu" <yhd986@163.com>
+#Subject: [PATCH] gdi32: The original family name should be obtained in find_matching_face_by_name().
+Message-Id: <76d4e2f3.6b9d.177ed5b2233.Coremail.yhd986@163.com>
+Date: Mon, 1 Mar 2021 18:35:08 +0800 (CST)
+
+From ec81c26a49d51faffbfb97355a9543c618850516 Mon Sep 17 00:00:00 2001
+From: Haidong Yu <yuhaidong@uniontech.com>
+Date: Mon, 1 Mar 2021 15:56:39 +0800
+Subject: [PATCH] gdi32: The original family name should be obtained in
+ find_matching_face_by_name().
+
+Signed-off-by: Haidong Yu <yuhaidong@uniontech.com>
+---
+ dlls/gdi32/font.c | 21 ++++++++++++++++-----
+ 1 file changed, 16 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/gdi32/font.c b/dlls/gdi32/font.c
+index 1e78c210546..f579caba944 100644
+--- a/dlls/gdi32/font.c
++++ b/dlls/gdi32/font.c
+@@ -1506,13 +1506,17 @@ static struct gdi_font_face *find_best_matching_face( const struct gdi_font_fami
+ 
+ static struct gdi_font_face *find_matching_face_by_name( const WCHAR *name, const WCHAR *subst,
+                                                          const LOGFONTW *lf, FONTSIGNATURE fs,
+-                                                         BOOL can_use_bitmap )
++                                                         BOOL can_use_bitmap, const WCHAR **orig_name )
+ {
+     struct gdi_font_family *family;
+     struct gdi_font_face *face;
+ 
+     family = find_family_from_any_name( name );
+-    if (family && (face = find_best_matching_face( family, lf, fs, can_use_bitmap ))) return face;
++    if (family && (face = find_best_matching_face( family, lf, fs, can_use_bitmap ))) 
++    {
++        if (orig_name) *orig_name = family->family_name;
++        return face;
++    }
+     if (subst)
+     {
+         family = find_family_from_any_name( subst );
+@@ -1524,11 +1528,18 @@ static struct gdi_font_face *find_matching_face_by_name( const WCHAR *name, cons
+         LIST_FOR_EACH_ENTRY( face, get_family_face_list(family), struct gdi_font_face, entry )
+             if (!facename_compare( face->full_name, name, LF_FACESIZE - 1 ) &&
+                 can_select_face( face, fs, can_use_bitmap ))
++            {
++                if (orig_name) *orig_name = family->family_name;
+                 return face;
++            }
+ 
+     if ((family = find_family_from_font_links( name, subst, fs )))
+     {
+-        if ((face = find_best_matching_face( family, lf, fs, can_use_bitmap ))) return face;
++        if ((face = find_best_matching_face( family, lf, fs, can_use_bitmap ))) 
++        {
++            if (orig_name) *orig_name = family->family_name;
++            return face;
++        }
+     }
+     return NULL;
+ }
+@@ -1595,7 +1606,7 @@ static struct gdi_font_face *find_matching_face( const LOGFONTW *lf, CHARSETINFO
+             *orig_name = lf->lfFaceName;
+ 	}
+ 
+-        if ((face = find_matching_face_by_name( lf->lfFaceName, subst, lf, csi->fs, can_use_bitmap )))
++        if ((face = find_matching_face_by_name( lf->lfFaceName, subst, lf, csi->fs, can_use_bitmap, orig_name )))
+             return face;
+     }
+     *orig_name = NULL; /* substitution is no longer relevant */
+@@ -2157,7 +2168,7 @@ static void add_child_font( struct gdi_font *font, const WCHAR *family_name )
+     struct gdi_font *child;
+     struct gdi_font_face *face;
+ 
+-    if (!(face = find_matching_face_by_name( family_name, NULL, &font->lf, fs, FALSE ))) return;
++    if (!(face = find_matching_face_by_name( family_name, NULL, &font->lf, fs, FALSE, NULL ))) return;
+ 
+     if (!(child = create_gdi_font( face, family_name, &font->lf ))) return;
+     child->matrix = font->matrix;
+
+-- 
+2.20.1
+

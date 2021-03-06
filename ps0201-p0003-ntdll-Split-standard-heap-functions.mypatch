@@ -1,7 +1,7 @@
-From 6803d3f50695131e4186742ba5b5381ed99e39a9 Mon Sep 17 00:00:00 2001
+From eeeac26da7f8c8256703bd41daba96e35062b60f Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Wed, 28 Aug 2019 22:24:42 +0200
-Subject: [PATCH 03/11] ntdll: Split standard heap functions.
+Subject: [PATCH 03/14] ntdll: Split standard heap functions.
 
 ---
  dlls/ntdll/heap.c       | 113 +++++++++++++++++++++++++++-------------
@@ -9,10 +9,10 @@ Subject: [PATCH 03/11] ntdll: Split standard heap functions.
  2 files changed, 84 insertions(+), 36 deletions(-)
 
 diff --git a/dlls/ntdll/heap.c b/dlls/ntdll/heap.c
-index 1ac0cb24806..e483ba81873 100644
+index cae41cba0d9..38d8f21605c 100644
 --- a/dlls/ntdll/heap.c
 +++ b/dlls/ntdll/heap.c
-@@ -1335,8 +1335,6 @@ static BOOL HEAP_IsRealArena( HEAP *heapPtr,   /* [in] ptr to the heap */
+@@ -1334,8 +1334,6 @@ static BOOL HEAP_IsRealArena( HEAP *heapPtr,   /* [in] ptr to the heap */
      BOOL ret = FALSE;
      const ARENA_LARGE *large_arena;
  
@@ -21,7 +21,7 @@ index 1ac0cb24806..e483ba81873 100644
      /* calling HeapLock may result in infinite recursion, so do the critsect directly */
      if (!(flags & HEAP_NO_SERIALIZE))
          enter_critical_section( &heapPtr->critSection );
-@@ -1644,18 +1642,27 @@ HANDLE WINAPI RtlDestroyHeap( HANDLE heap )
+@@ -1649,18 +1647,27 @@ HANDLE WINAPI RtlDestroyHeap( HANDLE heap )
   *  This call does not SetLastError().
   */
  void * WINAPI DECLSPEC_HOTPATCH RtlAllocateHeap( HANDLE heap, ULONG flags, SIZE_T size )
@@ -53,7 +53,7 @@ index 1ac0cb24806..e483ba81873 100644
      rounded_size = ROUND_SIZE(size) + HEAP_TAIL_EXTRA_SIZE;
      if (rounded_size < size)  /* overflow */
      {
-@@ -1668,10 +1675,10 @@ void * WINAPI DECLSPEC_HOTPATCH RtlAllocateHeap( HANDLE heap, ULONG flags, SIZE_
+@@ -1673,10 +1680,10 @@ void * WINAPI DECLSPEC_HOTPATCH RtlAllocateHeap( HANDLE heap, ULONG flags, SIZE_
  
      if (rounded_size >= HEAP_MIN_LARGE_BLOCK_SIZE && (flags & HEAP_GROWABLE))
      {
@@ -66,7 +66,7 @@ index 1ac0cb24806..e483ba81873 100644
          return ret;
      }
  
-@@ -1680,7 +1687,7 @@ void * WINAPI DECLSPEC_HOTPATCH RtlAllocateHeap( HANDLE heap, ULONG flags, SIZE_
+@@ -1685,7 +1692,7 @@ void * WINAPI DECLSPEC_HOTPATCH RtlAllocateHeap( HANDLE heap, ULONG flags, SIZE_
      if (!(pArena = HEAP_FindFreeBlock( heapPtr, rounded_size, &subheap )))
      {
          TRACE("(%p,%08x,%08lx): returning NULL\n",
@@ -75,7 +75,7 @@ index 1ac0cb24806..e483ba81873 100644
          if (!(flags & HEAP_NO_SERIALIZE)) leave_critical_section( &heapPtr->critSection );
          if (flags & HEAP_GENERATE_EXCEPTIONS) RtlRaiseStatus( STATUS_NO_MEMORY );
          return NULL;
-@@ -1709,7 +1716,7 @@ void * WINAPI DECLSPEC_HOTPATCH RtlAllocateHeap( HANDLE heap, ULONG flags, SIZE_
+@@ -1714,7 +1721,7 @@ void * WINAPI DECLSPEC_HOTPATCH RtlAllocateHeap( HANDLE heap, ULONG flags, SIZE_
  
      if (!(flags & HEAP_NO_SERIALIZE)) leave_critical_section( &heapPtr->critSection );
  
@@ -84,7 +84,7 @@ index 1ac0cb24806..e483ba81873 100644
      return pInUse + 1;
  }
  
-@@ -1730,16 +1737,11 @@ void * WINAPI DECLSPEC_HOTPATCH RtlAllocateHeap( HANDLE heap, ULONG flags, SIZE_
+@@ -1735,16 +1742,11 @@ void * WINAPI DECLSPEC_HOTPATCH RtlAllocateHeap( HANDLE heap, ULONG flags, SIZE_
   */
  BOOLEAN WINAPI DECLSPEC_HOTPATCH RtlFreeHeap( HANDLE heap, ULONG flags, void *ptr )
  {
@@ -102,7 +102,7 @@ index 1ac0cb24806..e483ba81873 100644
      {
          RtlSetLastWin32ErrorAndNtStatusFromNtStatus( STATUS_INVALID_HANDLE );
          return FALSE;
-@@ -1747,6 +1749,17 @@ BOOLEAN WINAPI DECLSPEC_HOTPATCH RtlFreeHeap( HANDLE heap, ULONG flags, void *pt
+@@ -1752,6 +1754,17 @@ BOOLEAN WINAPI DECLSPEC_HOTPATCH RtlFreeHeap( HANDLE heap, ULONG flags, void *pt
  
      flags &= HEAP_NO_SERIALIZE;
      flags |= heapPtr->flags;
@@ -120,7 +120,7 @@ index 1ac0cb24806..e483ba81873 100644
      if (!(flags & HEAP_NO_SERIALIZE)) enter_critical_section( &heapPtr->critSection );
  
      /* Inform valgrind we are trying to free memory, so it can throw up an error message */
-@@ -1762,13 +1775,13 @@ BOOLEAN WINAPI DECLSPEC_HOTPATCH RtlFreeHeap( HANDLE heap, ULONG flags, void *pt
+@@ -1767,13 +1780,13 @@ BOOLEAN WINAPI DECLSPEC_HOTPATCH RtlFreeHeap( HANDLE heap, ULONG flags, void *pt
          HEAP_MakeInUseBlockFree( subheap, pInUse );
  
      if (!(flags & HEAP_NO_SERIALIZE)) leave_critical_section( &heapPtr->critSection );
@@ -136,7 +136,7 @@ index 1ac0cb24806..e483ba81873 100644
      return FALSE;
  }
  
-@@ -1790,24 +1803,33 @@ error:
+@@ -1795,24 +1808,33 @@ error:
   */
  PVOID WINAPI RtlReAllocateHeap( HANDLE heap, ULONG flags, PVOID ptr, SIZE_T size )
  {
@@ -177,7 +177,7 @@ index 1ac0cb24806..e483ba81873 100644
      if (!(flags & HEAP_NO_SERIALIZE)) enter_critical_section( &heapPtr->critSection );
  
      rounded_size = ROUND_SIZE(size) + HEAP_TAIL_EXTRA_SIZE(flags);
-@@ -1903,20 +1925,20 @@ PVOID WINAPI RtlReAllocateHeap( HANDLE heap, ULONG flags, PVOID ptr, SIZE_T size
+@@ -1908,20 +1930,20 @@ PVOID WINAPI RtlReAllocateHeap( HANDLE heap, ULONG flags, PVOID ptr, SIZE_T size
      ret = pArena + 1;
  done:
      if (!(flags & HEAP_NO_SERIALIZE)) leave_critical_section( &heapPtr->critSection );
@@ -201,7 +201,7 @@ index 1ac0cb24806..e483ba81873 100644
      return NULL;
  }
  
-@@ -2005,18 +2027,26 @@ BOOLEAN WINAPI RtlUnlockHeap( HANDLE heap )
+@@ -2010,18 +2032,26 @@ BOOLEAN WINAPI RtlUnlockHeap( HANDLE heap )
   */
  SIZE_T WINAPI RtlSizeHeap( HANDLE heap, ULONG flags, const void *ptr )
  {
@@ -233,7 +233,7 @@ index 1ac0cb24806..e483ba81873 100644
      if (!(flags & HEAP_NO_SERIALIZE)) enter_critical_section( &heapPtr->critSection );
  
      pArena = (const ARENA_INUSE *)ptr - 1;
-@@ -2036,7 +2066,7 @@ SIZE_T WINAPI RtlSizeHeap( HANDLE heap, ULONG flags, const void *ptr )
+@@ -2041,7 +2071,7 @@ SIZE_T WINAPI RtlSizeHeap( HANDLE heap, ULONG flags, const void *ptr )
      }
      if (!(flags & HEAP_NO_SERIALIZE)) leave_critical_section( &heapPtr->critSection );
  
@@ -242,7 +242,7 @@ index 1ac0cb24806..e483ba81873 100644
      return ret;
  }
  
-@@ -2057,8 +2087,19 @@ SIZE_T WINAPI RtlSizeHeap( HANDLE heap, ULONG flags, const void *ptr )
+@@ -2062,8 +2092,19 @@ SIZE_T WINAPI RtlSizeHeap( HANDLE heap, ULONG flags, const void *ptr )
   */
  BOOLEAN WINAPI RtlValidateHeap( HANDLE heap, ULONG flags, LPCVOID ptr )
  {
@@ -265,10 +265,10 @@ index 1ac0cb24806..e483ba81873 100644
  }
  
 diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
-index 41e8666a25c..9044e5109bf 100644
+index aebea12e6ba..8abea09582d 100644
 --- a/dlls/ntdll/ntdll_misc.h
 +++ b/dlls/ntdll/ntdll_misc.h
-@@ -115,6 +115,13 @@ extern enum loadorder get_load_order( const WCHAR *app_name, const UNICODE_STRIN
+@@ -113,6 +113,13 @@ extern enum loadorder get_load_order( const WCHAR *app_name, const UNICODE_STRIN
  static inline TEB64 *NtCurrentTeb64(void) { return (TEB64 *)NtCurrentTeb()->GdiBatchCount; }
  #endif
  
@@ -283,5 +283,5 @@ index 41e8666a25c..9044e5109bf 100644
  #define HASH_STRING_ALGORITHM_X65599   1
  #define HASH_STRING_ALGORITHM_INVALID  0xffffffff
 -- 
-2.29.1
+2.30.1
 

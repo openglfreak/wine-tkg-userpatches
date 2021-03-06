@@ -1,0 +1,101 @@
+From 7a6c5b5d34b80a0a6203df44115eb5279307844b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 26 Jan 2021 09:59:04 +0100
+Subject: [PATCH 15/18] winex11.drv: Remove thread-local clip_hwnd message
+ window.
+
+---
+ dlls/winex11.drv/mouse.c  | 19 +++----------------
+ dlls/winex11.drv/x11drv.h |  1 -
+ 2 files changed, 3 insertions(+), 17 deletions(-)
+
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index d45aa1e08a3..8df3c66a60d 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -449,7 +449,6 @@ void X11DRV_XInput2_Disable(void)
+  */
+ static BOOL grab_clipping_window( const RECT *clip )
+ {
+-    static const WCHAR messageW[] = {'M','e','s','s','a','g','e',0};
+     struct x11drv_thread_data *data = x11drv_thread_data();
+     CURSORINFO pci;
+     Window clip_window;
+@@ -459,17 +458,10 @@ static BOOL grab_clipping_window( const RECT *clip )
+     if (!data) return FALSE;
+     if (!(clip_window = init_clip_window())) return TRUE;
+ 
+-    if (!data->clip_hwnd &&
+-        !(data->clip_hwnd = CreateWindowW( messageW, NULL, 0, 0, 0, 0, 0, HWND_MESSAGE, 0,
+-                                    GetModuleHandleW(0), NULL )))
+-        return TRUE;
+-
+     if (data->xi2_state != xi_enabled) X11DRV_XInput2_Enable( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
+     if (data->xi2_state != xi_enabled)
+     {
+         WARN( "XInput2 not supported, refusing to clip to %s\n", wine_dbgstr_rect(clip) );
+-        DestroyWindow( data->clip_hwnd );
+-        data->clip_hwnd = NULL;
+         ClipCursor( NULL );
+         return TRUE;
+     }
+@@ -512,8 +504,6 @@ static BOOL grab_clipping_window( const RECT *clip )
+     {
+         X11DRV_XInput2_Disable();
+         XUnmapWindow( data->display, clip_window );
+-        DestroyWindow( data->clip_hwnd );
+-        data->clip_hwnd = NULL;
+         return FALSE;
+     }
+     clip_rect = *clip;
+@@ -537,8 +527,6 @@ void ungrab_clipping_window(void)
+     XUnmapWindow( data->display, clip_window );
+     if (clipping_cursor) XUngrabPointer( data->display, CurrentTime );
+     clipping_cursor = FALSE;
+-    if (data->clip_hwnd) DestroyWindow( data->clip_hwnd );
+-    data->clip_hwnd = NULL;
+     data->clip_reset = GetTickCount();
+ }
+ 
+@@ -580,7 +568,7 @@ static BOOL clip_fullscreen_window( HWND hwnd, BOOL reset )
+     if (!fullscreen) return FALSE;
+     if (!(thread_data = x11drv_thread_data())) return FALSE;
+     if (GetTickCount() - thread_data->clip_reset < 1000) return FALSE;
+-    if (!reset && clipping_cursor && thread_data->clip_hwnd) return FALSE;  /* already clipping */
++    if (!reset && clipping_cursor) return FALSE;  /* already clipping */
+ 
+     monitor = MonitorFromWindow( hwnd, MONITOR_DEFAULTTONEAREST );
+     if (!monitor) return FALSE;
+@@ -667,9 +655,8 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
+     if (!hwnd)
+     {
+         struct x11drv_thread_data *thread_data = x11drv_thread_data();
+-        HWND clip_hwnd = thread_data->clip_hwnd;
+ 
+-        if (!clip_hwnd) return;
++        if (!clipping_cursor) return;
+         if (thread_data->clip_window != window) return;
+         input->u.mi.dx += clip_rect.left;
+         input->u.mi.dy += clip_rect.top;
+@@ -1568,7 +1555,7 @@ void x11drv_desktop_clip_cursor( BOOL fullscreen, BOOL reset )
+             struct x11drv_thread_data *data = x11drv_thread_data();
+             if (data)
+             {
+-                if ((data->clip_hwnd && EqualRect( &clip, &clip_rect ) && !EqualRect(&clip_rect, &virtual_rect)) || clip_fullscreen_window( foreground, TRUE ))
++                if ((clipping_cursor && EqualRect( &clip, &clip_rect ) && !EqualRect(&clip_rect, &virtual_rect)) || clip_fullscreen_window( foreground, TRUE ))
+                     return;
+             }
+         }
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 56cc8db8b5c..a77510f0270 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -341,7 +341,6 @@ struct x11drv_thread_data
+     Window   selection_wnd;        /* window used for selection interactions */
+     unsigned long warp_serial;     /* serial number of last pointer warp request */
+     Window   clip_window;          /* window used for cursor clipping */
+-    HWND     clip_hwnd;            /* message window stored in desktop while clipping is active */
+     DWORD    clip_reset;           /* time when clipping was last reset */
+     HKL      kbd_layout;           /* active keyboard layout */
+     enum { xi_unavailable = -1, xi_unknown, xi_disabled, xi_enabled } xi2_state; /* XInput2 state */
+

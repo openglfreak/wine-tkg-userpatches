@@ -1,0 +1,40 @@
+From 3f5e9b902a37728c19a1336530349b312acbee24 Mon Sep 17 00:00:00 2001
+From: Arkadiusz Hiler <ahiler@codeweavers.com>
+Date: Fri, 12 Feb 2021 15:57:54 +0200
+Subject: [PATCH 19/26] hidclass.sys: Send RawInput messages for report_id-less
+ devices correctly.
+
+The HID_XFER_PACKET contains the report verbatim, i.e. report id is included
+only if it's used by the device.
+
+Report ID 0 is reserved by HID spec and used by the HID APIs for ID-less
+reports. This includes WM_INPUT / GetRawInputData() which just like
+HidD_GetInputReport() use the first byte for report id, even if it's not used
+by the device - then it is set to 0.
+
+This fixes Hades and other games using SDL 2.0.14+ for handling xinput
+controllers.
+---
+ dlls/hidclass.sys/device.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/dlls/hidclass.sys/device.c b/dlls/hidclass.sys/device.c
+index 18cf3a346fb..f6ac64105b3 100644
+--- a/dlls/hidclass.sys/device.c
++++ b/dlls/hidclass.sys/device.c
+@@ -262,6 +262,14 @@ static void HID_Device_sendRawInput(DEVICE_OBJECT *device, HID_XFER_PACKET *pack
+         req->input.hid.usage_page = ext->preparseData->caps.UsagePage;
+         req->input.hid.usage      = ext->preparseData->caps.Usage;
+         req->input.hid.length     = packet->reportBufferLen;
++
++        /* report-id-less reports */
++        if (ext->preparseData->reports[0].reportID == 0) {
++            BYTE zero_byte = 0;
++            req->input.hid.length++;
++            wine_server_add_data(req, &zero_byte, sizeof(zero_byte));
++        }
++
+         wine_server_add_data(req, packet->reportBuffer, packet->reportBufferLen);
+         wine_server_call(req);
+     }
+

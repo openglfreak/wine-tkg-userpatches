@@ -1,0 +1,103 @@
+From 63f9a6e39e02dc19d29ce4b74a0cae677580428c Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Sat, 6 Mar 2021 01:26:06 +0100
+Subject: [PATCH 6/9] winepulse.drv: Make requested audio buffer parameters
+ configurable per registry.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/winepulse.drv/mmdevdrv.c | 73 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 73 insertions(+)
+
+diff --git a/dlls/winepulse.drv/mmdevdrv.c b/dlls/winepulse.drv/mmdevdrv.c
+index aa705175425..997f64c9009 100644
+--- a/dlls/winepulse.drv/mmdevdrv.c
++++ b/dlls/winepulse.drv/mmdevdrv.c
+@@ -1476,11 +1476,84 @@ static DWORD WINAPI pulse_timer_cb(void *user)
+ }
+ 
+ static inline void fill_attr(ACImpl *This, pa_buffer_attr *attr, UINT32 period_bytes) {
++    static const WCHAR minreq_keyW[] = {'M','i','n','R','e','q',0};
++    static const WCHAR fragsize_keyW[] = {'F','r','a','g','S','i','z','e',0};
++    static const WCHAR tlength_keyW[] = {'T','L','e','n','g','t','h',0};
++    static const WCHAR maxlength_keyW[] = {'M','a','x','L','e','n','g','t','h',0};
++    static const WCHAR prebuf_keyW[] = {'P','r','e','B','u','f',0};
++    HKEY key;
++
+     /* PulseAudio will fill in correct values */
+     attr->minreq = attr->fragsize = period_bytes;
+     attr->tlength = period_bytes * 3;
+     attr->maxlength = This->bufsize_frames * pa_frame_size(&This->ss);
+     attr->prebuf = pa_frame_size(&This->ss);
++
++    if (RegCreateKeyExW(HKEY_CURRENT_USER, drv_key_settingsW, 0, NULL, 0,
++            KEY_READ, NULL, &key, NULL) != ERROR_SUCCESS)
++        ERR("Failed to open registry key %s\n", debugstr_w(drv_key_settingsW));
++    else{
++        DWORD data = 0, type = 0, size = sizeof(data);
++        if (RegQueryValueExW(key, minreq_keyW, 0, &type, (BYTE *)&data,
++            &size) == ERROR_SUCCESS){
++            if (type == REG_DWORD && size == sizeof(DWORD)) {
++                attr->minreq = (INT)data;
++                if (attr->minreq != -1U)
++                    attr->minreq = pa_usec_to_bytes((attr->minreq - 1) / 10 + 1, &This->ss);
++            }
++            else
++                ERR("Invalid type %u for setting %s, ignoring\n",
++                    type, wine_dbgstr_w(minreq_keyW));
++        }
++        size = sizeof(data);
++        if (RegQueryValueExW(key, fragsize_keyW, 0, &type, (BYTE *)&data,
++            &size) == ERROR_SUCCESS){
++            if (type == REG_DWORD && size == sizeof(DWORD)) {
++                attr->fragsize = (INT)data;
++                if (attr->fragsize != -1U)
++                    attr->fragsize = pa_usec_to_bytes((attr->fragsize - 1) / 10 + 1, &This->ss);
++            }
++            else
++                ERR("Invalid type %u for setting %s, ignoring\n",
++                    type, wine_dbgstr_w(fragsize_keyW));
++        }
++        size = sizeof(data);
++        if (RegQueryValueExW(key, tlength_keyW, 0, &type, (BYTE *)&data,
++            &size) == ERROR_SUCCESS){
++            if (type == REG_DWORD && size == sizeof(DWORD)) {
++                attr->tlength = (INT)data;
++                if (attr->tlength != -1U)
++                    attr->tlength = pa_usec_to_bytes((attr->tlength - 1) / 10 + 1, &This->ss);
++            }
++            else
++                ERR("Invalid type %u for setting %s, ignoring\n",
++                    type, wine_dbgstr_w(tlength_keyW));
++        }
++        size = sizeof(data);
++        if (RegQueryValueExW(key, maxlength_keyW, 0, &type, (BYTE *)&data,
++            &size) == ERROR_SUCCESS){
++            if (type == REG_DWORD && size == sizeof(DWORD)) {
++                attr->maxlength = (INT)data;
++                if (attr->maxlength != -1U)
++                    attr->maxlength = pa_usec_to_bytes((attr->maxlength - 1) / 10 + 1, &This->ss);
++            }
++            else
++                ERR("Invalid type %u for setting %s, ignoring\n",
++                    type, wine_dbgstr_w(maxlength_keyW));
++        }
++        size = sizeof(data);
++        if (RegQueryValueExW(key, prebuf_keyW, 0, &type, (BYTE *)&data,
++            &size) == ERROR_SUCCESS){
++            if (type == REG_DWORD && size == sizeof(DWORD)) {
++                attr->prebuf = (INT)data;
++                if (attr->prebuf != -1U)
++                    attr->prebuf = pa_usec_to_bytes((attr->prebuf - 1) / 10 + 1, &This->ss);
++            } else
++                ERR("Invalid type %u for setting %s, ignoring\n",
++                    type, wine_dbgstr_w(prebuf_keyW));
++        }
++        RegCloseKey(key);
++    }
+ }
+ 
+ static HRESULT pulse_stream_connect(ACImpl *This, UINT32 period_bytes) {
+-- 
+2.30.1
+

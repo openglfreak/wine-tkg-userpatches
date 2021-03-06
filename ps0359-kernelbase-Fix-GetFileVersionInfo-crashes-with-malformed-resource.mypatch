@@ -1,0 +1,65 @@
+From: Arkadiusz Hiler <ahiler@codeweavers.com>
+Subject: [PATCH] kernelbase: Fix GetFileVersionInfo*() crashes with malformed resources.
+Message-Id: <20210226141300.596843-1-ahiler@codeweavers.com>
+Date: Fri, 26 Feb 2021 16:13:00 +0200
+
+Some Unity games ship with an encrypted Assembly-CSharp.dll, including
+the resources directory, yet the engine still calls GetFileVersionInfoSizeW()
+on those files. This may results in a page fault when trying to find the
+version resource and takes the whole process down.
+
+The change fixes crashes when launching Home Behind 2 and Crown Trick.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=50075
+Signed-off-by: Arkadiusz Hiler <ahiler@codeweavers.com>
+---
+ dlls/kernelbase/version.c | 23 ++++++++++++++++-------
+ 1 file changed, 16 insertions(+), 7 deletions(-)
+
+diff --git a/dlls/kernelbase/version.c b/dlls/kernelbase/version.c
+index 58c49aa148b..a7b55de9706 100644
+--- a/dlls/kernelbase/version.c
++++ b/dlls/kernelbase/version.c
+@@ -42,6 +42,7 @@
+ 
+ #include "kernelbase.h"
+ #include "wine/debug.h"
++#include "wine/exception.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(ver);
+ 
+@@ -547,15 +548,23 @@ static DWORD find_version_resource( HANDLE handle, DWORD *reslen, DWORD *offset,
+     if (read_data( handle, mzh.e_lfanew, &magic, sizeof(magic) ) != sizeof(magic)) return 0;
+     *offset = mzh.e_lfanew;
+ 
+-    switch (magic)
++    __TRY
+     {
+-    case IMAGE_OS2_SIGNATURE:
+-        if (!find_ne_resource( handle, reslen, offset )) magic = 0;
+-        break;
+-    case IMAGE_NT_SIGNATURE:
+-        if (!find_pe_resource( handle, reslen, offset, flags )) magic = 0;
+-        break;
++        switch (magic)
++        {
++        case IMAGE_OS2_SIGNATURE:
++            if (!find_ne_resource( handle, reslen, offset )) magic = 0;
++            break;
++        case IMAGE_NT_SIGNATURE:
++            if (!find_pe_resource( handle, reslen, offset, flags )) magic = 0;
++            break;
++        }
+     }
++    __EXCEPT_PAGE_FAULT
++    {
++        magic = 0;
++    }
++    __ENDTRY
+     WARN( "Can't handle %04x files.\n", magic );
+     return magic;
+ }
+
+-- 
+2.30.1
+

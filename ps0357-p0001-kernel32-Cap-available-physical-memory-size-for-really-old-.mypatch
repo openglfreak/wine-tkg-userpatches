@@ -1,0 +1,36 @@
+From: Akihiro Sagawa <sagawa.aki@gmail.com>
+Subject: [PATCH 1/2] kernel32: Cap available physical memory size for really old binaries.
+Message-Id: <20210220212301.0308.375B48EC@gmail.com>
+Date: Sat, 20 Feb 2021 21:26:25 +0900
+
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=44931
+Signed-off-by: Akihiro Sagawa <sagawa.aki@gmail.com>
+---
+ dlls/kernel32/heap.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/kernel32/heap.c b/dlls/kernel32/heap.c
+index b7bd6f5f91d..7ed1bec5aff 100644
+--- a/dlls/kernel32/heap.c
++++ b/dlls/kernel32/heap.c
+@@ -596,12 +596,15 @@ VOID WINAPI GlobalMemoryStatus( LPMEMORYSTATUS lpBuffer )
+     if ( lpBuffer->dwAvailPhys +  lpBuffer->dwAvailPageFile >= 2U*1024*1024*1024)
+          lpBuffer->dwAvailPageFile = 2U*1024*1024*1024 -  lpBuffer->dwAvailPhys - 1;
+ 
+-    /* limit page file size for really old binaries */
++    /* cap values for really old binaries, e.g. Directer Player 5.0 */
++    /* use half of MAXLONG, so that dwAvailPhys + dwAvailPageFile <= MAXLONG */
+     if (nt->OptionalHeader.MajorSubsystemVersion < 4 ||
+         nt->OptionalHeader.MajorOperatingSystemVersion < 4)
+     {
+-        if (lpBuffer->dwTotalPageFile > MAXLONG) lpBuffer->dwTotalPageFile = MAXLONG;
+-        if (lpBuffer->dwAvailPageFile > MAXLONG) lpBuffer->dwAvailPageFile = MAXLONG;
++        lpBuffer->dwTotalPhys = min( lpBuffer->dwTotalPhys, MAXLONG / 2 );
++        lpBuffer->dwAvailPhys = min( lpBuffer->dwAvailPhys, MAXLONG / 2 );
++        lpBuffer->dwTotalPageFile = min( lpBuffer->dwTotalPageFile, MAXLONG / 2 );
++        lpBuffer->dwAvailPageFile = min( lpBuffer->dwAvailPageFile, MAXLONG / 2 );
+     }
+ 
+     TRACE("Length %u, MemoryLoad %u, TotalPhys %lx, AvailPhys %lx,"
+

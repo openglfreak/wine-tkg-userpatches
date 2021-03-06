@@ -1,0 +1,67 @@
+From a574b05a9fac18f5e2f1073ee8204c955e520845 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Sat, 6 Mar 2021 01:26:06 +0100
+Subject: [PATCH 8/9] winepulse.drv: Make duration and period from
+ AudioClient_Initialize configurable per registry.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/winepulse.drv/mmdevdrv.c | 33 +++++++++++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/dlls/winepulse.drv/mmdevdrv.c b/dlls/winepulse.drv/mmdevdrv.c
+index 28df00e3fc1..68a35007756 100644
+--- a/dlls/winepulse.drv/mmdevdrv.c
++++ b/dlls/winepulse.drv/mmdevdrv.c
+@@ -2165,8 +2165,11 @@ static HRESULT WINAPI AudioClient_Initialize(IAudioClient3 *iface,
+         REFERENCE_TIME period, const WAVEFORMATEX *fmt,
+         const GUID *sessionguid)
+ {
++    static const WCHAR duration_keyW[] = {'A','u','d','i','o','D','u','r','a','t','i','o','n',0};
++    static const WCHAR period_keyW[] = {'A','u','d','i','o','P','e','r','i','o','d',0};
+     ACImpl *This = impl_from_IAudioClient3(iface);
+     HRESULT hr = S_OK;
++    HKEY key;
+     UINT32 bufsize_bytes;
+ 
+     TRACE("(%p)->(%x, %x, %s, %s, %p, %s)\n", This, mode, flags,
+@@ -2218,6 +2221,36 @@ static HRESULT WINAPI AudioClient_Initialize(IAudioClient3 *iface,
+     if (duration < 3 * period)
+         duration = 3 * period;
+ 
++    if (RegCreateKeyExW(HKEY_CURRENT_USER, drv_key_settingsW, 0, NULL, 0,
++            KEY_READ, NULL, &key, NULL) != ERROR_SUCCESS)
++        ERR("Failed to open registry key %s\n", debugstr_w(drv_key_settingsW));
++    else{
++        DWORD64 data = 0;
++        DWORD type = 0, size = sizeof(data);
++        if (RegQueryValueExW(key, duration_keyW, 0, &type, (BYTE *)&data,
++            &size) == ERROR_SUCCESS){
++            if (type == REG_DWORD && size == sizeof(DWORD))
++                duration = (INT)*(DWORD*)&data;
++            if (type == REG_QWORD && size == sizeof(DWORD64))
++                duration = (INT64)data;
++            else
++                ERR("Invalid type %u for setting %s, ignoring\n",
++                    type, wine_dbgstr_w(duration_keyW));
++        }
++        size = sizeof(data);
++        if (RegQueryValueExW(key, period_keyW, 0, &type, (BYTE *)&data,
++            &size) == ERROR_SUCCESS){
++            if (type == REG_DWORD && size == sizeof(DWORD))
++                period = (INT)*(DWORD*)&data;
++            if (type == REG_QWORD && size == sizeof(DWORD64))
++                period = (INT64)data;
++            else
++                ERR("Invalid type %u for setting %s, ignoring\n",
++                    type, wine_dbgstr_w(period_keyW));
++        }
++        RegCloseKey(key);
++    }
++
+     This->period_bytes = pa_frame_size(&This->ss) * MulDiv(period, This->ss.rate, 10000000);
+ 
+     This->bufsize_frames = ceil((duration / 10000000.) * fmt->nSamplesPerSec);
+-- 
+2.30.1
+

@@ -1,0 +1,43 @@
+From 0afe4052075f3979681fb3e4d8b0f45194e816d9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 3 Mar 2021 12:08:13 +0100
+Subject: [PATCH 18/18] user32: Use shared memory to avoid ClipCursor requests.
+
+---
+ dlls/user32/cursoricon.c | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/cursoricon.c b/dlls/user32/cursoricon.c
+index b95208756ff..26e2e546a16 100644
+--- a/dlls/user32/cursoricon.c
++++ b/dlls/user32/cursoricon.c
+@@ -2135,8 +2135,9 @@ HCURSOR WINAPI GetCursor(void)
+  */
+ BOOL WINAPI DECLSPEC_HOTPATCH ClipCursor( const RECT *rect )
+ {
++    volatile struct desktop_shared_memory *shared = get_desktop_shared_memory();
+     UINT dpi;
+-    BOOL ret;
++    BOOL ret, need_request;
+     RECT new_rect;
+ 
+     TRACE( "Clipping to %s\n", wine_dbgstr_rect(rect) );
+@@ -2152,6 +2153,18 @@ BOOL WINAPI DECLSPEC_HOTPATCH ClipCursor( const RECT *rect )
+         }
+     }
+ 
++    if (!shared || !rect) need_request = TRUE;
++    else SHARED_READ_BEGIN( &shared->seq )
++    {
++        need_request = rect->left != shared->cursor.clip.left ||
++                       rect->top != shared->cursor.clip.top ||
++                       rect->right != shared->cursor.clip.right ||
++                       rect->bottom != shared->cursor.clip.bottom;
++    }
++    SHARED_READ_END( &shared->seq );
++
++    if (!need_request) return TRUE;
++
+     SERVER_START_REQ( set_cursor )
+     {
+         req->clip_msg = WM_WINE_CLIPCURSOR;

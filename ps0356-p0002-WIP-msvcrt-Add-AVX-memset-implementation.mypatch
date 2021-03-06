@@ -1,0 +1,394 @@
+From f910fdf53ba290b817eb606cdbfd22c0e6d58b9a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 17 Feb 2021 12:05:46 +0100
+Subject: [PATCH 2/2] WIP: msvcrt: Add AVX memset implementation.
+
+---
+ dlls/msvcrt/string.c | 296 ++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 291 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/msvcrt/string.c b/dlls/msvcrt/string.c
+index 9c9a4c74367..180f5d7e66f 100644
+--- a/dlls/msvcrt/string.c
++++ b/dlls/msvcrt/string.c
+@@ -2492,6 +2492,13 @@ extern BOOL avx_supported;
+                                 while(0); d -= size; s -= size; n -= size; } \
+                             } while(0)
+ 
++#define MEMSET_START(size) \
++                            do { \
++                                while (n >= size) { do
++#define MEMSET_END(size)   \
++                                while(0); d += size; n -= size; } \
++                            } while(0)
++
+ #define MEMMOVE_DECLARE(pfx, step, size, next, ...) \
+     static inline void *__cdecl memmove_ ## pfx ## _forward_ ## size(void *dst, char *d, const char *s, size_t n) \
+     { \
+@@ -2511,6 +2518,21 @@ extern BOOL avx_supported;
+         return memmove_ ## pfx ## _backward_ ## next(dst, d, s, n); \
+     }
+ 
++#define MEMSET_DECLARE(pfx, size, next, init, ...) \
++    static inline void *__cdecl memset_ ## pfx ## _ ## size(char *dst, char *d, int v, size_t n) \
++    { \
++        uint8_t tmp8 = v; \
++        uint16_t tmp16 = ((uint16_t)tmp8 << 8) | tmp8; \
++        uint32_t tmp32 = ((uint32_t)tmp16 << 16) | tmp16; \
++        uint64_t tmp64 = ((uint64_t)tmp32 << 32) | tmp32; \
++        init; \
++        MEMSET_START(size) \
++        { __VA_ARGS__ } \
++        MEMSET_END(size); \
++        if (!n) return dst; \
++        return memset_ ## pfx ## _ ## next(dst, d, v, n); \
++    } \
++
+ static inline void *__cdecl memmove_c_unaligned_32(char *d, const char *s, size_t n)
+ {
+     if (n > 16)
+@@ -2586,6 +2608,71 @@ MEMMOVE_DECLARE(c, 8, 64, 32,
+     *(int64_t*)(d + 56 * z + y) = *(int64_t *)(s + 56 * z + y);
+ )
+ 
++static inline void *__cdecl memset_c_unaligned_32(char *d, int v, size_t n)
++{
++    uint8_t tmp8 = v;
++    uint16_t tmp16 = ((uint16_t)tmp8 << 8) | tmp8;
++    uint32_t tmp32 = ((uint32_t)tmp16 << 16) | tmp16;
++    uint64_t tmp64 = ((uint64_t)tmp32 << 32) | tmp32;
++
++    if (n > 16)
++    {
++        *(uint64_t *)d = tmp64;
++        *(uint64_t *)(d + 8) = tmp64;
++        *(uint64_t *)(d + n - 16) = tmp64;
++        *(uint64_t *)(d + n - 8) = tmp64;
++        return d;
++    }
++    if (n >= 8)
++    {
++        *(uint64_t *)d = tmp64;
++        *(uint64_t *)(d + n - 8) = tmp64;
++        return d;
++    }
++    if (n >= 4)
++    {
++        *(uint32_t *)d = tmp32;
++        *(uint32_t *)(d + n - 4) = tmp32;
++        return d;
++    }
++    if (n >= 2)
++    {
++        *(uint16_t *)d = tmp16;
++        *(uint16_t *)(d + n - 2) = tmp16;
++        return d;
++    }
++    if (n >= 1)
++    {
++        *(uint8_t *)d = tmp8;
++        return d;
++    }
++    return d;
++}
++
++static inline void *__cdecl memset_c_16(void *dst, char *d, int v, size_t n)
++{
++    memset_c_unaligned_32(d, v, n);
++    return dst;
++}
++
++MEMSET_DECLARE(c, 32, 16,,
++    *(int64_t*)(d +  0) = tmp64;
++    *(int64_t*)(d +  8) = tmp64;
++    *(int64_t*)(d + 16) = tmp64;
++    *(int64_t*)(d + 24) = tmp64;
++)
++
++MEMSET_DECLARE(c, 64, 32,,
++    *(int64_t*)(d +  0) = tmp64;
++    *(int64_t*)(d +  8) = tmp64;
++    *(int64_t*)(d + 16) = tmp64;
++    *(int64_t*)(d + 24) = tmp64;
++    *(int64_t*)(d + 32) = tmp64;
++    *(int64_t*)(d + 40) = tmp64;
++    *(int64_t*)(d + 48) = tmp64;
++    *(int64_t*)(d + 56) = tmp64;
++)
++
+ static void *__cdecl memmove_c_forward(void *dst, char *d, const char *s, size_t n)
+ {
+     return memmove_c_forward_64(dst, d, s, n);
+@@ -2603,6 +2690,12 @@ static void *__cdecl memmove_c(char *d, const char *s, size_t n)
+     else return memmove_c_backward(d, d + n, s + n, n);
+ }
+ 
++static void *__cdecl memset_c(char *d, int v, size_t n)
++{
++    if (__builtin_expect(n <= 32, 1)) return memset_c_unaligned_32(d, v, n);
++    return memset_c_64(d, d, v, n);
++}
++
+ #ifndef __SSE2__
+ #ifdef __clang__
+ #pragma clang attribute push (__attribute__((target("sse2"))), apply_to=function)
+@@ -2763,6 +2856,79 @@ MEMMOVE_DECLARE(aligned_sse2, 16,  256, 128,
+     _mm_store_si128((__m128i*)(d +240 * z + y), _mm_load_si128((__m128i *)(s +240 * z + y)));
+ )
+ 
++static inline void *__cdecl memset_sse2_unaligned_64(char *d, int v, size_t n)
++{
++    uint8_t tmp8 = v;
++    uint16_t tmp16 = ((uint16_t)tmp8 << 8) | tmp8;
++    uint32_t tmp32 = ((uint32_t)tmp16 << 16) | tmp16;
++    uint64_t tmp64 = ((uint64_t)tmp32 << 32) | tmp32;
++
++    if (n > 32)
++    {
++        __m128i tmp128 = _mm_set1_epi64x(tmp64);
++        _mm_storeu_si128((__m128i *)d, tmp128);
++        _mm_storeu_si128((__m128i *)(d + 16), tmp128);
++        _mm_storeu_si128((__m128i *)(d + n - 32), tmp128);
++        _mm_storeu_si128((__m128i *)(d + n - 16), tmp128);
++        return d;
++    }
++    if (n >= 16)
++    {
++        __m128i tmp128 = _mm_set1_epi64x(tmp64);
++        _mm_storeu_si128((__m128i *)d, tmp128);
++        _mm_storeu_si128((__m128i *)(d + n - 16), tmp128);
++        return d;
++    }
++    if (n >= 8)
++    {
++        *(uint64_t *)d = tmp64;
++        *(uint64_t *)(d + n - 8) = tmp64;
++        return d;
++    }
++    if (n >= 4)
++    {
++        *(uint32_t *)d = tmp32;
++        *(uint32_t *)(d + n - 4) = tmp32;
++        return d;
++    }
++    if (n >= 2)
++    {
++        *(uint16_t *)d = tmp16;
++        *(uint16_t *)(d + n - 2) = tmp16;
++        return d;
++    }
++    if (n >= 1)
++    {
++        *(uint8_t *)d = tmp8;
++        return d;
++    }
++    return d;
++}
++
++static inline void *__cdecl memset_sse2_32(void *dst, char *d, int v, size_t n)
++{
++    memset_sse2_unaligned_64(d, v, n);
++    return dst;
++}
++
++MEMSET_DECLARE(sse2, 64, 32, __m128i tmp128 = _mm_set1_epi64x(tmp64),
++    _mm_store_si128((__m128i*)(d +  0), tmp128);
++    _mm_store_si128((__m128i*)(d + 16), tmp128);
++    _mm_store_si128((__m128i*)(d + 32), tmp128);
++    _mm_store_si128((__m128i*)(d + 48), tmp128);
++)
++
++MEMSET_DECLARE(sse2, 128, 64, __m128i tmp128 = _mm_set1_epi64x(tmp64),
++    _mm_store_si128((__m128i*)(d +  0), tmp128);
++    _mm_store_si128((__m128i*)(d + 16), tmp128);
++    _mm_store_si128((__m128i*)(d + 32), tmp128);
++    _mm_store_si128((__m128i*)(d + 48), tmp128);
++    _mm_store_si128((__m128i*)(d + 64), tmp128);
++    _mm_store_si128((__m128i*)(d + 80), tmp128);
++    _mm_store_si128((__m128i*)(d + 96), tmp128);
++    _mm_store_si128((__m128i*)(d +112), tmp128);
++)
++
+ #define MEMMOVE_SSE2_FORWARD_MISALIGN(x) (0x10 - ((uintptr_t)x & 0xf))
+ #define MEMMOVE_SSE2_BACKWARD_MISALIGN(x) ((uintptr_t)x & 0xf)
+ 
+@@ -2784,13 +2950,21 @@ static void *__cdecl memmove_sse2_backward(void *dst, char *d, const char *s, si
+     else return memmove_aligned_sse2_backward_256(dst, d, s, n);
+ }
+ 
+-static inline void *__cdecl memmove_sse2(char *d, const char *s, size_t n)
++static void *__cdecl memmove_sse2(char *d, const char *s, size_t n)
+ {
+     if (__builtin_expect(n <= 64, 1)) return memmove_sse2_unaligned_64(d, s, n);
+     else if (d < s) return memmove_sse2_forward(d, d, s, n);
+     else return memmove_sse2_backward(d, d + n, s + n, n);
+ }
+ 
++static void *__cdecl memset_sse2(char *d, int v, size_t n)
++{
++    size_t k = MEMMOVE_SSE2_FORWARD_MISALIGN(d);
++    if (__builtin_expect(n <= 64, 1)) return memset_sse2_unaligned_64(d, v, n);
++    memset_sse2_unaligned_64(d, v, k);
++    return memset_sse2_128(d, d + k, v, n - k);
++}
++
+ #undef MEMMOVE_SSE2_FORWARD_MISALIGN
+ #undef MEMMOVE_SSE2_BACKWARD_MISALIGN
+ 
+@@ -2971,6 +3145,105 @@ MEMMOVE_DECLARE(aligned_avx, 32, 512, 256,
+     _mm256_store_si256((__m256i*)(d +480 * z + y), _mm256_load_si256((__m256i *)(s +480 * z + y)));
+ )
+ 
++static inline void *__cdecl memset_avx_unaligned_128(char *d, int v, size_t n)
++{
++    uint8_t tmp8 = v;
++    uint16_t tmp16 = ((uint16_t)tmp8 << 8) | tmp8;
++    uint32_t tmp32 = ((uint32_t)tmp16 << 16) | tmp16;
++    uint64_t tmp64 = ((uint64_t)tmp32 << 32) | tmp32;
++
++    if (n > 64)
++    {
++        __m256i tmp256 = _mm256_set1_epi64x(tmp64);
++        _mm256_storeu_si256((__m256i *)d, tmp256);
++        _mm256_storeu_si256((__m256i *)(d + 32), tmp256);
++        _mm256_storeu_si256((__m256i *)(d + n - 64), tmp256);
++        _mm256_storeu_si256((__m256i *)(d + n - 32), tmp256);
++        return d;
++    }
++    if (n >= 32)
++    {
++        __m256i tmp256 = _mm256_set1_epi64x(tmp64);
++        _mm256_storeu_si256((__m256i *)d, tmp256);
++        _mm256_storeu_si256((__m256i *)(d + n - 32), tmp256);
++        return d;
++    }
++    if (n >= 16)
++    {
++        __m128i tmp128 = _mm_set1_epi64x(tmp64);
++        _mm_storeu_si128((__m128i *)d, tmp128);
++        _mm_storeu_si128((__m128i *)(d + n - 16), tmp128);
++        return d;
++    }
++    if (n >= 8)
++    {
++        *(uint64_t *)d = tmp64;
++        *(uint64_t *)(d + n - 8) = tmp64;
++        return d;
++    }
++    if (n >= 4)
++    {
++        *(uint32_t *)d = tmp32;
++        *(uint32_t *)(d + n - 4) = tmp32;
++        return d;
++    }
++    if (n >= 2)
++    {
++        *(uint16_t *)d = tmp16;
++        *(uint16_t *)(d + n - 2) = tmp16;
++        return d;
++    }
++    if (n >= 1)
++    {
++        *(uint8_t *)d = tmp8;
++        return d;
++    }
++    return d;
++}
++
++static inline void *__cdecl memset_avx_64(void *dst, char *d, int v, size_t n)
++{
++    memset_avx_unaligned_128(d, v, n);
++    return dst;
++}
++
++MEMSET_DECLARE(avx, 128, 64, __m256i tmp256 = _mm256_set1_epi64x(tmp64),
++    _mm256_store_si256((__m256i*)(d +  0), tmp256);
++    _mm256_store_si256((__m256i*)(d + 32), tmp256);
++    _mm256_store_si256((__m256i*)(d + 64), tmp256);
++    _mm256_store_si256((__m256i*)(d + 96), tmp256);
++)
++
++MEMSET_DECLARE(avx, 256, 128, __m256i tmp256 = _mm256_set1_epi64x(tmp64),
++    _mm256_store_si256((__m256i*)(d +  0), tmp256);
++    _mm256_store_si256((__m256i*)(d + 32), tmp256);
++    _mm256_store_si256((__m256i*)(d + 64), tmp256);
++    _mm256_store_si256((__m256i*)(d + 96), tmp256);
++    _mm256_store_si256((__m256i*)(d +128), tmp256);
++    _mm256_store_si256((__m256i*)(d +160), tmp256);
++    _mm256_store_si256((__m256i*)(d +192), tmp256);
++    _mm256_store_si256((__m256i*)(d +224), tmp256);
++)
++
++MEMSET_DECLARE(avx, 512, 256, __m256i tmp256 = _mm256_set1_epi64x(tmp64),
++    _mm256_store_si256((__m256i*)(d +  0), tmp256);
++    _mm256_store_si256((__m256i*)(d + 32), tmp256);
++    _mm256_store_si256((__m256i*)(d + 64), tmp256);
++    _mm256_store_si256((__m256i*)(d + 96), tmp256);
++    _mm256_store_si256((__m256i*)(d +128), tmp256);
++    _mm256_store_si256((__m256i*)(d +160), tmp256);
++    _mm256_store_si256((__m256i*)(d +192), tmp256);
++    _mm256_store_si256((__m256i*)(d +224), tmp256);
++    _mm256_store_si256((__m256i*)(d +256), tmp256);
++    _mm256_store_si256((__m256i*)(d +288), tmp256);
++    _mm256_store_si256((__m256i*)(d +320), tmp256);
++    _mm256_store_si256((__m256i*)(d +352), tmp256);
++    _mm256_store_si256((__m256i*)(d +384), tmp256);
++    _mm256_store_si256((__m256i*)(d +416), tmp256);
++    _mm256_store_si256((__m256i*)(d +448), tmp256);
++    _mm256_store_si256((__m256i*)(d +480), tmp256);
++)
++
+ #define MEMMOVE_AVX_FORWARD_MISALIGN(x) (0x20 - ((uintptr_t)x & 0x1f))
+ #define MEMMOVE_AVX_BACKWARD_MISALIGN(x) ((uintptr_t)x & 0x1f)
+ 
+@@ -2992,13 +3265,21 @@ static void *__cdecl memmove_avx_backward(void *dst, char *d, const char *s, siz
+     else return memmove_aligned_avx_backward_512(dst, d, s, n);
+ }
+ 
+-static inline void *__cdecl memmove_avx(char *d, const char *s, size_t n)
++static void *__cdecl memmove_avx(char *d, const char *s, size_t n)
+ {
+     if (__builtin_expect(n <= 128, 1)) return memmove_avx_unaligned_128(d, s, n);
+     else if (d < s) return memmove_avx_forward(d, d, s, n);
+     else return memmove_avx_backward(d, d + n, s + n, n);
+ }
+ 
++static void *__cdecl memset_avx(char *d, int v, size_t n)
++{
++    size_t k = MEMMOVE_AVX_FORWARD_MISALIGN(d);
++    if (__builtin_expect(n <= 128, 1)) return memset_avx_unaligned_128(d, v, n);
++    memset_avx_unaligned_128(d, v, k);
++    return memset_avx_512(d, d + k, v, n - k);
++}
++
+ #undef MEMMOVE_AVX_FORWARD_MISALIGN
+ #undef MEMMOVE_AVX_BACKWARD_MISALIGN
+ 
+@@ -3017,6 +3298,10 @@ static inline void *__cdecl memmove_avx(char *d, const char *s, size_t n)
+ #undef MEMMOVE_END_BWD
+ #undef MEMMOVE_DECLARE
+ 
++#undef MEMSET_START
++#undef MEMSET_END
++#undef MEMSET_DECLARE
++
+ /*********************************************************************
+  *                  memmove (MSVCRT.@)
+  */
+@@ -3044,9 +3329,10 @@ void * __cdecl memcpy(void *dst, const void *src, size_t n)
+  */
+ void* __cdecl memset(void *dst, int c, size_t n)
+ {
+-    volatile unsigned char *d = dst;  /* avoid gcc optimizations */
+-    while (n--) *d++ = c;
+-    return dst;
++    if (__builtin_expect(n <= 32, 1)) return memset_c_unaligned_32(dst, c, n);
++    if (avx_supported) return memset_avx(dst, c, n);
++    if (sse2_supported) return memset_sse2(dst, c, n);
++    return memset_c(dst, c, n);
+ }
+ 
+ /*********************************************************************
+-- 
+2.30.1
+

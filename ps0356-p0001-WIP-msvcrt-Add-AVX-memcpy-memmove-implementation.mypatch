@@ -1,0 +1,1016 @@
+From 272189b06010c2a6b19ea7ce2c7ea17763ce93a9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 9 Feb 2021 23:51:22 +0100
+Subject: [PATCH 1/2] WIP: msvcrt: Add AVX memcpy/memmove implementation.
+
+---
+ dlls/msvcrt/math.c   |  26 ++
+ dlls/msvcrt/string.c | 878 ++++++++++++++++++++++++++-----------------
+ tools/makedep.c      |   1 +
+ 3 files changed, 563 insertions(+), 342 deletions(-)
+
+diff --git a/dlls/msvcrt/math.c b/dlls/msvcrt/math.c
+index d6b0d9422e7..5e83be0d169 100644
+--- a/dlls/msvcrt/math.c
++++ b/dlls/msvcrt/math.c
+@@ -42,6 +42,7 @@
+ #include <limits.h>
+ #include <locale.h>
+ #include <math.h>
++#include <immintrin.h>
+ 
+ #include "msvcrt.h"
+ #include "winternl.h"
+@@ -50,6 +51,8 @@
+ #include "wine/asm.h"
+ #include "wine/debug.h"
+ 
++#include "msvcrt/intrin.h"
++
+ WINE_DEFAULT_DEBUG_CHANNEL(msvcrt);
+ 
+ #undef div
+@@ -65,12 +68,27 @@ typedef int (CDECL *MSVCRT_matherr_func)(struct _exception *);
+ static MSVCRT_matherr_func MSVCRT_default_matherr_func = NULL;
+ 
+ BOOL sse2_supported;
++BOOL avx_supported;
+ static BOOL sse2_enabled;
+ 
+ static const struct unix_funcs *unix_funcs;
+ 
++#ifndef __AVX__
++#ifdef __clang__
++#pragma clang attribute push (__attribute__((target("avx"))), apply_to=function)
++#else
++#pragma GCC push_options
++#pragma GCC target("avx")
++#endif
++#define __DISABLE_AVX__
++#endif /* __AVX__ */
+ void msvcrt_init_math( void *module )
+ {
++    int info[4];
++    avx_supported = FALSE;
++    __cpuid(info, 1);
++    if (IsProcessorFeaturePresent( PF_XSAVE_ENABLED ) && (info[2] & (1 << 28)))
++        avx_supported = (_xgetbv(0) & 0x6) == 0x6;
+     sse2_supported = IsProcessorFeaturePresent( PF_XMMI64_INSTRUCTIONS_AVAILABLE );
+ #if _MSVCR_VER <=71
+     sse2_enabled = FALSE;
+@@ -79,6 +97,14 @@ void msvcrt_init_math( void *module )
+ #endif
+     __wine_init_unix_lib( module, DLL_PROCESS_ATTACH, NULL, &unix_funcs );
+ }
++#ifdef __DISABLE_AVX__
++#undef __DISABLE_AVX__
++#ifdef __clang__
++#pragma clang attribute pop
++#else
++#pragma GCC pop_options
++#endif
++#endif /* __DISABLE_AVX__ */
+ 
+ /* Copied from musl: src/internal/libm.h */
+ static inline float fp_barrierf(float x)
+diff --git a/dlls/msvcrt/string.c b/dlls/msvcrt/string.c
+index d335fce4992..9c9a4c74367 100644
+--- a/dlls/msvcrt/string.c
++++ b/dlls/msvcrt/string.c
+@@ -34,6 +34,8 @@
+ #include "wine/asm.h"
+ #include "wine/debug.h"
+ 
++#include <immintrin.h>
++
+ WINE_DEFAULT_DEBUG_CHANNEL(msvcrt);
+ 
+ /*********************************************************************
+@@ -2471,378 +2473,570 @@ int __cdecl memcmp(const void *ptr1, const void *ptr2, size_t n)
+     return 0;
+ }
+ 
+-#if defined(__i386__) || defined(__x86_64__)
++extern BOOL sse2_supported;
++extern BOOL avx_supported;
++
++#define MEMMOVE_START_FWD(step, size) \
++                            do { \
++                                static const int z = 1, y = 0; \
++                                while (n >= size) { do
++#define MEMMOVE_END_FWD(size)   \
++                                while(0); d += size; s += size; n -= size; } \
++                            } while(0)
++
++#define MEMMOVE_START_BWD(step, size) \
++                            do { \
++                                static const int z = -1, y = -step; \
++                                while (n >= size) { do
++#define MEMMOVE_END_BWD(size)   \
++                                while(0); d -= size; s -= size; n -= size; } \
++                            } while(0)
++
++#define MEMMOVE_DECLARE(pfx, step, size, next, ...) \
++    static inline void *__cdecl memmove_ ## pfx ## _forward_ ## size(void *dst, char *d, const char *s, size_t n) \
++    { \
++        MEMMOVE_START_FWD(step, size) \
++        { __VA_ARGS__ } \
++        MEMMOVE_END_FWD(size); \
++        if (!n) return dst; \
++        return memmove_ ## pfx ## _forward_ ## next(dst, d, s, n); \
++    } \
++    \
++    static inline void *__cdecl memmove_ ## pfx ## _backward_ ## size(void *dst, char *d, const char *s, size_t n) \
++    { \
++        MEMMOVE_START_BWD(step, size) \
++        { __VA_ARGS__ } \
++        MEMMOVE_END_BWD(size); \
++        if (!n) return dst; \
++        return memmove_ ## pfx ## _backward_ ## next(dst, d, s, n); \
++    }
++
++static inline void *__cdecl memmove_c_unaligned_32(char *d, const char *s, size_t n)
++{
++    if (n > 16)
++    {
++        uint64_t tmp0 = *(uint64_t *)s;
++        uint64_t tmp1 = *(uint64_t *)(s + 8);
++        uint64_t tmp2 = *(uint64_t *)(s + n - 16);
++        uint64_t tmp3 = *(uint64_t *)(s + n - 8);
++        *(uint64_t *)d = tmp0;
++        *(uint64_t *)(d + 8) = tmp1;
++        *(uint64_t *)(d + n - 16) = tmp2;
++        *(uint64_t *)(d + n - 8) = tmp3;
++        return d;
++    }
++    if (n >= 8)
++    {
++        uint64_t tmp0 = *(uint64_t *)s;
++        uint64_t tmp1 = *(uint64_t *)(s + n - 8);
++        *(uint64_t *)d = tmp0;
++        *(uint64_t *)(d + n - 8) = tmp1;
++        return d;
++    }
++    if (n >= 4)
++    {
++        uint32_t tmp0 = *(uint32_t *)s;
++        uint32_t tmp1 = *(uint32_t *)(s + n - 4);
++        *(uint32_t *)d = tmp0;
++        *(uint32_t *)(d + n - 4) = tmp1;
++        return d;
++    }
++    if (n >= 2)
++    {
++        uint16_t tmp0 = *(uint16_t *)s;
++        uint16_t tmp1 = *(uint16_t *)(s + n - 2);
++        *(uint16_t *)d = tmp0;
++        *(uint16_t *)(d + n - 2) = tmp1;
++        return d;
++    }
++    if (n >= 1)
++    {
++        *(uint8_t *)d = *(uint8_t *)s;
++        return d;
++    }
++    return d;
++}
++
++static inline void *__cdecl memmove_c_forward_16(void *dst, char *d, const char *s, size_t n)
++{
++    memmove_c_unaligned_32(d, s, n);
++    return dst;
++}
+ 
+-#ifdef __i386__
++static inline void *__cdecl memmove_c_backward_16(void *dst, char *d, const char *s, size_t n)
++{
++    return memmove_c_unaligned_32(d - n, s - n, n);
++}
+ 
+-#define DEST_REG "%edi"
+-#define SRC_REG "%esi"
+-#define LEN_REG "%ecx"
+-#define TMP_REG "%edx"
++MEMMOVE_DECLARE(c, 8, 32, 16,
++    *(int64_t*)(d +  0 * z + y) = *(int64_t *)(s +  0 * z + y);
++    *(int64_t*)(d +  8 * z + y) = *(int64_t *)(s +  8 * z + y);
++    *(int64_t*)(d + 16 * z + y) = *(int64_t *)(s + 16 * z + y);
++    *(int64_t*)(d + 24 * z + y) = *(int64_t *)(s + 24 * z + y);
++)
+ 
+-#define MEMMOVE_INIT \
+-    "pushl " SRC_REG "\n\t" \
+-    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t") \
+-    "pushl " DEST_REG "\n\t" \
+-    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t") \
+-    "movl 12(%esp), " DEST_REG "\n\t" \
+-    "movl 16(%esp), " SRC_REG "\n\t" \
+-    "movl 20(%esp), " LEN_REG "\n\t"
++MEMMOVE_DECLARE(c, 8, 64, 32,
++    *(int64_t*)(d +  0 * z + y) = *(int64_t *)(s +  0 * z + y);
++    *(int64_t*)(d +  8 * z + y) = *(int64_t *)(s +  8 * z + y);
++    *(int64_t*)(d + 16 * z + y) = *(int64_t *)(s + 16 * z + y);
++    *(int64_t*)(d + 24 * z + y) = *(int64_t *)(s + 24 * z + y);
++    *(int64_t*)(d + 32 * z + y) = *(int64_t *)(s + 32 * z + y);
++    *(int64_t*)(d + 40 * z + y) = *(int64_t *)(s + 40 * z + y);
++    *(int64_t*)(d + 48 * z + y) = *(int64_t *)(s + 48 * z + y);
++    *(int64_t*)(d + 56 * z + y) = *(int64_t *)(s + 56 * z + y);
++)
+ 
+-#define MEMMOVE_CLEANUP \
+-    "movl 12(%esp), %eax\n\t" \
+-    "popl " DEST_REG "\n\t" \
+-    __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t") \
+-    "popl " SRC_REG "\n\t" \
+-    __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t")
++static void *__cdecl memmove_c_forward(void *dst, char *d, const char *s, size_t n)
++{
++    return memmove_c_forward_64(dst, d, s, n);
++}
+ 
+-#else
++static void *__cdecl memmove_c_backward(void *dst, char *d, const char *s, size_t n)
++{
++    return memmove_c_backward_64(dst, d, s, n);
++}
+ 
+-#define DEST_REG "%rdi"
+-#define SRC_REG "%rsi"
+-#define LEN_REG "%r8"
+-#define TMP_REG "%r9"
+-
+-#define MEMMOVE_INIT \
+-    "pushq " SRC_REG "\n\t" \
+-    __ASM_CFI(".cfi_adjust_cfa_offset 8\n\t") \
+-    "pushq " DEST_REG "\n\t" \
+-    __ASM_CFI(".cfi_adjust_cfa_offset 8\n\t") \
+-    "movq %rcx, " DEST_REG "\n\t" \
+-    "movq %rdx, " SRC_REG "\n\t"
+-
+-#define MEMMOVE_CLEANUP \
+-    "movq %rcx, %rax\n\t" \
+-    "popq " DEST_REG "\n\t" \
+-    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t") \
+-    "popq " SRC_REG "\n\t" \
+-    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
++static void *__cdecl memmove_c(char *d, const char *s, size_t n)
++{
++    if (__builtin_expect(n <= 32, 1)) return memmove_c_unaligned_32(d, s, n);
++    if (d < s) return memmove_c_forward(d, d, s, n);
++    else return memmove_c_backward(d, d + n, s + n, n);
++}
++
++#ifndef __SSE2__
++#ifdef __clang__
++#pragma clang attribute push (__attribute__((target("sse2"))), apply_to=function)
++#else
++#pragma GCC push_options
++#pragma GCC target("sse2")
+ #endif
++#define __DISABLE_SSE2__
++#endif /* __SSE2__ */
++
++static inline void *__cdecl memmove_sse2_unaligned_64(char *d, const char *s, size_t n)
++{
++    if (n > 32)
++    {
++        __m128i xmm0 = _mm_loadu_si128((__m128i *)s);
++        __m128i xmm1 = _mm_loadu_si128((__m128i *)(s + 16));
++        __m128i xmm2 = _mm_loadu_si128((__m128i *)(s + n - 32));
++        __m128i xmm3 = _mm_loadu_si128((__m128i *)(s + n - 16));
++        _mm_storeu_si128((__m128i *)d, xmm0);
++        _mm_storeu_si128((__m128i *)(d + 16), xmm1);
++        _mm_storeu_si128((__m128i *)(d + n - 32), xmm2);
++        _mm_storeu_si128((__m128i *)(d + n - 16), xmm3);
++        return d;
++    }
++    if (n >= 16)
++    {
++        __m128i xmm0 = _mm_loadu_si128((__m128i *)s);
++        __m128i xmm1 = _mm_loadu_si128((__m128i *)(s + n - 16));
++        _mm_storeu_si128((__m128i *)d, xmm0);
++        _mm_storeu_si128((__m128i *)(d + n - 16), xmm1);
++        return d;
++    }
++    if (n >= 8)
++    {
++        uint64_t tmp0 = *(uint64_t *)s;
++        uint64_t tmp1 = *(uint64_t *)(s + n - 8);
++        *(uint64_t *)d = tmp0;
++        *(uint64_t *)(d + n - 8) = tmp1;
++        return d;
++    }
++    if (n >= 4)
++    {
++        uint32_t tmp0 = *(uint32_t *)s;
++        uint32_t tmp1 = *(uint32_t *)(s + n - 4);
++        *(uint32_t *)d = tmp0;
++        *(uint32_t *)(d + n - 4) = tmp1;
++        return d;
++    }
++    if (n >= 2)
++    {
++        uint16_t tmp0 = *(uint16_t *)s;
++        uint16_t tmp1 = *(uint16_t *)(s + n - 2);
++        *(uint16_t *)d = tmp0;
++        *(uint16_t *)(d + n - 2) = tmp1;
++        return d;
++    }
++    if (n >= 1)
++    {
++        *(uint8_t *)d = *(uint8_t *)s;
++        return d;
++    }
++    return d;
++}
++
++static inline void *__cdecl memmove_sse2_forward_32(void *dst, char *d, const char *s, size_t n)
++{
++    memmove_sse2_unaligned_64(d, s, n);
++    return dst;
++}
++
++static inline void *__cdecl memmove_sse2_backward_32(void *dst, char *d, const char *s, size_t n)
++{
++    return memmove_sse2_unaligned_64(d - n, s - n, n);
++}
++
++MEMMOVE_DECLARE(sse2, 16, 64, 32,
++    _mm_store_si128((__m128i*)(d +  0 * z + y), _mm_loadu_si128((__m128i *)(s +  0 * z + y)));
++    _mm_store_si128((__m128i*)(d + 16 * z + y), _mm_loadu_si128((__m128i *)(s + 16 * z + y)));
++    _mm_store_si128((__m128i*)(d + 32 * z + y), _mm_loadu_si128((__m128i *)(s + 32 * z + y)));
++    _mm_store_si128((__m128i*)(d + 48 * z + y), _mm_loadu_si128((__m128i *)(s + 48 * z + y)));
++)
++
++MEMMOVE_DECLARE(sse2, 16, 128, 64,
++    _mm_store_si128((__m128i*)(d +  0 * z + y), _mm_loadu_si128((__m128i *)(s +  0 * z + y)));
++    _mm_store_si128((__m128i*)(d + 16 * z + y), _mm_loadu_si128((__m128i *)(s + 16 * z + y)));
++    _mm_store_si128((__m128i*)(d + 32 * z + y), _mm_loadu_si128((__m128i *)(s + 32 * z + y)));
++    _mm_store_si128((__m128i*)(d + 48 * z + y), _mm_loadu_si128((__m128i *)(s + 48 * z + y)));
++    _mm_store_si128((__m128i*)(d + 64 * z + y), _mm_loadu_si128((__m128i *)(s + 64 * z + y)));
++    _mm_store_si128((__m128i*)(d + 80 * z + y), _mm_loadu_si128((__m128i *)(s + 80 * z + y)));
++    _mm_store_si128((__m128i*)(d + 96 * z + y), _mm_loadu_si128((__m128i *)(s + 96 * z + y)));
++    _mm_store_si128((__m128i*)(d +112 * z + y), _mm_loadu_si128((__m128i *)(s +112 * z + y)));
++)
++
++MEMMOVE_DECLARE(sse2, 16,  256, 128,
++    _mm_store_si128((__m128i*)(d +  0 * z + y), _mm_loadu_si128((__m128i *)(s +  0 * z + y)));
++    _mm_store_si128((__m128i*)(d + 16 * z + y), _mm_loadu_si128((__m128i *)(s + 16 * z + y)));
++    _mm_store_si128((__m128i*)(d + 32 * z + y), _mm_loadu_si128((__m128i *)(s + 32 * z + y)));
++    _mm_store_si128((__m128i*)(d + 48 * z + y), _mm_loadu_si128((__m128i *)(s + 48 * z + y)));
++    _mm_store_si128((__m128i*)(d + 64 * z + y), _mm_loadu_si128((__m128i *)(s + 64 * z + y)));
++    _mm_store_si128((__m128i*)(d + 80 * z + y), _mm_loadu_si128((__m128i *)(s + 80 * z + y)));
++    _mm_store_si128((__m128i*)(d + 96 * z + y), _mm_loadu_si128((__m128i *)(s + 96 * z + y)));
++    _mm_store_si128((__m128i*)(d +112 * z + y), _mm_loadu_si128((__m128i *)(s +112 * z + y)));
++    _mm_store_si128((__m128i*)(d +128 * z + y), _mm_loadu_si128((__m128i *)(s +128 * z + y)));
++    _mm_store_si128((__m128i*)(d +144 * z + y), _mm_loadu_si128((__m128i *)(s +144 * z + y)));
++    _mm_store_si128((__m128i*)(d +160 * z + y), _mm_loadu_si128((__m128i *)(s +160 * z + y)));
++    _mm_store_si128((__m128i*)(d +176 * z + y), _mm_loadu_si128((__m128i *)(s +176 * z + y)));
++    _mm_store_si128((__m128i*)(d +192 * z + y), _mm_loadu_si128((__m128i *)(s +192 * z + y)));
++    _mm_store_si128((__m128i*)(d +208 * z + y), _mm_loadu_si128((__m128i *)(s +208 * z + y)));
++    _mm_store_si128((__m128i*)(d +224 * z + y), _mm_loadu_si128((__m128i *)(s +224 * z + y)));
++    _mm_store_si128((__m128i*)(d +240 * z + y), _mm_loadu_si128((__m128i *)(s +240 * z + y)));
++)
++
++static inline void *__cdecl memmove_aligned_sse2_forward_32(void *dst, char *d, const char *s, size_t n)
++{
++    memmove_sse2_unaligned_64(d, s, n);
++    return dst;
++}
++
++static inline void *__cdecl memmove_aligned_sse2_backward_32(void *dst, char *d, const char *s, size_t n)
++{
++    return memmove_sse2_unaligned_64(d - n, s - n, n);
++}
++
++MEMMOVE_DECLARE(aligned_sse2, 16,  64, 32,
++    _mm_store_si128((__m128i*)(d +  0 * z + y), _mm_load_si128((__m128i *)(s +  0 * z + y)));
++    _mm_store_si128((__m128i*)(d + 16 * z + y), _mm_load_si128((__m128i *)(s + 16 * z + y)));
++    _mm_store_si128((__m128i*)(d + 32 * z + y), _mm_load_si128((__m128i *)(s + 32 * z + y)));
++    _mm_store_si128((__m128i*)(d + 48 * z + y), _mm_load_si128((__m128i *)(s + 48 * z + y)));
++)
++
++MEMMOVE_DECLARE(aligned_sse2, 16,  128, 64,
++    _mm_store_si128((__m128i*)(d +  0 * z + y), _mm_load_si128((__m128i *)(s +  0 * z + y)));
++    _mm_store_si128((__m128i*)(d + 16 * z + y), _mm_load_si128((__m128i *)(s + 16 * z + y)));
++    _mm_store_si128((__m128i*)(d + 32 * z + y), _mm_load_si128((__m128i *)(s + 32 * z + y)));
++    _mm_store_si128((__m128i*)(d + 48 * z + y), _mm_load_si128((__m128i *)(s + 48 * z + y)));
++    _mm_store_si128((__m128i*)(d + 64 * z + y), _mm_load_si128((__m128i *)(s + 64 * z + y)));
++    _mm_store_si128((__m128i*)(d + 80 * z + y), _mm_load_si128((__m128i *)(s + 80 * z + y)));
++    _mm_store_si128((__m128i*)(d + 96 * z + y), _mm_load_si128((__m128i *)(s + 96 * z + y)));
++    _mm_store_si128((__m128i*)(d +112 * z + y), _mm_load_si128((__m128i *)(s +112 * z + y)));
++)
++
++MEMMOVE_DECLARE(aligned_sse2, 16,  256, 128,
++    _mm_store_si128((__m128i*)(d +  0 * z + y), _mm_load_si128((__m128i *)(s +  0 * z + y)));
++    _mm_store_si128((__m128i*)(d + 16 * z + y), _mm_load_si128((__m128i *)(s + 16 * z + y)));
++    _mm_store_si128((__m128i*)(d + 32 * z + y), _mm_load_si128((__m128i *)(s + 32 * z + y)));
++    _mm_store_si128((__m128i*)(d + 48 * z + y), _mm_load_si128((__m128i *)(s + 48 * z + y)));
++    _mm_store_si128((__m128i*)(d + 64 * z + y), _mm_load_si128((__m128i *)(s + 64 * z + y)));
++    _mm_store_si128((__m128i*)(d + 80 * z + y), _mm_load_si128((__m128i *)(s + 80 * z + y)));
++    _mm_store_si128((__m128i*)(d + 96 * z + y), _mm_load_si128((__m128i *)(s + 96 * z + y)));
++    _mm_store_si128((__m128i*)(d +112 * z + y), _mm_load_si128((__m128i *)(s +112 * z + y)));
++    _mm_store_si128((__m128i*)(d +128 * z + y), _mm_load_si128((__m128i *)(s +128 * z + y)));
++    _mm_store_si128((__m128i*)(d +144 * z + y), _mm_load_si128((__m128i *)(s +144 * z + y)));
++    _mm_store_si128((__m128i*)(d +160 * z + y), _mm_load_si128((__m128i *)(s +160 * z + y)));
++    _mm_store_si128((__m128i*)(d +176 * z + y), _mm_load_si128((__m128i *)(s +176 * z + y)));
++    _mm_store_si128((__m128i*)(d +192 * z + y), _mm_load_si128((__m128i *)(s +192 * z + y)));
++    _mm_store_si128((__m128i*)(d +208 * z + y), _mm_load_si128((__m128i *)(s +208 * z + y)));
++    _mm_store_si128((__m128i*)(d +224 * z + y), _mm_load_si128((__m128i *)(s +224 * z + y)));
++    _mm_store_si128((__m128i*)(d +240 * z + y), _mm_load_si128((__m128i *)(s +240 * z + y)));
++)
++
++#define MEMMOVE_SSE2_FORWARD_MISALIGN(x) (0x10 - ((uintptr_t)x & 0xf))
++#define MEMMOVE_SSE2_BACKWARD_MISALIGN(x) ((uintptr_t)x & 0xf)
++
++static void *__cdecl memmove_sse2_forward(void *dst, char *d, const char *s, size_t n)
++{
++    size_t k = MEMMOVE_SSE2_FORWARD_MISALIGN(d);
++    memmove_sse2_unaligned_64(d, s, k);
++    d += k; s += k; n -= k;
++    if (MEMMOVE_SSE2_FORWARD_MISALIGN(s)) return memmove_sse2_forward_256(dst, d, s, n);
++    else return memmove_aligned_sse2_forward_256(dst, d, s, n);
++}
++
++static void *__cdecl memmove_sse2_backward(void *dst, char *d, const char *s, size_t n)
++{
++    size_t k = MEMMOVE_SSE2_BACKWARD_MISALIGN(d);
++    d -= k; s -= k; n -= k;
++    memmove_sse2_unaligned_64(d, s, k);
++    if (MEMMOVE_SSE2_BACKWARD_MISALIGN(s)) return memmove_sse2_backward_256(dst, d, s, n);
++    else return memmove_aligned_sse2_backward_256(dst, d, s, n);
++}
+ 
+-void * __cdecl sse2_memmove(void *dst, const void *src, size_t n);
+-__ASM_GLOBAL_FUNC( sse2_memmove,
+-        MEMMOVE_INIT
+-        "mov " DEST_REG ", " TMP_REG "\n\t" /* check copying direction */
+-        "sub " SRC_REG ", " TMP_REG "\n\t"
+-        "cmp " LEN_REG ", " TMP_REG "\n\t"
+-        "jb copy_bwd\n\t"
+-        /* copy forwards */
+-        "cmp $4, " LEN_REG "\n\t" /* 4-bytes align */
+-        "jb copy_fwd3\n\t"
+-        "mov " DEST_REG ", " TMP_REG "\n\t"
+-        "shr $1, " TMP_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "movsb\n\t"
+-        "dec " LEN_REG "\n\t"
+-        "inc " TMP_REG "\n\t"
+-        "1:\n\t"
+-        "shr $1, " TMP_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "movsw\n\t"
+-        "sub $2, " LEN_REG "\n\t"
+-        "inc " TMP_REG "\n\t"
+-        "1:\n\t" /* 16-bytes align */
+-        "cmp $16, " LEN_REG "\n\t"
+-        "jb copy_fwd15\n\t"
+-        "shr $1, " TMP_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "movsl\n\t"
+-        "sub $4, " LEN_REG "\n\t"
+-        "inc " TMP_REG "\n\t"
+-        "1:\n\t"
+-        "shr $1, " TMP_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "movsl\n\t"
+-        "movsl\n\t"
+-        "sub $8, " LEN_REG "\n\t"
+-        "1:\n\t"
+-        "cmp $64, " LEN_REG "\n\t"
+-        "jb copy_fwd63\n\t"
+-        "1:\n\t" /* copy 64-bytes blocks in loop, dest 16-bytes aligned */
+-        "movdqu 0x00(" SRC_REG "), %xmm0\n\t"
+-        "movdqu 0x10(" SRC_REG "), %xmm1\n\t"
+-        "movdqu 0x20(" SRC_REG "), %xmm2\n\t"
+-        "movdqu 0x30(" SRC_REG "), %xmm3\n\t"
+-        "movdqa %xmm0, 0x00(" DEST_REG ")\n\t"
+-        "movdqa %xmm1, 0x10(" DEST_REG ")\n\t"
+-        "movdqa %xmm2, 0x20(" DEST_REG ")\n\t"
+-        "movdqa %xmm3, 0x30(" DEST_REG ")\n\t"
+-        "add $64, " SRC_REG "\n\t"
+-        "add $64, " DEST_REG "\n\t"
+-        "sub $64, " LEN_REG "\n\t"
+-        "cmp $64, " LEN_REG "\n\t"
+-        "jae 1b\n\t"
+-        "copy_fwd63:\n\t" /* copy last 63 bytes, dest 16-bytes aligned */
+-        "mov " LEN_REG ", " TMP_REG "\n\t"
+-        "and $15, " LEN_REG "\n\t"
+-        "shr $5, " TMP_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "movdqu 0(" SRC_REG "), %xmm0\n\t"
+-        "movdqa %xmm0, 0(" DEST_REG ")\n\t"
+-        "add $16, " SRC_REG "\n\t"
+-        "add $16, " DEST_REG "\n\t"
+-        "1:\n\t"
+-        "shr $1, " TMP_REG "\n\t"
+-        "jnc copy_fwd15\n\t"
+-        "movdqu 0x00(" SRC_REG "), %xmm0\n\t"
+-        "movdqu 0x10(" SRC_REG "), %xmm1\n\t"
+-        "movdqa %xmm0, 0x00(" DEST_REG ")\n\t"
+-        "movdqa %xmm1, 0x10(" DEST_REG ")\n\t"
+-        "add $32, " SRC_REG "\n\t"
+-        "add $32, " DEST_REG "\n\t"
+-        "copy_fwd15:\n\t" /* copy last 15 bytes, dest 4-bytes aligned */
+-        "mov " LEN_REG ", " TMP_REG "\n\t"
+-        "and $3, " LEN_REG "\n\t"
+-        "shr $3, " TMP_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "movsl\n\t"
+-        "1:\n\t"
+-        "shr $1, " TMP_REG "\n\t"
+-        "jnc copy_fwd3\n\t"
+-        "movsl\n\t"
+-        "movsl\n\t"
+-        "copy_fwd3:\n\t" /* copy last 3 bytes */
+-        "shr $1, " LEN_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "movsb\n\t"
+-        "1:\n\t"
+-        "shr $1, " LEN_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "movsw\n\t"
+-        "1:\n\t"
+-        MEMMOVE_CLEANUP
+-        "ret\n\t"
+-        "copy_bwd:\n\t"
+-        "lea (" DEST_REG ", " LEN_REG "), " DEST_REG "\n\t"
+-        "lea (" SRC_REG ", " LEN_REG "), " SRC_REG "\n\t"
+-        "cmp $4, " LEN_REG "\n\t" /* 4-bytes align */
+-        "jb copy_bwd3\n\t"
+-        "mov " DEST_REG ", " TMP_REG "\n\t"
+-        "shr $1, " TMP_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "dec " SRC_REG "\n\t"
+-        "dec " DEST_REG "\n\t"
+-        "movb (" SRC_REG "), %al\n\t"
+-        "movb %al, (" DEST_REG ")\n\t"
+-        "dec " LEN_REG "\n\t"
+-        "1:\n\t"
+-        "shr $1, " TMP_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "sub $2, " SRC_REG "\n\t"
+-        "sub $2, " DEST_REG "\n\t"
+-        "movw (" SRC_REG "), %ax\n\t"
+-        "movw %ax, (" DEST_REG ")\n\t"
+-        "sub $2, " LEN_REG "\n\t"
+-        "1:\n\t" /* 16-bytes align */
+-        "cmp $16, " LEN_REG "\n\t"
+-        "jb copy_bwd15\n\t"
+-        "shr $1, " TMP_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "sub $4, " SRC_REG "\n\t"
+-        "sub $4, " DEST_REG "\n\t"
+-        "movl (" SRC_REG "), %eax\n\t"
+-        "movl %eax, (" DEST_REG ")\n\t"
+-        "sub $4, " LEN_REG "\n\t"
+-        "1:\n\t"
+-        "shr $1, " TMP_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "sub $8, " SRC_REG "\n\t"
+-        "sub $8, " DEST_REG "\n\t"
+-        "movl 4(" SRC_REG "), %eax\n\t"
+-        "movl %eax, 4(" DEST_REG ")\n\t"
+-        "movl (" SRC_REG "), %eax\n\t"
+-        "movl %eax, (" DEST_REG ")\n\t"
+-        "sub $8, " LEN_REG "\n\t"
+-        "1:\n\t"
+-        "cmp $64, " LEN_REG "\n\t"
+-        "jb copy_bwd63\n\t"
+-        "1:\n\t" /* copy 64-bytes blocks in loop, dest 16-bytes aligned */
+-        "sub $64, " SRC_REG "\n\t"
+-        "sub $64, " DEST_REG "\n\t"
+-        "movdqu 0x00(" SRC_REG "), %xmm0\n\t"
+-        "movdqu 0x10(" SRC_REG "), %xmm1\n\t"
+-        "movdqu 0x20(" SRC_REG "), %xmm2\n\t"
+-        "movdqu 0x30(" SRC_REG "), %xmm3\n\t"
+-        "movdqa %xmm0, 0x00(" DEST_REG ")\n\t"
+-        "movdqa %xmm1, 0x10(" DEST_REG ")\n\t"
+-        "movdqa %xmm2, 0x20(" DEST_REG ")\n\t"
+-        "movdqa %xmm3, 0x30(" DEST_REG ")\n\t"
+-        "sub $64, " LEN_REG "\n\t"
+-        "cmp $64, " LEN_REG "\n\t"
+-        "jae 1b\n\t"
+-        "copy_bwd63:\n\t" /* copy last 63 bytes, dest 16-bytes aligned */
+-        "mov " LEN_REG ", " TMP_REG "\n\t"
+-        "and $15, " LEN_REG "\n\t"
+-        "shr $5, " TMP_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "sub $16, " SRC_REG "\n\t"
+-        "sub $16, " DEST_REG "\n\t"
+-        "movdqu (" SRC_REG "), %xmm0\n\t"
+-        "movdqa %xmm0, (" DEST_REG ")\n\t"
+-        "1:\n\t"
+-        "shr $1, " TMP_REG "\n\t"
+-        "jnc copy_bwd15\n\t"
+-        "sub $32, " SRC_REG "\n\t"
+-        "sub $32, " DEST_REG "\n\t"
+-        "movdqu 0x00(" SRC_REG "), %xmm0\n\t"
+-        "movdqu 0x10(" SRC_REG "), %xmm1\n\t"
+-        "movdqa %xmm0, 0x00(" DEST_REG ")\n\t"
+-        "movdqa %xmm1, 0x10(" DEST_REG ")\n\t"
+-        "copy_bwd15:\n\t" /* copy last 15 bytes, dest 4-bytes aligned */
+-        "mov " LEN_REG ", " TMP_REG "\n\t"
+-        "and $3, " LEN_REG "\n\t"
+-        "shr $3, " TMP_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "sub $4, " SRC_REG "\n\t"
+-        "sub $4, " DEST_REG "\n\t"
+-        "movl (" SRC_REG "), %eax\n\t"
+-        "movl %eax, (" DEST_REG ")\n\t"
+-        "1:\n\t"
+-        "shr $1, " TMP_REG "\n\t"
+-        "jnc copy_bwd3\n\t"
+-        "sub $8, " SRC_REG "\n\t"
+-        "sub $8, " DEST_REG "\n\t"
+-        "movl 4(" SRC_REG "), %eax\n\t"
+-        "movl %eax, 4(" DEST_REG ")\n\t"
+-        "movl (" SRC_REG "), %eax\n\t"
+-        "movl %eax, (" DEST_REG ")\n\t"
+-        "copy_bwd3:\n\t" /* copy last 3 bytes */
+-        "shr $1, " LEN_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "dec " SRC_REG "\n\t"
+-        "dec " DEST_REG "\n\t"
+-        "movb (" SRC_REG "), %al\n\t"
+-        "movb %al, (" DEST_REG ")\n\t"
+-        "1:\n\t"
+-        "shr $1, " LEN_REG "\n\t"
+-        "jnc 1f\n\t"
+-        "movw -2(" SRC_REG "), %ax\n\t"
+-        "movw %ax, -2(" DEST_REG ")\n\t"
+-        "1:\n\t"
+-        MEMMOVE_CLEANUP
+-        "ret" )
++static inline void *__cdecl memmove_sse2(char *d, const char *s, size_t n)
++{
++    if (__builtin_expect(n <= 64, 1)) return memmove_sse2_unaligned_64(d, s, n);
++    else if (d < s) return memmove_sse2_forward(d, d, s, n);
++    else return memmove_sse2_backward(d, d + n, s + n, n);
++}
+ 
++#undef MEMMOVE_SSE2_FORWARD_MISALIGN
++#undef MEMMOVE_SSE2_BACKWARD_MISALIGN
++
++#ifdef __DISABLE_SSE2__
++#ifdef __clang__
++#pragma clang attribute pop
++#else
++#pragma GCC pop_options
+ #endif
++#undef __DISABLE_SSE2__
++#endif /* __DISABLE_SSE2__ */
+ 
+-/*********************************************************************
+- *                  memmove (MSVCRT.@)
+- */
+-#ifdef WORDS_BIGENDIAN
+-# define MERGE(w1, sh1, w2, sh2) ((w1 << sh1) | (w2 >> sh2))
++#ifndef __AVX__
++#ifdef __clang__
++#pragma clang attribute push (__attribute__((target("avx"))), apply_to=function)
+ #else
+-# define MERGE(w1, sh1, w2, sh2) ((w1 >> sh1) | (w2 << sh2))
++#pragma GCC push_options
++#pragma GCC target("avx")
+ #endif
+-void * __cdecl memmove(void *dst, const void *src, size_t n)
++#define __DISABLE_AVX__
++#endif /* __AVX__ */
++
++static inline void *__cdecl memmove_avx_unaligned_128(char *d, const char *s, size_t n)
+ {
+-#ifdef __x86_64__
+-    return sse2_memmove(dst, src, n);
+-#else
+-    unsigned char *d = dst;
+-    const unsigned char *s = src;
+-    int sh1;
++    if (n > 64)
++    {
++        __m256i ymm0 = _mm256_loadu_si256((__m256i *)s);
++        __m256i ymm1 = _mm256_loadu_si256((__m256i *)(s + 32));
++        __m256i ymm2 = _mm256_loadu_si256((__m256i *)(s + n - 64));
++        __m256i ymm3 = _mm256_loadu_si256((__m256i *)(s + n - 32));
++        _mm256_storeu_si256((__m256i *)d, ymm0);
++        _mm256_storeu_si256((__m256i *)(d + 32), ymm1);
++        _mm256_storeu_si256((__m256i *)(d + n - 64), ymm2);
++        _mm256_storeu_si256((__m256i *)(d + n - 32), ymm3);
++        return d;
++    }
++    if (n >= 32)
++    {
++        __m256i ymm0 = _mm256_loadu_si256((__m256i *)s);
++        __m256i ymm1 = _mm256_loadu_si256((__m256i *)(s + n - 32));
++        _mm256_storeu_si256((__m256i *)d, ymm0);
++        _mm256_storeu_si256((__m256i *)(d + n - 32), ymm1);
++        return d;
++    }
++    if (n >= 16)
++    {
++        __m128i xmm0 = _mm_loadu_si128((__m128i *)s);
++        __m128i xmm1 = _mm_loadu_si128((__m128i *)(s + n - 16));
++        _mm_storeu_si128((__m128i *)d, xmm0);
++        _mm_storeu_si128((__m128i *)(d + n - 16), xmm1);
++        return d;
++    }
++    if (n >= 8)
++    {
++        uint64_t tmp0 = *(uint64_t *)s;
++        uint64_t tmp1 = *(uint64_t *)(s + n - 8);
++        *(uint64_t *)d = tmp0;
++        *(uint64_t *)(d + n - 8) = tmp1;
++        return d;
++    }
++    if (n >= 4)
++    {
++        uint32_t tmp0 = *(uint32_t *)s;
++        uint32_t tmp1 = *(uint32_t *)(s + n - 4);
++        *(uint32_t *)d = tmp0;
++        *(uint32_t *)(d + n - 4) = tmp1;
++        return d;
++    }
++    if (n >= 2)
++    {
++        uint16_t tmp0 = *(uint16_t *)s;
++        uint16_t tmp1 = *(uint16_t *)(s + n - 2);
++        *(uint16_t *)d = tmp0;
++        *(uint16_t *)(d + n - 2) = tmp1;
++        return d;
++    }
++    if (n >= 1)
++    {
++        *(uint8_t *)d = *(uint8_t *)s;
++        return d;
++    }
++    return d;
++}
+ 
+-#ifdef __i386__
+-    if (sse2_supported)
+-        return sse2_memmove(dst, src, n);
+-#endif
++static inline void *__cdecl memmove_avx_forward_64(void *dst, char *d, const char *s, size_t n)
++{
++    memmove_avx_unaligned_128(d, s, n);
++    return dst;
++}
+ 
+-    if (!n) return dst;
++static inline void *__cdecl memmove_avx_backward_64(void *dst, char *d, const char *s, size_t n)
++{
++    return memmove_avx_unaligned_128(d - n, s - n, n);
++}
++
++MEMMOVE_DECLARE(avx, 32, 128, 64,
++    _mm256_store_si256((__m256i*)(d +  0 * z + y), _mm256_loadu_si256((__m256i *)(s +  0 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 32 * z + y), _mm256_loadu_si256((__m256i *)(s + 32 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 64 * z + y), _mm256_loadu_si256((__m256i *)(s + 64 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 96 * z + y), _mm256_loadu_si256((__m256i *)(s + 96 * z + y)));
++)
++
++MEMMOVE_DECLARE(avx, 32, 256, 128,
++    _mm256_store_si256((__m256i*)(d +  0 * z + y), _mm256_loadu_si256((__m256i *)(s +  0 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 32 * z + y), _mm256_loadu_si256((__m256i *)(s + 32 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 64 * z + y), _mm256_loadu_si256((__m256i *)(s + 64 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 96 * z + y), _mm256_loadu_si256((__m256i *)(s + 96 * z + y)));
++    _mm256_store_si256((__m256i*)(d +128 * z + y), _mm256_loadu_si256((__m256i *)(s +128 * z + y)));
++    _mm256_store_si256((__m256i*)(d +160 * z + y), _mm256_loadu_si256((__m256i *)(s +160 * z + y)));
++    _mm256_store_si256((__m256i*)(d +192 * z + y), _mm256_loadu_si256((__m256i *)(s +192 * z + y)));
++    _mm256_store_si256((__m256i*)(d +224 * z + y), _mm256_loadu_si256((__m256i *)(s +224 * z + y)));
++)
++
++MEMMOVE_DECLARE(avx, 32, 512, 256,
++    _mm256_store_si256((__m256i*)(d +  0 * z + y), _mm256_loadu_si256((__m256i *)(s +  0 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 32 * z + y), _mm256_loadu_si256((__m256i *)(s + 32 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 64 * z + y), _mm256_loadu_si256((__m256i *)(s + 64 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 96 * z + y), _mm256_loadu_si256((__m256i *)(s + 96 * z + y)));
++    _mm256_store_si256((__m256i*)(d +128 * z + y), _mm256_loadu_si256((__m256i *)(s +128 * z + y)));
++    _mm256_store_si256((__m256i*)(d +160 * z + y), _mm256_loadu_si256((__m256i *)(s +160 * z + y)));
++    _mm256_store_si256((__m256i*)(d +192 * z + y), _mm256_loadu_si256((__m256i *)(s +192 * z + y)));
++    _mm256_store_si256((__m256i*)(d +224 * z + y), _mm256_loadu_si256((__m256i *)(s +224 * z + y)));
++    _mm256_store_si256((__m256i*)(d +256 * z + y), _mm256_loadu_si256((__m256i *)(s +256 * z + y)));
++    _mm256_store_si256((__m256i*)(d +288 * z + y), _mm256_loadu_si256((__m256i *)(s +288 * z + y)));
++    _mm256_store_si256((__m256i*)(d +320 * z + y), _mm256_loadu_si256((__m256i *)(s +320 * z + y)));
++    _mm256_store_si256((__m256i*)(d +352 * z + y), _mm256_loadu_si256((__m256i *)(s +352 * z + y)));
++    _mm256_store_si256((__m256i*)(d +384 * z + y), _mm256_loadu_si256((__m256i *)(s +384 * z + y)));
++    _mm256_store_si256((__m256i*)(d +416 * z + y), _mm256_loadu_si256((__m256i *)(s +416 * z + y)));
++    _mm256_store_si256((__m256i*)(d +448 * z + y), _mm256_loadu_si256((__m256i *)(s +448 * z + y)));
++    _mm256_store_si256((__m256i*)(d +480 * z + y), _mm256_loadu_si256((__m256i *)(s +480 * z + y)));
++)
++
++static inline void *__cdecl memmove_aligned_avx_forward_64(void *dst, char *d, const char *s, size_t n)
++{
++    memmove_avx_unaligned_128(d, s, n);
++    return dst;
++}
+ 
+-    if ((size_t)dst - (size_t)src >= n)
+-    {
+-        for (; (size_t)d % sizeof(size_t) && n; n--) *d++ = *s++;
++static inline void *__cdecl memmove_aligned_avx_backward_64(void *dst, char *d, const char *s, size_t n)
++{
++    return memmove_avx_unaligned_128(d - n, s - n, n);
++}
+ 
+-        sh1 = 8 * ((size_t)s % sizeof(size_t));
+-        if (!sh1)
+-        {
+-            while (n >= sizeof(size_t))
+-            {
+-                *(size_t*)d = *(size_t*)s;
+-                s += sizeof(size_t);
+-                d += sizeof(size_t);
+-                n -= sizeof(size_t);
+-            }
+-        }
+-        else if (n >= 2 * sizeof(size_t))
+-        {
+-            int sh2 = 8 * sizeof(size_t) - sh1;
+-            size_t x, y;
++MEMMOVE_DECLARE(aligned_avx, 32, 128, 64,
++    _mm256_store_si256((__m256i*)(d +  0 * z + y), _mm256_load_si256((__m256i *)(s +  0 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 32 * z + y), _mm256_load_si256((__m256i *)(s + 32 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 64 * z + y), _mm256_load_si256((__m256i *)(s + 64 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 96 * z + y), _mm256_load_si256((__m256i *)(s + 96 * z + y)));
++)
+ 
+-            s -= sh1 / 8;
+-            x = *(size_t*)s;
+-            do
+-            {
+-                s += sizeof(size_t);
+-                y = *(size_t*)s;
+-                *(size_t*)d = MERGE(x, sh1, y, sh2);
+-                d += sizeof(size_t);
+-
+-                s += sizeof(size_t);
+-                x = *(size_t*)s;
+-                *(size_t*)d = MERGE(y, sh1, x, sh2);
+-                d += sizeof(size_t);
+-
+-                n -= 2 * sizeof(size_t);
+-            } while (n >= 2 * sizeof(size_t));
+-            s += sh1 / 8;
+-        }
+-        while (n--) *d++ = *s++;
+-        return dst;
+-    }
+-    else
+-    {
+-        d += n;
+-        s += n;
++MEMMOVE_DECLARE(aligned_avx, 32, 256, 128,
++    _mm256_store_si256((__m256i*)(d +  0 * z + y), _mm256_load_si256((__m256i *)(s +  0 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 32 * z + y), _mm256_load_si256((__m256i *)(s + 32 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 64 * z + y), _mm256_load_si256((__m256i *)(s + 64 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 96 * z + y), _mm256_load_si256((__m256i *)(s + 96 * z + y)));
++    _mm256_store_si256((__m256i*)(d +128 * z + y), _mm256_load_si256((__m256i *)(s +128 * z + y)));
++    _mm256_store_si256((__m256i*)(d +160 * z + y), _mm256_load_si256((__m256i *)(s +160 * z + y)));
++    _mm256_store_si256((__m256i*)(d +192 * z + y), _mm256_load_si256((__m256i *)(s +192 * z + y)));
++    _mm256_store_si256((__m256i*)(d +224 * z + y), _mm256_load_si256((__m256i *)(s +224 * z + y)));
++)
+ 
+-        for (; (size_t)d % sizeof(size_t) && n; n--) *--d = *--s;
++MEMMOVE_DECLARE(aligned_avx, 32, 512, 256,
++    _mm256_store_si256((__m256i*)(d +  0 * z + y), _mm256_load_si256((__m256i *)(s +  0 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 32 * z + y), _mm256_load_si256((__m256i *)(s + 32 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 64 * z + y), _mm256_load_si256((__m256i *)(s + 64 * z + y)));
++    _mm256_store_si256((__m256i*)(d + 96 * z + y), _mm256_load_si256((__m256i *)(s + 96 * z + y)));
++    _mm256_store_si256((__m256i*)(d +128 * z + y), _mm256_load_si256((__m256i *)(s +128 * z + y)));
++    _mm256_store_si256((__m256i*)(d +160 * z + y), _mm256_load_si256((__m256i *)(s +160 * z + y)));
++    _mm256_store_si256((__m256i*)(d +192 * z + y), _mm256_load_si256((__m256i *)(s +192 * z + y)));
++    _mm256_store_si256((__m256i*)(d +224 * z + y), _mm256_load_si256((__m256i *)(s +224 * z + y)));
++    _mm256_store_si256((__m256i*)(d +256 * z + y), _mm256_load_si256((__m256i *)(s +256 * z + y)));
++    _mm256_store_si256((__m256i*)(d +288 * z + y), _mm256_load_si256((__m256i *)(s +288 * z + y)));
++    _mm256_store_si256((__m256i*)(d +320 * z + y), _mm256_load_si256((__m256i *)(s +320 * z + y)));
++    _mm256_store_si256((__m256i*)(d +352 * z + y), _mm256_load_si256((__m256i *)(s +352 * z + y)));
++    _mm256_store_si256((__m256i*)(d +384 * z + y), _mm256_load_si256((__m256i *)(s +384 * z + y)));
++    _mm256_store_si256((__m256i*)(d +416 * z + y), _mm256_load_si256((__m256i *)(s +416 * z + y)));
++    _mm256_store_si256((__m256i*)(d +448 * z + y), _mm256_load_si256((__m256i *)(s +448 * z + y)));
++    _mm256_store_si256((__m256i*)(d +480 * z + y), _mm256_load_si256((__m256i *)(s +480 * z + y)));
++)
+ 
+-        sh1 = 8 * ((size_t)s % sizeof(size_t));
+-        if (!sh1)
+-        {
+-            while (n >= sizeof(size_t))
+-            {
+-                s -= sizeof(size_t);
+-                d -= sizeof(size_t);
+-                *(size_t*)d = *(size_t*)s;
+-                n -= sizeof(size_t);
+-            }
+-        }
+-        else if (n >= 2 * sizeof(size_t))
+-        {
+-            int sh2 = 8 * sizeof(size_t) - sh1;
+-            size_t x, y;
++#define MEMMOVE_AVX_FORWARD_MISALIGN(x) (0x20 - ((uintptr_t)x & 0x1f))
++#define MEMMOVE_AVX_BACKWARD_MISALIGN(x) ((uintptr_t)x & 0x1f)
+ 
+-            s -= sh1 / 8;
+-            x = *(size_t*)s;
+-            do
+-            {
+-                s -= sizeof(size_t);
+-                y = *(size_t*)s;
+-                d -= sizeof(size_t);
+-                *(size_t*)d = MERGE(y, sh1, x, sh2);
+-
+-                s -= sizeof(size_t);
+-                x = *(size_t*)s;
+-                d -= sizeof(size_t);
+-                *(size_t*)d = MERGE(x, sh1, y, sh2);
+-
+-                n -= 2 * sizeof(size_t);
+-            } while (n >= 2 * sizeof(size_t));
+-            s += sh1 / 8;
+-        }
+-        while (n--) *--d = *--s;
+-    }
+-    return dst;
++static void *__cdecl memmove_avx_forward(void *dst, char *d, const char *s, size_t n)
++{
++    size_t k = MEMMOVE_AVX_FORWARD_MISALIGN(d);
++    memmove_avx_unaligned_128(d, s, k);
++    d += k; s += k; n -= k;
++    if (MEMMOVE_AVX_FORWARD_MISALIGN(s)) return memmove_avx_forward_512(dst, d, s, n);
++    else return memmove_aligned_avx_forward_512(dst, d, s, n);
++}
++
++static void *__cdecl memmove_avx_backward(void *dst, char *d, const char *s, size_t n)
++{
++    size_t k = MEMMOVE_AVX_BACKWARD_MISALIGN(d);
++    d -= k; s -= k; n -= k;
++    memmove_avx_unaligned_128(d, s, k);
++    if (MEMMOVE_AVX_BACKWARD_MISALIGN(s)) return memmove_avx_backward_512(dst, d, s, n);
++    else return memmove_aligned_avx_backward_512(dst, d, s, n);
++}
++
++static inline void *__cdecl memmove_avx(char *d, const char *s, size_t n)
++{
++    if (__builtin_expect(n <= 128, 1)) return memmove_avx_unaligned_128(d, s, n);
++    else if (d < s) return memmove_avx_forward(d, d, s, n);
++    else return memmove_avx_backward(d, d + n, s + n, n);
++}
++
++#undef MEMMOVE_AVX_FORWARD_MISALIGN
++#undef MEMMOVE_AVX_BACKWARD_MISALIGN
++
++#ifdef __DISABLE_AVX__
++#undef __DISABLE_AVX__
++#ifdef __clang__
++#pragma clang attribute pop
++#else
++#pragma GCC pop_options
+ #endif
++#endif /* __DISABLE_AVX__ */
++
++#undef MEMMOVE_START_FWD
++#undef MEMMOVE_END_FWD
++#undef MEMMOVE_START_BWD
++#undef MEMMOVE_END_BWD
++#undef MEMMOVE_DECLARE
++
++/*********************************************************************
++ *                  memmove (MSVCRT.@)
++ */
++void * __cdecl memmove(void *dst, const void *src, size_t n)
++{
++    if (__builtin_expect(n <= 32, 1)) return memmove_c_unaligned_32(dst, src, n);
++    if (avx_supported) return memmove_avx(dst, src, n);
++    if (sse2_supported) return memmove_sse2(dst, src, n);
++    return memmove_c(dst, src, n);
+ }
+-#undef MERGE
+ 
+ /*********************************************************************
+  *                  memcpy   (MSVCRT.@)
+  */
+ void * __cdecl memcpy(void *dst, const void *src, size_t n)
+ {
+-    return memmove(dst, src, n);
++    if (__builtin_expect(n <= 32, 1)) return memmove_c_unaligned_32(dst, src, n);
++    if (avx_supported) return memmove_avx(dst, src, n);
++    if (sse2_supported) return memmove_sse2(dst, src, n);
++    return memmove_c(dst, src, n);
+ }
+ 
+ /*********************************************************************
+diff --git a/tools/makedep.c b/tools/makedep.c
+index 913854c7f05..a9f1ac2a67d 100644
+--- a/tools/makedep.c
++++ b/tools/makedep.c
+@@ -1570,6 +1570,7 @@ static struct file *open_include_file( const struct makefile *make, struct incl_
+     if (pFile->type == INCL_SYSTEM && pFile->use_msvcrt)
+     {
+         if (!strcmp( pFile->name, "stdarg.h" )) return NULL;
++        if (!strcmp( pFile->name, "immintrin.h" )) return NULL;
+         fprintf( stderr, "%s:%d: error: system header %s cannot be used with msvcrt\n",
+                  pFile->included_by->file->name, pFile->included_line, pFile->name );
+         exit(1);
+-- 
+2.30.1
+

@@ -1,0 +1,60 @@
+From 317930b485e6a6fd38adc1b9602b1c2bc20b8338 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 1 Mar 2021 20:44:19 +0100
+Subject: [PATCH 07/11] server: Only return full keystate when requested.
+
+---
+ server/queue.c | 28 +++++++++-------------------
+ 1 file changed, 9 insertions(+), 19 deletions(-)
+
+diff --git a/server/queue.c b/server/queue.c
+index 06a1cfda1d9..2660f2fc7ea 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -3282,34 +3282,21 @@ DECL_HANDLER(get_key_state)
+             desktop->shared->keystate[req->key & 0xff] &= ~0x40;
+             SHARED_WRITE_END( &desktop->shared->seq );
+         }
+-        set_reply_data( (void *)desktop->shared->keystate, size );
++        else set_reply_data( (void *)desktop->shared->keystate, size );
+         release_object( desktop );
+     }
+-    else
++    else if (!current->queue)
+     {
+-        unsigned char *keystate;
+-        if (current->queue)
+-        {
+-            if (req->key >= 0)
+-            {
+-                /* synchronize with desktop keystate, but _only_ if req->key is given */
+-                synchronize_input_key_state( current->queue->input );
+-                reply->state = current->queue->input->keystate[req->key & 0xff];
+-            }
+-            set_reply_data( current->queue->input->keystate, size );
+-            return;
+-        }
+-
+-        /* fallback to desktop keystate */
+-        if (!(desktop = get_thread_desktop( current, 0 ))) return;
+-        if (req->key >= 0) reply->state = desktop->shared->keystate[req->key & 0xff] & ~0x40;
+-        if ((keystate = set_reply_data_size( size )))
+-        {
+-            unsigned int i;
+-            for (i = 0; i < size; i++) keystate[i] = desktop->shared->keystate[i] & ~0x40;
+-        }
+-        release_object( desktop );
++        reply->state = 0;
++        memset( set_reply_data_size( size ), 0, size );
++    }
++    else if (req->key >= 0)
++    {
++        /* synchronize with desktop keystate, but _only_ if req->key is given */
++        synchronize_input_key_state( current->queue->input );
++        reply->state = current->queue->input->keystate[req->key & 0xff];
+     }
++    else set_reply_data( current->queue->input->keystate, size );
+ }
+ 
+ 
+

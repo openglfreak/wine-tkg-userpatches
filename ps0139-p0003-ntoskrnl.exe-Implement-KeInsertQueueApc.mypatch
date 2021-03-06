@@ -331,13 +331,13 @@ index ab46d0edec4..b4fcaf96e2d 100644
      free( thread->req_data );
      free( thread->reply_data );
 @@ -611,6 +615,7 @@ static int thread_apc_signaled( struct object *obj, struct wait_queue_entry *ent
- static void thread_apc_destroy( struct object *obj )
  {
      struct thread_apc *apc = (struct thread_apc *)obj;
+ 
 +    if (apc->callee) release_object( apc->callee);
      if (apc->caller) release_object( apc->caller );
-     if (apc->owner) release_object( apc->owner );
- }
+     if (apc->owner)
+     {
 @@ -624,6 +629,7 @@ static struct thread_apc *create_apc( struct object *owner, const apc_call_t *ca
      {
          apc->call        = *call_data;
@@ -453,7 +453,7 @@ index ab46d0edec4..b4fcaf96e2d 100644
 -    if (thread)
 +    if (!thread && !process)
      {
--        if (!queue_apc( NULL, thread, apc )) set_error( STATUS_THREAD_IS_TERMINATING );
+-        if (!queue_apc( NULL, thread, apc )) set_error( STATUS_UNSUCCESSFUL );
 -        release_object( thread );
 +        release_object(apc);
 +        return;
@@ -490,7 +490,7 @@ index ab46d0edec4..b4fcaf96e2d 100644
 +        else
 +        {
 +            close_handle( current->process, apc_handle );
-+            set_error( thread ? STATUS_THREAD_IS_TERMINATING : STATUS_PROCESS_IS_TERMINATING );
++            set_error( STATUS_UNSUCCESSFUL );
          }
 -        release_object( process );
 +        release_object( thread ? (void*) thread : (void*) process );

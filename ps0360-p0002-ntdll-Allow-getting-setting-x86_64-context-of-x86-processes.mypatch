@@ -1,0 +1,198 @@
+From: "Rafał Harabień" <rafalh92@outlook.com>
+Subject: [PATCH v2 2/2] ntdll: Allow getting/setting x86_64 context of x86 processes in wine64
+Message-Id: <DB8PR03MB56609AD8D9B0FD645615897CC79B9@DB8PR03MB5660.eurprd03.prod.outlook.com>
+Date: Mon,  1 Mar 2021 00:42:28 +0100
+In-Reply-To: <20210228234228.58239-1-rafalh92@outlook.com>
+References: <20210228234228.58239-1-rafalh92@outlook.com>
+
+WoW64 process has two separate contexts:
+- x86 context used most of the time (e.g. by application code)
+- x86_64 context used by system when it quits x86 emulation and jumps to
+  the kernel code
+A notable exception are debug registers - their state is shared. Some
+debuggers make use of that fact and sets/gets debug registers of x86
+processes using x86_64 thread context.
+
+This change adds support for setting and getting debug registers using
+x86_64 thread context. Getting other registers is allowed too and will
+return values from x86 thread context.
+
+This change fixes hardware breakpoints in IDA 7.0 disassembler (x86_64 app)
+when debugging x86 (32 bit) applications.
+
+Signed-off-by: Rafał Harabień <rafalh92@outlook.com>
+---
+ dlls/ntdll/tests/exception.c    |  9 -----
+ dlls/ntdll/unix/signal_x86_64.c | 62 +++++++++++++++++++++++++++++++++
+ server/thread.c                 | 24 +++++++++++--
+ 3 files changed, 84 insertions(+), 11 deletions(-)
+
+diff --git a/dlls/ntdll/tests/exception.c b/dlls/ntdll/tests/exception.c
+index 8f83a14f856..1eaadf9d01e 100644
+--- a/dlls/ntdll/tests/exception.c
++++ b/dlls/ntdll/tests/exception.c
+@@ -5841,7 +5841,6 @@ static void test_debug_registers_wow64(void)
+     ZeroMemory(&ctx, sizeof(ctx));
+     ctx.ContextFlags = CONTEXT_ALL;
+     bret = GetThreadContext(pi.hThread, &ctx);
+-    todo_wine
+     ok(bret, "GetThreadContext failed\n");
+ 
+     ctx.Dr0 = 0x12340000;
+@@ -5850,14 +5849,12 @@ static void test_debug_registers_wow64(void)
+     ctx.Dr3 = 0x12340003;
+     ctx.Dr7 = 0x155; // enable all breakpoints (local)
+     bret = SetThreadContext(pi.hThread, &ctx);
+-    todo_wine
+     ok(bret, "SetThreadContext failed\n");
+     
+     if (bret) {
+         ZeroMemory(&ctx, sizeof(ctx));
+         ctx.ContextFlags = CONTEXT_ALL;
+         bret = GetThreadContext(pi.hThread, &ctx);
+-        todo_wine
+         ok(bret, "GetThreadContext failed\n");
+         if (bret)
+         {
+@@ -5896,22 +5893,16 @@ static void test_debug_registers_wow64(void)
+     ok(ret == STATUS_SUCCESS, "Wow64GetThreadContext failed with %lx\n", ret);
+     if (ret == STATUS_SUCCESS)
+     {
+-        todo_wine
+         ok(wow64_ctx.Dr0 == 0x56780000, "expected 0x56780000, got %lx\n", wow64_ctx.Dr0);
+-        todo_wine
+         ok(wow64_ctx.Dr1 == 0x56780001, "expected 0x56780001, got %lx\n", wow64_ctx.Dr1);
+-        todo_wine
+         ok(wow64_ctx.Dr2 == 0x56780002, "expected 0x56780002, got %lx\n", wow64_ctx.Dr2);
+-        todo_wine
+         ok(wow64_ctx.Dr3 == 0x56780003, "expected 0x56780003, got %lx\n", wow64_ctx.Dr3);
+-        todo_wine
+         ok(wow64_ctx.Dr7 == 0x101, "expected 0x101, got %lx\n", wow64_ctx.Dr7);
+     }
+ 
+     ZeroMemory(&ctx, sizeof(ctx));
+     ctx.ContextFlags = CONTEXT_ALL;
+     bret = GetThreadContext(pi.hThread, &ctx);
+-    todo_wine
+     ok(bret, "GetThreadContext failed\n");
+     if (bret)
+     {
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index e62e958b4aa..51b324a1790 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -1707,6 +1707,68 @@ NTSTATUS context_to_server( context_t *to, const CONTEXT *from )
+  */
+ NTSTATUS context_from_server( CONTEXT *to, const context_t *from )
+ {
++    if (from->cpu == CPU_x86)
++    {
++        // WoW64 process has two separate contexts: one 32 bit used when executing normal user code and one 64 bit
++        // used by WoW64 internals for talking with the kernel. Debug registers are shared between those contexts
++        // and some debuggers make use of that fact so handle getting them here. Other registers could be set to
++        // anything but to keep things sane lets copy them from 32 bit context.
++        to->ContextFlags = CONTEXT_AMD64;
++        if (from->flags & SERVER_CTX_CONTROL)
++        {
++            to->ContextFlags |= CONTEXT_CONTROL;
++            to->Rbp    = from->ctl.i386_regs.ebp;
++            to->Rip    = from->ctl.i386_regs.eip;
++            to->Rsp    = from->ctl.i386_regs.esp;
++            to->SegCs  = from->ctl.i386_regs.cs;
++            to->SegSs  = from->ctl.i386_regs.ss;
++            to->EFlags = from->ctl.i386_regs.eflags;
++        }
++
++        if (from->flags & SERVER_CTX_INTEGER)
++        {
++            to->ContextFlags |= CONTEXT_INTEGER;
++            to->Rax = from->integer.i386_regs.eax;
++            to->Rcx = from->integer.i386_regs.ecx;
++            to->Rdx = from->integer.i386_regs.edx;
++            to->Rbx = from->integer.i386_regs.ebx;
++            to->Rsi = from->integer.i386_regs.esi;
++            to->Rdi = from->integer.i386_regs.edi;
++            to->R8  = 0;
++            to->R9  = 0;
++            to->R10 = 0;
++            to->R11 = 0;
++            to->R12 = 0;
++            to->R13 = 0;
++            to->R14 = 0;
++            to->R15 = 0;
++        }
++        if (from->flags & SERVER_CTX_SEGMENTS)
++        {
++            to->ContextFlags |= CONTEXT_SEGMENTS;
++            to->SegDs = from->seg.i386_regs.ds;
++            to->SegEs = from->seg.i386_regs.es;
++            to->SegFs = from->seg.i386_regs.fs;
++            to->SegGs = from->seg.i386_regs.gs;
++        }
++        if (from->flags & SERVER_CTX_FLOATING_POINT)
++        {
++            to->ContextFlags |= CONTEXT_FLOATING_POINT;
++            memset(&to->u.FltSave, 0, sizeof(to->u.FltSave));
++        }
++        if (from->flags & SERVER_CTX_DEBUG_REGISTERS)
++        {
++            to->ContextFlags |= CONTEXT_DEBUG_REGISTERS;
++            to->Dr0 = from->debug.i386_regs.dr0;
++            to->Dr1 = from->debug.i386_regs.dr1;
++            to->Dr2 = from->debug.i386_regs.dr2;
++            to->Dr3 = from->debug.i386_regs.dr3;
++            to->Dr6 = from->debug.i386_regs.dr6;
++            to->Dr7 = from->debug.i386_regs.dr7;
++        }
++        return STATUS_SUCCESS;
++    }
++
+     if (from->cpu != CPU_x86_64) return STATUS_INVALID_PARAMETER;
+ 
+     to->ContextFlags = CONTEXT_AMD64 | (to->ContextFlags & 0x40);
+diff --git a/server/thread.c b/server/thread.c
+index d544970f3c1..281ad93a849 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -1890,8 +1890,7 @@ DECL_HANDLER(set_thread_context)
+     reply->self = (thread == current);
+ 
+     if (thread->state == TERMINATED) set_error( STATUS_UNSUCCESSFUL );
+-    else if (context->cpu != thread->process->cpu) set_error( STATUS_INVALID_PARAMETER );
+-    else
++    else if (context->cpu == thread->process->cpu)
+     {
+         unsigned int system_flags = get_context_system_regs(context->cpu) & context->flags;
+ 
+@@ -1903,6 +1902,27 @@ DECL_HANDLER(set_thread_context)
+             thread->context->regs.flags |= context->flags;
+         }
+     }
++    else if (context->cpu == CPU_x86_64 && thread->process->cpu == CPU_x86)
++    {
++        // WoW64 process has two separate contexts: one 32 bit used when executing normal user code and one 64 bit
++        // used by WoW64 internals for talking with the kernel. Debug registers are shared between those contexts
++        // and some debuggers make use of that fact so handle setting them here.
++        unsigned int system_flags = get_context_system_regs( context->cpu ) & context->flags;
++        if (system_flags)
++        {
++            set_thread_context( thread, context, system_flags );
++            if (thread->context && !get_error())
++            {
++                thread->context->regs.debug.i386_regs.dr0 = context->debug.x86_64_regs.dr0;
++                thread->context->regs.debug.i386_regs.dr1 = context->debug.x86_64_regs.dr1;
++                thread->context->regs.debug.i386_regs.dr2 = context->debug.x86_64_regs.dr2;
++                thread->context->regs.debug.i386_regs.dr3 = context->debug.x86_64_regs.dr3;
++                thread->context->regs.debug.i386_regs.dr6 = context->debug.x86_64_regs.dr6;
++                thread->context->regs.debug.i386_regs.dr7 = context->debug.x86_64_regs.dr7;
++            }
++        }
++    }
++    else set_error( STATUS_INVALID_PARAMETER );
+ 
+     release_object( thread );
+ }
+
+-- 
+2.25.1
+

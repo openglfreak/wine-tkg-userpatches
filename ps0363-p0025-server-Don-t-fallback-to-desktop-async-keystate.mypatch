@@ -1,0 +1,90 @@
+From e9f5c5a6161c824f54484c6af5a8a7e02d635aa7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 8 Feb 2021 19:47:05 +0100
+Subject: [PATCH 25/26] server: Don't fallback to desktop async keystate.
+
+When thread doesn't have a message queue.
+
+(for bioshock 2 remastered)
+---
+ dlls/user32/tests/input.c |  5 ++---
+ server/queue.c            | 24 +++++++-----------------
+ 2 files changed, 9 insertions(+), 20 deletions(-)
+
+diff --git a/dlls/user32/tests/input.c b/dlls/user32/tests/input.c
+index c49015ebb84..04d233b0cf6 100644
+--- a/dlls/user32/tests/input.c
++++ b/dlls/user32/tests/input.c
+@@ -3718,14 +3718,13 @@ static DWORD WINAPI get_key_state_thread(void *arg)
+     ret = GetKeyboardState(keystate);
+     ok(ret, "GetKeyboardState failed, %u\n", GetLastError());
+     result = keystate['X'];
+-    todo_wine_if(!has_queue)
+     ok(!result, "%d: expected that keystate is not set, got %#x\n", i, result);
+ 
+     result = keystate['C'];
+     ok(!result, "%d: expected that C keystate is not set, got %#x\n", i, result);
+ 
+     result = GetKeyState('X');
+-    if (!has_queue) todo_wine ok(!(result & 0x8000), "%d: expected that highest bit is unset, got %#x\n", i, result);
++    if (!has_queue) ok(!(result & 0x8000), "%d: expected that highest bit is unset, got %#x\n", i, result);
+     else todo_wine ok((result & 0x8000), "%d: expected that highest bit is set, got %#x\n", i, result);
+     ok(!(result & 0x007e), "%d: expected that undefined bits are unset, got %#x\n", i, result);
+ 
+@@ -3737,7 +3736,7 @@ static DWORD WINAPI get_key_state_thread(void *arg)
+     ret = GetKeyboardState(keystate);
+     ok(ret, "GetKeyboardState failed, %u\n", GetLastError());
+     result = keystate['X'];
+-    if (!has_queue) todo_wine ok(!result, "%d: expected that keystate is unset, got %#x\n", i, result);
++    if (!has_queue) ok(!result, "%d: expected that keystate is unset, got %#x\n", i, result);
+     else todo_wine ok(result, "%d: expected that keystate is set, got %#x\n", i, result);
+ 
+     result = keystate['C'];
+diff --git a/server/queue.c b/server/queue.c
+index 2c5d0cfc52e..535b41ea6a5 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -3232,30 +3232,20 @@ DECL_HANDLER(get_key_state)
+         set_reply_data( (void *)desktop->shared->keystate, size );
+         release_object( desktop );
+     }
++    else if (!current->queue)
++    {
++        reply->state = 0;
++        memset( set_reply_data_size( size ), 0, size );
++    }
+     else
+     {
+-        unsigned char *keystate;
+-        if (current->queue)
+-        {
+-            if (req->key >= 0)
+-            {
+-                /* synchronize with desktop keystate, but _only_ if req->key is given */
+-                synchronize_input_key_state( current->queue->input );
+-                reply->state = current->queue->input->keystate[req->key & 0xff];
+-            }
+-            set_reply_data( current->queue->input->keystate, size );
+-            return;
+-        }
+-
+-        /* fallback to desktop keystate */
+-        if (!(desktop = get_thread_desktop( current, 0 ))) return;
+-        if (req->key >= 0) reply->state = desktop->shared->keystate[req->key & 0xff] & ~0x40;
+-        if ((keystate = set_reply_data_size( size )))
+-        {
+-            unsigned int i;
+-            for (i = 0; i < size; i++) keystate[i] = desktop->shared->keystate[i] & ~0x40;
+-        }
+-        release_object( desktop );
++        if (req->key >= 0)
++        {
++            /* synchronize with desktop keystate, but _only_ if req->key is given */
++            synchronize_input_key_state( current->queue->input );
++            reply->state = current->queue->input->keystate[req->key & 0xff];
++        }
++        set_reply_data( current->queue->input->keystate, size );
+     }
+ }
+ 
+

@@ -1,7 +1,7 @@
 From: Damjan Jovanovic <damjan.jov@gmail.com>
-Subject: [PATCH 1/6] activeds: implement ADsSetLastError() and ADsGetLastError()
-Message-Id: <CAJm2B-n=baRucfY=JPO0ESNrV2QS89qYpFb=TGjk2eVrdg=rSw@mail.gmail.com>
-Date: Sun, 7 Feb 2021 17:55:17 +0200
+Subject: [PATCH v3 1/7] activeds: implement ADsSetLastError() and ADsGetLastError()
+Message-Id: <CAJm2B-nRE7ctsLazQf0jdDDe+zKDZhRB1rGc_0VwGTLf292hvQ@mail.gmail.com>
+Date: Thu, 18 Feb 2021 18:48:19 +0200
 
 Signed-off-by: Damjan Jovanovic <damjan.jov@gmail.com>
 ---
@@ -14,7 +14,7 @@ diff --git a/dlls/activeds/activeds_main.c b/dlls/activeds/activeds_main.c
 index 1b22da67653..75dd312c729 100644
 --- a/dlls/activeds/activeds_main.c
 +++ b/dlls/activeds/activeds_main.c
-@@ -40,11 +40,21 @@
+@@ -40,6 +40,42 @@
  
  WINE_DEFAULT_DEBUG_CHANNEL(activeds);
  
@@ -26,20 +26,19 @@ index 1b22da67653..75dd312c729 100644
 +    WCHAR *last_provider;
 +};
 +
- /*****************************************************
-  * DllMain
-  */
- BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
- {
++/*****************************************************
++ * DllMain
++ */
++BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
++{
 +    struct activeds_tls_data *tls;
 +
-     TRACE("(%p, %d, %p)\n",hinstDLL, fdwReason, lpvReserved);
- 
-     switch(fdwReason)
-@@ -53,6 +63,16 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
-         return FALSE;  /* prefer native version */
-     case DLL_PROCESS_ATTACH:
-         DisableThreadLibraryCalls( hinstDLL );
++    TRACE("(%p, %d, %p)\n",hinstDLL, fdwReason, lpvReserved);
++
++    switch(fdwReason)
++    {
++    case DLL_PROCESS_ATTACH:
++        DisableThreadLibraryCalls( hinstDLL );
 +        tls_idx = TlsAlloc();
 +        break;
 +    case DLL_PROCESS_DETACH:
@@ -50,9 +49,14 @@ index 1b22da67653..75dd312c729 100644
 +            HeapFree(GetProcessHeap(), 0, tls->last_provider);
 +            HeapFree(GetProcessHeap(), 0, tls);
 +        }
-         break;
-     }
-     return TRUE;
++        break;
++    }
++    return TRUE;
++}
++
+ /*****************************************************
+  * ADsGetObject     [ACTIVEDS.3]
+  *
 @@ -232,9 +252,39 @@ HRESULT WINAPI ADsOpenObject(LPCWSTR path, LPCWSTR user, LPCWSTR password, DWORD
  /*****************************************************
   * ADsSetLastError    [ACTIVEDS.12]

@@ -1,0 +1,102 @@
+From: Damjan Jovanovic <damjan.jov@gmail.com>
+Subject: [PATCH v3 5/7] adsldp: implement the ADS_SEARCHPREF_CHASE_REFERRALS search preference
+Message-Id: <CAJm2B-k5Fwf1NUNxJyqGPO0CiMirmyN6C_BPZEyvcuMwS8FouQ@mail.gmail.com>
+Date: Thu, 18 Feb 2021 18:49:33 +0200
+
+Signed-off-by: Damjan Jovanovic <damjan.jov@gmail.com>
+---
+ dlls/adsldp/adsldp.c | 46 ++++++++++++++++++++++++++++++++++++++++++++
+ include/iads.idl     |  7 +++++++
+ include/winldap.h    |  3 +++
+ 3 files changed, 56 insertions(+)
+
+diff --git a/dlls/adsldp/adsldp.c b/dlls/adsldp/adsldp.c
+index 905018fe59a..1dacb0d6624 100644
+--- a/dlls/adsldp/adsldp.c
++++ b/dlls/adsldp/adsldp.c
+@@ -1319,6 +1319,52 @@ static HRESULT WINAPI search_SetSearchPreference(IDirectorySearch *iface, PADS_S
+                 prefs[i].dwStatus = ADS_STATUS_S_OK;
+             break;
+ 
++        case ADS_SEARCHPREF_CHASE_REFERRALS:
++        {
++            ULONG referral = (ULONG)LDAP_OPT_OFF;
++
++            if (prefs[i].vValue.dwType != ADSTYPE_INTEGER)
++            {
++                FIXME("ADS_SEARCHPREF_CHASE_REFERRALS: unsupported dwType %d\n", prefs[i].vValue.dwType);
++                prefs[i].dwStatus = ADS_STATUS_INVALID_SEARCHPREFVALUE;
++                break;
++            }
++
++            TRACE("CHASE_REFERRALS: %d\n", prefs[i].vValue.u.Integer);
++            switch (prefs[i].vValue.u.Integer)
++            {
++            case ADS_CHASE_REFERRALS_NEVER:
++                referral = (ULONG)LDAP_OPT_OFF;
++                break;
++            case ADS_CHASE_REFERRALS_SUBORDINATE:
++                referral = LDAP_CHASE_SUBORDINATE_REFERRALS;
++                break;
++            case ADS_CHASE_REFERRALS_EXTERNAL:
++                referral = LDAP_CHASE_EXTERNAL_REFERRALS;
++                break;
++            case ADS_CHASE_REFERRALS_ALWAYS:
++                referral = (ULONG)LDAP_OPT_ON;
++                break;
++            default:
++                ERR("unknown/unsupported referral 0x%x\n", prefs[i].vValue.u.Integer);
++                prefs[i].dwStatus = ADS_STATUS_INVALID_SEARCHPREFVALUE;
++                hr = S_ADS_ERRORSOCCURRED;
++            }
++            if (SUCCEEDED(hr))
++            {
++                err = ldap_set_optionW(ldap->ld, LDAP_OPT_REFERRALS, &referral);
++                if (err != LDAP_SUCCESS)
++                {
++                    TRACE("ldap_set_option error %#x\n", err);
++                    prefs[i].dwStatus = ADS_STATUS_INVALID_SEARCHPREF;
++                    hr = S_ADS_ERRORSOCCURRED;
++                }
++                else
++                    prefs[i].dwStatus = ADS_STATUS_S_OK;
++            }
++            break;
++        }
++
+         default:
+             FIXME("pref %d, type %u: stub\n", prefs[i].dwSearchPref, prefs[i].vValue.dwType);
+             prefs[i].dwStatus = ADS_STATUS_INVALID_SEARCHPREF;
+diff --git a/include/iads.idl b/include/iads.idl
+index 6dfafce3a87..b443633e39d 100644
+--- a/include/iads.idl
++++ b/include/iads.idl
+@@ -152,6 +152,13 @@ typedef enum
+     ADS_PASSWORD_ENCODE_CLEAR
+ } ADS_PASSWORD_ENCODING_ENUM;
+ 
++typedef enum {
++    ADS_CHASE_REFERRALS_NEVER = 0,
++    ADS_CHASE_REFERRALS_SUBORDINATE = 0x20,
++    ADS_CHASE_REFERRALS_EXTERNAL = 0x40,
++    ADS_CHASE_REFERRALS_ALWAYS = ADS_CHASE_REFERRALS_SUBORDINATE | ADS_CHASE_REFERRALS_EXTERNAL
++} ADS_CHASE_REFERRALS_ENUM;
++
+ typedef struct _ADS_CASEIGNORE_LIST
+ {
+     struct _ADS_CASEIGNORE_LIST *Next;
+diff --git a/include/winldap.h b/include/winldap.h
+index 2d41eaa3fa2..5295f683ee1 100644
+--- a/include/winldap.h
++++ b/include/winldap.h
+@@ -164,6 +164,9 @@ typedef struct berelement
+ #define LDAP_OPT_ON                     ((void *)1)
+ #define LDAP_OPT_OFF                    ((void *)0)
+ 
++#define LDAP_CHASE_SUBORDINATE_REFERRALS 0x00000020
++#define LDAP_CHASE_EXTERNAL_REFERRALS 0x00000040
++
+ #define LDAP_VERSION1   1
+ #define LDAP_VERSION2   2
+ #define LDAP_VERSION3   3
+

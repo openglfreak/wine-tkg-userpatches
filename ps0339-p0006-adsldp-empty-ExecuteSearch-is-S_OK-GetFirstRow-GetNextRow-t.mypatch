@@ -1,0 +1,83 @@
+From: Damjan Jovanovic <damjan.jov@gmail.com>
+Subject: [PATCH v3 6/7] adsldp: empty ExecuteSearch() is S_OK, GetFirstRow()/GetNextRow() then return S_ADS_NOMORE_ROWS
+Message-Id: <CAJm2B-mpCoe=Up85+oFBod1sEH=B0wMA8pFww9tw1GcoHA3vbw@mail.gmail.com>
+Date: Thu, 18 Feb 2021 18:49:48 +0200
+
+Some search errors are returned from ExecuteSearch(), but empty
+search results definitely result in S_OK from ExecuteSearch()
+and S_ADS_NOMORE_ROWS from subsequent GetFirstRow()/GetNextRow().
+
+Try 2 adds a test, and doesn't report all errors through
+GetFirstRow()/GetNextRow().
+
+Signed-off-by: Damjan Jovanovic <damjan.jov@gmail.com>
+---
+ dlls/adsldp/adsldp.c     | 18 ++++++++++++++----
+ dlls/adsldp/tests/ldap.c |  7 +++++++
+ 2 files changed, 21 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/adsldp/adsldp.c b/dlls/adsldp/adsldp.c
+index 1dacb0d6624..76e888aa623 100644
+--- a/dlls/adsldp/adsldp.c
++++ b/dlls/adsldp/adsldp.c
+@@ -409,6 +409,7 @@ typedef struct
+ 
+ struct ldap_search_context
+ {
++    HRESULT search_hr;
+     LDAPSearch *page;
+     LDAPMessage *res, *entry;
+     BerElement *ber;
+@@ -1439,13 +1440,19 @@ static HRESULT WINAPI search_ExecuteSearch(IDirectorySearch *iface, LPWSTR filte
+         err = ldap_search_ext_sW(ldap->ld, ldap->object, ldap->search.scope, filter, props,
+                                  ldap->search.attribtypes_only, ctrls, NULL, NULL, 0, &ldap_ctx->res);
+     heap_free(props);
++    ldap_ctx->search_hr = S_OK;
+     if (err != LDAP_SUCCESS)
+     {
+         TRACE("ldap_search_sW error %#x\n", err);
+-        if (ldap_ctx->page)
+-            ldap_search_abandon_page(ldap->ld, ldap_ctx->page);
+-        heap_free(ldap_ctx);
+-        return HRESULT_FROM_WIN32(map_ldap_error(err));
++        if (map_ldap_error(err) == ERROR_DS_NO_SUCH_OBJECT)
++            ldap_ctx->search_hr = S_ADS_NOMORE_ROWS;
++        else
++        {
++            if (ldap_ctx->page)
++                ldap_search_abandon_page(ldap->ld, ldap_ctx->page);
++            heap_free(ldap_ctx);
++            return HRESULT_FROM_WIN32(map_ldap_error(err));
++        }
+     }
+ 
+     *res = ldap_ctx;
+@@ -1482,6 +1489,9 @@ static HRESULT WINAPI search_GetNextRow(IDirectorySearch *iface, ADS_SEARCH_HAND
+ 
+     if (!ldap_ctx->entry)
+     {
++        if (FAILED(ldap_ctx->search_hr))
++            return ldap_ctx->search_hr;
++
+         ldap_ctx->count = ldap_count_entries(ldap->ld, ldap_ctx->res);
+         ldap_ctx->pos = 0;
+ 
+diff --git a/dlls/adsldp/tests/ldap.c b/dlls/adsldp/tests/ldap.c
+index fe9801a3972..a8a69a1e7d3 100644
+--- a/dlls/adsldp/tests/ldap.c
++++ b/dlls/adsldp/tests/ldap.c
+@@ -526,6 +526,13 @@ todo_wine
+     hr = IDirectorySearch_CloseSearchHandle(ds, sh);
+     ok(hr == S_OK, "got %#x\n", hr);
+ 
++    hr = IDirectorySearch_ExecuteSearch(ds, (WCHAR *)L"(INeverExistForSure=*)", NULL, ~0, &sh);
++    ok(hr == S_OK, "got %#x\n", hr);
++    hr = IDirectorySearch_GetNextRow(ds, sh);
++    ok(hr == S_ADS_NOMORE_ROWS, "got %#x\n", hr);
++    hr = IDirectorySearch_CloseSearchHandle(ds, sh);
++    ok(hr == S_OK, "got %#x\n", hr);
++
+     pref[0].dwSearchPref = ADS_SEARCHPREF_TOMBSTONE;
+     pref[0].vValue.dwType = ADSTYPE_BOOLEAN;
+     pref[0].vValue.Integer = 1;
+

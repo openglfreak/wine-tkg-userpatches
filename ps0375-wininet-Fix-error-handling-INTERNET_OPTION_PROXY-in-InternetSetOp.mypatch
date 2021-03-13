@@ -1,0 +1,82 @@
+From: "Jiangyi Chen" <cjy520lcy@163.com>
+Subject: [PATCH] wininet: Fix error handling INTERNET_OPTION_PROXY in InternetSetOptionA.
+Message-Id: <19af7843.3144.17815034f4b.Coremail.cjy520lcy@163.com>
+Date: Tue, 9 Mar 2021 11:24:01 +0800 (CST)
+
+From a261cf7dcd5251ba9a3c8522935d50d7d1e9b354 Mon Sep 17 00:00:00 2001
+From: Jiangyi Chen <chenjiangyi@uniontech.com>
+Date: Tue, 9 Mar 2021 11:12:19 +0800
+#Subject: [PATCH] wininet: Fix error handling INTERNET_OPTION_PROXY in
+ InternetSetOptionA. lpszProxy may not be a null-terminated string when
+ dwAccessType isn't set to INTERNET_OPEN_TYPE_PROXY. Therefore, the call of 
+ MultiByteToWideChar may fail or cause the wine application to crash.
+
+Signed-off-by: Jiangyi Chen <chenjiangyi@uniontech.com>
+---
+ dlls/wininet/internet.c | 49 +++++++++++++++++++++++++++--------------
+ 1 file changed, 32 insertions(+), 17 deletions(-)
+
+diff --git a/dlls/wininet/internet.c b/dlls/wininet/internet.c
+index 1b6f060d607..b5411af8ee3 100644
+--- a/dlls/wininet/internet.c
++++ b/dlls/wininet/internet.c
+@@ -3122,23 +3122,38 @@ BOOL WINAPI InternetSetOptionA(HINTERNET hInternet, DWORD dwOption,
+     {
+     case INTERNET_OPTION_PROXY:
+         {
+-        LPINTERNET_PROXY_INFOA pi = (LPINTERNET_PROXY_INFOA) lpBuffer;
+-        LPINTERNET_PROXY_INFOW piw;
+-        DWORD proxlen, prbylen;
+-        LPWSTR prox, prby;
+-
+-        proxlen = MultiByteToWideChar( CP_ACP, 0, pi->lpszProxy, -1, NULL, 0);
+-        prbylen= MultiByteToWideChar( CP_ACP, 0, pi->lpszProxyBypass, -1, NULL, 0);
+-        wlen = sizeof(*piw) + proxlen + prbylen;
+-        wbuffer = heap_alloc(wlen*sizeof(WCHAR) );
+-        piw = (LPINTERNET_PROXY_INFOW) wbuffer;
+-        piw->dwAccessType = pi->dwAccessType;
+-        prox = (LPWSTR) &piw[1];
+-        prby = &prox[proxlen+1];
+-        MultiByteToWideChar( CP_ACP, 0, pi->lpszProxy, -1, prox, proxlen);
+-        MultiByteToWideChar( CP_ACP, 0, pi->lpszProxyBypass, -1, prby, prbylen);
+-        piw->lpszProxy = prox;
+-        piw->lpszProxyBypass = prby;
++            LPINTERNET_PROXY_INFOA pi = (LPINTERNET_PROXY_INFOA) lpBuffer;
++            LPINTERNET_PROXY_INFOW piw;
++            DWORD proxlen, prbylen;
++            LPWSTR prox, prby;
++
++            if (!lpBuffer || dwBufferLength < sizeof(INTERNET_PROXY_INFOA))
++            {
++                SetLastError(ERROR_INVALID_PARAMETER);
++                return FALSE;
++            }
++
++            if(pi->dwAccessType == INTERNET_OPEN_TYPE_PROXY)
++            {
++                proxlen = MultiByteToWideChar( CP_ACP, 0, pi->lpszProxy, -1, NULL, 0);
++                prbylen= MultiByteToWideChar( CP_ACP, 0, pi->lpszProxyBypass, -1, NULL, 0);
++                wlen = sizeof(*piw) + proxlen + prbylen;
++                wbuffer = heap_alloc(wlen*sizeof(WCHAR) );
++                piw = (LPINTERNET_PROXY_INFOW) wbuffer;
++                piw->dwAccessType = pi->dwAccessType;
++                prox = (LPWSTR) &piw[1];
++                prby = &prox[proxlen+1];
++                MultiByteToWideChar( CP_ACP, 0, pi->lpszProxy, -1, prox, proxlen);
++                MultiByteToWideChar( CP_ACP, 0, pi->lpszProxyBypass, -1, prby, prbylen);
++                piw->lpszProxy = prox;
++                piw->lpszProxyBypass = prby;
++            }
++            else
++            {
++                FIXME("dwAccessType other than INTERNET_OPTION_PROXY unimplemented\n");
++                SetLastError(ERROR_INTERNET_INVALID_OPTION);
++                return FALSE;
++            }
+         }
+         break;
+     case INTERNET_OPTION_USER_AGENT:
+
+-- 
+2.20.1
+

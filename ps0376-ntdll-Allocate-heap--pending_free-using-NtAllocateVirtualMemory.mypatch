@@ -1,0 +1,49 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH] ntdll: Allocate heap->pending_free using NtAllocateVirtualMemory.
+Message-Id: <20210308081423.9422-1-rbernon@codeweavers.com>
+Date: Mon,  8 Mar 2021 09:14:17 +0100
+
+As we may just be initializing the process heap itself, it's not
+completely ready.
+
+This should fix the "HEAP_GetPtr Invalid heap 0000000000000000!" error.
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/ntdll/heap.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/heap.c b/dlls/ntdll/heap.c
+index cae41cba0d9..0ecf765f733 100644
+--- a/dlls/ntdll/heap.c
++++ b/dlls/ntdll/heap.c
+@@ -1508,8 +1508,9 @@ void heap_set_debug_flags( HANDLE handle )
+     if ((heap->flags & HEAP_GROWABLE) && !heap->pending_free &&
+         ((flags & HEAP_FREE_CHECKING_ENABLED) || RUNNING_ON_VALGRIND))
+     {
+-        heap->pending_free = RtlAllocateHeap( GetProcessHeap(), HEAP_ZERO_MEMORY,
+-                                              MAX_FREE_PENDING * sizeof(*heap->pending_free) );
++        SIZE_T size = MAX_FREE_PENDING * sizeof(*heap->pending_free);
++        NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&heap->pending_free, 0,
++                                 &size, MEM_COMMIT, PAGE_READWRITE );
+         heap->pending_pos = 0;
+     }
+ }
+@@ -1623,7 +1624,12 @@ HANDLE WINAPI RtlDestroyHeap( HANDLE heap )
+         NtFreeVirtualMemory( NtCurrentProcess(), &addr, &size, MEM_RELEASE );
+     }
+     subheap_notify_free_all(&heapPtr->subheap);
+-    RtlFreeHeap( GetProcessHeap(), 0, heapPtr->pending_free );
++    if (heapPtr->pending_free)
++    {
++        size = 0;
++        addr = heapPtr->pending_free;
++        NtFreeVirtualMemory( NtCurrentProcess(), &addr, &size, MEM_RELEASE );
++    }
+     size = 0;
+     addr = heapPtr->subheap.base;
+     NtFreeVirtualMemory( NtCurrentProcess(), &addr, &size, MEM_RELEASE );
+
+-- 
+2.30.0
+

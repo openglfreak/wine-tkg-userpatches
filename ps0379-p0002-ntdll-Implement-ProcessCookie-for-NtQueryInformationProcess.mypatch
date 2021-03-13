@@ -1,0 +1,79 @@
+From: Myah Caron <qsniyg@protonmail.com>
+Subject: [PATCH resend 2/3] ntdll: Implement ProcessCookie for NtQueryInformationProcess.
+Message-Id: <kOZB-Qr3zAOzuV6t2aRc7ldQGANigaQuL58so2yBFj5AnoiD8ZeA85bXhsjGDyO1XeT00jJC68tA7a5kEkvEeBGuKandT7bwIdne1WbS-Mk=@protonmail.com>
+Date: Thu, 11 Mar 2021 02:44:40 +0000
+
+The entropy is based on
+https://web.archive.org/web/20100603042315/http://blogs.msdn.com/b/michael_howard/archive/2006/08/16/702707.aspx
+
+Signed-off-by: Myah Caron <qsniyg@protonmail.com>
+---
+I've opted not to include the rdtsc instruction for patch simplicity. It would require either intrinsics or inline assembly, and I'm not sure what's the right way to integrate this under wine.
+
+Since the SystemCalls and PageFaults fields are not currently implemented under wine, the entropy currently isn't as good as it could be. I initially thought of (ab)using SystemInterruptInformation's getrandom usage, but I figured that would be even more of a hack. If this (or something else) would be preferred however, please let me know.
+
+ dlls/ntdll/unix/process.c | 28 ++++++++++++++++++++++++++--
+ 1 file changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/unix/process.c b/dlls/ntdll/unix/process.c
+index ca9951dfa03..c1d7472b00d 100644
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -62,6 +62,7 @@
+ #define WIN32_NO_STATUS
+ #include "windef.h"
+ #include "winternl.h"
++#include "ddk/wdm.h"
+ #include "unix_private.h"
+ #include "wine/exception.h"
+ #include "wine/server.h"
+@@ -1170,6 +1171,30 @@ void fill_vm_counters( VM_COUNTERS_EX *pvmi, int unix_pid )
+
+ #endif
+
++static ULONG get_process_cookie( void )
++{
++    static ULONG process_cookie;
++
++    if (!process_cookie)
++    {
++        SYSTEM_PERFORMANCE_INFORMATION spi;
++
++        ULONG cookie = user_shared_data->TickCount.High1Time;
++        cookie ^= user_shared_data->TickCount.LowPart;
++        cookie ^= user_shared_data->InterruptTime.LowPart;
++
++        NtQuerySystemInformation( SystemPerformanceInformation, &spi, sizeof( spi ), NULL );
++        cookie ^= spi.SystemCalls;
++        cookie ^= spi.PageFaults;
++
++        /* cookie ^= (ULONG)rdtsc */
++
++        InterlockedExchange( (LONG*)&process_cookie, cookie );
++    }
++
++    return process_cookie;
++}
++
+ #define UNIMPLEMENTED_INFO_CLASS(c) \
+     case c: \
+         FIXME( "(process=%p) Unimplemented information class: " #c "\n", handle); \
+@@ -1559,11 +1584,10 @@ NTSTATUS WINAPI NtQueryInformationProcess( HANDLE handle, PROCESSINFOCLASS class
+         break;
+
+     case ProcessCookie:
+-        FIXME( "ProcessCookie (%p,%p,0x%08x,%p) stub\n", handle, info, size, ret_len );
+         if (handle == NtCurrentProcess())
+         {
+             len = sizeof(ULONG);
+-            if (size == len) *(ULONG *)info = 0;
++            if (size == len) *(ULONG *)info = get_process_cookie();
+             else ret = STATUS_INFO_LENGTH_MISMATCH;
+         }
+         else ret = STATUS_INVALID_PARAMETER;
+--
+2.30.1
+
+
+
+

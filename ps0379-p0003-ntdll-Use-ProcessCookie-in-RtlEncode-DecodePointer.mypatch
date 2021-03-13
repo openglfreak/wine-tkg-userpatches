@@ -1,0 +1,78 @@
+From: Myah Caron <qsniyg@protonmail.com>
+Subject: [PATCH resend 3/3] ntdll: Use ProcessCookie in RtlEncode/DecodePointer.
+Message-Id: <Y-LCRs9OnrXxeFO0BFMHAFAaxb7EfqhOmo-_aY-O6t3B6WtiNGLX-RLiczvv7CAVX2hgv1BhxM7As4OYkB52JSPv8Jr8nWzxq6itDyf-jDA=@protonmail.com>
+Date: Thu, 11 Mar 2021 02:45:08 +0000
+
+Signed-off-by: Myah Caron <qsniyg@protonmail.com>
+---
+ dlls/ntdll/rtl.c | 30 +++++++++++-------------------
+ 1 file changed, 11 insertions(+), 19 deletions(-)
+
+diff --git a/dlls/ntdll/rtl.c b/dlls/ntdll/rtl.c
+index c878035a044..b50e3d42543 100644
+--- a/dlls/ntdll/rtl.c
++++ b/dlls/ntdll/rtl.c
+@@ -1536,30 +1536,22 @@ WCHAR * WINAPI RtlIpv6AddressToStringW(const IN6_ADDR *address, WCHAR *str)
+ }
+
+ /***********************************************************************
+- * get_pointer_obfuscator (internal)
++ * get_process_cookie (internal)
+  */
+-static DWORD_PTR get_pointer_obfuscator( void )
++static ULONG get_process_cookie( void )
+ {
+-    static DWORD_PTR pointer_obfuscator;
++    static ULONG process_cookie;
+
+-    if (!pointer_obfuscator)
++    if (!process_cookie)
+     {
+-        ULONG seed = NtGetTickCount();
+-        ULONG_PTR rand;
++        ULONG cookie;
++        NtQueryInformationProcess( NtCurrentProcess(), ProcessCookie, &cookie,
++                                   sizeof( cookie ), NULL );
+
+-        /* generate a random value for the obfuscator */
+-        rand = RtlUniform( &seed );
+-
+-        /* handle 64bit pointers */
+-        rand ^= (ULONG_PTR)RtlUniform( &seed ) << ((sizeof (DWORD_PTR) - sizeof (ULONG))*8);
+-
+-        /* set the high bits so dereferencing obfuscated pointers will (usually) crash */
+-        rand |= (ULONG_PTR)0xc0000000 << ((sizeof (DWORD_PTR) - sizeof (ULONG))*8);
+-
+-        InterlockedCompareExchangePointer( (void**) &pointer_obfuscator, (void*) rand, NULL );
++        InterlockedExchange( (LONG*)&process_cookie, cookie );
+     }
+
+-    return pointer_obfuscator;
++    return process_cookie;
+ }
+
+ /***********************************************************************
+@@ -1592,7 +1584,7 @@ PVOID WINAPI RtlEncodePointer( PVOID ptr )
+ {
+
+     DWORD_PTR ptrval = (DWORD_PTR) ptr;
+-    DWORD_PTR cookie = get_pointer_obfuscator();
++    DWORD_PTR cookie = (DWORD_PTR) get_process_cookie();
+
+     ptrval = (ptrval ^ cookie);
+     return (PVOID)rotr_ptr(ptrval, cookie);
+@@ -1601,7 +1593,7 @@ PVOID WINAPI RtlEncodePointer( PVOID ptr )
+ PVOID WINAPI RtlDecodePointer( PVOID ptr )
+ {
+     DWORD_PTR ptrval = (DWORD_PTR) ptr;
+-    DWORD_PTR cookie = get_pointer_obfuscator();
++    DWORD_PTR cookie = (DWORD_PTR) get_process_cookie();
+
+     ptrval = rotl_ptr(ptrval, cookie);
+     return (PVOID)(ptrval ^ cookie);
+--
+2.30.1
+
+
+
+

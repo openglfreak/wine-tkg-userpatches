@@ -1,0 +1,132 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH v2 1/3] user32: Implement SendInput size parameter check.
+Message-Id: <20210309183932.3445733-1-rbernon@codeweavers.com>
+Date: Tue,  9 Mar 2021 19:39:30 +0100
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+
+v2: Fix WoW64 and 32bit test results, a bit or rewrite of PATCH 3 to
+    use of the INPUT_WINE flag as implicit way to inform of injected
+    messages.
+
+Supersedes: 201308-201310
+
+ dlls/user32/input.c       | 18 +++++++++++
+ dlls/user32/tests/input.c | 63 +++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 81 insertions(+)
+
+diff --git a/dlls/user32/input.c b/dlls/user32/input.c
+index e06f8b4413e..e9a74f177b9 100644
+--- a/dlls/user32/input.c
++++ b/dlls/user32/input.c
+@@ -182,6 +182,24 @@ UINT WINAPI SendInput( UINT count, LPINPUT inputs, int size )
+     UINT i;
+     NTSTATUS status;
+ 
++    if (size != sizeof(INPUT))
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return 0;
++    }
++
++    if (!count)
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return 0;
++    }
++
++    if (!inputs)
++    {
++        SetLastError( ERROR_NOACCESS );
++        return 0;
++    }
++
+     for (i = 0; i < count; i++)
+     {
+         if (inputs[i].type == INPUT_MOUSE)
+diff --git a/dlls/user32/tests/input.c b/dlls/user32/tests/input.c
+index 9d75daa0bd5..7e8829ce375 100644
+--- a/dlls/user32/tests/input.c
++++ b/dlls/user32/tests/input.c
+@@ -4118,6 +4118,68 @@ static void test_UnregisterDeviceNotification(void)
+     ok(ret == FALSE, "Unregistering NULL Device Notification returned: %d\n", ret);
+ }
+ 
++static void test_SendInput(void)
++{
++    INPUT input[16];
++    UINT res, i;
++    HWND hwnd;
++
++    hwnd = CreateWindowW( L"static", L"test", WS_OVERLAPPED, 0, 0, 100, 100, 0, 0, 0, 0 );
++    ok(hwnd != 0, "CreateWindowW failed\n");
++
++    ShowWindow( hwnd, SW_SHOWNORMAL );
++    UpdateWindow( hwnd );
++    SetForegroundWindow( hwnd );
++    SetFocus( hwnd );
++    empty_message_queue();
++
++    SetLastError(0xdeadbeef);
++    res = SendInput(0, NULL, 0);
++    ok(res == 0 && GetLastError() == ERROR_INVALID_PARAMETER, "SendInput returned %u, error %#x\n", res, GetLastError());
++    SetLastError(0xdeadbeef);
++    res = SendInput(1, NULL, 0);
++    ok(res == 0 && GetLastError() == ERROR_INVALID_PARAMETER, "SendInput returned %u, error %#x\n", res, GetLastError());
++    SetLastError(0xdeadbeef);
++    res = SendInput(1, NULL, sizeof(*input));
++    ok(res == 0 && (GetLastError() == ERROR_NOACCESS || GetLastError() == ERROR_INVALID_PARAMETER), "SendInput returned %u, error %#x\n", res, GetLastError());
++    SetLastError(0xdeadbeef);
++    res = SendInput(0, input, sizeof(*input));
++    ok(res == 0 && GetLastError() == ERROR_INVALID_PARAMETER, "SendInput returned %u, error %#x\n", res, GetLastError());
++    SetLastError(0xdeadbeef);
++    res = SendInput(0, NULL, sizeof(*input));
++    ok(res == 0 && GetLastError() == ERROR_INVALID_PARAMETER, "SendInput returned %u, error %#x\n", res, GetLastError());
++
++    memset(input, 0, sizeof(input));
++    SetLastError(0xdeadbeef);
++    res = SendInput(1, input, sizeof(*input));
++    ok(res == 1 && GetLastError() == 0xdeadbeef, "SendInput returned %u, error %#x\n", res, GetLastError());
++    SetLastError(0xdeadbeef);
++    res = SendInput(16, input, sizeof(*input));
++    ok(res == 16 && GetLastError() == 0xdeadbeef, "SendInput returned %u, error %#x\n", res, GetLastError());
++
++    SetLastError(0xdeadbeef);
++    res = SendInput(1, input, 0);
++    ok(res == 0 && GetLastError() == ERROR_INVALID_PARAMETER, "SendInput returned %u, error %#x\n", res, GetLastError());
++    SetLastError(0xdeadbeef);
++    res = SendInput(1, input, sizeof(*input) + 1);
++    ok(res == 0 && GetLastError() == ERROR_INVALID_PARAMETER, "SendInput returned %u, error %#x\n", res, GetLastError());
++    SetLastError(0xdeadbeef);
++    res = SendInput(1, input, sizeof(*input) - 1);
++    ok(res == 0 && GetLastError() == ERROR_INVALID_PARAMETER, "SendInput returned %u, error %#x\n", res, GetLastError());
++
++    for (i = 0; i < ARRAY_SIZE(input); ++i) input[i].type = INPUT_KEYBOARD;
++    SetLastError(0xdeadbeef);
++    res = SendInput(16, input, offsetof(INPUT, ki) + sizeof(KEYBDINPUT));
++    ok(res == 0 && GetLastError() == ERROR_INVALID_PARAMETER, "SendInput returned %u, error %#x\n", res, GetLastError());
++    SetLastError(0xdeadbeef);
++    res = SendInput(16, input, sizeof(*input));
++    ok(res == 16 && GetLastError() == 0xdeadbeef, "SendInput returned %u, error %#x\n", res, GetLastError());
++    empty_message_queue();
++
++    trace("done\n");
++    DestroyWindow(hwnd);
++}
++
+ START_TEST(input)
+ {
+     char **argv;
+@@ -4140,6 +4202,7 @@ START_TEST(input)
+         return;
+     }
+ 
++    test_SendInput();
+     test_Input_blackbox();
+     test_Input_whitebox();
+     test_Input_unicode();
+
+-- 
+2.30.0
+

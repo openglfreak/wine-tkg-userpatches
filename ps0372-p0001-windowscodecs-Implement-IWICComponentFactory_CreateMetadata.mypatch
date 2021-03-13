@@ -1,0 +1,225 @@
+From f488bd71ebb96e6926a8f3671bfa770babdaf29b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 4 Jan 2021 18:36:09 +0100
+Subject: [PATCH 1/2] windowscodecs: Implement
+ IWICComponentFactory_CreateMetadataReader.
+
+---
+ dlls/windowscodecs/imgfactory.c     | 108 ++++++++++++++++++++++------
+ dlls/windowscodecs/tests/metadata.c |  50 +++++++++++++
+ 2 files changed, 138 insertions(+), 20 deletions(-)
+
+diff --git a/dlls/windowscodecs/imgfactory.c b/dlls/windowscodecs/imgfactory.c
+index 7e10fc37875..b159154e83c 100644
+--- a/dlls/windowscodecs/imgfactory.c
++++ b/dlls/windowscodecs/imgfactory.c
+@@ -1246,16 +1246,8 @@ static HRESULT WINAPI ComponentFactory_CreateQueryWriterFromReader(IWICComponent
+     return IWICImagingFactory2_CreateQueryWriterFromReader(&This->IWICImagingFactory2_iface, reader, vendor, writer);
+ }
+ 
+-static HRESULT WINAPI ComponentFactory_CreateMetadataReader(IWICComponentFactory *iface,
+-        REFGUID format, const GUID *vendor, DWORD options, IStream *stream, IWICMetadataReader **reader)
+-{
+-    FIXME("%p,%s,%s,%x,%p,%p: stub\n", iface, debugstr_guid(format), debugstr_guid(vendor),
+-        options, stream, reader);
+-    return E_NOTIMPL;
+-}
+-
+-static HRESULT WINAPI ComponentFactory_CreateMetadataReaderFromContainer(IWICComponentFactory *iface,
+-        REFGUID format, const GUID *vendor, DWORD options, IStream *stream, IWICMetadataReader **reader)
++static HRESULT create_metadata_reader(IWICComponentFactory *iface, REFGUID metadata_format, REFGUID container_format,
++        const GUID *vendor, DWORD options, IStream *stream, IWICMetadataReader **reader)
+ {
+     HRESULT hr;
+     IEnumUnknown *enumreaders;
+@@ -1263,15 +1255,10 @@ static HRESULT WINAPI ComponentFactory_CreateMetadataReaderFromContainer(IWICCom
+     IWICMetadataReaderInfo *readerinfo;
+     IWICPersistStream *wicpersiststream;
+     ULONG num_fetched;
+-    GUID decoder_vendor;
++    GUID guid, *guids;
+     BOOL matches;
+     LARGE_INTEGER zero;
+-
+-    TRACE("%p,%s,%s,%x,%p,%p\n", iface, debugstr_guid(format), debugstr_guid(vendor),
+-        options, stream, reader);
+-
+-    if (!format || !stream || !reader)
+-        return E_INVALIDARG;
++    UINT count, i;
+ 
+     zero.QuadPart = 0;
+ 
+@@ -1293,9 +1280,9 @@ start:
+             {
+                 if (vendor)
+                 {
+-                    hr = IWICMetadataReaderInfo_GetVendorGUID(readerinfo, &decoder_vendor);
++                    hr = IWICMetadataReaderInfo_GetVendorGUID(readerinfo, &guid);
+ 
+-                    if (FAILED(hr) || !IsEqualIID(vendor, &decoder_vendor))
++                    if (FAILED(hr) || !IsEqualIID(vendor, &guid))
+                     {
+                         IWICMetadataReaderInfo_Release(readerinfo);
+                         IUnknown_Release(unkreaderinfo);
+@@ -1303,7 +1290,63 @@ start:
+                     }
+                 }
+ 
+-                hr = IWICMetadataReaderInfo_MatchesPattern(readerinfo, format, stream, &matches);
++                if (metadata_format)
++                {
++                    hr = IWICMetadataReaderInfo_GetMetadataFormat(readerinfo, &guid);
++
++                    if (FAILED(hr) || !IsEqualIID(metadata_format, &guid))
++                    {
++                        IWICMetadataReaderInfo_Release(readerinfo);
++                        IUnknown_Release(unkreaderinfo);
++                        continue;
++                    }
++
++                    if (!stream)
++                    {
++                        hr = IWICMetadataReaderInfo_CreateInstance(readerinfo, reader);
++                        break;
++                    }
++
++                    hr = IWICMetadataReaderInfo_GetContainerFormats(readerinfo, 0, NULL, &count);
++
++                    if (FAILED(hr) || !count)
++                    {
++                        IWICMetadataReaderInfo_Release(readerinfo);
++                        IUnknown_Release(unkreaderinfo);
++                        continue;
++                    }
++
++                    guids = HeapAlloc(GetProcessHeap(), 0, count * sizeof(*guids));
++
++                    if (!guids)
++                    {
++                        IWICMetadataReaderInfo_Release(readerinfo);
++                        IUnknown_Release(unkreaderinfo);
++                        continue;
++                    }
++
++                    hr = IWICMetadataReaderInfo_GetContainerFormats(readerinfo, count, guids, &count);
++
++                    if (FAILED(hr) || !count)
++                    {
++                        HeapFree(GetProcessHeap(), 0, guids);
++                        IWICMetadataReaderInfo_Release(readerinfo);
++                        IUnknown_Release(unkreaderinfo);
++                        continue;
++                    }
++
++                    for (i = 0; i < count; ++i)
++                    {
++                        hr = IWICMetadataReaderInfo_MatchesPattern(readerinfo, &guids[i], stream, &matches);
++                        if (SUCCEEDED(hr) && matches) break;
++                    }
++
++                    HeapFree(GetProcessHeap(), 0, guids);
++                }
++                else
++                {
++                    hr = IWICMetadataReaderInfo_MatchesPattern(readerinfo, container_format, stream, &matches);
++                }
+ 
+                 if (SUCCEEDED(hr) && matches)
+                 {
+@@ -1380,6 +1423,31 @@ start:
+         return S_OK;
+     else
+         return WINCODEC_ERR_COMPONENTNOTFOUND;
++
++}
++
++static HRESULT WINAPI ComponentFactory_CreateMetadataReader(IWICComponentFactory *iface,
++        REFGUID format, const GUID *vendor, DWORD options, IStream *stream, IWICMetadataReader **reader)
++{
++    TRACE("%p,%s,%s,%x,%p,%p\n", iface, debugstr_guid(format), debugstr_guid(vendor),
++        options, stream, reader);
++
++    if (!format || !reader)
++        return E_INVALIDARG;
++
++    return create_metadata_reader(iface, format, NULL, vendor, options, stream, reader);
++}
++
++static HRESULT WINAPI ComponentFactory_CreateMetadataReaderFromContainer(IWICComponentFactory *iface,
++        REFGUID format, const GUID *vendor, DWORD options, IStream *stream, IWICMetadataReader **reader)
++{
++    TRACE("%p,%s,%s,%x,%p,%p\n", iface, debugstr_guid(format), debugstr_guid(vendor),
++        options, stream, reader);
++
++    if (!format || !stream || !reader)
++        return E_INVALIDARG;
++
++    return create_metadata_reader(iface, NULL, format, vendor, options, stream, reader);
+ }
+ 
+ static HRESULT WINAPI ComponentFactory_CreateMetadataWriter(IWICComponentFactory *iface,
+diff --git a/dlls/windowscodecs/tests/metadata.c b/dlls/windowscodecs/tests/metadata.c
+index b597e5490c6..96cca60d6b5 100644
+--- a/dlls/windowscodecs/tests/metadata.c
++++ b/dlls/windowscodecs/tests/metadata.c
+@@ -967,6 +967,56 @@ static void test_create_reader(void)
+ 
+     stream = create_stream(metadata_tEXt, sizeof(metadata_tEXt));
+ 
++    hr = IWICComponentFactory_CreateMetadataReader(factory,
++        NULL, NULL, WICPersistOptionDefault,
++        stream, &reader);
++    ok(hr == E_INVALIDARG, "CreateMetadataReader failed, hr=%x\n", hr);
++
++    hr = IWICComponentFactory_CreateMetadataReader(factory,
++        &GUID_MetadataFormatChunktEXt, NULL, WICPersistOptionDefault,
++        stream, NULL);
++    ok(hr == E_INVALIDARG, "CreateMetadataReader failed, hr=%x\n", hr);
++
++    hr = IWICComponentFactory_CreateMetadataReader(factory,
++        &GUID_MetadataFormatChunktEXt, NULL, WICPersistOptionDefault,
++        NULL, &reader);
++    ok(hr == S_OK, "CreateMetadataReader failed, hr=%x\n", hr);
++
++    if (SUCCEEDED(hr))
++    {
++        hr = IWICMetadataReader_GetCount(reader, &count);
++        ok(hr == S_OK, "GetCount failed, hr=%x\n", hr);
++        ok(count == 0, "unexpected count %i\n", count);
++
++        hr = IWICMetadataReader_GetMetadataFormat(reader, &format);
++        ok(hr == S_OK, "GetMetadataFormat failed, hr=%x\n", hr);
++        ok(IsEqualGUID(&format, &GUID_MetadataFormatChunktEXt), "unexpected format %s\n", wine_dbgstr_guid(&format));
++
++        IWICMetadataReader_Release(reader);
++    }
++
++    hr = IWICComponentFactory_CreateMetadataReader(factory,
++        &GUID_MetadataFormatChunktEXt, NULL, WICPersistOptionDefault,
++        stream, &reader);
++    ok(hr == S_OK, "CreateMetadataReader failed, hr=%x\n", hr);
++
++    if (SUCCEEDED(hr))
++    {
++        hr = IWICMetadataReader_GetCount(reader, &count);
++        ok(hr == S_OK, "GetCount failed, hr=%x\n", hr);
++        ok(count == 1, "unexpected count %i\n", count);
++
++        hr = IWICMetadataReader_GetMetadataFormat(reader, &format);
++        ok(hr == S_OK, "GetMetadataFormat failed, hr=%x\n", hr);
++        ok(IsEqualGUID(&format, &GUID_MetadataFormatChunktEXt), "unexpected format %s\n", wine_dbgstr_guid(&format));
++
++        IWICMetadataReader_Release(reader);
++    }
++
++    IStream_Release(stream);
++
++    stream = create_stream(metadata_tEXt, sizeof(metadata_tEXt));
++
+     hr = IWICComponentFactory_CreateMetadataReaderFromContainer(factory,
+         NULL, NULL, WICPersistOptionDefault,
+         stream, &reader);
+-- 
+2.30.2
+

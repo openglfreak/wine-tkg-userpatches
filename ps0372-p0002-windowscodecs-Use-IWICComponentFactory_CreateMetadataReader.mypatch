@@ -1,0 +1,107 @@
+From c97455d5207c3e4058f6e8490e83c6a3b1f6218b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 19 Jan 2021 10:15:43 +0100
+Subject: [PATCH 2/2] windowscodecs: Use
+ IWICComponentFactory_CreateMetadataReader in GetReaderByIndex.
+
+Instead of create_instance
+---
+ dlls/windowscodecs/decoder.c           | 44 +++++++-------------------
+ dlls/windowscodecs/libtiff.c           |  4 +--
+ dlls/windowscodecs/wincodecs_private.h |  4 +--
+ 3 files changed, 15 insertions(+), 37 deletions(-)
+
+diff --git a/dlls/windowscodecs/decoder.c b/dlls/windowscodecs/decoder.c
+index 89e352b8946..e1eaa88d502 100644
+--- a/dlls/windowscodecs/decoder.c
++++ b/dlls/windowscodecs/decoder.c
+@@ -650,40 +650,18 @@ static HRESULT WINAPI CommonDecoderFrame_Block_GetReaderByIndex(IWICMetadataBloc
+                 offset, length);
+         }
+ 
+-        if (This->metadata_blocks[nIndex].options & DECODER_BLOCK_READER_CLSID)
+-        {
+-            IWICMetadataReader *reader;
+-            IWICPersistStream *persist;
+-            if (SUCCEEDED(hr))
+-            {
+-                hr = create_instance(&This->metadata_blocks[nIndex].reader_clsid,
+-                    &IID_IWICMetadataReader, (void**)&reader);
+-            }
+-
+-            if (SUCCEEDED(hr))
+-            {
+-                hr = IWICMetadataReader_QueryInterface(reader, &IID_IWICPersistStream, (void**)&persist);
+-
+-                if (SUCCEEDED(hr))
+-                {
+-                    hr = IWICPersistStream_LoadEx(persist, (IStream*)stream, NULL,
+-                        This->metadata_blocks[nIndex].options & DECODER_BLOCK_OPTION_MASK);
+-
+-                    IWICPersistStream_Release(persist);
+-                }
+-
+-                if (SUCCEEDED(hr))
+-                    *ppIMetadataReader = reader;
+-                else
+-                    IWICMetadataReader_Release(reader);
+-            }
+-        }
+-        else
++        if (SUCCEEDED(hr))
+         {
+-            hr = IWICComponentFactory_CreateMetadataReaderFromContainer(factory,
+-                &This->parent->decoder_info.block_format, NULL,
+-                This->metadata_blocks[nIndex].options & DECODER_BLOCK_OPTION_MASK,
+-                (IStream*)stream, ppIMetadataReader);
++            if (This->metadata_blocks[nIndex].options & DECODER_BLOCK_FORMAT_GUID)
++                hr = IWICComponentFactory_CreateMetadataReader(factory,
++                    &This->metadata_blocks[nIndex].format_guid, NULL,
++                    This->metadata_blocks[nIndex].options & DECODER_BLOCK_OPTION_MASK,
++                    (IStream*)stream, ppIMetadataReader);
++            else
++                hr = IWICComponentFactory_CreateMetadataReaderFromContainer(factory,
++                    &This->parent->decoder_info.block_format, NULL,
++                    This->metadata_blocks[nIndex].options & DECODER_BLOCK_OPTION_MASK,
++                    (IStream*)stream, ppIMetadataReader);
+         }
+ 
+         IWICStream_Release(stream);
+diff --git a/dlls/windowscodecs/libtiff.c b/dlls/windowscodecs/libtiff.c
+index 25d8c1c6081..1ee0fbcabd6 100644
+--- a/dlls/windowscodecs/libtiff.c
++++ b/dlls/windowscodecs/libtiff.c
+@@ -1129,8 +1129,8 @@ static HRESULT CDECL tiff_decoder_get_metadata_blocks(struct decoder *iface,
+ #else
+     result.options = byte_swapped ? WICPersistOptionBigEndian : WICPersistOptionLittleEndian;
+ #endif
+-    result.options |= WICPersistOptionNoCacheStream|DECODER_BLOCK_FULL_STREAM|DECODER_BLOCK_READER_CLSID;
+-    result.reader_clsid = CLSID_WICIfdMetadataReader;
++    result.options |= WICPersistOptionNoCacheStream|DECODER_BLOCK_FULL_STREAM|DECODER_BLOCK_FORMAT_GUID;
++    result.format_guid = GUID_MetadataFormatIfd;
+ 
+     *blocks = RtlAllocateHeap(GetProcessHeap(), 0, sizeof(**blocks));
+     **blocks = result;
+diff --git a/dlls/windowscodecs/wincodecs_private.h b/dlls/windowscodecs/wincodecs_private.h
+index 453bc58cca6..889b00f92a2 100644
+--- a/dlls/windowscodecs/wincodecs_private.h
++++ b/dlls/windowscodecs/wincodecs_private.h
+@@ -285,13 +285,13 @@ struct decoder_frame
+ 
+ #define DECODER_BLOCK_OPTION_MASK 0x0001000F
+ #define DECODER_BLOCK_FULL_STREAM 0x80000000
+-#define DECODER_BLOCK_READER_CLSID 0x40000000
++#define DECODER_BLOCK_FORMAT_GUID 0x40000000
+ struct decoder_block
+ {
+     ULONGLONG offset;
+     ULONGLONG length;
+     DWORD options;
+-    GUID reader_clsid;
++    GUID format_guid;
+ };
+ 
+ struct decoder
+-- 
+2.30.2
+

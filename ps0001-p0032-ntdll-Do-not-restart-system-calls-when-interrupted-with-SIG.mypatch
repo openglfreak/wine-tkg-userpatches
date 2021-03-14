@@ -1,0 +1,106 @@
+From 3551d334d25c1cb625da47df6c8ed69d89f32233 Mon Sep 17 00:00:00 2001
+From: Zebediah Figura <z.figura12@gmail.com>
+Date: Fri, 12 Mar 2021 17:23:10 -0600
+Subject: [PATCH 32/38] ntdll: Do not restart system calls when interrupted with
+ SIGUSR1.
+
+---
+ dlls/ntdll/unix/signal_arm.c    | 5 +++--
+ dlls/ntdll/unix/signal_arm64.c  | 5 +++--
+ dlls/ntdll/unix/signal_i386.c   | 5 +++--
+ dlls/ntdll/unix/signal_x86_64.c | 5 +++--
+ 4 files changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/ntdll/unix/signal_arm.c b/dlls/ntdll/unix/signal_arm.c
+index 5c96521e55e..50b6594bb06 100644
+--- a/dlls/ntdll/unix/signal_arm.c
++++ b/dlls/ntdll/unix/signal_arm.c
+@@ -958,14 +958,15 @@ void signal_init_process(void)
+     if (sigaction( SIGABRT, &sig_act, NULL ) == -1) goto error;
+     sig_act.sa_sigaction = quit_handler;
+     if (sigaction( SIGQUIT, &sig_act, NULL ) == -1) goto error;
+-    sig_act.sa_sigaction = usr1_handler;
+-    if (sigaction( SIGUSR1, &sig_act, NULL ) == -1) goto error;
+     sig_act.sa_sigaction = trap_handler;
+     if (sigaction( SIGTRAP, &sig_act, NULL ) == -1) goto error;
+     sig_act.sa_sigaction = segv_handler;
+     if (sigaction( SIGSEGV, &sig_act, NULL ) == -1) goto error;
+     if (sigaction( SIGILL, &sig_act, NULL ) == -1) goto error;
+     if (sigaction( SIGBUS, &sig_act, NULL ) == -1) goto error;
++    sig_act.sa_sigaction = usr1_handler;
++    sig_act.sa_flags &= ~SA_RESTART; /* needed for fast sync alertable waits */
++    if (sigaction( SIGUSR1, &sig_act, NULL ) == -1) goto error;
+     return;
+ 
+  error:
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index 80cc59d0743..d96c8e2509b 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -1111,8 +1111,6 @@ void signal_init_process(void)
+     if (sigaction( SIGABRT, &sig_act, NULL ) == -1) goto error;
+     sig_act.sa_sigaction = quit_handler;
+     if (sigaction( SIGQUIT, &sig_act, NULL ) == -1) goto error;
+-    sig_act.sa_sigaction = usr1_handler;
+-    if (sigaction( SIGUSR1, &sig_act, NULL ) == -1) goto error;
+     sig_act.sa_sigaction = usr2_handler;
+     if (sigaction( SIGUSR2, &sig_act, NULL ) == -1) goto error;
+     sig_act.sa_sigaction = trap_handler;
+@@ -1123,6 +1121,9 @@ void signal_init_process(void)
+     if (sigaction( SIGILL, &sig_act, NULL ) == -1) goto error;
+     sig_act.sa_sigaction = bus_handler;
+     if (sigaction( SIGBUS, &sig_act, NULL ) == -1) goto error;
++    sig_act.sa_sigaction = usr1_handler;
++    sig_act.sa_flags &= ~SA_RESTART; /* needed for fast sync alertable waits */
++    if (sigaction( SIGUSR1, &sig_act, NULL ) == -1) goto error;
+     return;
+ 
+  error:
+diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
+index 655fd69ee73..4b1e3109ab0 100644
+--- a/dlls/ntdll/unix/signal_i386.c
++++ b/dlls/ntdll/unix/signal_i386.c
+@@ -2546,14 +2546,15 @@ void signal_init_process(void)
+     if (sigaction( SIGABRT, &sig_act, NULL ) == -1) goto error;
+     sig_act.sa_sigaction = quit_handler;
+     if (sigaction( SIGQUIT, &sig_act, NULL ) == -1) goto error;
+-    sig_act.sa_sigaction = usr1_handler;
+-    if (sigaction( SIGUSR1, &sig_act, NULL ) == -1) goto error;
+     sig_act.sa_sigaction = trap_handler;
+     if (sigaction( SIGTRAP, &sig_act, NULL ) == -1) goto error;
+     sig_act.sa_sigaction = segv_handler;
+     if (sigaction( SIGSEGV, &sig_act, NULL ) == -1) goto error;
+     if (sigaction( SIGILL, &sig_act, NULL ) == -1) goto error;
+     if (sigaction( SIGBUS, &sig_act, NULL ) == -1) goto error;
++    sig_act.sa_sigaction = usr1_handler;
++    sig_act.sa_flags &= ~SA_RESTART; /* needed for fast sync alertable waits */
++    if (sigaction( SIGUSR1, &sig_act, NULL ) == -1) goto error;
+     return;
+ 
+  error:
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 7dab5fbf4ed..315956a00e2 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -2867,15 +2867,16 @@ void signal_init_process(void)
+     if (sigaction( SIGABRT, &sig_act, NULL ) == -1) goto error;
+     sig_act.sa_sigaction = quit_handler;
+     if (sigaction( SIGQUIT, &sig_act, NULL ) == -1) goto error;
+-    sig_act.sa_sigaction = usr1_handler;
+-    if (sigaction( SIGUSR1, &sig_act, NULL ) == -1) goto error;
+     sig_act.sa_sigaction = trap_handler;
+     if (sigaction( SIGTRAP, &sig_act, NULL ) == -1) goto error;
+     sig_act.sa_sigaction = segv_handler;
+     if (sigaction( SIGSEGV, &sig_act, NULL ) == -1) goto error;
+     if (sigaction( SIGILL, &sig_act, NULL ) == -1) goto error;
+     if (sigaction( SIGBUS, &sig_act, NULL ) == -1) goto error;
+     install_bpf(&sig_act);
++    sig_act.sa_sigaction = usr1_handler;
++    sig_act.sa_flags &= ~SA_RESTART; /* needed for fast sync alertable waits */
++    if (sigaction( SIGUSR1, &sig_act, NULL ) == -1) goto error;
+     return;
+ 
+  error:
+-- 
+2.11.4.GIT
+

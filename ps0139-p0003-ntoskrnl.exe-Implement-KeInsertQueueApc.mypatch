@@ -260,9 +260,9 @@ index bd0c9725da9..26d44428b34 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
 @@ -486,7 +486,9 @@ enum apc_type
-     APC_MAP_VIEW,
      APC_UNMAP_VIEW,
      APC_CREATE_THREAD,
+     APC_DUP_HANDLE,
 -    APC_BREAK_PROCESS
 +    APC_BREAK_PROCESS,
 +    APC_REAL_USER,
@@ -271,9 +271,9 @@ index bd0c9725da9..26d44428b34 100644
  
  typedef union
 @@ -596,6 +598,11 @@ typedef union
-         mem_size_t       reserve;   /* reserve size for thread stack */
-         mem_size_t       commit;    /* commit size for thread stack */
-     } create_thread;
+         unsigned int     attributes;   /* object attributes */
+         unsigned int     options;      /* duplicate options */
+     } dup_handle;
 +    struct
 +    {
 +        enum apc_type    type;      /* APC_REAL_KERNEL && APC_REAL_USER */
@@ -413,12 +413,13 @@ index ab46d0edec4..b4fcaf96e2d 100644
      default:
          return &thread->system_apc;
      }
-@@ -1373,13 +1406,14 @@ static int queue_apc( struct process *process, struct thread *thread, struct thr
+@@ -1406,14 +1439,15 @@ static int queue_apc( struct process *process, struct thread *thread, struct thr
          if (thread->state == TERMINATED) return 0;
          queue = get_apc_queue( thread, apc->call.type );
-         /* send signal for system APCs if needed */
--        if (queue == &thread->system_apc && list_empty( queue ) && !is_in_apc_wait( thread ))
-+        if ((queue == &thread->system_apc || queue == &thread->kernel_apc) && list_empty( queue ) && !is_in_apc_wait( thread ))
+         /* send signal if needed */
+-        if ((queue == &thread->system_apc || fast_user_apc_needs_signal())
++        if ((queue == &thread->system_apc || fast_user_apc_needs_signal() || queue == &thread->kernel_apc)
+             && list_empty( queue ) && !is_in_apc_wait( thread ))
          {
              if (!send_thread_signal( thread, SIGUSR1 )) return 0;
          }

@@ -1,0 +1,164 @@
+From cbba08ab81f4bf860d84775a8e0d0e6289e19a0e Mon Sep 17 00:00:00 2001
+From: Zebediah Figura <z.figura12@gmail.com>
+Date: Wed, 10 Mar 2021 17:42:18 -0600
+Subject: [PATCH 08/38] ntdll: Use a kernel APC to call NtDuplicateObject() if
+ DUPLICATE_CLOSE_SOURCE is used on another process.
+
+---
+ dlls/ntdll/unix/server.c | 36 ++++++++++++++++++++++++++++++++++++
+ server/protocol.def      | 16 ++++++++++++++++
+ server/thread.c          | 15 +++++++++++++++
+ server/trace.c           |  9 +++++++++
+ 4 files changed, 76 insertions(+)
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 4f149c0f644..1f8cf546977 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -580,6 +580,21 @@ static void invoke_system_apc( const apc_call_t *call, apc_result_t *result )
+         else result->create_thread.status = STATUS_INVALID_PARAMETER;
+         break;
+     }
++    case APC_DUP_HANDLE:
++    {
++        HANDLE dst_handle = NULL;
++
++        result->type = call->type;
++
++        result->dup_handle.status = NtDuplicateObject( NtCurrentProcess(),
++                                                       wine_server_ptr_handle(call->dup_handle.src_handle),
++                                                       wine_server_ptr_handle(call->dup_handle.dst_process),
++                                                       &dst_handle, call->dup_handle.access,
++                                                       call->dup_handle.attributes, call->dup_handle.options );
++        result->dup_handle.handle = wine_server_obj_handle( dst_handle );
++        NtClose( wine_server_ptr_handle(call->dup_handle.dst_process) );
++        break;
++    }
+     case APC_BREAK_PROCESS:
+     {
+         HANDLE handle;
+@@ -1679,6 +1694,27 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE
+ {
+     NTSTATUS ret;
+ 
++    if ((options & DUPLICATE_CLOSE_SOURCE) && source_process != NtCurrentProcess())
++    {
++        apc_call_t call;
++        apc_result_t result;
++
++        memset( &call, 0, sizeof(call) );
++
++        call.dup_handle.type        = APC_DUP_HANDLE;
++        call.dup_handle.src_handle  = wine_server_obj_handle( source );
++        call.dup_handle.dst_process = wine_server_obj_handle( dest_process );
++        call.dup_handle.access      = access;
++        call.dup_handle.attributes  = attributes;
++        call.dup_handle.options     = options;
++        ret = server_queue_process_apc( source_process, &call, &result );
++        if (ret != STATUS_SUCCESS) return ret;
++
++        if (!result.dup_handle.status)
++            *dest = wine_server_ptr_handle( result.dup_handle.handle );
++        return result.dup_handle.status;
++    }
++
+     SERVER_START_REQ( dup_handle )
+     {
+         req->src_process = wine_server_obj_handle( source_process );
+diff --git a/server/protocol.def b/server/protocol.def
+index 86a5b6a1942..4138d4be840 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -483,6 +483,7 @@ enum apc_type
+     APC_MAP_VIEW,
+     APC_UNMAP_VIEW,
+     APC_CREATE_THREAD,
++    APC_DUP_HANDLE,
+     APC_BREAK_PROCESS
+ };
+ 
+@@ -593,6 +594,15 @@ typedef union
+         mem_size_t       reserve;   /* reserve size for thread stack */
+         mem_size_t       commit;    /* commit size for thread stack */
+     } create_thread;
++    struct
++    {
++        enum apc_type    type;         /* APC_DUP_HANDLE */
++        obj_handle_t     src_handle;   /* src handle to duplicate */
++        obj_handle_t     dst_process;  /* dst process handle */
++        unsigned int     access;       /* wanted access rights */
++        unsigned int     attributes;   /* object attributes */
++        unsigned int     options;      /* duplicate options */
++    } dup_handle;
+ } apc_call_t;
+ 
+ typedef union
+@@ -682,6 +692,12 @@ typedef union
+     } create_thread;
+     struct
+     {
++        enum apc_type    type;      /* APC_DUP_HANDLE */
++        unsigned int     status;    /* status returned by call */
++        obj_handle_t     handle;    /* duplicated handle in dst process */
++    } dup_handle;
++    struct
++    {
+         enum apc_type    type;      /* APC_BREAK_PROCESS */
+         unsigned int     status;    /* status returned by call */
+     } break_process;
+diff --git a/server/thread.c b/server/thread.c
+index e4abe4fab94..fe9f9bdec37 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -1756,6 +1756,21 @@ DECL_HANDLER(queue_apc)
+     case APC_BREAK_PROCESS:
+         process = get_process_from_handle( req->handle, PROCESS_CREATE_THREAD );
+         break;
++    case APC_DUP_HANDLE:
++        process = get_process_from_handle( req->handle, PROCESS_DUP_HANDLE );
++        if (process && process != current->process)
++        {
++            /* duplicate the destination process handle into the target process */
++            obj_handle_t handle = duplicate_handle( current->process, apc->call.dup_handle.dst_process,
++                                                    process, 0, 0, DUPLICATE_SAME_ACCESS );
++            if (handle) apc->call.dup_handle.dst_process = handle;
++            else
++            {
++                release_object( process );
++                process = NULL;
++            }
++        }
++        break;
+     default:
+         set_error( STATUS_INVALID_PARAMETER );
+         break;
+diff --git a/server/trace.c b/server/trace.c
+index b07935cc54b..f7c792b326d 100644
+--- a/server/trace.c
++++ b/server/trace.c
+@@ -235,6 +235,11 @@ static void dump_apc_call( const char *prefix, const apc_call_t *call )
+         dump_uint64( ",commit=", &call->create_thread.commit );
+         fprintf( stderr, ",flags=%x", call->create_thread.flags );
+         break;
++    case APC_DUP_HANDLE:
++        fprintf( stderr, "APC_DUP_HANDLE,src_handle=%04x,dst_process=%04x,access=%x,attributes=%x,options=%x",
++                 call->dup_handle.src_handle, call->dup_handle.dst_process, call->dup_handle.access,
++                 call->dup_handle.attributes, call->dup_handle.options );
++        break;
+     case APC_BREAK_PROCESS:
+         fprintf( stderr, "APC_BREAK_PROCESS" );
+         break;
+@@ -318,6 +323,10 @@ static void dump_apc_result( const char *prefix, const apc_result_t *result )
+                  get_status_name( result->create_thread.status ),
+                  result->create_thread.pid, result->create_thread.tid, result->create_thread.handle );
+         break;
++    case APC_DUP_HANDLE:
++        fprintf( stderr, "APC_DUP_HANDLE,status=%s,handle=%04x",
++                 get_status_name( result->dup_handle.status ), result->dup_handle.handle );
++        break;
+     case APC_BREAK_PROCESS:
+         fprintf( stderr, "APC_BREAK_PROCESS,status=%s", get_status_name( result->break_process.status ) );
+         break;
+-- 
+2.11.4.GIT
+

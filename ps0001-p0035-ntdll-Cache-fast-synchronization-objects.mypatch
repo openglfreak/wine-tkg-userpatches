@@ -1,0 +1,289 @@
+From 0670f3119abf9d0886b5c3b2f7ac5d110d0414da Mon Sep 17 00:00:00 2001
+From: Zebediah Figura <z.figura12@gmail.com>
+Date: Fri, 12 Mar 2021 15:04:17 -0600
+Subject: [PATCH 35/38] ntdll: Cache fast synchronization objects.
+
+---
+ dlls/ntdll/unix/server.c       |   3 +
+ dlls/ntdll/unix/sync.c         | 183 ++++++++++++++++++++++++++++++++++++++---
+ dlls/ntdll/unix/unix_private.h |   2 +
+ 3 files changed, 177 insertions(+), 11 deletions(-)
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 8eecf49e100..6229fc201e1 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1737,6 +1737,9 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE
+     {
+         fd = remove_fd_from_cache( source );
+         if (fd != -1) close( fd );
++#ifdef HAVE_LINUX_WINESYNC_H
++        close_fast_sync_obj( source );
++#endif
+     }
+ 
+     SERVER_START_REQ( dup_handle )
+@@ -1769,6 +1770,10 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
+      * retrieve it again */
+     int fd = remove_fd_from_cache( handle );
+ 
++#ifdef HAVE_LINUX_WINESYNC_H
++    close_fast_sync_obj( handle );
++#endif
++
+     SERVER_START_REQ( close_handle )
+     {
+         req->handle = wine_server_obj_handle( handle );
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index 25703ec121d..8386748db73 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -36,6 +36,9 @@
+ #ifdef HAVE_SYS_IOCTL_H
+ #include <sys/ioctl.h>
+ #endif
++#ifdef HAVE_SYS_MMAN_H
++#include <sys/mman.h>
++#endif
+ #ifdef HAVE_SYS_SYSCALL_H
+ #include <sys/syscall.h>
+ #endif
+@@ -378,6 +381,12 @@ static int get_fast_sync_device(void)
+  * it closes the handle; when all handles are closed, the server deletes the
+  * fast synchronization object.
+  *
++ * We also need this for signal-and-wait. The signal and wait operations aren't
++ * atomic, but we can't perform the signal and then return STATUS_INVALID_HANDLE
++ * for the wait—we need to either do both operations or neither. That means we
++ * need to grab references to both objects, and prevent them from being
++ * destroyed before we're done with them.
++ *
+  * We want lookup of objects from the cache to be very fast; ideally, it should
+  * be lock-free. We achieve this by using atomic modifications to "refcount",
+  * and guaranteeing that all other fields are valid and correct *as long as*
+@@ -425,6 +434,120 @@ static void release_fast_sync_obj( struct fast_sync_cache_entry *cache )
+     }
+ }
+ 
++static pthread_mutex_t fast_sync_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++
++#define FAST_SYNC_CACHE_BLOCK_SIZE  (65536 / sizeof(struct fast_sync_cache_entry))
++#define FAST_SYNC_CACHE_ENTRIES     128
++
++static struct fast_sync_cache_entry *fast_sync_cache[FAST_SYNC_CACHE_ENTRIES];
++static struct fast_sync_cache_entry fast_sync_cache_initial_block[FAST_SYNC_CACHE_BLOCK_SIZE];
++
++static inline unsigned int handle_to_index( HANDLE handle, unsigned int *entry )
++{
++    unsigned int idx = (wine_server_obj_handle(handle) >> 2) - 1;
++    *entry = idx / FAST_SYNC_CACHE_BLOCK_SIZE;
++    return idx % FAST_SYNC_CACHE_BLOCK_SIZE;
++}
++
++
++static struct fast_sync_cache_entry *cache_fast_sync_obj( HANDLE handle, obj_handle_t fast_sync, int obj,
++                                                          enum fast_sync_type type, unsigned int access )
++{
++    unsigned int entry, idx = handle_to_index( handle, &entry );
++    struct fast_sync_cache_entry *cache;
++    int refcount;
++
++    if (entry >= FAST_SYNC_CACHE_ENTRIES)
++    {
++        FIXME( "too many allocated handles, not caching %p\n", handle );
++        return NULL;
++    }
++
++    if (!fast_sync_cache[entry])  /* do we need to allocate a new block of entries? */
++    {
++        if (!entry) fast_sync_cache[0] = fast_sync_cache_initial_block;
++        else
++        {
++            static const size_t size = FAST_SYNC_CACHE_BLOCK_SIZE * sizeof(struct fast_sync_cache_entry *);
++            void *ptr = anon_mmap_alloc( size, PROT_READ | PROT_WRITE );
++            if (ptr == MAP_FAILED) return NULL;
++            if (InterlockedCompareExchangePointer( (void **)&fast_sync_cache[entry], ptr, NULL ))
++                munmap( ptr, size ); /* someone beat us to it */
++        }
++    }
++
++    cache = &fast_sync_cache[entry][idx];
++
++    mutex_lock( &fast_sync_cache_mutex );
++
++    if (InterlockedCompareExchange( &cache->refcount, 0, 0 ))
++    {
++        /* We lost the race with another thread trying to cache this object, or
++         * the handle is currently being used for another object (i.e. it was
++         * closed and then reused). We have no way of knowing which, and in the
++         * latter case we can't cache this object until the old one is
++         * completely destroyed, so always return failure. */
++        mutex_unlock( &fast_sync_cache_mutex );
++        return NULL;
++    }
++
++    cache->handle = fast_sync;
++    cache->obj = obj;
++    cache->type = type;
++    cache->access = access;
++    cache->closed = FALSE;
++    /* make sure we set the other members before the refcount; this store needs
++     * release semantics
++     * set the refcount to 2 (one for the handle, one for the caller) */
++    refcount = InterlockedExchange( &cache->refcount, 2 );
++    assert( !refcount );
++
++    mutex_unlock( &fast_sync_cache_mutex );
++
++    return cache;
++}
++
++
++/* returns the previous value */
++static inline LONG interlocked_inc_if_nonzero( LONG *dest )
++{
++    LONG val, tmp;
++    for (val = *dest;; val = tmp)
++    {
++        if (!val || (tmp = InterlockedCompareExchange( dest, val + 1, val )) == val)
++            break;
++    }
++    return val;
++}
++
++
++static struct fast_sync_cache_entry *get_cached_fast_sync_obj( HANDLE handle )
++{
++    unsigned int entry, idx = handle_to_index( handle, &entry );
++    struct fast_sync_cache_entry *cache;
++
++    if (entry >= FAST_SYNC_CACHE_ENTRIES || !fast_sync_cache[entry])
++        return NULL;
++
++    cache = &fast_sync_cache[entry][idx];
++
++    /* this load needs acquire semantics */
++    if (!interlocked_inc_if_nonzero( &cache->refcount ))
++        return NULL;
++
++    if (cache->closed)
++    {
++        /* The object is still being used, but the handle has been closed.
++         * It might have been reused for another object in the meantime, so
++         * force the caller to check the server. */
++        InterlockedDecrement( &cache->refcount );
++        return NULL;
++    }
++
++    return cache;
++}
++
+ 
+ /* returns a pointer to a cache entry; if the object could not be cached,
+  * returns "fallback_cache" instead, which should be allocated on stack */
+@@ -432,39 +555,77 @@ static NTSTATUS get_fast_sync_obj( HANDLE handle, enum fast_sync_type desired_ty
+                                    struct fast_sync_cache_entry *fallback_cache,
+                                    struct fast_sync_cache_entry **ret_cache )
+ {
+-    struct fast_sync_cache_entry *cache = fallback_cache;
++    struct fast_sync_cache_entry *cache;
++    obj_handle_t fast_sync_handle;
++    enum fast_sync_type type;
++    unsigned int access;
+     NTSTATUS ret;
++    int obj;
+ 
+-    *ret_cache = fallback_cache;
++    /* try to find it in the cache already */
++    if ((cache = get_cached_fast_sync_obj( handle )))
++    {
++        *ret_cache = cache;
++        return STATUS_SUCCESS;
++    }
+ 
++    /* try to retrieve it from the server */
+     SERVER_START_REQ( get_fast_sync_obj )
+     {
+         req->handle = wine_server_obj_handle( handle );
+         if (!(ret = wine_server_call( req )))
+         {
+-            cache->handle = reply->handle;
+-            cache->access = reply->access;
+-            cache->type = reply->type;
+-            cache->obj = reply->obj;
+-            cache->refcount = 1;
+-            cache->closed = FALSE;
++            fast_sync_handle = reply->handle;
++            access = reply->access;
++            type = reply->type;
++            obj = reply->obj;
+         }
+     }
+     SERVER_END_REQ;
+ 
+-    if (!ret && desired_type && desired_type != cache->type)
++    if (ret) return ret;
++
++    cache = cache_fast_sync_obj( handle, fast_sync_handle, obj, type, access );
++    if (!cache)
++    {
++        cache = fallback_cache;
++        cache->handle = fast_sync_handle;
++        cache->obj = obj;
++        cache->type = type;
++        cache->access = access;
++        cache->closed = FALSE;
++        cache->refcount = 1;
++    }
++
++    *ret_cache = cache;
++
++    if (desired_type && desired_type != cache->type)
+     {
+         release_fast_sync_obj( cache );
+         return STATUS_OBJECT_TYPE_MISMATCH;
+     }
+ 
+-    if (!ret && (cache->access & desired_access) != desired_access)
++    if ((cache->access & desired_access) != desired_access)
+     {
+         release_fast_sync_obj( cache );
+         return STATUS_ACCESS_DENIED;
+     }
+ 
+-    return ret;
++    return STATUS_SUCCESS;
++}
++
++
++void close_fast_sync_obj( HANDLE handle )
++{
++    struct fast_sync_cache_entry *cache = get_cached_fast_sync_obj( handle );
++
++    if (cache)
++    {
++        cache->closed = TRUE;
++        /* once for the reference we just grabbed, and once for the handle */
++        release_fast_sync_obj( cache );
++        release_fast_sync_obj( cache );
++    }
+ }
+ 
+ 
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 5529fe28a19..e4af55ffd92 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -241,6 +241,8 @@ extern void init_cpu_info(void) DECLSPEC_HIDDEN;
+ 
+ extern void dbg_init(void) DECLSPEC_HIDDEN;
+ 
++extern void close_fast_sync_obj( HANDLE handle ) DECLSPEC_HIDDEN;
++
+ extern void WINAPI DECLSPEC_NORETURN call_user_apc_dispatcher( CONTEXT *context_ptr, ULONG_PTR ctx,
+                                                                ULONG_PTR arg1, ULONG_PTR arg2,
+                                                                PNTAPCFUNC func,
+-- 
+2.11.4.GIT
+

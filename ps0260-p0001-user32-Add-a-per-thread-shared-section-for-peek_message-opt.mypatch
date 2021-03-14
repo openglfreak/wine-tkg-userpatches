@@ -200,8 +200,8 @@ index 59c5d040f4e..a34b22f7298 100644
  
  /* ### protocol_version begin ### */
  
--#define SERVER_PROTOCOL_VERSION 692
-+#define SERVER_PROTOCOL_VERSION 693
+-#define SERVER_PROTOCOL_VERSION 693
++#define SERVER_PROTOCOL_VERSION 694
  
  /* ### protocol_version end ### */
  
@@ -294,17 +294,17 @@ index 43ab91dc671..585a2230654 100644
 --- a/server/queue.c
 +++ b/server/queue.c
 @@ -146,6 +146,7 @@ struct msg_queue
-     int                    esync_in_msgwait; /* our thread is currently waiting on us */
-     unsigned int           fsync_idx;
      int                    fsync_in_msgwait; /* our thread is currently waiting on us */
+     struct fast_sync      *fast_sync;       /* fast synchronization object */
+     int                    in_fast_wait;    /* are we in a fast wait? */
 +    volatile struct thread_shared_memory *shared;  /* thread shared memory ptr */
  };
  
  struct hotkey
 @@ -319,6 +320,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
-         queue->esync_in_msgwait = 0;
-         queue->fsync_idx       = 0;
          queue->fsync_in_msgwait = 0;
+         queue->fast_sync       = NULL;
+         queue->in_fast_wait    = 0;
 +        queue->shared          = thread->shared;
          list_init( &queue->send_result );
          list_init( &queue->callback_result );
@@ -319,9 +319,9 @@ index 43ab91dc671..585a2230654 100644
 +    queue->shared->changed_bits = queue->changed_bits;
 +    SHARED_WRITE_END( &queue->shared->seq );
 +
-     if (is_signaled( queue )) wake_up( &queue->obj, 0 );
- }
- 
+     if (is_signaled( queue ))
+     {
+         wake_up( &queue->obj, 0 );
 @@ -555,6 +563,11 @@ static inline void clear_queue_bits( struct msg_queue *queue, unsigned int bits
      queue->wake_bits &= ~bits;
      queue->changed_bits &= ~bits;
@@ -338,6 +338,7 @@ index 43ab91dc671..585a2230654 100644
      struct msg_queue *queue = (struct msg_queue *)obj;
      queue->wake_mask = 0;
      queue->changed_mask = 0;
+     fast_reset_event( queue->fast_sync );
 +
 +    SHARED_WRITE_BEGIN( &queue->shared->seq );
 +    queue->shared->wake_mask = queue->wake_mask;
@@ -346,7 +347,7 @@ index 43ab91dc671..585a2230654 100644
  }
  
  static void msg_queue_destroy( struct object *obj )
-@@ -2510,10 +2528,23 @@ DECL_HANDLER(set_queue_mask)
+@@ -2515,12 +2533,22 @@ DECL_HANDLER(set_queue_mask)
          queue->changed_mask = req->changed_mask;
          reply->wake_bits    = queue->wake_bits;
          reply->changed_bits = queue->changed_bits;
@@ -359,18 +360,16 @@ index 43ab91dc671..585a2230654 100644
          if (is_signaled( queue ))
          {
              /* if skip wait is set, do what would have been done in the subsequent wait */
--            if (req->skip_wait) queue->wake_mask = queue->changed_mask = 0;
-+            if (req->skip_wait)
-+            {
-+                queue->wake_mask = queue->changed_mask = 0;
+             if (req->skip_wait)
+             {
+                 queue->wake_mask = queue->changed_mask = 0;
 +                SHARED_WRITE_BEGIN( &queue->shared->seq );
 +                queue->shared->wake_mask = queue->wake_mask;
 +                queue->shared->changed_mask = queue->changed_mask;
 +                SHARED_WRITE_END( &queue->shared->seq );
-+            }
-             else wake_up( &queue->obj, 0 );
-         }
-     }
+             }
+             else
+             {
 @@ -2530,6 +2561,10 @@ DECL_HANDLER(get_queue_status)
          reply->changed_bits = queue->changed_bits;
          queue->changed_bits &= ~req->clear_bits;
@@ -394,18 +393,18 @@ index 43ab91dc671..585a2230654 100644
      if ((filter & QS_POSTMESSAGE) &&
          get_posted_message( queue, get_win, req->get_first, req->get_last, req->flags, reply ))
 @@ -2778,6 +2817,12 @@ DECL_HANDLER(get_message)
-     if (get_win == -1 && current->process->idle_event) set_event( current->process->idle_event );
      queue->wake_mask = req->wake_mask;
      queue->changed_mask = req->changed_mask;
+     fast_reset_event( queue->fast_sync );
 +
 +    SHARED_WRITE_BEGIN( &queue->shared->seq );
 +    queue->shared->wake_mask = queue->wake_mask;
 +    queue->shared->changed_mask = queue->changed_mask;
 +    SHARED_WRITE_END( &queue->shared->seq );
 +
-     set_error( STATUS_PENDING );  /* FIXME */
- }
+     return;
  
+ found_msg:
 diff --git a/server/thread.c b/server/thread.c
 index 31043c3df33..d38136c05c2 100644
 --- a/server/thread.c
@@ -419,9 +418,9 @@ index 31043c3df33..d38136c05c2 100644
  #include "fsync.h"
  
 @@ -252,6 +253,8 @@ static inline void init_thread_structure( struct thread *thread )
-     thread->desc            = NULL;
      thread->desc_len        = 0;
      thread->exit_poll       = NULL;
+     thread->fast_sync       = NULL;
 +    thread->shared_mapping  = NULL;
 +    thread->shared          = NULL;
  
@@ -482,9 +481,9 @@ index f947edb94a6..6c801ad6421 100644
 --- a/server/thread.h
 +++ b/server/thread.h
 @@ -95,6 +95,8 @@ struct thread
-     data_size_t            desc_len;      /* thread description length in bytes */
      WCHAR                 *desc;          /* thread description string */
      struct timeout_user   *exit_poll;     /* poll if the thread/process has exited already */
+     struct fast_sync      *fast_sync;     /* fast synchronization object */
 +    struct object         *shared_mapping;         /* thread shared memory mapping */
 +    volatile struct thread_shared_memory *shared;  /* thread shared memory ptr */
  };

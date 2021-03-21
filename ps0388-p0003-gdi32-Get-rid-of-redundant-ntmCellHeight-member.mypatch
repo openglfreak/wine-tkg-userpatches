@@ -1,0 +1,64 @@
+From: Akihiro Sagawa <sagawa.aki@gmail.com>
+Subject: [PATCH 3/3] gdi32: Get rid of redundant ntmCellHeight member.
+Message-Id: <20210319234556.641C.375B48EC@gmail.com>
+Date: Fri, 19 Mar 2021 23:46:45 +0900
+
+Signed-off-by: Akihiro Sagawa <sagawa.aki@gmail.com>
+---
+ dlls/gdi32/font.c        | 6 ++++--
+ dlls/gdi32/freetype.c    | 1 -
+ dlls/gdi32/gdi_private.h | 1 -
+ 3 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/gdi32/font.c b/dlls/gdi32/font.c
+index bd3c8839851..a3c3bde71d8 100644
+--- a/dlls/gdi32/font.c
++++ b/dlls/gdi32/font.c
+@@ -2712,10 +2712,12 @@ static BOOL get_face_enum_data( struct gdi_font_face *face, ENUMLOGFONTEXW *elf,
+     if (font_funcs->set_outline_text_metrics( font ))
+     {
+         static const DWORD ntm_ppem = 32;
++        UINT cell_height;
+ 
+ #define TM font->otm.otmTextMetrics
+ #define SCALE_NTM(value) (MulDiv( ntm->ntmTm.tmHeight, (value), TM.tmHeight ))
+-        ntm->ntmTm.tmHeight = MulDiv( ntm_ppem, font->ntmCellHeight, font->otm.otmEMSquare );
++        cell_height = TM.tmHeight / ( -lf.lfHeight / font->otm.otmEMSquare );
++        ntm->ntmTm.tmHeight = MulDiv( ntm_ppem, cell_height, font->otm.otmEMSquare );
+         ntm->ntmTm.tmAscent = SCALE_NTM( TM.tmAscent );
+         ntm->ntmTm.tmDescent = ntm->ntmTm.tmHeight - ntm->ntmTm.tmAscent;
+         ntm->ntmTm.tmInternalLeading = SCALE_NTM( TM.tmInternalLeading );
+@@ -2727,7 +2729,7 @@ static BOOL get_face_enum_data( struct gdi_font_face *face, ENUMLOGFONTEXW *elf,
+                (const char *)&TM + offsetof( TEXTMETRICW, tmWeight ),
+                sizeof(TEXTMETRICW) - offsetof( TEXTMETRICW, tmWeight ));
+         ntm->ntmTm.ntmSizeEM = font->otm.otmEMSquare;
+-        ntm->ntmTm.ntmCellHeight = font->ntmCellHeight;
++        ntm->ntmTm.ntmCellHeight = cell_height;
+         ntm->ntmTm.ntmAvgWidth = font->ntmAvgWidth;
+ #undef SCALE_NTM
+ #undef TM
+diff --git a/dlls/gdi32/freetype.c b/dlls/gdi32/freetype.c
+index c66db289ab1..b29d9fcc88e 100644
+--- a/dlls/gdi32/freetype.c
++++ b/dlls/gdi32/freetype.c
+@@ -3775,7 +3775,6 @@ static BOOL CDECL freetype_set_outline_text_metrics( struct gdi_font *font )
+         descent = windescent;
+     }
+ 
+-    font->ntmCellHeight = ascent + descent;
+     font->ntmAvgWidth = pOS2->xAvgCharWidth;
+ 
+ #define SCALE_X(x) (pFT_MulFix(x, em_scale))
+diff --git a/dlls/gdi32/gdi_private.h b/dlls/gdi32/gdi_private.h
+index 2bf16e8eaf8..71493c185b6 100644
+--- a/dlls/gdi32/gdi_private.h
++++ b/dlls/gdi32/gdi_private.h
+@@ -344,7 +344,6 @@ struct gdi_font
+     SHORT                  yMax;
+     SHORT                  yMin;
+     UINT                   ntmFlags;
+-    UINT                   ntmCellHeight;
+     UINT                   ntmAvgWidth;
+     UINT                   aa_flags;
+     ULONG                  ttc_item_offset;    /* 0 if font is not a part of TrueType collection */
+

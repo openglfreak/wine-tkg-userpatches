@@ -1,0 +1,96 @@
+From 7fd934613b060c65df75c5e1a9bfd43493248e14 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 2 Sep 2020 16:13:10 +0200
+Subject: [PATCH 19/37] user32: Send WM_NCACTIVATE on SetForegroundWindow call.
+
+When window is already active but has lost foreground, as shown by
+concurrent SetForegroundWindow tests.
+---
+ dlls/user32/focus.c     |  4 ++++
+ dlls/user32/tests/win.c | 42 ++++++++++++++++++++---------------------
+ 2 files changed, 24 insertions(+), 22 deletions(-)
+
+diff --git a/dlls/user32/focus.c b/dlls/user32/focus.c
+index 6a09d491995..91b4b40af4e 100644
+--- a/dlls/user32/focus.c
++++ b/dlls/user32/focus.c
+@@ -212,6 +212,10 @@ static BOOL set_foreground_window( HWND hwnd, UINT flags )
+         else if (send_msg_new)  /* old window belongs to us but new one to other thread */
+             ret = set_active_window( 0, NULL, flags|SET_ACTIVE_WINDOW_FLAGS_FOCUS );
+ 
++        /* already active, set_active_window will do no nothing */
++        if (!send_msg_new && hwnd == GetActiveWindow())
++            SendMessageW( hwnd, WM_NCACTIVATE, TRUE, (LPARAM)hwnd );
++
+         if (send_msg_new)  /* new window belongs to other thread */
+             SendNotifyMessageW( hwnd, WM_WINE_SETACTIVEWINDOW, (WPARAM)hwnd, flags|SET_ACTIVE_WINDOW_FLAGS_FOCUS );
+         else  /* new window belongs to us */
+diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
+index 7d225d2df06..73f0390d5e3 100644
+--- a/dlls/user32/tests/win.c
++++ b/dlls/user32/tests/win.c
+@@ -3218,33 +3218,32 @@ struct test_sfw_test_desc
+ 
+     BOOL todo_msgcount_before_set_foreground;
+     int  msgcount_before_set_foreground;
+-    BOOL todo_msgcount_after_set_foreground;
+     int  msgcount_after_set_foreground;
+     int  msgcount_after_peek_message;
+     int  expected_window;
+ };
+ 
+ static struct test_sfw_test_desc test_sfw_tests[] = {
+-    {1, FALSE, FALSE, FALSE,  FALSE, 0, FALSE, 0, 7, 0},
+-    {1, TRUE, FALSE, FALSE,   FALSE, 0,  TRUE, 1, 7, 0},
+-    {1, FALSE, TRUE, FALSE,   FALSE, 0, FALSE, 0, 7, 0},
+-    {1, TRUE, TRUE, FALSE,    FALSE, 0,  TRUE, 1, 7, 0},
+-    {1, FALSE, FALSE, TRUE,   FALSE, 0, FALSE, 0, 7, 0},
+-    {1, TRUE, FALSE, TRUE,    FALSE, 0,  TRUE, 1, 7, 0},
+-
+-    {2, FALSE, FALSE, FALSE,  FALSE, 0, FALSE, 6, 1, 1},
+-    {2, TRUE, FALSE, FALSE,   FALSE, 0, FALSE, 6, 1, 1},
+-    {2, FALSE, TRUE, FALSE,   FALSE, 6, FALSE, 0, 1, 1},
+-    {2, TRUE, TRUE, FALSE,    FALSE, 6,  TRUE, 1, 7, 0},
+-    {2, FALSE, FALSE, TRUE,    TRUE, 8, FALSE, 0, 1, 1},
+-    {2, TRUE, FALSE, TRUE,     TRUE, 8,  TRUE, 1, 7, 0},
+-
+-    {0, FALSE, FALSE, FALSE,  FALSE, 0, FALSE, 6, 1, 1},
+-    {0, TRUE, FALSE, FALSE,   FALSE, 0, FALSE, 6, 1, 1},
+-    {0, FALSE, TRUE, FALSE,   FALSE, 6, FALSE, 0, 1, 1},
+-    {0, TRUE, TRUE, FALSE,    FALSE, 6,  TRUE, 1, 7, 0},
+-    {0, FALSE, FALSE, TRUE,    TRUE, 8, FALSE, 0, 1, 1},
+-    {0, TRUE, FALSE, TRUE,     TRUE, 8,  TRUE, 1, 7, 0},
++    {1, FALSE, FALSE, FALSE,  FALSE, 0, 0, 7, 0},
++    {1, TRUE, FALSE, FALSE,   FALSE, 0, 1, 7, 0},
++    {1, FALSE, TRUE, FALSE,   FALSE, 0, 0, 7, 0},
++    {1, TRUE, TRUE, FALSE,    FALSE, 0, 1, 7, 0},
++    {1, FALSE, FALSE, TRUE,   FALSE, 0, 0, 7, 0},
++    {1, TRUE, FALSE, TRUE,    FALSE, 0, 1, 7, 0},
++
++    {2, FALSE, FALSE, FALSE,  FALSE, 0, 6, 1, 1},
++    {2, TRUE, FALSE, FALSE,   FALSE, 0, 6, 1, 1},
++    {2, FALSE, TRUE, FALSE,   FALSE, 6, 0, 1, 1},
++    {2, TRUE, TRUE, FALSE,    FALSE, 6, 1, 7, 0},
++    {2, FALSE, FALSE, TRUE,    TRUE, 8, 0, 1, 1},
++    {2, TRUE, FALSE, TRUE,     TRUE, 8, 1, 7, 0},
++
++    {0, FALSE, FALSE, FALSE,  FALSE, 0, 6, 1, 1},
++    {0, TRUE, FALSE, FALSE,   FALSE, 0, 6, 1, 1},
++    {0, FALSE, TRUE, FALSE,   FALSE, 6, 0, 1, 1},
++    {0, TRUE, TRUE, FALSE,    FALSE, 6, 1, 7, 0},
++    {0, FALSE, FALSE, TRUE,    TRUE, 8, 0, 1, 1},
++    {0, TRUE, FALSE, TRUE,     TRUE, 8, 1, 7, 0},
+ };
+ 
+ static DWORD WINAPI test_sfw_thread( void *param )
+@@ -3311,7 +3310,6 @@ static DWORD WINAPI test_sfw_thread( void *param )
+         test_sfw_msg_count = 0;
+         trace( "%d: calling SetForegroundWindow\n", i );
+         SetForegroundWindow( windows[1] );
+-        todo_wine_if( test->todo_msgcount_after_set_foreground )
+         ok( test_sfw_msg_count == test->msgcount_after_set_foreground,
+             "%d: Unexpected number of messages received after SetForegroundWindow: %d\n", i, test_sfw_msg_count );
+ 
+-- 
+2.31.0
+

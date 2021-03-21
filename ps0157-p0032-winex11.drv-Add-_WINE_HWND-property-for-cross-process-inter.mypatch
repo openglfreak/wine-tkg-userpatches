@@ -1,0 +1,269 @@
+From 6de742f27a19619e4b90bed05c3be19244ae7827 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 16 Jan 2020 12:30:15 +0100
+Subject: [PATCH 32/37] winex11.drv: Add _WINE_HWND property for cross-process
+ interaction.
+
+The XSaveContext / XFindContext only works within one process. For
+other processes to know about Wine windows, we have to use a property.
+---
+ dlls/winex11.drv/bitblt.c      |  3 +-
+ dlls/winex11.drv/event.c       | 13 +++-----
+ dlls/winex11.drv/mouse.c       |  3 +-
+ dlls/winex11.drv/window.c      | 54 +++++++++++++++++++++++++++-------
+ dlls/winex11.drv/x11drv.h      |  6 ++--
+ dlls/winex11.drv/x11drv_main.c |  2 +-
+ 6 files changed, 54 insertions(+), 27 deletions(-)
+
+diff --git a/dlls/winex11.drv/bitblt.c b/dlls/winex11.drv/bitblt.c
+index a6fbb755a7e..883b79ef70b 100644
+--- a/dlls/winex11.drv/bitblt.c
++++ b/dlls/winex11.drv/bitblt.c
+@@ -1621,8 +1621,7 @@ static void set_layer_region( struct x11drv_window_surface *surface, HRGN hrgn )
+     DWORD size;
+     HWND hwnd;
+ 
+-    if (XFindContext( thread_init_display(), surface->window, winContext, (char **)&hwnd ))
+-        return;
++    hwnd = x11drv_get_hwnd_for_window( thread_init_display(), surface->window, TRUE, NULL );
+ 
+     if (hrgn)
+     {
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index e1fe4f26fc5..7df0e6078e8 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -404,8 +404,7 @@ static inline BOOL call_event_handler( Display *display, XEvent *event )
+ #ifdef GenericEvent
+     if (event->type == GenericEvent) hwnd = 0; else
+ #endif
+-    if (XFindContext( display, event->xany.window, winContext, (char **)&hwnd ) != 0)
+-        hwnd = 0;  /* not for a registered window */
++    hwnd = x11drv_get_hwnd_for_window( display, event->xany.window, TRUE, NULL );
+     if (!hwnd && event->xany.window == root_window) hwnd = GetDesktopWindow();
+ 
+     TRACE( "%lu %s for hwnd/window %p/%lx\n",
+@@ -848,7 +847,6 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
+  */
+ static void focus_out( Display *display , HWND hwnd, Time time )
+  {
+-    HWND hwnd_tmp;
+     Window focus_win;
+     int revert;
+     XIC xic;
+@@ -870,11 +868,8 @@ static void focus_out( Display *display , HWND hwnd, Time time )
+        getting the focus is a Wine window */
+ 
+     XGetInputFocus( display, &focus_win, &revert );
+-    if (focus_win)
+-    {
+-        if (XFindContext( display, focus_win, winContext, (char **)&hwnd_tmp ) != 0)
+-            focus_win = 0;
+-    }
++    if (focus_win && !x11drv_get_hwnd_for_window( display, focus_win, TRUE, NULL ))
++        focus_win = 0;
+ 
+     if (!focus_win)
+     {
+@@ -1786,7 +1781,7 @@ static void handle_dnd_protocol( HWND hwnd, XClientMessageEvent *event )
+     /* query window (drag&drop event contains only drag window) */
+     XQueryPointer( event->display, root_window, &root, &child,
+                    &root_x, &root_y, &child_x, &child_y, &u);
+-    if (XFindContext( event->display, child, winContext, (char **)&hwnd ) != 0) hwnd = 0;
++    hwnd = x11drv_get_hwnd_for_window( event->display, child, TRUE, NULL );
+     if (!hwnd) return;
+     if (event->data.l[0] == DndFile || event->data.l[0] == DndFiles)
+         EVENT_DropFromOffiX(hwnd, event);
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 1982be35f50..bc802b4b3fb 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -1976,8 +1976,7 @@ static BOOL X11DRV_XIEnterEvent( XGenericEventCookie *xev )
+     XEvent event;
+     HWND hwnd;
+ 
+-    if (XFindContext( xiev->display, xiev->event, winContext, (char **)&hwnd ) != 0)
+-        hwnd = 0;
++    hwnd = x11drv_get_hwnd_for_window( xiev->display, xiev->event, TRUE, NULL );
+     if (!hwnd && xiev->event == root_window)
+         hwnd = GetDesktopWindow();
+ 
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 37bfa873972..fc16fa12769 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -82,9 +82,6 @@ static const unsigned int net_wm_state_atoms[NB_NET_WM_STATES] =
+ /* is cursor clipping active? */
+ BOOL clipping_cursor = FALSE;
+ 
+-/* X context to associate a hwnd to an X window */
+-XContext winContext = 0;
+-
+ /* X context to associate a struct x11drv_win_data to an hwnd */
+ XContext win_data_context = 0;
+ 
+@@ -1490,7 +1487,7 @@ Window create_client_window( HWND hwnd, const XVisualInfo *visual )
+ 
+     if (data->client_window)
+     {
+-        XDeleteContext( data->display, data->client_window, winContext );
++        x11drv_set_hwnd_for_window( data->display, data->client_window, NULL );
+         XReparentWindow( gdi_display, data->client_window, dummy_parent, 0, 0 );
+         TRACE( "%p reparent xwin %lx/%lx\n", data->hwnd, data->whole_window, data->client_window );
+     }
+@@ -1518,7 +1515,7 @@ Window create_client_window( HWND hwnd, const XVisualInfo *visual )
+                                                CWBackingStore | CWColormap | CWBorderPixel, &attr );
+     if (data->client_window)
+     {
+-        XSaveContext( data->display, data->client_window, winContext, (char *)data->hwnd );
++        x11drv_set_hwnd_for_window( data->display, data->client_window, data->hwnd );
+         XMapWindow( gdi_display, data->client_window );
+         XSync( gdi_display, False );
+         if (data->whole_window) XSelectInput( data->display, data->client_window, ExposureMask );
+@@ -1578,7 +1575,7 @@ static void create_whole_window( struct x11drv_win_data *data )
+     set_initial_wm_hints( data->display, data->whole_window );
+     set_wm_hints( data );
+ 
+-    XSaveContext( data->display, data->whole_window, winContext, (char *)data->hwnd );
++    x11drv_set_hwnd_for_window( data->display, data->whole_window, data->hwnd );
+     SetPropA( data->hwnd, whole_window_prop, (HANDLE)data->whole_window );
+ 
+     /* set the window text */
+@@ -1610,7 +1607,7 @@ static void destroy_whole_window( struct x11drv_win_data *data, BOOL already_des
+ {
+     TRACE( "win %p xwin %lx/%lx\n", data->hwnd, data->whole_window, data->client_window );
+ 
+-    if (data->client_window) XDeleteContext( data->display, data->client_window, winContext );
++    if (data->client_window) x11drv_set_hwnd_for_window( data->display, data->client_window, NULL );
+ 
+     if (!data->whole_window)
+     {
+@@ -1620,7 +1617,7 @@ static void destroy_whole_window( struct x11drv_win_data *data, BOOL already_des
+             if (xwin)
+             {
+                 if (!already_destroyed) XSelectInput( data->display, xwin, 0 );
+-                XDeleteContext( data->display, xwin, winContext );
++                x11drv_set_hwnd_for_window( data->display, xwin, NULL );
+                 RemovePropA( data->hwnd, foreign_window_prop );
+             }
+             return;
+@@ -1634,7 +1631,7 @@ static void destroy_whole_window( struct x11drv_win_data *data, BOOL already_des
+             XReparentWindow( data->display, data->client_window, get_dummy_parent(), 0, 0 );
+             XSync( data->display, False );
+         }
+-        XDeleteContext( data->display, data->whole_window, winContext );
++        x11drv_set_hwnd_for_window( data->display, data->whole_window, NULL );
+         if (!already_destroyed) XDestroyWindow( data->display, data->whole_window );
+     }
+     if (data->whole_colormap) XFreeColormap( data->display, data->whole_colormap );
+@@ -2019,7 +2016,7 @@ HWND create_foreign_window( Display *display, Window xwin )
+         class_registered = TRUE;
+     }
+ 
+-    if (XFindContext( display, xwin, winContext, (char **)&hwnd )) hwnd = 0;
++    hwnd = x11drv_get_hwnd_for_window( display, xwin, TRUE, NULL );
+     if (hwnd) return hwnd;  /* already created */
+ 
+     XSelectInput( display, xwin, StructureNotifyMask );
+@@ -2060,7 +2057,7 @@ HWND create_foreign_window( Display *display, Window xwin )
+     data->mapped = TRUE;
+ 
+     SetPropA( hwnd, foreign_window_prop, (HANDLE)xwin );
+-    XSaveContext( display, xwin, winContext, (char *)data->hwnd );
++    x11drv_set_hwnd_for_window( display, xwin, data->hwnd );
+ 
+     TRACE( "win %lx parent %p style %08x %s -> hwnd %p\n",
+            xwin, parent, style, wine_dbgstr_rect(&data->window_rect), hwnd );
+@@ -2923,3 +2920,38 @@ void CDECL X11DRV_FlashWindowEx( PFLASHWINFO pfinfo )
+     }
+     release_win_data( data );
+ }
++
++static int x11drv_get_hwnd_for_window_error( Display *display, XErrorEvent *event, void *arg )
++{
++    return 1;
++}
++
++HWND x11drv_get_hwnd_for_window( Display *display, Window window, BOOL same_process, BOOL *is_foreign )
++{
++    unsigned long count, remaining;
++    HWND *property, hwnd = NULL;
++    DWORD pid;
++    Atom type;
++    int format;
++
++    if (is_foreign) *is_foreign = TRUE;
++    X11DRV_expect_error( display, x11drv_get_hwnd_for_window_error, NULL );
++    XGetWindowProperty( display, window, x11drv_atom(_WINE_HWND), 0, ~0UL, False, XA_CARDINAL,
++                        &type, &format, &count, &remaining, (unsigned char **)&property );
++    if (X11DRV_check_error()) return NULL;
++    if (!property) return NULL;
++
++    if (is_foreign) *is_foreign = FALSE;
++    hwnd = *property;
++    XFree(property);
++
++    if (!hwnd || !GetWindowThreadProcessId( hwnd, &pid )) return NULL;
++    if (same_process && pid != GetCurrentProcessId()) return NULL;
++    return hwnd;
++}
++
++void x11drv_set_hwnd_for_window( Display *display, Window window, HWND hwnd )
++{
++    XChangeProperty( display, window, x11drv_atom(_WINE_HWND), XA_CARDINAL, 8,
++                     PropModeReplace, (unsigned char *)&hwnd, sizeof(hwnd) );
++}
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 35b02cad7e2..149e9799c22 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -489,6 +489,7 @@ enum x11drv_atoms
+     XATOM__GTK_WORKAREAS_D0,
+     XATOM__XEMBED,
+     XATOM__XEMBED_INFO,
++    XATOM__WINE_HWND,
+     XATOM_XdndAware,
+     XATOM_XdndEnter,
+     XATOM_XdndPosition,
+@@ -612,6 +613,9 @@ extern void release_win_data( struct x11drv_win_data *data ) DECLSPEC_HIDDEN;
+ extern Window X11DRV_get_whole_window( HWND hwnd ) DECLSPEC_HIDDEN;
+ extern XIC X11DRV_get_ic( HWND hwnd ) DECLSPEC_HIDDEN;
+ 
++extern HWND x11drv_get_hwnd_for_window( Display *display, Window window, BOOL same_process, BOOL *is_foreign ) DECLSPEC_HIDDEN;
++extern void x11drv_set_hwnd_for_window( Display *display, Window window, HWND hwnd ) DECLSPEC_HIDDEN;
++
+ extern void sync_gl_drawable( HWND hwnd, BOOL known_child ) DECLSPEC_HIDDEN;
+ extern void set_gl_drawable_parent( HWND hwnd, HWND parent ) DECLSPEC_HIDDEN;
+ extern void destroy_gl_drawable( HWND hwnd ) DECLSPEC_HIDDEN;
+@@ -638,8 +642,6 @@ static inline void mirror_rect( const RECT *window_rect, RECT *rect )
+     rect->right = width - tmp;
+ }
+ 
+-/* X context to associate a hwnd to an X window */
+-extern XContext winContext DECLSPEC_HIDDEN;
+ /* X context to associate a struct x11drv_win_data to an hwnd */
+ extern XContext win_data_context DECLSPEC_HIDDEN;
+ /* X context to associate an X cursor to a Win32 cursor handle */
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index 341b42f89ee..d6831d76e47 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -181,6 +181,7 @@ static const char * const atom_names[NB_XATOMS - FIRST_XATOM] =
+     "_GTK_WORKAREAS_D0",
+     "_XEMBED",
+     "_XEMBED_INFO",
++    "_WINE_HWND",
+     "XdndAware",
+     "XdndEnter",
+     "XdndPosition",
+@@ -594,7 +595,6 @@ static BOOL process_attach(void)
+ 
+     XInternAtoms( display, (char **)atom_names, NB_XATOMS - FIRST_XATOM, False, X11DRV_Atoms );
+ 
+-    winContext = XUniqueContext();
+     win_data_context = XUniqueContext();
+     cursor_context = XUniqueContext();
+ 
+-- 
+2.31.0
+

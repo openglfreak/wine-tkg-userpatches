@@ -1,0 +1,219 @@
+From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
+Subject: [PATCH v2 3/4] iphlpapi: Implement asynchronous APC for IcmpSendEcho2(Ex).
+Message-Id: <d6891b42bc831ada406231c9e2abcaf3f7f09636.1616161273.git.gabrielopcode@gmail.com>
+Date: Fri, 19 Mar 2021 15:43:40 +0200
+In-Reply-To: <83f1ca06a773a9223c3b21fedbf1f34b92b24b1d.1616161273.git.gabrielopcode@gmail.com>
+References: <83f1ca06a773a9223c3b21fedbf1f34b92b24b1d.1616161273.git.gabrielopcode@gmail.com>
+
+Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
+---
+ dlls/iphlpapi/icmp.c | 112 +++++++++++++++++++++++++++++++++----------
+ 1 file changed, 87 insertions(+), 25 deletions(-)
+
+diff --git a/dlls/iphlpapi/icmp.c b/dlls/iphlpapi/icmp.c
+index ceeab69..61a991f 100644
+--- a/dlls/iphlpapi/icmp.c
++++ b/dlls/iphlpapi/icmp.c
+@@ -71,6 +71,7 @@
+ #include "winternl.h"
+ #include "ipexport.h"
+ #include "icmpapi.h"
++#include "wine/asm.h"
+ #include "wine/debug.h"
+ 
+ /* Set up endianness macros for the ip and ip_icmp BSD headers */
+@@ -178,11 +179,11 @@ static int in_cksum(u_short *addr, int len)
+ }
+ 
+ /* Receive a reply (IPv4); this function uses, takes ownership of and will always free `buffer` */
+-static DWORD icmp_get_reply(int sid, unsigned char *buffer, DWORD send_time, void *reply_buf, DWORD reply_size, DWORD timeout)
++static DWORD icmp_get_reply(int sid, unsigned char *buffer, DWORD send_time, void *reply_buf, DWORD *reply_size, DWORD timeout)
+ {
+-    int repsize = MAXIPLEN + MAXICMPLEN + min(65535, reply_size);
++    int repsize = MAXIPLEN + MAXICMPLEN + min(65535, *reply_size);
+     struct icmp *icmp_header = (struct icmp*)buffer;
+-    char *endbuf = (char*)reply_buf + reply_size;
++    char *endbuf = (char*)reply_buf + *reply_size;
+     struct ip *ip_header = (struct ip*)buffer;
+     struct icmp_echo_reply *ier = reply_buf;
+     unsigned short id, seq, cksum;
+@@ -345,11 +346,13 @@ done:
+     if (res)
+     {
+         /* Move the data so there's no gap between it and the ICMP_ECHO_REPLY array */
++        char *reply_end = (char*)reply_buf + *reply_size;
+         DWORD gap_size = endbuf - (char*)ier;
+ 
+         if (gap_size)
+         {
+-            memmove(ier, endbuf, ((char*)reply_buf + reply_size) - endbuf);
++            *reply_size -= gap_size;
++            memmove(ier, endbuf, reply_end - endbuf);
+ 
+             /* Fix the pointers */
+             while (ier-- != reply_buf)
+@@ -367,13 +370,15 @@ done:
+                it and write it out if there's enough space available in the buffer. */
+             if (gap_size >= sizeof(IO_STATUS_BLOCK))
+             {
+-                IO_STATUS_BLOCK *io = (IO_STATUS_BLOCK*)((char*)reply_buf + reply_size - sizeof(IO_STATUS_BLOCK));
++                IO_STATUS_BLOCK *io = (IO_STATUS_BLOCK*)(reply_end - sizeof(IO_STATUS_BLOCK));
+ 
+                 io->Pointer = NULL;  /* Always NULL or STATUS_SUCCESS */
+-                io->Information = reply_size - gap_size;
++                io->Information = *reply_size;
+             }
+         }
+     }
++    else
++        *reply_size = 8;  /* ICMP error message */
+ 
+     HeapFree(GetProcessHeap(), 0, buffer);
+     TRACE("received %d replies\n",res);
+@@ -384,6 +389,9 @@ struct icmp_get_reply_async_ctx
+ {
+     icmp_t *icp;
+     HANDLE event;
++    PIO_APC_ROUTINE apc;
++    void *apc_ctx;
++    HANDLE thread;
+     unsigned char *buffer;
+     void *reply_buf;
+     DWORD reply_size;
+@@ -391,13 +399,52 @@ struct icmp_get_reply_async_ctx
+     DWORD timeout;
+ };
+ 
++#ifdef __i386__
++/* The stdcall calling convention has the callee clean the stack. Vista and later
++ * have different callback signatures, so we can't rely on it restoring the stack.
++ */
++extern void CALLBACK icmp_get_reply_async_call_apc(ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3);
++__ASM_GLOBAL_FUNC(icmp_get_reply_async_call_apc,
++    "pushl %ebp\n\t"
++    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t")
++    __ASM_CFI(".cfi_rel_offset %ebp,0\n\t")
++    "movl %esp,%ebp\n\t"
++    __ASM_CFI(".cfi_def_cfa_register %ebp\n\t")
++    "pushl 16(%ebp)\n\t"    /* io.Information */
++    "pushl $0\n\t"          /* io.Status */
++    "movl %esp,%eax\n\t"
++    "pushl $0\n\t"
++    "pushl %eax\n\t"
++    "pushl 12(%ebp)\n\t"
++    "call *8(%ebp)\n\t"
++    "leave\n\t"
++    __ASM_CFI(".cfi_def_cfa %esp,4\n\t")
++    __ASM_CFI(".cfi_same_value %ebp\n\t")
++    "ret")
++#else
++static void CALLBACK icmp_get_reply_async_call_apc(ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3)
++{
++    IO_STATUS_BLOCK io;
++
++    io.Pointer = NULL;  /* Always NULL or STATUS_SUCCESS */
++    io.Information = arg3;
++    ((PIO_APC_ROUTINE)arg1)(arg2, &io, 0);
++}
++#endif
++
+ static DWORD WINAPI icmp_get_reply_async_func(VOID *parameter)
+ {
+     struct icmp_get_reply_async_ctx *ctx = parameter;
+ 
+-    icmp_get_reply(ctx->icp->sid, ctx->buffer, ctx->send_time, ctx->reply_buf, ctx->reply_size, ctx->timeout);
++    icmp_get_reply(ctx->icp->sid, ctx->buffer, ctx->send_time, ctx->reply_buf, &ctx->reply_size, ctx->timeout);
+ 
+-    SetEvent(ctx->event);
++    if (ctx->apc)
++    {
++        NtQueueApcThread(ctx->thread, icmp_get_reply_async_call_apc, (ULONG_PTR)ctx->apc, (ULONG_PTR)ctx->apc_ctx, ctx->reply_size);
++        CloseHandle(ctx->thread);
++    }
++    if (ctx->event)
++        SetEvent(ctx->event);
+ 
+     icmp_unlock(ctx->icp);
+     HeapFree(GetProcessHeap(), 0, ctx);
+@@ -616,11 +663,6 @@ DWORD WINAPI IcmpSendEcho2Ex(
+         return 0;
+     }
+ 
+-    if (ApcRoutine)
+-    {
+-        FIXME("unsupported for APCs\n");
+-        return 0;
+-    }
+     if (SourceAddress)
+     {
+         FIXME("unsupported for source addresses\n");
+@@ -724,25 +766,45 @@ DWORD WINAPI IcmpSendEcho2Ex(
+         goto done;
+     }
+ 
+-    if (Event)
++    if (Event || ApcRoutine)
+     {
+         struct icmp_get_reply_async_ctx *ctx = HeapAlloc(GetProcessHeap(), 0, sizeof(*ctx));
+ 
+         if (ctx)
+         {
+-            ctx->icp = icp;
+-            ctx->event = Event;
+-            ctx->buffer = buffer;
+-            ctx->reply_buf = ReplyBuffer;
+-            ctx->reply_size = ReplySize;
+-            ctx->send_time = send_time;
+-            ctx->timeout = Timeout;
+-            if (QueueUserWorkItem(icmp_get_reply_async_func, ctx, WT_EXECUTEDEFAULT | WT_EXECUTELONGFUNCTION))
++            BOOL failed = FALSE;
++
++            /* The APC is executed only if there's no event on Vista and later */
++            ctx->apc = NULL;
++            if (ApcRoutine && !(Event && LOBYTE(LOWORD(GetVersion())) >= 6))
+             {
+-                SetLastError(ERROR_IO_PENDING);
+-                return 0;
++                if (DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
++                                    &ctx->thread, 0, FALSE, DUPLICATE_SAME_ACCESS))
++                    ctx->apc = ApcRoutine;
++                else
++                    failed = TRUE;
+             }
+ 
++            if (!failed)
++            {
++                ctx->icp = icp;
++                ctx->event = Event;
++                ctx->apc_ctx = ApcContext;
++                ctx->buffer = buffer;
++                ctx->reply_buf = ReplyBuffer;
++                ctx->reply_size = ReplySize;
++                ctx->send_time = send_time;
++                ctx->timeout = Timeout;
++
++                if (QueueUserWorkItem(icmp_get_reply_async_func, ctx, WT_EXECUTEDEFAULT | WT_EXECUTELONGFUNCTION))
++                {
++                    SetLastError(ERROR_IO_PENDING);
++                    return 0;
++                }
++
++                if (ctx->apc)
++                    CloseHandle(ctx->thread);
++            }
+             HeapFree(GetProcessHeap(), 0, ctx);
+         }
+         else
+@@ -752,7 +814,7 @@ DWORD WINAPI IcmpSendEcho2Ex(
+         goto done;
+     }
+ 
+-    res = icmp_get_reply(icp->sid, buffer, send_time, ReplyBuffer, ReplySize, Timeout);
++    res = icmp_get_reply(icp->sid, buffer, send_time, ReplyBuffer, &ReplySize, Timeout);
+ 
+ done:
+     icmp_unlock(icp);
+
+-- 
+2.30.0
+

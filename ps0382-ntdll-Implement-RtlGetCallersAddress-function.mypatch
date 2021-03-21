@@ -1,0 +1,94 @@
+From: Vijay Kiran Kamuju <infyquest@gmail.com>
+#Subject: [PATCH v2] ntdll: Implement RtlGetCallersAddress function.
+Message-Id: <CACfa+K+OLRu4rWu=f3=W6f_aS8uk824zMK4xkvw3RO1=XxHXpw@mail.gmail.com>
+Date: Sun, 14 Mar 2021 19:41:28 +0100
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=50726
+
+Signed-off-by: Vijay Kiran Kamuju <infyquest@gmail.com>
+
+<div dir="ltr">Wine-Bug: <a href="https://bugs.winehq.org/show_bug.cgi?id=50726">https://bugs.winehq.org/show_bug.cgi?id=50726</a><br><br>Signed-off-by: Vijay Kiran Kamuju &lt;<a href="mailto:infyquest@gmail.com">infyquest@gmail.com</a>&gt;<br></div>
+
+From d2cc497290a9a2d1b777bcdc4eff4d6db6813f24 Mon Sep 17 00:00:00 2001
+From: Vijay Kiran Kamuju <infyquest@gmail.com>
+Date: Sun, 14 Mar 2021 17:44:32 +0100
+Subject: [PATCH v2] ntdll: Implement RtlGetCallersAddress function.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=50726
+
+Signed-off-by: Vijay Kiran Kamuju <infyquest@gmail.com>
+---
+ dlls/ntdll/exception.c | 18 ++++++++++++++++++
+ dlls/ntdll/ntdll.spec  |  2 +-
+ include/winbase.h      |  2 ++
+ include/winnt.h        |  1 +
+ 4 files changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/exception.c b/dlls/ntdll/exception.c
+index d5b3042c491..d81c6000363 100644
+--- a/dlls/ntdll/exception.c
++++ b/dlls/ntdll/exception.c
+@@ -1001,3 +1001,21 @@ NTSTATUS WINAPI RtlCopyExtendedContext( CONTEXT_EX *dst, ULONG context_flags, CO
+         memcpy( &dst_xs->YmmContext, &src_xs->YmmContext, sizeof(dst_xs->YmmContext) );
+     return STATUS_SUCCESS;
+ }
++
++/***********************************************************************
++ *              RtlGetCallersAddress      (NTDLL.@)
++ */
++VOID WINAPI RtlGetCallersAddress( PVOID *address, PVOID *caller )
++{
++    PVOID backtrace[2];
++    USHORT framecount = 0;
++
++    TRACE( "(%p, %p)\n", address, caller );
++
++    *address = NULL;
++    *caller = NULL;
++    framecount = RtlCaptureStackBackTrace(2, 2, &backtrace[0], NULL);
++
++    if ( framecount ) *address = backtrace[0];
++    if ( framecount > 1 ) *caller = backtrace[1];
++}
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+index c8622ba21f4..0ab551c199f 100644
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -689,7 +689,7 @@
+ @ stub RtlGenerate8dot3Name
+ @ stdcall RtlGetAce(ptr long ptr)
+ @ stdcall RtlGetActiveActivationContext(ptr)
+-@ stub RtlGetCallersAddress
++@ stdcall RtlGetCallersAddress(ptr ptr)
+ @ stdcall RtlGetCompressionWorkSpaceSize(long ptr ptr)
+ @ stdcall RtlGetControlSecurityDescriptor(ptr ptr ptr)
+ @ stdcall RtlGetCurrentDirectory_U(long ptr)
+diff --git a/include/winbase.h b/include/winbase.h
+index 651da6d6906..765eff10ac4 100644
+--- a/include/winbase.h
++++ b/include/winbase.h
+@@ -2913,6 +2913,8 @@ WINBASEAPI UINT        WINAPI _lwrite(HFILE,LPCSTR,UINT);
+ #define     ZeroMemory RtlZeroMemory
+ #define     CopyMemory RtlCopyMemory
+ #define     SecureZeroMemory RtlSecureZeroMemory
++#define     SecureZeroMemory RtlSecureZeroMemory
++#define     CaptureStackBackTrace RtlCaptureStackBackTrace
+ 
+ /* Wine internal functions */
+ 
+diff --git a/include/winnt.h b/include/winnt.h
+index 9025e965b4d..e4b1283951f 100644
+--- a/include/winnt.h
++++ b/include/winnt.h
+@@ -2401,6 +2401,7 @@ typedef struct _STACK_FRAME_HEADER
+ #endif
+ 
+ NTSYSAPI void WINAPI RtlCaptureContext(CONTEXT*);
++NTSYSAPI USHORT WINAPI RtlCaptureStackBackTrace(ULONG,ULONG,PVOID*,PULONG);
+ 
+ #define WOW64_CONTEXT_i386 0x00010000
+ #define WOW64_CONTEXT_i486 0x00010000
+
+-- 
+2.30.2
+

@@ -1,0 +1,117 @@
+From 8cbce0935da9f3eb67ef8a204825db633f51e694 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 30 Sep 2020 15:10:24 +0200
+Subject: [PATCH 15/37] user32: Use flags in set_active_window instead of BOOL
+ params.
+
+---
+ dlls/user32/focus.c        | 20 ++++++++++----------
+ dlls/user32/user_private.h |  6 ++++++
+ 2 files changed, 16 insertions(+), 10 deletions(-)
+
+diff --git a/dlls/user32/focus.c b/dlls/user32/focus.c
+index 4c18238a98b..d5add0ab197 100644
+--- a/dlls/user32/focus.c
++++ b/dlls/user32/focus.c
+@@ -71,10 +71,10 @@ static HWND set_focus_window( HWND hwnd )
+ /*******************************************************************
+  *		set_active_window
+  */
+-static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
++static BOOL set_active_window( HWND hwnd, HWND *prev, UINT flags )
+ {
+     HWND previous = GetActiveWindow();
+-    BOOL ret;
++    BOOL ret, mouse = (flags & SET_ACTIVE_WINDOW_FLAGS_MOUSE);
+     DWORD winflags, old_thread, new_thread;
+     CBTACTIVATESTRUCT cbt;
+ 
+@@ -156,7 +156,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+     }
+ 
+     /* now change focus if necessary */
+-    if (focus)
++    if (flags & SET_ACTIVE_WINDOW_FLAGS_FOCUS)
+     {
+         GUITHREADINFO info;
+ 
+@@ -177,7 +177,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+ /*******************************************************************
+  *		set_foreground_window
+  */
+-static BOOL set_foreground_window( HWND hwnd, BOOL mouse )
++static BOOL set_foreground_window( HWND hwnd, UINT flags )
+ {
+     BOOL ret, send_msg_old = FALSE, send_msg_new = FALSE;
+     HWND previous = 0;
+@@ -199,12 +199,12 @@ static BOOL set_foreground_window( HWND hwnd, BOOL mouse )
+         if (send_msg_old)  /* old window belongs to other thread */
+             SendNotifyMessageW( previous, WM_WINE_SETACTIVEWINDOW, 0, 0 );
+         else if (send_msg_new)  /* old window belongs to us but new one to other thread */
+-            ret = set_active_window( 0, NULL, mouse, TRUE );
++            ret = set_active_window( 0, NULL, flags|SET_ACTIVE_WINDOW_FLAGS_FOCUS );
+ 
+         if (send_msg_new)  /* new window belongs to other thread */
+             SendNotifyMessageW( hwnd, WM_WINE_SETACTIVEWINDOW, (WPARAM)hwnd, 0 );
+         else  /* new window belongs to us */
+-            ret = set_active_window( hwnd, NULL, mouse, TRUE );
++            ret = set_active_window( hwnd, NULL, flags|SET_ACTIVE_WINDOW_FLAGS_FOCUS );
+     }
+     return ret;
+ }
+@@ -217,7 +217,7 @@ static BOOL set_foreground_window( HWND hwnd, BOOL mouse )
+  */
+ BOOL FOCUS_MouseActivate( HWND hwnd )
+ {
+-    return set_foreground_window( hwnd, TRUE );
++    return set_foreground_window( hwnd, SET_ACTIVE_WINDOW_FLAGS_MOUSE );
+ }
+ 
+ 
+@@ -246,7 +246,7 @@ HWND WINAPI SetActiveWindow( HWND hwnd )
+             return GetActiveWindow();  /* Windows doesn't seem to return an error here */
+     }
+ 
+-    if (!set_active_window( hwnd, &prev, FALSE, TRUE )) return 0;
++    if (!set_active_window( hwnd, &prev, SET_ACTIVE_WINDOW_FLAGS_FOCUS )) return 0;
+     return prev;
+ }
+ 
+@@ -293,7 +293,7 @@ HWND WINAPI SetFocus( HWND hwnd )
+         /* activate hwndTop if needed. */
+         if (hwndTop != GetActiveWindow())
+         {
+-            if (!set_active_window( hwndTop, NULL, FALSE, FALSE )) return 0;
++            if (!set_active_window( hwndTop, NULL, 0 )) return 0;
+             if (!IsWindow( hwnd )) return 0;  /* Abort if window destroyed */
+ 
+             /* Do not change focus if the window is no longer active */
+@@ -319,7 +319,7 @@ BOOL WINAPI SetForegroundWindow( HWND hwnd )
+     TRACE( "%p\n", hwnd );
+ 
+     hwnd = WIN_GetFullHandle( hwnd );
+-    return set_foreground_window( hwnd, FALSE );
++    return set_foreground_window( hwnd, 0 );
+ }
+ 
+ 
+diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
+index 7761a1ceb4f..193fde53307 100644
+--- a/dlls/user32/user_private.h
++++ b/dlls/user32/user_private.h
+@@ -60,6 +60,12 @@ enum wine_internal_message
+     WM_WINE_LAST_DRIVER_MSG = 0x80001fff
+ };
+ 
++enum set_active_window_flags
++{
++    SET_ACTIVE_WINDOW_FLAGS_MOUSE = 1,
++    SET_ACTIVE_WINDOW_FLAGS_FOCUS = 2,
++};
++
+ typedef struct tagUSER_DRIVER {
+     /* keyboard functions */
+     HKL    (CDECL *pActivateKeyboardLayout)(HKL, UINT);
+-- 
+2.31.0
+

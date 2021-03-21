@@ -1,0 +1,43 @@
+From 000274bf87e94ae2c9b4a9d0d688f89c4b734511 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 14 Aug 2020 14:56:35 +0200
+Subject: [PATCH 17/37] server: Support filtering sent internal messages.
+
+We will need this to process only a specific internal message type
+without processing any of the other messages.
+---
+ server/queue.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/server/queue.c b/server/queue.c
+index 3a52773c00d..bf72833b17d 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -2603,8 +2603,8 @@ DECL_HANDLER(post_quit_message)
+ /* get a message from the current queue */
+ DECL_HANDLER(get_message)
+ {
++    struct message *msg;
+     struct timer *timer;
+-    struct list *ptr;
+     struct msg_queue *queue = get_current_queue();
+     user_handle_t get_win = get_user_full_handle( req->get_win );
+     unsigned int filter = req->flags >> 16;
+@@ -2622,9 +2622,12 @@ DECL_HANDLER(get_message)
+     if (!filter) filter = QS_ALLINPUT;
+ 
+     /* first check for sent messages */
+-    if ((ptr = list_head( &queue->msg_list[SEND_MESSAGE] )))
++    LIST_FOR_EACH_ENTRY( msg, &queue->msg_list[SEND_MESSAGE], struct message, entry )
+     {
+-        struct message *msg = LIST_ENTRY( ptr, struct message, entry );
++        /* skip filtered internal messages */
++        if ((req->get_first & 0x80000000) && (req->get_last & 0x80000000) &&
++            !check_msg_filter( msg->msg, req->get_first, req->get_last ))
++            continue;
+         receive_message( queue, msg, reply );
+         return;
+     }
+-- 
+2.31.0
+

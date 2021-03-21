@@ -1,0 +1,59 @@
+From: Dmitry Timoshkov <dmitry@baikal.ru>
+Subject: [PATCH 2/3] msxml3: Don't unlink the XML declaration when saving document.
+Message-Id: <20210319182428.4c3d1b660f7f838940b68ed9@baikal.ru>
+Date: Fri, 19 Mar 2021 18:24:28 +0300
+
+Signed-off-by: Dmitry Timoshkov <dmitry@baikal.ru>
+---
+ dlls/msxml3/domdoc.c       | 3 ---
+ dlls/msxml3/tests/domdoc.c | 4 ++--
+ 2 files changed, 2 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/msxml3/domdoc.c b/dlls/msxml3/domdoc.c
+index 80c32e9ba99..a81ef5f16cb 100644
+--- a/dlls/msxml3/domdoc.c
++++ b/dlls/msxml3/domdoc.c
+@@ -2534,7 +2534,6 @@ static HRESULT WINAPI domdoc_save(
+ {
+     domdoc *This = impl_from_IXMLDOMDocument3( iface );
+     xmlSaveCtxtPtr ctx = NULL;
+-    xmlNodePtr xmldecl;
+     HRESULT ret = S_OK;
+ 
+     TRACE("(%p)->(%s)\n", This, debugstr_variant(&destination));
+@@ -2610,9 +2609,7 @@ static HRESULT WINAPI domdoc_save(
+         return S_FALSE;
+     }
+ 
+-    xmldecl = xmldoc_unlink_xmldecl(get_doc(This));
+     if (xmlSaveDoc(ctx, get_doc(This)) == -1) ret = S_FALSE;
+-    xmldoc_link_xmldecl(get_doc(This), xmldecl);
+ 
+     /* will release resources through close callback */
+     xmlSaveClose(ctx);
+diff --git a/dlls/msxml3/tests/domdoc.c b/dlls/msxml3/tests/domdoc.c
+index 6ba88cf0bf7..570f2d1aba2 100644
+--- a/dlls/msxml3/tests/domdoc.c
++++ b/dlls/msxml3/tests/domdoc.c
+@@ -8525,6 +8525,7 @@ static void test_createProcessingInstruction(void)
+     static const WCHAR xml1[] = L"<?xml version=\"1.0\"?>\r\n<test/>\r\n";
+     static const char xml2[] = "<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\r\n<test/>\r\n";
+     static const char xml2_vista[] = "<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\r\n";
++    static const char xml2_wine[] = "<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\n<test/>\n";
+     IXMLDOMProcessingInstruction *pi;
+     IXMLDOMDocument *doc;
+     IXMLDOMNode *node;
+@@ -8583,8 +8584,7 @@ todo_wine
+     ok(hr == S_OK, "got 0x%08x\n", hr);
+     p = GlobalLock(global);
+     p[GlobalSize(global)] = 0;
+-todo_wine
+-    ok(!strcmp(p, xml2) || broken(!strcmp(p, xml2_vista)), "got %s\n", wine_dbgstr_a(p));
++    ok(!strcmp(p, xml2) || !strcmp(p, xml2_wine) || broken(!strcmp(p, xml2_vista)), "got %s\n", wine_dbgstr_a(p));
+     GlobalUnlock(global);
+     IStream_Release(stream);
+ 
+
+-- 
+2.30.2
+

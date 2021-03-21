@@ -1,0 +1,128 @@
+From 010fcc683a4f612b5b85f2d7ed10fe11177a9d47 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 16 Jan 2020 18:03:54 +0100
+Subject: [PATCH 21/37] server: Add a timestamp to set_foreground_window
+ requests.
+
+We call SetForegroundWindow in event handlers and sometimes overwrite
+the foreground window with an older event. Having a timestamp will help
+discarding old events.
+---
+ dlls/user32/focus.c |  7 ++++---
+ server/protocol.def |  1 +
+ server/queue.c      | 10 ++++++++--
+ server/user.h       |  1 +
+ server/winstation.c |  1 +
+ 5 files changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/user32/focus.c b/dlls/user32/focus.c
+index 43b86ae99ad..2b44c06c16a 100644
+--- a/dlls/user32/focus.c
++++ b/dlls/user32/focus.c
+@@ -187,7 +187,7 @@ BOOL set_active_window( HWND hwnd, HWND *prev, UINT flags )
+ /*******************************************************************
+  *		set_foreground_window
+  */
+-static BOOL set_foreground_window( HWND hwnd, UINT flags )
++static BOOL set_foreground_window( HWND hwnd, UINT flags, DWORD time )
+ {
+     BOOL ret, send_msg_old = FALSE, send_msg_new = FALSE;
+     HWND previous = 0;
+@@ -195,6 +195,7 @@ static BOOL set_foreground_window( HWND hwnd, UINT flags )
+     SERVER_START_REQ( set_foreground_window )
+     {
+         req->handle = wine_server_user_handle( hwnd );
++        req->time = time;
+         if ((ret = !wine_server_call_err( req )))
+         {
+             previous = wine_server_ptr_handle( reply->previous );
+@@ -231,7 +232,7 @@ static BOOL set_foreground_window( HWND hwnd, UINT flags )
+  */
+ BOOL FOCUS_MouseActivate( HWND hwnd )
+ {
+-    return set_foreground_window( hwnd, SET_ACTIVE_WINDOW_FLAGS_MOUSE );
++    return set_foreground_window( hwnd, SET_ACTIVE_WINDOW_FLAGS_MOUSE, GetTickCount() );
+ }
+ 
+ 
+@@ -333,7 +334,7 @@ BOOL WINAPI SetForegroundWindow( HWND hwnd )
+     TRACE( "%p\n", hwnd );
+ 
+     hwnd = WIN_GetFullHandle( hwnd );
+-    return set_foreground_window( hwnd, 0 );
++    return set_foreground_window( hwnd, 0, GetTickCount() );
+ }
+ 
+ 
+diff --git a/server/protocol.def b/server/protocol.def
+index e13b549c750..b33bdcf2341 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -2784,6 +2784,7 @@ enum coords_relative
+ /* Set the system foreground window */
+ @REQ(set_foreground_window)
+     user_handle_t  handle;        /* handle to the foreground window */
++    unsigned int   time;          /* time of the event that triggered the request */
+ @REPLY
+     user_handle_t  previous;      /* handle to the previous foreground window */
+     int            send_msg_old;  /* whether we have to send a msg to the old window */
+diff --git a/server/queue.c b/server/queue.c
+index bf72833b17d..28d1c67eec1 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -3133,20 +3133,26 @@ DECL_HANDLER(set_foreground_window)
+     struct thread *thread = NULL;
+     struct desktop *desktop;
+     struct msg_queue *queue = get_current_queue();
++    int time_diff;
+ 
+     if (!(desktop = get_thread_desktop( current, 0 ))) return;
+     reply->previous = desktop->foreground_input ? desktop->foreground_input->active : 0;
+     reply->send_msg_old = (reply->previous && desktop->foreground_input != queue->input);
+     reply->send_msg_new = FALSE;
+ 
+-    if (is_valid_foreground_window( req->handle ) &&
++    time_diff = req->time - desktop->foreground_time;
++    if (time_diff >= 0 && is_valid_foreground_window( req->handle ) &&
+         (thread = get_window_thread( req->handle )) &&
+         thread->queue->input->desktop == desktop)
+     {
++        desktop->foreground_time = req->time;
+         set_foreground_input( desktop, thread->queue->input );
+         reply->send_msg_new = (desktop->foreground_input != queue->input);
+     }
+-    else set_win32_error( ERROR_INVALID_WINDOW_HANDLE );
++    else if (time_diff < 0)
++        set_win32_error( ERROR_INVALID_TIME );
++    else
++        set_win32_error( ERROR_INVALID_WINDOW_HANDLE );
+ 
+     if (thread) release_object( thread );
+     release_object( desktop );
+diff --git a/server/user.h b/server/user.h
+index 6267f3e2881..a279c10f7d5 100644
+--- a/server/user.h
++++ b/server/user.h
+@@ -74,6 +74,7 @@ struct desktop
+     struct list          hotkeys;          /* list of registered hotkeys */
+     struct timeout_user *close_timeout;    /* timeout before closing the desktop */
+     struct thread_input *foreground_input; /* thread input of foreground thread */
++    unsigned int         foreground_time;  /* time of last foreground input change */
+     unsigned int         users;            /* processes and threads using this desktop */
+     struct global_cursor cursor;           /* global cursor information */
+     unsigned char        keystate[256];    /* asynchronous key state */
+diff --git a/server/winstation.c b/server/winstation.c
+index 1c7552f0687..d5865f6e060 100644
+--- a/server/winstation.c
++++ b/server/winstation.c
+@@ -234,6 +234,7 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned
+             desktop->global_hooks = NULL;
+             desktop->close_timeout = NULL;
+             desktop->foreground_input = NULL;
++            desktop->foreground_time = 0;
+             desktop->users = 0;
+             memset( &desktop->cursor, 0, sizeof(desktop->cursor) );
+             memset( desktop->keystate, 0, sizeof(desktop->keystate) );
+-- 
+2.31.0
+

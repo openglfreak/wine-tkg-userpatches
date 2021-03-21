@@ -1,0 +1,97 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH] dinput: Stop hook thread when DLL is unloaded.
+Message-Id: <20210319170251.1132143-1-rbernon@codeweavers.com>
+Date: Fri, 19 Mar 2021 18:02:51 +0100
+
+Otherwise we may still have an alive window with a window procedure
+that isn't loaded anymore.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=50673
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/dinput/dinput_main.c | 41 +++++++++++++++++++++++----------------
+ 1 file changed, 24 insertions(+), 17 deletions(-)
+
+diff --git a/dlls/dinput/dinput_main.c b/dlls/dinput/dinput_main.c
+index 45023fc104a..389d8da96e8 100644
+--- a/dlls/dinput/dinput_main.c
++++ b/dlls/dinput/dinput_main.c
+@@ -1848,6 +1848,7 @@ static DWORD WINAPI hook_thread_proc(void *param)
+ 
+ static DWORD hook_thread_id;
+ static HANDLE hook_thread_event;
++static HANDLE hook_thread;
+ 
+ static CRITICAL_SECTION_DEBUG dinput_critsect_debug =
+ {
+@@ -1857,24 +1858,11 @@ static CRITICAL_SECTION_DEBUG dinput_critsect_debug =
+ };
+ static CRITICAL_SECTION dinput_hook_crit = { &dinput_critsect_debug, -1, 0, 0, 0, 0 };
+ 
+-static BOOL check_hook_thread(void)
++static void stop_hook_thread(void)
+ {
+-    static HANDLE hook_thread;
+-    HMODULE module;
+-
+     EnterCriticalSection(&dinput_hook_crit);
+-
+-    TRACE("IDirectInputs left: %d\n", list_count(&direct_input_list));
+-    if (!list_empty(&direct_input_list) && !hook_thread)
++    if (hook_thread)
+     {
+-        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (const WCHAR*)DINPUT_instance, &module);
+-        hook_thread_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+-        hook_thread = CreateThread(NULL, 0, hook_thread_proc, hook_thread_event, 0, &hook_thread_id);
+-    }
+-    else if (list_empty(&direct_input_list) && hook_thread)
+-    {
+-        DWORD tid = hook_thread_id;
+-
+         if (hook_thread_event) /* if thread is not started yet */
+         {
+             WaitForSingleObject(hook_thread_event, INFINITE);
+@@ -1882,11 +1870,29 @@ static BOOL check_hook_thread(void)
+             hook_thread_event = NULL;
+         }
+ 
+-        hook_thread_id = 0;
+-        PostThreadMessageW(tid, WM_USER+0x10, 0, 0);
++        PostThreadMessageW(hook_thread_id, WM_USER+0x10, 0, 0);
++        WaitForSingleObject(hook_thread, INFINITE);
+         CloseHandle(hook_thread);
++        hook_thread_id = 0;
+         hook_thread = NULL;
+     }
++    LeaveCriticalSection(&dinput_hook_crit);
++}
++
++static BOOL check_hook_thread(void)
++{
++    HMODULE module;
++
++    EnterCriticalSection(&dinput_hook_crit);
++
++    TRACE("IDirectInputs left: %d\n", list_count(&direct_input_list));
++    if (!list_empty(&direct_input_list) && !hook_thread)
++    {
++        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (const WCHAR*)DINPUT_instance, &module);
++        hook_thread_event = CreateEventW(NULL, FALSE, FALSE, NULL);
++        hook_thread = CreateThread(NULL, 0, hook_thread_proc, hook_thread_event, 0, &hook_thread_id);
++    }
++    else if (list_empty(&direct_input_list)) stop_hook_thread();
+ 
+     LeaveCriticalSection(&dinput_hook_crit);
+     return hook_thread_id != 0;
+@@ -1988,6 +1994,7 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved)
+         break;
+       case DLL_PROCESS_DETACH:
+         if (reserved) break;
++        stop_hook_thread();
+         unregister_di_em_win_class();
+         DeleteCriticalSection(&dinput_hook_crit);
+         break;
+
+-- 
+2.30.2
+

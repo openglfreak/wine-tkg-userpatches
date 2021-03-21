@@ -1,0 +1,239 @@
+From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
+Subject: [PATCH 3/5] mountmgr.sys: Add an ioctl to directly make volume queries.
+Message-Id: <CAEU2+vortP4Y5JDxduj4nwJS=8NOig5+n=bstRWN5jK-xdjr1Q@mail.gmail.com>
+Date: Thu, 18 Mar 2021 10:53:43 -0600
+
+This patch adds a new ioctl similar to
+IOCTL_MOUNTMGR_QUERY_UNIX_DRIVE, but this version directly returns the
+FILE_FS_*_INFORMATION from the mountmgr implementation instead of
+returning properties of the mount point and relying on the caller to
+interpret those properties correctly.
+
+Best,
+Erich
+
+From 5354dedc85423ae46a582bb4af3661fc50d8e0fb Mon Sep 17 00:00:00 2001
+From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
+Date: Sun, 28 Feb 2021 11:21:06 -0700
+#Subject: mountmgr.sys: Add an ioctl to directly make volume queries.
+
+Signed-off-by: Erich E. Hoover <erich.e.hoover@gmail.com>
+---
+ dlls/mountmgr.sys/device.c   | 89 ++++++++++++++++++++++++------------
+ dlls/mountmgr.sys/mountmgr.c | 11 +++++
+ dlls/mountmgr.sys/mountmgr.h |  1 +
+ include/ddk/mountmgr.h       | 10 ++++
+ 4 files changed, 83 insertions(+), 28 deletions(-)
+
+diff --git a/dlls/mountmgr.sys/device.c b/dlls/mountmgr.sys/device.c
+index 04e8fe3c0f5..7d6487ccc6a 100644
+--- a/dlls/mountmgr.sys/device.c
++++ b/dlls/mountmgr.sys/device.c
+@@ -1902,32 +1902,18 @@ static NTSTATUS query_property( struct disk_device *device, IRP *irp )
+     return status;
+ }
+ 
+-static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
++static NTSTATUS WINAPI fill_volume_info( FS_INFORMATION_CLASS info_class, enum fs_type fs_type,
++                                         DWORD serial, WCHAR *label, void *buff, ULONG length,
++                                         ULONG_PTR *size )
+ {
+-    IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
+-    int info_class = irpsp->Parameters.QueryVolume.FsInformationClass;
+-    ULONG length = irpsp->Parameters.QueryVolume.Length;
+-    struct disk_device *dev = device->DeviceExtension;
+-    PIO_STATUS_BLOCK io = &irp->IoStatus;
+-    struct volume *volume;
+     NTSTATUS status;
+ 
+-    TRACE( "volume query %x length %u\n", info_class, length );
+-
+-    EnterCriticalSection( &device_section );
+-    volume = dev->volume;
+-    if (!volume)
+-    {
+-        status = STATUS_BAD_DEVICE_TYPE;
+-        goto done;
+-    }
+-
+     switch(info_class)
+     {
+     case FileFsVolumeInformation:
+     {
+ 
+-        FILE_FS_VOLUME_INFORMATION *info = irp->AssociatedIrp.SystemBuffer;
++        FILE_FS_VOLUME_INFORMATION *info = buff;
+ 
+         if (length < sizeof(FILE_FS_VOLUME_INFORMATION))
+         {
+@@ -1936,13 +1922,13 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
+         }
+ 
+         info->VolumeCreationTime.QuadPart = 0; /* FIXME */
+-        info->VolumeSerialNumber = volume->serial;
+-        info->VolumeLabelLength = min( strlenW(volume->label) * sizeof(WCHAR),
++        info->VolumeSerialNumber = serial;
++        info->VolumeLabelLength = min( strlenW(label) * sizeof(WCHAR),
+                                        length - offsetof( FILE_FS_VOLUME_INFORMATION, VolumeLabel ) );
+-        info->SupportsObjects = (get_mountmgr_fs_type(volume->fs_type) == MOUNTMGR_FS_TYPE_NTFS);
+-        memcpy( info->VolumeLabel, volume->label, info->VolumeLabelLength );
++        info->SupportsObjects = (get_mountmgr_fs_type(fs_type) == MOUNTMGR_FS_TYPE_NTFS);
++        memcpy( info->VolumeLabel, label, info->VolumeLabelLength );
+ 
+-        io->Information = offsetof( FILE_FS_VOLUME_INFORMATION, VolumeLabel ) + info->VolumeLabelLength;
++        *size = offsetof( FILE_FS_VOLUME_INFORMATION, VolumeLabel ) + info->VolumeLabelLength;
+         status = STATUS_SUCCESS;
+         break;
+     }
+@@ -1954,8 +1940,8 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
+         static const WCHAR cdfsW[] = {'C','D','F','S'};
+         static const WCHAR udfW[] = {'U','D','F'};
+ 
+-        FILE_FS_ATTRIBUTE_INFORMATION *info = irp->AssociatedIrp.SystemBuffer;
+-        enum mountmgr_fs_type fs_type = get_mountmgr_fs_type(volume->fs_type);
++        FILE_FS_ATTRIBUTE_INFORMATION *info = buff;
++        enum mountmgr_fs_type fs_type = get_mountmgr_fs_type(fs_type);
+ 
+         if (length < sizeof(FILE_FS_ATTRIBUTE_INFORMATION))
+         {
+@@ -1997,17 +1983,64 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
+             break;
+         }
+ 
+-        io->Information = offsetof( FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName ) + info->FileSystemNameLength;
++        *size = offsetof( FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName ) + info->FileSystemNameLength;
+         status = STATUS_SUCCESS;
+         break;
+     }
+     default:
+-        FIXME("Unsupported volume query %x\n", irpsp->Parameters.QueryVolume.FsInformationClass);
++        FIXME("Unsupported volume query %x\n", info_class);
+         status = STATUS_NOT_SUPPORTED;
+         break;
+     }
++    return status;
++}
++
++/* implementation of IOCTL_MOUNTMGR_QUERY_VOLUME */
++NTSTATUS query_volume( void *buff, SIZE_T insize, SIZE_T outsize, IO_STATUS_BLOCK *iosb )
++{
++    const struct mountmgr_volume *input = buff;
++    FS_INFORMATION_CLASS info_class = input->info_class;
++    NTSTATUS status = STATUS_NO_SUCH_DEVICE;
++    int letter = tolowerW( input->letter );
++    struct volume *volume;
++
++    if (letter && (letter < 'a' || letter > 'z')) return STATUS_INVALID_PARAMETER;
++
++    EnterCriticalSection( &device_section );
++    if (letter)
++        volume = find_volume_by_letter( letter - 'a' );
++    else
++        volume = find_volume_by_unixdev( input->unix_dev );
++    if (volume)
++    {
++        status = fill_volume_info( info_class, volume->fs_type, volume->serial, volume->label,
++                                   buff, outsize, &iosb->Information );
++        release_volume( volume );
++    }
++    LeaveCriticalSection( &device_section );
++
++    return status;
++}
++
++static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
++{
++    IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
++    int info_class = irpsp->Parameters.QueryVolume.FsInformationClass;
++    ULONG length = irpsp->Parameters.QueryVolume.Length;
++    struct disk_device *dev = device->DeviceExtension;
++    void *buff = irp->AssociatedIrp.SystemBuffer;
++    NTSTATUS status = STATUS_BAD_DEVICE_TYPE;
++    PIO_STATUS_BLOCK io = &irp->IoStatus;
++    struct volume *volume;
++
++    TRACE( "volume query %x length %u\n", info_class, length );
++
++    EnterCriticalSection( &device_section );
++    volume = dev->volume;
++    if (volume)
++        status = fill_volume_info( info_class, volume->fs_type, volume->serial, volume->label,
++                                   buff, length, &io->Information );
+ 
+-done:
+     io->u.Status = status;
+     LeaveCriticalSection( &device_section );
+     IoCompleteRequest( irp, IO_NO_INCREMENT );
+diff --git a/dlls/mountmgr.sys/mountmgr.c b/dlls/mountmgr.sys/mountmgr.c
+index 61d51d8e61d..6ad29562d59 100644
+--- a/dlls/mountmgr.sys/mountmgr.c
++++ b/dlls/mountmgr.sys/mountmgr.c
+@@ -923,6 +923,17 @@ static NTSTATUS WINAPI mountmgr_ioctl( DEVICE_OBJECT *device, IRP *irp )
+                                    irpsp->Parameters.DeviceIoControl.OutputBufferLength,
+                                    &irp->IoStatus );
+         break;
++    case IOCTL_MOUNTMGR_QUERY_VOLUME:
++        if (irpsp->Parameters.DeviceIoControl.InputBufferLength < sizeof(struct mountmgr_volume))
++        {
++            status = STATUS_INVALID_PARAMETER;
++            break;
++        }
++        status = query_volume( irp->AssociatedIrp.SystemBuffer,
++                               irpsp->Parameters.DeviceIoControl.InputBufferLength,
++                               irpsp->Parameters.DeviceIoControl.OutputBufferLength,
++                               &irp->IoStatus );
++        break;
+     case IOCTL_MOUNTMGR_QUERY_DHCP_REQUEST_PARAMS:
+         if (irpsp->Parameters.DeviceIoControl.InputBufferLength < sizeof(struct mountmgr_dhcp_request_params))
+         {
+diff --git a/dlls/mountmgr.sys/mountmgr.h b/dlls/mountmgr.sys/mountmgr.h
+index 13be732e337..df2c8d4e048 100644
+--- a/dlls/mountmgr.sys/mountmgr.h
++++ b/dlls/mountmgr.sys/mountmgr.h
+@@ -61,6 +61,7 @@ extern NTSTATUS add_dos_device( int letter, const char *udi, const char *device,
+ extern NTSTATUS remove_dos_device( int letter, const char *udi ) DECLSPEC_HIDDEN;
+ extern NTSTATUS query_unix_drive( void *buff, SIZE_T insize, SIZE_T outsize,
+                                   IO_STATUS_BLOCK *iosb ) DECLSPEC_HIDDEN;
++extern NTSTATUS query_volume( void *buff, SIZE_T insize, SIZE_T outsize, IO_STATUS_BLOCK *iosb ) DECLSPEC_HIDDEN;
+ extern NTSTATUS WINAPI harddisk_driver_entry( DRIVER_OBJECT *driver, UNICODE_STRING *path ) DECLSPEC_HIDDEN;
+ extern NTSTATUS WINAPI serial_driver_entry( DRIVER_OBJECT *driver, UNICODE_STRING *path ) DECLSPEC_HIDDEN;
+ extern NTSTATUS WINAPI parallel_driver_entry( DRIVER_OBJECT *driver, UNICODE_STRING *path ) DECLSPEC_HIDDEN;
+diff --git a/include/ddk/mountmgr.h b/include/ddk/mountmgr.h
+index 3e4bacbb827..7310adb3fdc 100644
+--- a/include/ddk/mountmgr.h
++++ b/include/ddk/mountmgr.h
+@@ -21,6 +21,8 @@
+ #ifndef _MOUNTMGR_
+ #define _MOUNTMGR_
+ 
++#include "winternl.h"
++
+ #define MOUNTMGRCONTROLTYPE  ((ULONG)'m')
+ #define MOUNTDEVCONTROLTYPE  ((ULONG)'M')
+ 
+@@ -51,6 +53,7 @@ static const WCHAR MOUNTMGR_DOS_DEVICE_NAME[] = {'\\','\\','.','\\','M','o','u',
+ 
+ #define IOCTL_MOUNTMGR_DEFINE_UNIX_DRIVE CTL_CODE(MOUNTMGRCONTROLTYPE, 32, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+ #define IOCTL_MOUNTMGR_QUERY_UNIX_DRIVE  CTL_CODE(MOUNTMGRCONTROLTYPE, 33, METHOD_BUFFERED, FILE_READ_ACCESS)
++#define IOCTL_MOUNTMGR_QUERY_VOLUME      CTL_CODE(MOUNTMGRCONTROLTYPE, 34, METHOD_BUFFERED, FILE_READ_ACCESS)
+ 
+ enum mountmgr_fs_type
+ {
+@@ -74,6 +77,13 @@ struct mountmgr_unix_drive
+     USHORT    label_offset;
+ };
+ 
++struct mountmgr_volume
++{
++    FS_INFORMATION_CLASS info_class;
++    ULONGLONG            unix_dev;
++    WCHAR                letter;
++};
++
+ #define IOCTL_MOUNTMGR_READ_CREDENTIAL       CTL_CODE(MOUNTMGRCONTROLTYPE, 48, METHOD_BUFFERED, FILE_READ_ACCESS)
+ #define IOCTL_MOUNTMGR_WRITE_CREDENTIAL      CTL_CODE(MOUNTMGRCONTROLTYPE, 49, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+ #define IOCTL_MOUNTMGR_DELETE_CREDENTIAL     CTL_CODE(MOUNTMGRCONTROLTYPE, 50, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+
+-- 
+2.17.1
+

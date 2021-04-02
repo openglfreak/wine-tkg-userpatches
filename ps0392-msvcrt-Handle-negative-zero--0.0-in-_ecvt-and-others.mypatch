@@ -1,0 +1,87 @@
+From: "Lauri Kenttä" <lauri.kentta@gmail.com>
+Subject: [PATCH] msvcrt: Handle negative zero (-0.0) in _ecvt and others.
+Message-Id: <20210331210901.21438-1-lauri.kentta@gmail.com>
+Date: Thu,  1 Apr 2021 00:09:01 +0300
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=50885
+Signed-off-by: Lauri Kenttä <lauri.kentta@gmail.com>
+---
+ dlls/msvcrt/math.c         | 24 ++++++++++++++++++++----
+ dlls/msvcrt/tests/printf.c |  4 ++++
+ 2 files changed, 24 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/msvcrt/math.c b/dlls/msvcrt/math.c
+index 6b2d08a8294..cdc93a6b75a 100644
+--- a/dlls/msvcrt/math.c
++++ b/dlls/msvcrt/math.c
+@@ -2588,6 +2588,10 @@ char * CDECL _ecvt( double number, int ndigits, int *decpt, int *sign )
+     if( number < 0) {
+         *sign = TRUE;
+         number = -number;
++    } else if(number == 0) {
++        /* handle negative zero correctly */
++        *sign = signbit(number) ? TRUE : FALSE;
++        number = 0;
+     } else
+         *sign = FALSE;
+     /* handle cases with zero ndigits or less */
+@@ -2651,6 +2655,10 @@ int CDECL _ecvt_s( char *buffer, size_t length, double number, int ndigits, int
+     if( number < 0) {
+         *sign = TRUE;
+         number = -number;
++    } else if(number == 0) {
++        /* handle negative zero correctly */
++        *sign = signbit(number) ? TRUE : FALSE;
++        number = 0;
+     } else
+         *sign = FALSE;
+     len = _snprintf(result, prec + 7, "%.*le", prec - 1, number);
+@@ -2692,8 +2700,12 @@ char * CDECL _fcvt( double number, int ndigits, int *decpt, int *sign )
+ 
+     if (number < 0)
+     {
+-	*sign = 1;
+-	number = -number;
++        *sign = 1;
++        number = -number;
++    } else if(number == 0) {
++        /* handle negative zero correctly */
++        *sign = signbit(number) ? 1 : 0;
++        number = 0;
+     } else *sign = 0;
+ 
+     stop = _snprintf(buf, 80, "%.*f", ndigits < 0 ? 0 : ndigits, number);
+@@ -2776,8 +2788,12 @@ int CDECL _fcvt_s(char* outbuffer, size_t size, double number, int ndigits, int
+ 
+     if (number < 0)
+     {
+-	*sign = 1;
+-	number = -number;
++        *sign = 1;
++        number = -number;
++    } else if(number == 0) {
++        /* handle negative zero correctly */
++        *sign = signbit(number) ? 1 : 0;
++        number = 0;
+     } else *sign = 0;
+ 
+     stop = _snprintf(buf, 80, "%.*f", ndigits < 0 ? 0 : ndigits, number);
+diff --git a/dlls/msvcrt/tests/printf.c b/dlls/msvcrt/tests/printf.c
+index 8960671f23e..14fd75d2b3c 100644
+--- a/dlls/msvcrt/tests/printf.c
++++ b/dlls/msvcrt/tests/printf.c
+@@ -647,6 +647,10 @@ static struct {
+     {           0.0,   5,     "00000",          "00000",          0,      0,     0 },
+     {           0.0,   0,          "",               "",          0,      0,     0 },
+     {           0.0,  -1,          "",               "",          0,      0,     0 },
++    /* -0.0 with different precisions */
++    {          -0.0,   5,     "00000",          "00000",          0,      0,     1 },
++    {          -0.0,   0,          "",               "",          0,      0,     1 },
++    {          -0.0,  -1,          "",               "",          0,      0,     1 },
+     /* Numbers > 1.0 with 0 or -ve precision */
+     {     -123.0001,   0,          "",            "123",          3,      3,     1 },
+     {     -123.0001,  -1,          "",             "12",          3,      3,     1 },
+
+-- 
+2.31.0
+

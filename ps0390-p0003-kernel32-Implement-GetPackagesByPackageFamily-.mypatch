@@ -1,0 +1,388 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH 3/5] kernel32: Implement GetPackagesByPackageFamily().
+Message-Id: <20210326093747.10165-3-pgofman@codeweavers.com>
+Date: Fri, 26 Mar 2021 12:37:45 +0300
+In-Reply-To: <20210326093747.10165-1-pgofman@codeweavers.com>
+References: <20210326093747.10165-1-pgofman@codeweavers.com>
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ .../api-ms-win-appmodel-runtime-l1-1-1.spec   |   2 +-
+ .../ext-ms-win-kernel32-package-l1-1-1.spec   |   2 +-
+ dlls/kernel32/kernel32.spec                   |   1 +
+ dlls/kernel32/tests/version.c                 | 131 ++++++++++++++++++
+ dlls/kernelbase/kernelbase.spec               |   2 +-
+ dlls/kernelbase/version.c                     | 115 +++++++++++++++
+ include/appmodel.h                            |   2 +
+ 7 files changed, 252 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/api-ms-win-appmodel-runtime-l1-1-1/api-ms-win-appmodel-runtime-l1-1-1.spec b/dlls/api-ms-win-appmodel-runtime-l1-1-1/api-ms-win-appmodel-runtime-l1-1-1.spec
+index 99d1d9f3835..696bb75be30 100644
+--- a/dlls/api-ms-win-appmodel-runtime-l1-1-1/api-ms-win-appmodel-runtime-l1-1-1.spec
++++ b/dlls/api-ms-win-appmodel-runtime-l1-1-1/api-ms-win-appmodel-runtime-l1-1-1.spec
+@@ -15,7 +15,7 @@
+ @ stub GetPackageInfo
+ @ stub GetPackagePath
+ @ stub GetPackagePathByFullName
+-@ stub GetPackagesByPackageFamily
++@ stdcall GetPackagesByPackageFamily(wstr ptr ptr ptr ptr) kernel32.GetPackagesByPackageFamily
+ @ stub GetStagedPackageOrigin
+ @ stub GetStagedPackagePathByFullName
+ @ stub OpenPackageInfoByFullName
+diff --git a/dlls/ext-ms-win-kernel32-package-l1-1-1/ext-ms-win-kernel32-package-l1-1-1.spec b/dlls/ext-ms-win-kernel32-package-l1-1-1/ext-ms-win-kernel32-package-l1-1-1.spec
+index 61fd115cca7..ff5118049e2 100644
+--- a/dlls/ext-ms-win-kernel32-package-l1-1-1/ext-ms-win-kernel32-package-l1-1-1.spec
++++ b/dlls/ext-ms-win-kernel32-package-l1-1-1/ext-ms-win-kernel32-package-l1-1-1.spec
+@@ -12,7 +12,7 @@
+ @ stub GetPackageId
+ @ stub GetPackageInfo
+ @ stub GetPackagePath
+-@ stub GetPackagesByPackageFamily
++@ stdcall GetPackagesByPackageFamily(wstr ptr ptr ptr ptr) kernel32.GetPackagesByPackageFamily
+ @ stub GetStagedPackageOrigin
+ @ stub OpenPackageInfoByFullName
+ @ stub PackageFamilyNameFromFullName
+diff --git a/dlls/kernel32/kernel32.spec b/dlls/kernel32/kernel32.spec
+index 230a2a09ea2..d605ed6e771 100644
+--- a/dlls/kernel32/kernel32.spec
++++ b/dlls/kernel32/kernel32.spec
+@@ -765,6 +765,7 @@
+ @ stdcall -import GetOverlappedResultEx(long ptr ptr long long)
+ @ stdcall -import GetUserDefaultGeoName(ptr long)
+ @ stdcall -import GetUserPreferredUILanguages(long ptr ptr ptr)
++@ stdcall -import GetPackagesByPackageFamily(wstr ptr ptr ptr ptr)
+ @ stdcall GetPackageFamilyName(long ptr ptr) kernelbase.GetPackageFamilyName
+ @ stdcall GetPackageFullName(long ptr ptr) kernelbase.GetPackageFullName
+ @ stdcall -import GetPhysicallyInstalledSystemMemory(ptr)
+diff --git a/dlls/kernel32/tests/version.c b/dlls/kernel32/tests/version.c
+index 835c5398685..9a35d679323 100644
+--- a/dlls/kernel32/tests/version.c
++++ b/dlls/kernel32/tests/version.c
+@@ -23,6 +23,7 @@
+ #include "winternl.h"
+ #include "appmodel.h"
+ 
++static LONG (WINAPI * pGetPackagesByPackageFamily)(const WCHAR *, UINT32 *, WCHAR **, UINT32 *, WCHAR *);
+ static BOOL (WINAPI * pGetProductInfo)(DWORD, DWORD, DWORD, DWORD, DWORD *);
+ static UINT (WINAPI * pGetSystemFirmwareTable)(DWORD, DWORD, void *, DWORD);
+ static LONG (WINAPI * pPackageIdFromFullName)(const WCHAR *, UINT32, UINT32 *, BYTE *);
+@@ -43,6 +44,7 @@ static void init_function_pointers(void)
+ 
+     hmod = GetModuleHandleA("kernel32.dll");
+ 
++    GET_PROC(GetPackagesByPackageFamily);
+     GET_PROC(GetProductInfo);
+     GET_PROC(GetSystemFirmwareTable);
+     GET_PROC(PackageIdFromFullName);
+@@ -918,6 +920,134 @@ static void test_PackageIdFromFullName(void)
+     ok(ret == ERROR_INVALID_PARAMETER, "Got unexpected ret %u.\n", ret);
+ }
+ 
++static void test_package_info(void)
++{
++    static const WCHAR package_family_msvc140[] = L"Microsoft.VCLibs.140.00_8wekyb3d8bbwe";
++    UINT32 count, length, curr_length, size;
++    WCHAR *full_names[32];
++    BYTE id_buffer[512];
++    WCHAR buffer[2048];
++    BOOL arch_found;
++    SYSTEM_INFO si;
++    unsigned int i;
++    PACKAGE_ID *id;
++    DWORD arch;
++    LONG ret;
++
++    if (!pGetPackagesByPackageFamily)
++    {
++        win_skip("GetPackagesByPackageFamily not available.\n");
++        return;
++    }
++
++    GetSystemInfo(&si);
++    arch = si.wProcessorArchitecture;
++
++    count = 0;
++    length = 0;
++    ret = pGetPackagesByPackageFamily(L"Unknown_8wekyb3d8bbwe", &count, NULL, &length, NULL);
++    ok(ret == ERROR_SUCCESS, "Got unexpected ret %u.\n", ret);
++    ok(!count, "Got unexpected count %u.\n", count);
++    ok(!length, "Got unexpected length %u.\n", length);
++
++    count = 0;
++    length = 0;
++    ret = pGetPackagesByPackageFamily(L"Unknown_iekyb3d8bbwe", &count, NULL, &length, NULL);
++    ok(ret == ERROR_SUCCESS, "Got unexpected ret %u.\n", ret);
++    ok(!count, "Got unexpected count %u.\n", count);
++    ok(!length, "Got unexpected length %u.\n", length);
++
++    count = 0xdeadbeef;
++    length = 0xdeadbeef;
++    ret = pGetPackagesByPackageFamily(L"Unknown", &count, NULL, &length, NULL);
++    ok(ret == ERROR_INVALID_PARAMETER, "Got unexpected ret %u.\n", ret);
++    ok(count == 0xdeadbeef, "Got unexpected count %u.\n", count);
++    ok(length == 0xdeadbeef, "Got unexpected length %u.\n", length);
++
++    count = 0;
++    length = 0;
++    ret = pGetPackagesByPackageFamily(L"Unknown", &count, NULL, &length, NULL);
++    ok(ret == ERROR_INVALID_PARAMETER, "Got unexpected ret %u.\n", ret);
++    ok(!count, "Got unexpected count %u.\n", count);
++    ok(!length, "Got unexpected length %u.\n", length);
++
++    count = 0;
++    length = 0;
++    ret = pGetPackagesByPackageFamily(L"Unknown_8wekyb3d8bbwe_b", &count, NULL, &length, NULL);
++    ok(ret == ERROR_SUCCESS, "Got unexpected ret %u.\n", ret);
++    ok(!count, "Got unexpected count %u.\n", count);
++    ok(!length, "Got unexpected length %u.\n", length);
++
++    count = 0;
++    length = 0;
++    ret = pGetPackagesByPackageFamily(L"Unknown_", &count, NULL, &length, NULL);
++    ok(ret == ERROR_SUCCESS, "Got unexpected ret %u.\n", ret);
++    ok(!count, "Got unexpected count %u.\n", count);
++    ok(!length, "Got unexpected length %u.\n", length);
++
++    length = 0;
++    ret = pGetPackagesByPackageFamily(package_family_msvc140, NULL, NULL, &length, NULL);
++    ok(ret == ERROR_INVALID_PARAMETER, "Got unexpected ret %u.\n", ret);
++    ok(!length, "Got unexpected length %u.\n", length);
++
++    count = 0;
++    ret = pGetPackagesByPackageFamily(package_family_msvc140, &count, NULL, NULL, NULL);
++    ok(ret == ERROR_INVALID_PARAMETER, "Got unexpected ret %u.\n", ret);
++    ok(!count, "Got unexpected count %u.\n", count);
++
++    count = ARRAY_SIZE(full_names);
++    length = ARRAY_SIZE(buffer);
++    ret = pGetPackagesByPackageFamily(package_family_msvc140, &count, NULL, &length, NULL);
++    ok(ret == ERROR_INVALID_PARAMETER, "Got unexpected ret %u.\n", ret);
++    ok(count == ARRAY_SIZE(full_names), "Got unexpected count %u.\n", count);
++    ok(length == ARRAY_SIZE(buffer), "Got unexpected length %u.\n", length);
++
++    ret = pGetPackagesByPackageFamily(package_family_msvc140, &count, full_names, &length, NULL);
++    ok(ret == ERROR_INVALID_PARAMETER, "Got unexpected ret %u.\n", ret);
++    ok(count == ARRAY_SIZE(full_names), "Got unexpected count %u.\n", count);
++    ok(length == ARRAY_SIZE(buffer), "Got unexpected length %u.\n", length);
++
++    ret = pGetPackagesByPackageFamily(package_family_msvc140, &count, NULL, &length, buffer);
++    ok(ret == ERROR_INVALID_PARAMETER, "Got unexpected ret %u.\n", ret);
++    ok(count == ARRAY_SIZE(full_names), "Got unexpected count %u.\n", count);
++    ok(length == ARRAY_SIZE(buffer), "Got unexpected length %u.\n", length);
++
++    count = 0;
++    length = 0;
++    ret = pGetPackagesByPackageFamily(package_family_msvc140, &count, NULL, &length, NULL);
++    if (!ret && !count && !length)
++    {
++        win_skip("Package VCLibs.140.00 is not installed.\n");
++        return;
++    }
++
++    ok(ret == ERROR_INSUFFICIENT_BUFFER, "Got unexpected ret %u.\n", ret);
++    ok(count >= 1, "Got unexpected count %u.\n", count);
++    ok(length > 1, "Got unexpected length %u.\n", length);
++
++    ret = pGetPackagesByPackageFamily(package_family_msvc140, &count, full_names, &length, buffer);
++    ok(ret == ERROR_SUCCESS, "Got unexpected ret %u.\n", ret);
++    ok(count >= 1, "Got unexpected count %u.\n", count);
++    ok(length > 1, "Got unexpected length %u.\n", length);
++
++    id = (PACKAGE_ID *)id_buffer;
++    curr_length = 0;
++    arch_found = FALSE;
++    for (i = 0; i < count; ++i)
++    {
++        curr_length += lstrlenW(full_names[i]) + 1;
++
++        size = sizeof(id_buffer);
++        ret = pPackageIdFromFullName(full_names[i], 0, &size, id_buffer);
++        ok(ret == ERROR_SUCCESS, "Got unexpected ret %u.\n", ret);
++
++        if (id->processorArchitecture == arch)
++            arch_found = TRUE;
++    }
++    ok(curr_length == length, "Got unexpected length %u.\n", length);
++    ok(arch_found, "Did not find package for current arch.\n");
++}
++
+ START_TEST(version)
+ {
+     init_function_pointers();
+@@ -927,4 +1057,5 @@ START_TEST(version)
+     test_VerifyVersionInfo();
+     test_GetSystemFirmwareTable();
+     test_PackageIdFromFullName();
++    test_package_info();
+ }
+diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
+index 615b928bd22..b385ebd6774 100644
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -614,7 +614,7 @@
+ # @ stub GetPackageStatusForUser
+ # @ stub GetPackageTargetPlatformProperty
+ # @ stub GetPackageVolumeSisPath
+-# @ stub GetPackagesByPackageFamily
++@ stdcall GetPackagesByPackageFamily(wstr ptr ptr ptr ptr)
+ @ stdcall GetPerformanceInfo(ptr long)
+ @ stdcall GetPhysicallyInstalledSystemMemory(ptr)
+ # @ stub GetPreviousFgPolicyRefreshInfoInternal
+diff --git a/dlls/kernelbase/version.c b/dlls/kernelbase/version.c
+index 1ee82ce019a..1efd4adaee7 100644
+--- a/dlls/kernelbase/version.c
++++ b/dlls/kernelbase/version.c
+@@ -39,10 +39,12 @@
+ #include "winnls.h"
+ #include "winternl.h"
+ #include "winerror.h"
++#include "winreg.h"
+ #include "appmodel.h"
+ 
+ #include "kernelbase.h"
+ #include "wine/debug.h"
++#include "wine/heap.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(ver);
+ 
+@@ -154,6 +156,8 @@ static const struct
+     }
+ };
+ 
++static const WCHAR packages_key_name[] = L"Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows"
++        L"\\CurrentVersion\\AppModel\\PackageRepository\\Packages";
+ 
+ /******************************************************************************
+  *  init_current_version
+@@ -1681,3 +1685,114 @@ LONG WINAPI PackageIdFromFullName(const WCHAR *full_name, UINT32 flags, UINT32 *
+ 
+     return ERROR_SUCCESS;
+ }
++
++
++/***********************************************************************
++ *         GetPackagesByPackageFamily   (kernelbase.@)
++ */
++LONG WINAPI GetPackagesByPackageFamily(const WCHAR *family_name, UINT32 *count, WCHAR **full_names,
++        UINT32 *buffer_length, WCHAR *buffer)
++{
++    UINT32 curr_count, curr_length, package_id_buf_size, size;
++    unsigned int i, name_len, publisher_id_len;
++    DWORD subkey_count, max_key_len, length;
++    const WCHAR *publisher_id;
++    WCHAR *package_name;
++    BOOL short_buffer;
++    PACKAGE_ID *id;
++    HKEY key;
++
++    TRACE("family_name %s, count %p, full_names %p, buffer_length %p, buffer %p.\n",
++            debugstr_w(family_name), count, full_names, buffer_length, buffer);
++
++    if (!buffer_length || !count || !family_name)
++        return ERROR_INVALID_PARAMETER;
++
++    if ((*buffer_length || *count) && (!full_names || !buffer))
++        return ERROR_INVALID_PARAMETER;
++
++    if (!(publisher_id = wcschr(family_name, L'_')))
++        return ERROR_INVALID_PARAMETER;
++
++    name_len = publisher_id - family_name;
++    ++publisher_id;
++    publisher_id_len = lstrlenW(publisher_id);
++
++    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, packages_key_name, 0, KEY_READ, &key))
++    {
++        ERR("Key open failed.\n");
++        *count = 0;
++        *buffer_length = 0;
++        return ERROR_SUCCESS;
++    }
++    if (RegQueryInfoKeyW(key, NULL, NULL, NULL, &subkey_count, &max_key_len, NULL, NULL, NULL, NULL, NULL, NULL))
++    {
++        ERR("Query key info failed.\n");
++        RegCloseKey(key);
++        *count = 0;
++        *buffer_length = 0;
++        return ERROR_SUCCESS;
++    }
++
++    if (!(package_name = heap_alloc((max_key_len + 1) * sizeof(*package_name))))
++    {
++        ERR("No memory.\n");
++        RegCloseKey(key);
++        return ERROR_OUTOFMEMORY;
++    }
++
++    package_id_buf_size = sizeof(*id) + (max_key_len + 1) * sizeof(WCHAR);
++    if (!(id = heap_alloc(package_id_buf_size)))
++    {
++        ERR("No memory.\n");
++        heap_free(package_name);
++        RegCloseKey(key);
++        return ERROR_OUTOFMEMORY;
++    }
++
++    curr_count = curr_length = 0;
++    for (i = 0; i < subkey_count; ++i)
++    {
++        length = max_key_len + 1;
++        if (RegEnumKeyExW(key, i, package_name, &length, NULL, NULL, NULL, NULL))
++        {
++            ERR("Error enumerating key %u.\n", i);
++            continue;
++        }
++
++        size = package_id_buf_size;
++        if (PackageIdFromFullName(package_name, 0, &size, (BYTE *)id))
++        {
++            ERR("Error getting package id from full name.\n");
++            continue;
++        }
++
++        if (lstrlenW(id->name) != name_len)
++            continue;
++        if (wcsnicmp(family_name, id->name, name_len))
++            continue;
++
++        if (lstrlenW(id->publisherId) != publisher_id_len)
++            continue;
++        if (wcsnicmp(publisher_id, id->publisherId, publisher_id_len))
++            continue;
++        if (curr_length + length < *buffer_length)
++        {
++            memcpy(buffer + curr_length, package_name, (length + 1) * sizeof(*package_name));
++            if (curr_count < *count)
++                full_names[curr_count] = buffer + curr_length;
++        }
++        curr_length += length + 1;
++        ++curr_count;
++    }
++
++    heap_free(id);
++    heap_free(package_name);
++    RegCloseKey(key);
++
++    short_buffer = curr_length > *buffer_length || curr_count > *count;
++    *count = curr_count;
++    *buffer_length = curr_length;
++
++    return short_buffer ? ERROR_INSUFFICIENT_BUFFER : ERROR_SUCCESS;
++}
+diff --git a/include/appmodel.h b/include/appmodel.h
+index e4288bbfbb0..27a0d0a8646 100644
+--- a/include/appmodel.h
++++ b/include/appmodel.h
+@@ -82,6 +82,8 @@ LONG WINAPI AppPolicyGetProcessTerminationMethod(HANDLE token, AppPolicyProcessT
+ LONG WINAPI AppPolicyGetShowDeveloperDiagnostic(HANDLE token, AppPolicyShowDeveloperDiagnostic *policy);
+ LONG WINAPI AppPolicyGetThreadInitializationType(HANDLE token, AppPolicyThreadInitializationType *policy);
+ LONG WINAPI AppPolicyGetWindowingModel(HANDLE processToken, AppPolicyWindowingModel *policy);
++LONG WINAPI GetPackagesByPackageFamily(const WCHAR *family_name, UINT32 *count, WCHAR **full_names,
++        UINT32 *buffer_length, WCHAR *buffer);
+ LONG WINAPI PackageIdFromFullName(const WCHAR *full_name, UINT32 flags, UINT32 *buffer_length, BYTE *buffer);
+ 
+ #if defined(__cplusplus)
+
+-- 
+2.30.2
+

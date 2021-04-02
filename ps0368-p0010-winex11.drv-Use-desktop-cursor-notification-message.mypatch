@@ -47,9 +47,9 @@ index c0b54a29233..21c432ec1c2 100644
 -    set_window_cursor( window, cursor );
 -}
 -
- struct mouse_button_mapping
- {
-     int deviceid;
+ #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
+ /***********************************************************************
+  *              update_relative_valuators
 @@ -459,6 +438,7 @@ static BOOL grab_clipping_window( const RECT *clip )
  {
      static const WCHAR messageW[] = {'M','e','s','s','a','g','e',0};
@@ -83,15 +83,6 @@ index c0b54a29233..21c432ec1c2 100644
      data->clip_hwnd = msg_hwnd;
      SendNotifyMessageW( GetDesktopWindow(), WM_X11DRV_CLIP_CURSOR_NOTIFY, 0, (LPARAM)msg_hwnd );
      return TRUE;
-@@ -706,8 +693,6 @@ static POINT map_event_coords(const XButtonEvent *event, HWND hwnd)
-  */
- static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPUT *input )
- {
--    struct x11drv_win_data *data;
--
-     input->type = INPUT_MOUSE;
- 
-     if (!hwnd)
 @@ -718,12 +703,6 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
  
          if (!clip_hwnd) return;
@@ -105,22 +96,19 @@ index c0b54a29233..21c432ec1c2 100644
          input->u.mi.dx += clip_rect.left;
          input->u.mi.dy += clip_rect.top;
          __wine_send_input( hwnd, input, SEND_HWMSG_WINDOW );
-@@ -740,15 +719,6 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
-         return;
-     }
+@@ -737,12 +716,6 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
+     if (!(data = get_win_data( hwnd ))) return;
+     map_event_coords( hwnd, window, data, input );
  
--    if ((InterlockedExchangePointer( (void **)&cursor_window, hwnd ) != hwnd ||
--         input->u.mi.time - last_cursor_change > 100) &&
--        (data = get_win_data( hwnd )))
+-    if (InterlockedExchangePointer( (void **)&cursor_window, hwnd ) != hwnd ||
+-        input->u.mi.time - last_cursor_change > 100)
 -    {
 -        sync_window_cursor( data->whole_window );
 -        last_cursor_change = input->u.mi.time;
--        release_win_data( data );
 -    }
--
+     release_win_data( data );
+ 
      if (hwnd != GetDesktopWindow())
-     {
-         hwnd = GetAncestor( hwnd, GA_ROOT );
 @@ -1543,19 +1513,6 @@ void CDECL X11DRV_DestroyCursorIcon( HCURSOR handle )
      }
  }

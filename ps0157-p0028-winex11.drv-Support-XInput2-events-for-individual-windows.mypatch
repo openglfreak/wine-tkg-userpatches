@@ -22,7 +22,7 @@ index b517e44e150..6f46ef505c9 100644
                           0, 0, width, height, 0, default_visual.depth, InputOutput, default_visual.visual,
                           CWEventMask | CWCursor | CWColormap, &win_attr );
      if (!win) return FALSE;
-+    X11DRV_XInput2_Enable( display, win, win_attr.event_mask );
++    enable_xinput2( display, win, win_attr.event_mask );
      if (!create_desktop_win_data( win )) return FALSE;
  
      X11DRV_init_desktop( win, width, height );
@@ -50,10 +50,10 @@ index aeccda79b83..edf2b94bf9b 100644
 +++ b/dlls/winex11.drv/mouse.c
 @@ -313,19 +313,31 @@ void x11drv_xinput_init(void)
  /***********************************************************************
-  *              X11DRV_XInput2_Enable
+  *              enable_xinput2
   */
--void X11DRV_XInput2_Enable(void)
-+void X11DRV_XInput2_Enable( Display *display, Window window, long event_mask )
+-static void enable_xinput2(void)
++void enable_xinput2( Display *display, Window window, long event_mask )
  {
  #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
      struct x11drv_thread_data *data = x11drv_thread_data();
@@ -84,7 +84,7 @@ index aeccda79b83..edf2b94bf9b 100644
  
      mask.mask     = mask_bits;
      mask.mask_len = sizeof(mask_bits);
-@@ -337,8 +349,9 @@ static void X11DRV_XInput2_Enable(void)
+@@ -337,8 +349,9 @@ static void enable_xinput2(void)
      XISetMask( mask_bits, XI_RawMotion );
      XISetMask( mask_bits, XI_ButtonPress );
  
@@ -95,12 +95,12 @@ index aeccda79b83..edf2b94bf9b 100644
      pointer_info = pXIQueryDevice( data->display, data->xi2_core_pointer, &count );
      update_relative_valuators( pointer_info->classes, pointer_info->num_classes );
      pXIFreeDeviceInfo( pointer_info );
-@@ -358,25 +371,39 @@ static void X11DRV_XInput2_Enable(void)
+@@ -371,28 +384,42 @@ static void disable_xinput2(void)
  /***********************************************************************
-  *              X11DRV_XInput2_Disable
+  *              disable_xinput2
   */
--void X11DRV_XInput2_Disable(void)
-+void X11DRV_XInput2_Disable( Display *display, Window window, long event_mask )
+-static void disable_xinput2(void)
++void disable_xinput2( Display *display, Window window, long event_mask )
  {
  #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
      struct x11drv_thread_data *data = x11drv_thread_data();
@@ -127,15 +127,20 @@ index aeccda79b83..edf2b94bf9b 100644
  
      mask.mask = NULL;
      mask.mask_len = 0;
-     mask.deviceid = XIAllMasterDevices;
+-    mask.deviceid = XIAllDevices;
++    mask.deviceid = XIAllMasterDevices;
  
 -    pXISelectEvents( data->display, DefaultRootWindow( data->display ), &mask, 1 );
+-    pXIFreeDeviceInfo( data->xi2_devices );
 +    pXISelectEvents( display, DefaultRootWindow( display ), &mask, 1 );
 +
 +    if (!data) return;
-     data->x_pos_valuator.number = -1;
-     data->y_pos_valuator.number = -1;
++    if (data->xi2_devices) pXIFreeDeviceInfo( data->xi2_devices );
+     data->x_rel_valuator.number = -1;
+     data->y_rel_valuator.number = -1;
+     data->xi2_devices = NULL;
      data->xi2_core_pointer = 0;
+     data->xi2_current_slave = 0;
 +    data->xi2_state = xi_disabled;
  #endif
  }
@@ -144,8 +149,8 @@ index aeccda79b83..edf2b94bf9b 100644
      }
  
      /* enable XInput2 unless we are already clipping */
--    if (!data->clip_hwnd) X11DRV_XInput2_Enable();
-+    if (!data->clip_hwnd) X11DRV_XInput2_Enable( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
+-    if (!data->clip_hwnd) enable_xinput2();
++    if (!data->clip_hwnd) enable_xinput2( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
  
      if (data->xi2_state != xi_enabled)
      {
@@ -153,8 +158,8 @@ index aeccda79b83..edf2b94bf9b 100644
  
      if (!clipping_cursor)
      {
--        X11DRV_XInput2_Disable();
-+        X11DRV_XInput2_Disable( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
+-        disable_xinput2();
++        disable_xinput2( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
          DestroyWindow( msg_hwnd );
          return FALSE;
      }
@@ -162,8 +167,8 @@ index aeccda79b83..edf2b94bf9b 100644
          TRACE( "clip hwnd reset from %p\n", hwnd );
          data->clip_hwnd = 0;
          data->clip_reset = GetTickCount();
--        X11DRV_XInput2_Disable();
-+        X11DRV_XInput2_Disable( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
+-        disable_xinput2();
++        disable_xinput2( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
          DestroyWindow( hwnd );
      }
      else if (prev_clip_hwnd)
@@ -175,7 +180,7 @@ index f46cbfb088a..93bf3e9c97e 100644
          int mask = get_window_attributes( data, &attr );
  
          XChangeWindowAttributes( data->display, data->whole_window, mask, &attr );
-+        X11DRV_XInput2_Enable( data->display, data->whole_window, attr.event_mask );
++        enable_xinput2( data->display, data->whole_window, attr.event_mask );
      }
  }
  
@@ -183,7 +188,7 @@ index f46cbfb088a..93bf3e9c97e 100644
                                          data->vis.visual, mask, &attr );
      if (!data->whole_window) goto done;
  
-+    X11DRV_XInput2_Enable( data->display, data->whole_window, attr.event_mask );
++    enable_xinput2( data->display, data->whole_window, attr.event_mask );
      set_initial_wm_hints( data->display, data->whole_window );
      set_wm_hints( data );
  
@@ -191,7 +196,7 @@ index f46cbfb088a..93bf3e9c97e 100644
          data->clip_window = XCreateWindow( data->display, root_window, 0, 0, 1, 1, 0, 0,
                                             InputOnly, default_visual.visual,
                                             CWOverrideRedirect | CWEventMask, &attr );
-+        X11DRV_XInput2_Enable( data->display, data->clip_window, attr.event_mask );
++        enable_xinput2( data->display, data->clip_window, attr.event_mask );
          XFlush( data->display );
          SetPropA( hwnd, clip_window_prop, (HANDLE)data->clip_window );
          X11DRV_InitClipboard();
@@ -199,14 +204,12 @@ diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 8d556a32a73..9cbedf59ec9 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -197,8 +197,8 @@ extern BOOL CDECL X11DRV_UnrealizePalette( HPALETTE hpal ) DECLSPEC_HIDDEN;
+@@ -197,6 +197,8 @@ extern BOOL CDECL X11DRV_UnrealizePalette( HPALETTE hpal ) DECLSPEC_HIDDEN;
  extern void X11DRV_Xcursor_Init(void) DECLSPEC_HIDDEN;
  extern void X11DRV_XInput2_Load(void) DECLSPEC_HIDDEN;
  extern void X11DRV_XInput2_Init(void) DECLSPEC_HIDDEN;
--extern void X11DRV_XInput2_Enable(void) DECLSPEC_HIDDEN;
--extern void X11DRV_XInput2_Disable(void) DECLSPEC_HIDDEN;
-+extern void X11DRV_XInput2_Enable( Display *display, Window window, long event_mask ) DECLSPEC_HIDDEN;
-+extern void X11DRV_XInput2_Disable( Display *display, Window window, long event_mask ) DECLSPEC_HIDDEN;
++extern void enable_xinput2( Display *display, Window window, long event_mask ) DECLSPEC_HIDDEN;
++extern void disable_xinput2( Display *display, Window window, long event_mask ) DECLSPEC_HIDDEN;
  
  BOOL x11drv_handle_focus_in_event( HWND hwnd, XEvent *xev, Time time );
  BOOL x11drv_handle_focus_out_event( HWND hwnd, XEvent *xev, Time time );
@@ -226,33 +229,11 @@ index 8d556a32a73..9cbedf59ec9 100644
  {
      Display *display;
 @@ -342,7 +352,7 @@ struct x11drv_thread_data
+     HWND     clip_hwnd;            /* message window stored in desktop while clipping is active */
      DWORD    clip_reset;           /* time when clipping was last reset */
      HKL      kbd_layout;           /* active keyboard layout */
- #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
 -    enum { xi_unavailable = -1, xi_unknown, xi_disabled, xi_enabled } xi2_state; /* XInput2 state */
 +    enum xi2_state xi2_state;      /* XInput2 state */
-     XIValuatorClassInfo x_pos_valuator;
-     XIValuatorClassInfo y_pos_valuator;
-     int      xi2_core_pointer;     /* XInput2 core pointer id */
-diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
-index 8d556a32a73..9cbedf59ec9 100644
---- a/dlls/winex11.drv/x11drv_main.c
-+++ b/dlls/winex11.drv/x11drv_main.c
-@@ -640,7 +640,7 @@ void CDECL X11DRV_ThreadDetach(void)
-     if (data)
-     {
-         if (GetWindowThreadProcessId( GetDesktopWindow(), NULL ) == GetCurrentThreadId())
--            X11DRV_XInput2_Disable();
-+            X11DRV_XInput2_Disable( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
-         if (data->xim) XCloseIM( data->xim );
-         if (data->font_set) XFreeFontSet( data->display, data->font_set );
-         XCloseDisplay( data->display );
-@@ -744,7 +744,7 @@ struct x11drv_thread_data *x11drv_init_thread_data(void)
- 
-     if (use_xim) X11DRV_SetupXIM();
-     if (GetWindowThreadProcessId( GetDesktopWindow(), NULL ) == GetCurrentThreadId())
--        X11DRV_XInput2_Enable();
-+        X11DRV_XInput2_Enable( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
- 
-     X11DRV_XInput2_Init();
- 
+     void    *xi2_devices;          /* list of XInput2 devices (valid when state is enabled) */
+     int      xi2_device_count;
+     struct x11drv_valuator_data x_rel_valuator;

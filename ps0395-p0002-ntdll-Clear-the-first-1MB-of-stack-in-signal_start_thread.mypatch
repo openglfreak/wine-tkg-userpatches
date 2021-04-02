@@ -1,0 +1,58 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH v2 2/2] ntdll: Clear the first ~1MB of stack in signal_start_thread.
+Message-Id: <20210331102337.519979-2-rbernon@codeweavers.com>
+Date: Wed, 31 Mar 2021 12:23:37 +0200
+In-Reply-To: <20210331102337.519979-1-rbernon@codeweavers.com>
+References: <20210331102337.519979-1-rbernon@codeweavers.com>
+
+Instead of the whole stack.
+
+Stack creation in virtual_alloc_thread_stack and RtlCreateUserStack, as
+well as Windows rounding logic, enforce a minimum reserved size of 1MB.
+
+There's a few guard and canary pages used on the bottom, plus a few more
+on the top for initial context, and we have to keep a bit of space if we
+ever need a stack while doing this, so we clear a bit less than 1MB to
+be safe.
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/ntdll/signal_i386.c   | 4 ++--
+ dlls/ntdll/signal_x86_64.c | 5 ++---
+ 2 files changed, 4 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/ntdll/signal_i386.c b/dlls/ntdll/signal_i386.c
+index 635b8f4de81..7261d398942 100644
+--- a/dlls/ntdll/signal_i386.c
++++ b/dlls/ntdll/signal_i386.c
+@@ -507,8 +507,8 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
+                    "leal -12(%esi),%ecx\n\t"
+                    /* clear the thread stack */
+                    "andl $~0xfff,%ecx\n\t"   /* round down to page size */
+-                   "movl %fs:8,%edi\n\t"     /* NtCurrentTeb()->Tib.StackLimit */
+-                   "addl $0x1000,%edi\n\t"
++                   "movl %ecx,%edi\n\t"
++                   "subl $0xf0000,%edi\n\t"
+                    "movl %edi,%esp\n\t"
+                    "subl %edi,%ecx\n\t"
+                    "xorl %eax,%eax\n\t"
+diff --git a/dlls/ntdll/signal_x86_64.c b/dlls/ntdll/signal_x86_64.c
+index d88f7ae553a..be8d6e22330 100644
+--- a/dlls/ntdll/signal_x86_64.c
++++ b/dlls/ntdll/signal_x86_64.c
+@@ -1544,9 +1544,8 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
+                    "movq %rcx,%rbx\n\t"        /* context */
+                    /* clear the thread stack */
+                    "andq $~0xfff,%rcx\n\t"     /* round down to page size */
+-                   "movq %gs:0x30,%rax\n\t"
+-                   "movq 0x10(%rax),%rdi\n\t"  /* NtCurrentTeb()->Tib.StackLimit */
+-                   "addq $0x2000,%rdi\n\t"
++                   "movq %rcx,%rdi\n\t"
++                   "subq $0xf0000,%rdi\n\t"
+                    "movq %rdi,%rsp\n\t"
+                    "subq %rdi,%rcx\n\t"
+                    "xorl %eax,%eax\n\t"
+
+-- 
+2.30.2
+

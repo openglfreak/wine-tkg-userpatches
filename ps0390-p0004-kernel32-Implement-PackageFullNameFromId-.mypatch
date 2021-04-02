@@ -1,0 +1,200 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH 4/5] kernel32: Implement PackageFullNameFromId().
+Message-Id: <20210326093747.10165-4-pgofman@codeweavers.com>
+Date: Fri, 26 Mar 2021 12:37:46 +0300
+In-Reply-To: <20210326093747.10165-1-pgofman@codeweavers.com>
+References: <20210326093747.10165-1-pgofman@codeweavers.com>
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ .../api-ms-win-appmodel-runtime-l1-1-1.spec   |  2 +-
+ .../ext-ms-win-kernel32-package-l1-1-1.spec   |  2 +-
+ dlls/kernel32/kernel32.spec                   |  1 +
+ dlls/kernel32/tests/version.c                 | 22 +++++++++-
+ dlls/kernelbase/kernelbase.spec               |  2 +-
+ dlls/kernelbase/version.c                     | 43 +++++++++++++++++++
+ include/appmodel.h                            |  1 +
+ 7 files changed, 69 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/api-ms-win-appmodel-runtime-l1-1-1/api-ms-win-appmodel-runtime-l1-1-1.spec b/dlls/api-ms-win-appmodel-runtime-l1-1-1/api-ms-win-appmodel-runtime-l1-1-1.spec
+index 696bb75be30..72a0a33baf5 100644
+--- a/dlls/api-ms-win-appmodel-runtime-l1-1-1/api-ms-win-appmodel-runtime-l1-1-1.spec
++++ b/dlls/api-ms-win-appmodel-runtime-l1-1-1/api-ms-win-appmodel-runtime-l1-1-1.spec
+@@ -21,7 +21,7 @@
+ @ stub OpenPackageInfoByFullName
+ @ stub PackageFamilyNameFromFullName
+ @ stub PackageFamilyNameFromId
+-@ stub PackageFullNameFromId
++@ stdcall PackageFullNameFromId(ptr ptr ptr) kernel32.PackageFullNameFromId
+ @ stdcall PackageIdFromFullName(wstr long ptr ptr) kernel32.PackageIdFromFullName
+ @ stub PackageNameAndPublisherIdFromFamilyName
+ @ stub ParseApplicationUserModelId
+diff --git a/dlls/ext-ms-win-kernel32-package-l1-1-1/ext-ms-win-kernel32-package-l1-1-1.spec b/dlls/ext-ms-win-kernel32-package-l1-1-1/ext-ms-win-kernel32-package-l1-1-1.spec
+index ff5118049e2..42566176b56 100644
+--- a/dlls/ext-ms-win-kernel32-package-l1-1-1/ext-ms-win-kernel32-package-l1-1-1.spec
++++ b/dlls/ext-ms-win-kernel32-package-l1-1-1/ext-ms-win-kernel32-package-l1-1-1.spec
+@@ -17,5 +17,5 @@
+ @ stub OpenPackageInfoByFullName
+ @ stub PackageFamilyNameFromFullName
+ @ stub PackageFamilyNameFromId
+-@ stub PackageFullNameFromId
++@ stdcall PackageFullNameFromId(ptr ptr ptr) kernel32.PackageFullNameFromId
+ @ stdcall PackageIdFromFullName(wstr long ptr ptr) kernel32.PackageIdFromFullName
+diff --git a/dlls/kernel32/kernel32.spec b/dlls/kernel32/kernel32.spec
+index d605ed6e771..4cfcf6df188 100644
+--- a/dlls/kernel32/kernel32.spec
++++ b/dlls/kernel32/kernel32.spec
+@@ -1153,6 +1153,7 @@
+ @ stdcall -import PeekConsoleInputW(ptr ptr long ptr)
+ @ stdcall -import PeekNamedPipe(long ptr long ptr ptr ptr)
+ @ stdcall -import PostQueuedCompletionStatus(long long ptr ptr)
++@ stdcall -import PackageFullNameFromId(ptr ptr ptr)
+ @ stdcall -import PackageIdFromFullName(wstr long ptr ptr)
+ @ stdcall PowerClearRequest(long long)
+ @ stdcall PowerCreateRequest(ptr)
+diff --git a/dlls/kernel32/tests/version.c b/dlls/kernel32/tests/version.c
+index 9a35d679323..ed1ef3e3bf7 100644
+--- a/dlls/kernel32/tests/version.c
++++ b/dlls/kernel32/tests/version.c
+@@ -26,6 +26,7 @@
+ static LONG (WINAPI * pGetPackagesByPackageFamily)(const WCHAR *, UINT32 *, WCHAR **, UINT32 *, WCHAR *);
+ static BOOL (WINAPI * pGetProductInfo)(DWORD, DWORD, DWORD, DWORD, DWORD *);
+ static UINT (WINAPI * pGetSystemFirmwareTable)(DWORD, DWORD, void *, DWORD);
++static LONG (WINAPI * pPackageFullNameFromId)(const PACKAGE_ID *, UINT32 *, WCHAR *);
+ static LONG (WINAPI * pPackageIdFromFullName)(const WCHAR *, UINT32, UINT32 *, BYTE *);
+ static NTSTATUS (WINAPI * pNtQuerySystemInformation)(SYSTEM_INFORMATION_CLASS, void *, ULONG, ULONG *);
+ static NTSTATUS (WINAPI * pRtlGetVersion)(RTL_OSVERSIONINFOEXW *);
+@@ -47,6 +48,7 @@ static void init_function_pointers(void)
+     GET_PROC(GetPackagesByPackageFamily);
+     GET_PROC(GetProductInfo);
+     GET_PROC(GetSystemFirmwareTable);
++    GET_PROC(PackageFullNameFromId);
+     GET_PROC(PackageIdFromFullName);
+ 
+     hmod = GetModuleHandleA("ntdll.dll");
+@@ -803,9 +805,11 @@ static void test_PackageIdFromFullName(void)
+     {
+         0, PROCESSOR_ARCHITECTURE_INTEL,
+                 {{.Major = 1, .Minor = 2, .Build = 3, .Revision = 4}},
+-                (WCHAR *)L"TestPackage", NULL,
++                (WCHAR *)L"TestPackage", (WCHAR *)L"TestResource",
+                 (WCHAR *)L"TestResourceId", (WCHAR *)L"0abcdefghjkme"
+     };
++    static const WCHAR test_package_fullname[] =
++            L"TestPackage_1.2.3.4_x86_TestResourceId_0abcdefghjkme";
+     UINT32 size, expected_size;
+     PACKAGE_ID test_id;
+     WCHAR fullname[512];
+@@ -918,6 +922,22 @@ static void test_PackageIdFromFullName(void)
+     size = sizeof(id_buffer);
+     ret = pPackageIdFromFullName(L"TestPackage_1.2.3.4_X86_0abcdefghjkme", 0, &size, id_buffer);
+     ok(ret == ERROR_INVALID_PARAMETER, "Got unexpected ret %u.\n", ret);
++
++    ret = pPackageFullNameFromId(&test_package_id, NULL, NULL);
++    ok(ret == ERROR_INVALID_PARAMETER, "Got unexpected ret %u.\n", ret);
++
++    size = sizeof(fullname);
++    ret = pPackageFullNameFromId(&test_package_id, &size, NULL);
++    ok(ret == ERROR_INVALID_PARAMETER, "Got unexpected ret %u.\n", ret);
++
++    size = 0;
++    ret = pPackageFullNameFromId(&test_package_id, &size, NULL);
++    ok(ret == ERROR_INSUFFICIENT_BUFFER, "Got unexpected ret %u.\n", ret);
++    ok(size == lstrlenW(test_package_fullname) + 1, "Got unexpected size %u.\n", size);
++
++    ret = pPackageFullNameFromId(&test_package_id, &size, fullname);
++    ok(ret == ERROR_SUCCESS, "Got unexpected ret %u.\n", ret);
++    ok(!lstrcmpW(fullname, test_package_fullname), "Got unexpected fullname %s.\n", debugstr_w(fullname));
+ }
+ 
+ static void test_package_info(void)
+diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
+index b385ebd6774..fc7671781f1 100644
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -1012,7 +1012,7 @@
+ # @ stub PackageFamilyNameFromFullName
+ # @ stub PackageFamilyNameFromId
+ # @ stub PackageFamilyNameFromProductId
+-# @ stub PackageFullNameFromId
++@ stdcall PackageFullNameFromId(ptr ptr ptr)
+ # @ stub PackageFullNameFromProductId
+ @ stdcall PackageIdFromFullName(wstr long ptr ptr)
+ # @ stub PackageIdFromProductId
+diff --git a/dlls/kernelbase/version.c b/dlls/kernelbase/version.c
+index 1efd4adaee7..b2a6ceb182e 100644
+--- a/dlls/kernelbase/version.c
++++ b/dlls/kernelbase/version.c
+@@ -1597,6 +1597,16 @@ UINT32 processor_arch_from_string(const WCHAR *str, unsigned int len)
+     return ~0u;
+ }
+ 
++const WCHAR *string_from_processor_arch(UINT32 code)
++{
++    unsigned int i;
++
++    for (i = 0; i < ARRAY_SIZE(arch_names); ++i)
++        if (code == arch_names[i].code)
++            return arch_names[i].name;
++    return NULL;
++}
++
+ /***********************************************************************
+  *         PackageIdFromFullName   (kernelbase.@)
+  */
+@@ -1687,6 +1697,39 @@ LONG WINAPI PackageIdFromFullName(const WCHAR *full_name, UINT32 flags, UINT32 *
+ }
+ 
+ 
++/***********************************************************************
++ *         PackageFullNameFromId   (kernelbase.@)
++ */
++LONG WINAPI PackageFullNameFromId(const PACKAGE_ID *package_id, UINT32 *length, WCHAR *full_name)
++{
++    WCHAR ver_str[5 * 4 + 3 + 1];
++    const WCHAR *arch_str;
++    UINT32 have_length;
++
++    TRACE("package_id %p, length %p, full_name %p.\n", package_id, length, full_name);
++
++    if (!package_id || !length)
++        return ERROR_INVALID_PARAMETER;
++    if (!full_name && *length)
++        return ERROR_INVALID_PARAMETER;
++    if (!package_id->name || !package_id->resourceId || !package_id->publisherId
++            || !(arch_str = string_from_processor_arch(package_id->processorArchitecture)))
++        return ERROR_INVALID_PARAMETER;
++
++    swprintf(ver_str, ARRAY_SIZE(ver_str), L"%u.%u.%u.%u", package_id->version.u.s.Major,
++            package_id->version.u.s.Minor, package_id->version.u.s.Build, package_id->version.u.s.Revision);
++    have_length = *length;
++    *length = lstrlenW(package_id->name) + 1 + lstrlenW(ver_str) + 1 + lstrlenW(arch_str) + 1
++            + lstrlenW(package_id->resourceId) + 1 + lstrlenW(package_id->publisherId) + 1;
++
++    if (have_length < *length)
++        return ERROR_INSUFFICIENT_BUFFER;
++
++    swprintf(full_name, *length, L"%s_%s_%s_%s_%s", package_id->name, ver_str, arch_str, package_id->resourceId, package_id->publisherId);
++    return ERROR_SUCCESS;
++}
++
++
+ /***********************************************************************
+  *         GetPackagesByPackageFamily   (kernelbase.@)
+  */
+diff --git a/include/appmodel.h b/include/appmodel.h
+index 27a0d0a8646..be59bc70f5f 100644
+--- a/include/appmodel.h
++++ b/include/appmodel.h
+@@ -84,6 +84,7 @@ LONG WINAPI AppPolicyGetThreadInitializationType(HANDLE token, AppPolicyThreadIn
+ LONG WINAPI AppPolicyGetWindowingModel(HANDLE processToken, AppPolicyWindowingModel *policy);
+ LONG WINAPI GetPackagesByPackageFamily(const WCHAR *family_name, UINT32 *count, WCHAR **full_names,
+         UINT32 *buffer_length, WCHAR *buffer);
++LONG WINAPI PackageFullNameFromId(const PACKAGE_ID *package_id, UINT32 *length, WCHAR *full_name);
+ LONG WINAPI PackageIdFromFullName(const WCHAR *full_name, UINT32 flags, UINT32 *buffer_length, BYTE *buffer);
+ 
+ #if defined(__cplusplus)
+
+-- 
+2.30.2
+

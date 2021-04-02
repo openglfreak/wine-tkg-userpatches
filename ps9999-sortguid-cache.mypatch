@@ -1,0 +1,59 @@
+diff --git a/dlls/kernelbase/locale.c b/dlls/kernelbase/locale.c
+index c58c2cbe434..413ed094adf 100644
+--- a/dlls/kernelbase/locale.c
++++ b/dlls/kernelbase/locale.c
+@@ -2898,12 +2898,53 @@ static int early_exit_sortkey_comparison(const struct sortkey_data* data1, const
+     return CSTR_EQUAL;
+ }
+ 
++static const struct sortguid *sortkey_compare_cached_locale = NULL;
++static WCHAR sortkey_compare_cached_locale_name[16] = {0};
++
++static CRITICAL_SECTION sortkey_compare_cached_locale_section;
++static CRITICAL_SECTION_DEBUG sortkey_compare_cached_locale_critsect_debug =
++{
++    0, 0, &locale_section,
++    { &sortkey_compare_cached_locale_critsect_debug.ProcessLocksList, &sortkey_compare_cached_locale_critsect_debug.ProcessLocksList },
++      0, 0, { (DWORD_PTR)(__FILE__ ": sortkey_compare_cached_locale_section") }
++};
++static CRITICAL_SECTION sortkey_compare_cached_locale_section = { &sortkey_compare_cached_locale_critsect_debug, -1, 0, 0, 0, 0 };
++
++static struct sortguid *get_cached_sortguid(const WCHAR *locale_name)
++{
++    size_t len;
++    const struct sortguid *locale;
++    
++    if (!locale_name)
++        return get_language_sort( locale_name );
++
++    RtlEnterCriticalSection( &sortkey_compare_cached_locale_section );
++
++    locale = sortkey_compare_cached_locale;
++
++    if (!wcscmp( locale_name, sortkey_compare_cached_locale_name ) && (locale_name[0] != L'\0' || locale))
++        goto done;
++
++    locale = get_language_sort( locale_name );
++
++    len = wcslen( locale_name );
++    if (len > sizeof(sortkey_compare_cached_locale_name) / sizeof(WCHAR) - 1)
++        goto done;
++
++    memcpy( &sortkey_compare_cached_locale_name[0], locale_name, (len + 1) * sizeof(WCHAR) );
++    sortkey_compare_cached_locale = locale;
++
++done:
++    RtlLeaveCriticalSection( &sortkey_compare_cached_locale_section );
++    return locale;
++}
++
+ static int sortkey_compare(int flags, const WCHAR *locale_name, const WCHAR *str1, int str1_len, const WCHAR *str2, int str2_len)
+ {
+     int i1, i2;
+     int ret;
+     struct sortkey_data data1, data2;
+-    const struct sortguid *locale = get_language_sort(locale_name);
++    const struct sortguid *locale = get_cached_sortguid(locale_name);
+     int diacritic_start_pos1;
+     int last_weighted_pos1;
+     int diacritic_start_pos2;

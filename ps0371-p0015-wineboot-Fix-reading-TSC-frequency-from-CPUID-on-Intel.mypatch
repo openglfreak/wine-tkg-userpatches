@@ -1,0 +1,31 @@
+From d78d9bf274db2144ca2296528efa9b96f762a9e3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 2 Apr 2021 00:19:10 +0200
+Subject: [PATCH 15/14] wineboot: Fix reading TSC frequency from CPUID on Intel.
+
+---
+ programs/wineboot/wineboot.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
+index 9333116e9af..d48c3e71a15 100644
+--- a/programs/wineboot/wineboot.c
++++ b/programs/wineboot/wineboot.c
+@@ -299,13 +299,13 @@ static void initialize_qpc_features(struct _KUSER_SHARED_DATA *data)
+         if (!(denom = regs[0]) || !(numer = regs[1])) data->QpcFrequency = 0;
+         else
+         {
+-            if (!(freq = regs[2]) && cpuid_level >= 0x16)
++            if ((freq = regs[2])) data->QpcFrequency = freq * numer / denom;
++            else if (cpuid_level >= 0x16)
+             {
+                 __cpuid(regs, 0x16); /* eax is base freq in MHz */
+-                freq = regs[0] * 1000 * denom / numer;
++                data->QpcFrequency = regs[0] * 1000000;
+             }
+-
+-            data->QpcFrequency = freq * numer / denom;
++            else data->QpcFrequency = 0;
+         }
+ 
+         if (!data->QpcFrequency)

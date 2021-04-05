@@ -1,42 +1,19 @@
-From 66d902c1eefa0669fa50bc87c2314266c2853c4e Mon Sep 17 00:00:00 2001
+From 2dc314313ad56144a5446feba370016a805cc47e Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Mon, 18 Jan 2021 18:44:03 +0100
-Subject: [PATCH 13/26] server: Move caret window and rect to input shared
+Subject: [PATCH 12/18] server: Move caret window and rect to input shared
  memory.
 
 ---
- include/wine/server_protocol.h |  4 ++-
- server/protocol.def            |  2 ++
- server/queue.c                 | 48 ++++++++++++++++++----------------
- 3 files changed, 31 insertions(+), 23 deletions(-)
+ server/protocol.def |  2 ++
+ server/queue.c      | 48 ++++++++++++++++++++++++---------------------
+ 2 files changed, 28 insertions(+), 22 deletions(-)
 
-diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
-index 0e3b63afdf3..9c63800121b 100644
---- a/include/wine/server_protocol.h
-+++ b/include/wine/server_protocol.h
-@@ -835,6 +835,8 @@ struct input_shared_memory
-     user_handle_t        active;
-     user_handle_t        menu_owner;
-     user_handle_t        move_size;
-+    user_handle_t        caret;
-+    rectangle_t          caret_rect;
- };
- 
- 
-@@ -6780,7 +6782,7 @@ union generic_reply
- 
- /* ### protocol_version begin ### */
- 
--#define SERVER_PROTOCOL_VERSION 704
-+#define SERVER_PROTOCOL_VERSION 705
- 
- /* ### protocol_version end ### */
- 
 diff --git a/server/protocol.def b/server/protocol.def
-index 6e19902bdd6..e9be7472910 100644
+index 4d1eec5134a..35d73615534 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -851,6 +851,8 @@ struct input_shared_memory
+@@ -887,6 +887,8 @@ struct input_shared_memory
      user_handle_t        active;           /* handle to the active window */
      user_handle_t        menu_owner;       /* handle to the menu owner */
      user_handle_t        move_size;        /* handle to the moving/resizing window */
@@ -46,7 +23,7 @@ index 6e19902bdd6..e9be7472910 100644
  
  /* Bits that must be clear for client to read */
 diff --git a/server/queue.c b/server/queue.c
-index 452d4487418..8be052ae93a 100644
+index 45e991b4992..719fd802d5a 100644
 --- a/server/queue.c
 +++ b/server/queue.c
 @@ -103,8 +103,6 @@ struct thread_input
@@ -58,7 +35,7 @@ index 452d4487418..8be052ae93a 100644
      int                    caret_hide;    /* caret hide count */
      int                    caret_state;   /* caret on/off state */
      user_handle_t          cursor;        /* current cursor */
-@@ -284,16 +282,18 @@ static void free_message( struct message *msg );
+@@ -286,16 +284,18 @@ static void free_message( struct message *msg );
  /* set the caret window in a given thread input */
  static void set_caret_window( struct thread_input *input, user_handle_t win )
  {
@@ -83,7 +60,7 @@ index 452d4487418..8be052ae93a 100644
  }
  
  /* create a thread input object */
-@@ -1203,7 +1203,7 @@ static inline void thread_input_cleanup_window( struct msg_queue *queue, user_ha
+@@ -1205,7 +1205,7 @@ static inline void thread_input_cleanup_window( struct msg_queue *queue, user_ha
      if (window == input->shared->active) input->shared->active = 0;
      if (window == input->shared->menu_owner) input->shared->menu_owner = 0;
      if (window == input->shared->move_size) input->shared->move_size = 0;
@@ -92,7 +69,7 @@ index 452d4487418..8be052ae93a 100644
      SHARED_WRITE_END( &input->shared->seq );
  }
  
-@@ -3200,10 +3200,10 @@ DECL_HANDLER(get_thread_input)
+@@ -3227,10 +3227,10 @@ DECL_HANDLER(get_thread_input)
          reply->active     = input->shared->active;
          reply->menu_owner = input->shared->menu_owner;
          reply->move_size  = input->shared->move_size;
@@ -105,7 +82,7 @@ index 452d4487418..8be052ae93a 100644
      }
  
      /* foreground window is active window of foreground thread */
-@@ -3389,14 +3389,16 @@ DECL_HANDLER(set_caret_window)
+@@ -3403,14 +3403,16 @@ DECL_HANDLER(set_caret_window)
      {
          struct thread_input *input = queue->input;
  
@@ -126,7 +103,7 @@ index 452d4487418..8be052ae93a 100644
      }
  }
  
-@@ -3409,22 +3411,24 @@ DECL_HANDLER(set_caret_info)
+@@ -3423,22 +3425,24 @@ DECL_HANDLER(set_caret_info)
  
      if (!queue) return;
      input = queue->input;

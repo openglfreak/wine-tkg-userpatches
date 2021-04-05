@@ -1,43 +1,19 @@
-From e8cccf634211844613c96b622a3ad826c19d92e9 Mon Sep 17 00:00:00 2001
+From 0b0d04e9553868b378706b7419224a3497d33ada Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Mon, 18 Jan 2021 22:11:03 +0100
-Subject: [PATCH 15/26] server: Add cursor handle and count to desktop shared
+Subject: [PATCH 14/18] server: Add cursor handle and count to desktop shared
  memory.
 
 ---
- include/wine/server_protocol.h |  4 +++-
- server/protocol.def            |  2 ++
- server/queue.c                 | 44 ++++++++++++++++++++--------------
- 3 files changed, 31 insertions(+), 19 deletions(-)
+ server/protocol.def |  2 ++
+ server/queue.c      | 44 ++++++++++++++++++++++++++------------------
+ 2 files changed, 28 insertions(+), 18 deletions(-)
 
-diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
-index 9c63800121b..9e898968dc6 100644
---- a/include/wine/server_protocol.h
-+++ b/include/wine/server_protocol.h
-@@ -836,7 +836,9 @@ struct input_shared_memory
-     user_handle_t        menu_owner;
-     user_handle_t        move_size;
-     user_handle_t        caret;
-+    user_handle_t        cursor;
-     rectangle_t          caret_rect;
-+    int                  cursor_count;
- };
- 
- 
-@@ -6782,7 +6784,7 @@ union generic_reply
- 
- /* ### protocol_version begin ### */
- 
--#define SERVER_PROTOCOL_VERSION 705
-+#define SERVER_PROTOCOL_VERSION 706
- 
- /* ### protocol_version end ### */
- 
 diff --git a/server/protocol.def b/server/protocol.def
-index e9be7472910..fbfdf25b2de 100644
+index 35d73615534..c600db1cc2f 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -852,7 +852,9 @@ struct input_shared_memory
+@@ -888,7 +888,9 @@ struct input_shared_memory
      user_handle_t        menu_owner;       /* handle to the menu owner */
      user_handle_t        move_size;        /* handle to the moving/resizing window */
      user_handle_t        caret;            /* handle to the caret window */
@@ -48,7 +24,7 @@ index e9be7472910..fbfdf25b2de 100644
  
  /* Bits that must be clear for client to read */
 diff --git a/server/queue.c b/server/queue.c
-index 8be052ae93a..e47db3b0407 100644
+index 719fd802d5a..315484f08c4 100644
 --- a/server/queue.c
 +++ b/server/queue.c
 @@ -105,8 +105,6 @@ struct thread_input
@@ -60,7 +36,7 @@ index 8be052ae93a..e47db3b0407 100644
      struct list            msg_list;      /* list of hardware messages */
      unsigned char          keystate[256]; /* state of each key */
      struct object         *shared_mapping; /* thread input shared memory mapping */
-@@ -311,8 +309,8 @@ static struct thread_input *create_thread_input( struct thread *thread )
+@@ -313,8 +311,8 @@ static struct thread_input *create_thread_input( struct thread *thread )
          input->shared->active       = 0;
          input->shared->menu_owner   = 0;
          input->shared->move_size    = 0;
@@ -68,21 +44,22 @@ index 8be052ae93a..e47db3b0407 100644
 -        input->cursor_count = 0;
 +        input->shared->cursor       = 0;
 +        input->shared->cursor_count = 0;
-         input->lock_count   = 0;
          SHARED_WRITE_END( &input->shared->seq );
          list_init( &input->msg_list );
-@@ -407,12 +405,16 @@ static int assign_thread_input( struct thread *thread, struct thread_input *new_
+         set_caret_window( input, 0 );
+@@ -409,13 +407,17 @@ static int assign_thread_input( struct thread *thread, struct thread_input *new_
+     }
      if (queue->input)
      {
-         if (queue->keystate_locked) queue->input->lock_count--;
 -        queue->input->cursor_count -= queue->cursor_count;
 +        SHARED_WRITE_BEGIN( &queue->input->shared->seq );
 +        queue->input->shared->cursor_count -= queue->cursor_count;
 +        SHARED_WRITE_END( &queue->input->shared->seq );
+         if (queue->keystate_lock) unlock_input_keystate( queue->input );
          release_object( queue->input );
-         queue->keystate_locked = 0;
      }
      queue->input = (struct thread_input *)grab_object( new_input );
+     if (queue->keystate_lock) lock_input_keystate( queue->input );
 -    new_input->cursor_count += queue->cursor_count;
 +    SHARED_WRITE_BEGIN( &new_input->shared->seq );
 +    new_input->shared->cursor_count += queue->cursor_count;
@@ -90,18 +67,18 @@ index 8be052ae93a..e47db3b0407 100644
  
      SHARED_WRITE_BEGIN( &queue->shared->seq );
      queue->shared->input_tid = queue->input->shared->tid;
-@@ -1156,7 +1158,9 @@ static void msg_queue_destroy( struct object *obj )
+@@ -1158,7 +1160,9 @@ static void msg_queue_destroy( struct object *obj )
+         free( timer );
      }
      if (queue->timeout) remove_timeout_user( queue->timeout );
-     if (queue->keystate_locked) queue->input->lock_count--;
 -    queue->input->cursor_count -= queue->cursor_count;
 +    SHARED_WRITE_BEGIN( &queue->input->shared->seq );
 +    queue->input->shared->cursor_count -= queue->cursor_count;
 +    SHARED_WRITE_END( &queue->input->shared->seq );
+     if (queue->keystate_lock) unlock_input_keystate( queue->input );
      release_object( queue->input );
      if (queue->hooks) release_object( queue->hooks );
-     if (queue->fd) release_object( queue->fd );
-@@ -3201,8 +3205,8 @@ DECL_HANDLER(get_thread_input)
+@@ -3228,8 +3232,8 @@ DECL_HANDLER(get_thread_input)
          reply->menu_owner = input->shared->menu_owner;
          reply->move_size  = input->shared->move_size;
          reply->caret      = input->shared->caret;
@@ -112,7 +89,7 @@ index 8be052ae93a..e47db3b0407 100644
          reply->rect       = input->shared->caret_rect;
      }
  
-@@ -3465,25 +3469,29 @@ DECL_HANDLER(set_cursor)
+@@ -3479,25 +3483,29 @@ DECL_HANDLER(set_cursor)
      if (!queue) return;
      input = queue->input;
  

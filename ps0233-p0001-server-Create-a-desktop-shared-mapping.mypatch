@@ -1,46 +1,20 @@
-From 9825767d24230aea712ee1d756beb273c136b69b Mon Sep 17 00:00:00 2001
-From: Huw Davies <huw@codeweavers.com>
-Date: Fri, 19 Jun 2020 16:06:17 +0100
+From 9677ae0a516c5b0b5eae8618a8553cfcb1950472 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sat, 6 Mar 2021 00:05:36 +0100
 Subject: [PATCH 01/15] server: Create a desktop shared mapping.
 
 Signed-off-by: Huw Davies <huw@codeweavers.com>
 ---
- include/wine/server_protocol.h |  7 ++++++-
- server/directory.c             | 17 +++++++++++++++++
- server/file.h                  |  6 ++++++
- server/mapping.c               | 19 ++++++++++++++++++-
- server/protocol.def            |  5 +++++
- server/user.h                  | 28 +++++++++++++++-------------
- server/winstation.c            | 22 ++++++++++++++++++++++
- 7 files changed, 89 insertions(+), 15 deletions(-)
+ server/directory.c  | 17 +++++++++++++++++
+ server/file.h       |  6 ++++++
+ server/mapping.c    | 19 ++++++++++++++++++-
+ server/protocol.def |  5 +++++
+ server/user.h       | 28 +++++++++++++++-------------
+ server/winstation.c | 22 ++++++++++++++++++++++
+ 6 files changed, 83 insertions(+), 14 deletions(-)
 
-diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
-index aed7090572b..0b956894110 100644
---- a/include/wine/server_protocol.h
-+++ b/include/wine/server_protocol.h
-@@ -800,6 +800,11 @@ struct cpu_topology_override
-     unsigned char host_cpu_id[64];
- };
- 
-+struct desktop_shared_memory
-+{
-+    int placeholder;
-+};
-+
- 
- 
- 
-@@ -6721,7 +6726,7 @@ union generic_reply
- 
- /* ### protocol_version begin ### */
- 
--#define SERVER_PROTOCOL_VERSION 691
-+#define SERVER_PROTOCOL_VERSION 692
- 
- /* ### protocol_version end ### */
- 
 diff --git a/server/directory.c b/server/directory.c
-index 386d615fcf7..d6c7330a60e 100644
+index 52360d4596b..1619f6926b2 100644
 --- a/server/directory.c
 +++ b/server/directory.c
 @@ -38,6 +38,7 @@
@@ -51,8 +25,8 @@ index 386d615fcf7..d6c7330a60e 100644
  
  #define HASH_SIZE 7  /* default hash size */
  
-@@ -248,6 +249,22 @@ struct object_type *get_object_type( const struct unicode_str *name )
-     return type;
+@@ -282,6 +283,22 @@ struct object *get_directory_obj( struct process *process, obj_handle_t handle )
+     return get_handle_obj( process, handle, 0, &directory_ops );
  }
  
 +struct object *create_desktop_map_directory( struct winstation *winstation )
@@ -75,7 +49,7 @@ index 386d615fcf7..d6c7330a60e 100644
  
  static void create_session( unsigned int id )
 diff --git a/server/file.h b/server/file.h
-index bfe14ec353a..f688a19d174 100644
+index ac8fe937d06..88fac1a31ee 100644
 --- a/server/file.h
 +++ b/server/file.h
 @@ -156,6 +156,10 @@ extern struct timeout_user *add_timeout_user( timeout_t when, timeout_callback f
@@ -89,8 +63,8 @@ index bfe14ec353a..f688a19d174 100644
  /* file functions */
  
  extern struct file *get_file_obj( struct process *process, obj_handle_t handle,
-@@ -178,6 +182,8 @@ extern void free_mapped_views( struct process *process );
- extern int get_page_size(void);
+@@ -183,6 +187,8 @@ extern struct mapping *create_fd_mapping( struct object *root, const struct unic
+                                           unsigned int attr, const struct security_descriptor *sd );
  extern struct object *create_user_data_mapping( struct object *root, const struct unicode_str *name,
                                                  unsigned int attr, const struct security_descriptor *sd );
 +extern struct object *create_desktop_mapping( struct object *root, const struct unicode_str *name,
@@ -99,10 +73,10 @@ index bfe14ec353a..f688a19d174 100644
  /* device functions */
  
 diff --git a/server/mapping.c b/server/mapping.c
-index 8d9890d4619..e4418879703 100644
+index f07d186bd7c..1fcdcdefb3f 100644
 --- a/server/mapping.c
 +++ b/server/mapping.c
-@@ -962,7 +962,7 @@ int get_page_size(void)
+@@ -1091,7 +1091,7 @@ int get_page_size(void)
  }
  
  struct object *create_user_data_mapping( struct object *root, const struct unicode_str *name,
@@ -111,7 +85,7 @@ index 8d9890d4619..e4418879703 100644
  {
      void *ptr;
      struct mapping *mapping;
-@@ -978,6 +978,23 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
+@@ -1107,6 +1107,23 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
      return &mapping->obj;
  }
  
@@ -136,10 +110,10 @@ index 8d9890d4619..e4418879703 100644
  DECL_HANDLER(create_mapping)
  {
 diff --git a/server/protocol.def b/server/protocol.def
-index 0f2fe077b80..7a561ee45c1 100644
+index 93a216a4bd7..327353e0b5f 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -816,6 +816,11 @@ struct cpu_topology_override
+@@ -852,6 +852,11 @@ struct cpu_topology_override
      unsigned char host_cpu_id[64];
  };
  
@@ -193,10 +167,10 @@ index 6267f3e2881..9a28ba7f449 100644
  
  /* user handles functions */
 diff --git a/server/winstation.c b/server/winstation.c
-index e4100e316ec..a3f6cfbfdf3 100644
+index 49f03aecf54..bbde98a10e3 100644
 --- a/server/winstation.c
 +++ b/server/winstation.c
-@@ -212,6 +212,22 @@ struct desktop *get_desktop_obj( struct process *process, obj_handle_t handle, u
+@@ -220,6 +220,22 @@ struct desktop *get_desktop_obj( struct process *process, obj_handle_t handle, u
      return (struct desktop *)get_handle_obj( process, handle, access, &desktop_ops );
  }
  
@@ -219,7 +193,7 @@ index e4100e316ec..a3f6cfbfdf3 100644
  /* create a desktop object */
  static struct desktop *create_desktop( const struct unicode_str *name, unsigned int attr,
                                         unsigned int flags, struct winstation *winstation )
-@@ -235,6 +251,11 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned
+@@ -243,6 +259,11 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned
              memset( desktop->keystate, 0, sizeof(desktop->keystate) );
              list_add_tail( &winstation->desktops, &desktop->entry );
              list_init( &desktop->hotkeys );
@@ -231,7 +205,7 @@ index e4100e316ec..a3f6cfbfdf3 100644
          }
          else clear_error();
      }
-@@ -295,6 +316,7 @@ static void desktop_destroy( struct object *obj )
+@@ -296,6 +317,7 @@ static void desktop_destroy( struct object *obj )
      if (desktop->global_hooks) release_object( desktop->global_hooks );
      if (desktop->close_timeout) remove_timeout_user( desktop->close_timeout );
      list_remove( &desktop->entry );

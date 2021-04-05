@@ -1,0 +1,37 @@
+From a952d9306641df0d84c04e853171d9258b00cfdb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 18 Jan 2021 17:58:36 +0100
+Subject: [PATCH 08/18] server: Add foreground TID to desktop shared memory.
+
+---
+ server/protocol.def | 1 +
+ server/queue.c      | 3 +++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/server/protocol.def b/server/protocol.def
+index 2880c3a16e4..5cf6411ecd2 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -865,6 +865,7 @@ struct desktop_shared_memory
+     unsigned int         seq;              /* sequence number - server updating if (seq_no & SEQUENCE_MASK) != 0 */
+     struct shared_cursor cursor;           /* global cursor information */
+     unsigned char        keystate[256];    /* asynchronous key state */
++    thread_id_t          foreground_tid;   /* tid of the foreground thread */
+ };
+ 
+ struct queue_shared_memory
+diff --git a/server/queue.c b/server/queue.c
+index 790dff0a105..0806e54fc00 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -535,6 +535,9 @@ static void set_foreground_input( struct desktop *desktop, struct thread_input *
+     if (desktop->foreground_input == input) return;
+     set_clip_rectangle( desktop, NULL, 1 );
+     desktop->foreground_input = input;
++    SHARED_WRITE_BEGIN( &desktop->shared->seq );
++    desktop->shared->foreground_tid = input ? input->shared->tid : 0;
++    SHARED_WRITE_END( &desktop->shared->seq );
+ }
+ 
+ /* get the hook table for a given thread */
+

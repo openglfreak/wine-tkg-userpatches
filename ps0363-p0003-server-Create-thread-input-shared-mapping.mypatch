@@ -1,48 +1,20 @@
-From ff25460bafce45e7436c1363676c755a03b6b8d3 Mon Sep 17 00:00:00 2001
+From 0ccda821ff0b04ff09a2382a617d53c98501a64d Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Thu, 14 Jan 2021 15:22:05 +0100
-Subject: [PATCH 04/26] server: Create thread input shared mapping.
+Subject: [PATCH 03/18] server: Create thread input shared mapping.
 
 ---
- include/wine/server_protocol.h |  9 +++-
- server/protocol.def            |  7 +++
- server/queue.c                 | 97 ++++++++++++++++++++--------------
- server/thread.c                | 41 +++++++++++++-
- server/thread.h                |  2 +
- 5 files changed, 113 insertions(+), 43 deletions(-)
+ server/protocol.def |  7 ++++
+ server/queue.c      | 97 ++++++++++++++++++++++++++-------------------
+ server/thread.c     | 41 ++++++++++++++++++-
+ server/thread.h     |  2 +
+ 4 files changed, 105 insertions(+), 42 deletions(-)
 
-diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
-index 6971fbdf6f9..58631acaf1c 100644
---- a/include/wine/server_protocol.h
-+++ b/include/wine/server_protocol.h
-@@ -822,6 +822,13 @@ struct queue_shared_memory
-     unsigned int         changed_bits;
-     unsigned int         wake_mask;
-     unsigned int         changed_mask;
-+    thread_id_t          input_tid;
-+};
-+
-+struct input_shared_memory
-+{
-+    unsigned int         seq;
-+    thread_id_t          tid;
- };
- 
- 
-@@ -6767,7 +6774,7 @@ union generic_reply
- 
- /* ### protocol_version begin ### */
- 
--#define SERVER_PROTOCOL_VERSION 699
-+#define SERVER_PROTOCOL_VERSION 700
- 
- /* ### protocol_version end ### */
- 
 diff --git a/server/protocol.def b/server/protocol.def
-index 68f9a69d091..741000799d8 100644
+index b7d281e15ff..5fdcfc08aa6 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -838,6 +838,13 @@ struct queue_shared_memory
+@@ -874,6 +874,13 @@ struct queue_shared_memory
      unsigned int         changed_bits;
      unsigned int         wake_mask;
      unsigned int         changed_mask;
@@ -57,19 +29,19 @@ index 68f9a69d091..741000799d8 100644
  
  /* Bits that must be clear for client to read */
 diff --git a/server/queue.c b/server/queue.c
-index d3510ec1d60..d1a30043a68 100644
+index 7a6b1ec9302..fe44c14fa9b 100644
 --- a/server/queue.c
 +++ b/server/queue.c
 @@ -116,6 +116,8 @@ struct thread_input
-     int                    lock_count;    /* lock counter for keystate */
      unsigned char          keystate[256]; /* state of each key */
-     unsigned char          shadow_keystate[256]; /* shadow copy of keystate */
+     unsigned char          desktop_keystate[256]; /* desktop keystate when keystate was synced */
+     int                    keystate_lock; /* keystate is locked */
 +    struct object         *shared_mapping; /* thread input shared memory mapping */
 +    volatile struct input_shared_memory *shared;  /* thread input shared memory ptr */
  };
  
  struct msg_queue
-@@ -244,6 +246,46 @@ static unsigned int cursor_history_latest;
+@@ -246,6 +248,46 @@ static unsigned int cursor_history_latest;
  static void queue_hardware_message( struct desktop *desktop, struct message *msg, int always_queue );
  static void free_message( struct message *msg );
  
@@ -116,7 +88,7 @@ index d3510ec1d60..d1a30043a68 100644
  /* set the caret window in a given thread input */
  static void set_caret_window( struct thread_input *input, user_handle_t win )
  {
-@@ -266,6 +308,8 @@ static struct thread_input *create_thread_input( struct thread *thread )
+@@ -268,6 +310,8 @@ static struct thread_input *create_thread_input( struct thread *thread )
  
      if ((input = alloc_object( &thread_input_ops )))
      {
@@ -125,7 +97,7 @@ index d3510ec1d60..d1a30043a68 100644
          input->focus        = 0;
          input->capture      = 0;
          input->active       = 0;
-@@ -335,7 +379,13 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+@@ -337,7 +381,13 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
  
          thread->queue = queue;
      }
@@ -140,7 +112,7 @@ index d3510ec1d60..d1a30043a68 100644
      return queue;
  }
  
-@@ -365,6 +415,10 @@ static int assign_thread_input( struct thread *thread, struct thread_input *new_
+@@ -367,6 +417,10 @@ static int assign_thread_input( struct thread *thread, struct thread_input *new_
      }
      queue->input = (struct thread_input *)grab_object( new_input );
      new_input->cursor_count += queue->cursor_count;
@@ -151,7 +123,7 @@ index d3510ec1d60..d1a30043a68 100644
      return 1;
  }
  
-@@ -393,46 +447,6 @@ static struct message *alloc_hardware_message( lparam_t info, struct hw_msg_sour
+@@ -395,46 +449,6 @@ static struct message *alloc_hardware_message( lparam_t info, struct hw_msg_sour
      return msg;
  }
  
@@ -198,7 +170,7 @@ index d3510ec1d60..d1a30043a68 100644
  static int update_desktop_cursor_pos( struct desktop *desktop, int x, int y )
  {
      int updated;
-@@ -1175,6 +1189,7 @@ static void thread_input_destroy( struct object *obj )
+@@ -1177,6 +1191,7 @@ static void thread_input_destroy( struct object *obj )
          if (input->desktop->foreground_input == input) set_foreground_input( input->desktop, NULL );
          release_object( input->desktop );
      }
@@ -207,10 +179,10 @@ index d3510ec1d60..d1a30043a68 100644
  
  /* fix the thread input data when a window is destroyed */
 diff --git a/server/thread.c b/server/thread.c
-index 93a66bbe9a7..74269b05a63 100644
+index 9191034a461..e8ac0ad329d 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -389,6 +389,8 @@ static inline void init_thread_structure( struct thread *thread )
+@@ -301,6 +301,8 @@ static inline void init_thread_structure( struct thread *thread )
      thread->desc_len        = 0;
      thread->queue_shared_mapping = NULL;
      thread->queue_shared         = NULL;
@@ -219,7 +191,7 @@ index 93a66bbe9a7..74269b05a63 100644
  
      thread->creation_time = current_time;
      thread->exit_time     = 0;
-@@ -452,13 +454,43 @@ static volatile void *init_queue_mapping( struct thread *thread )
+@@ -364,13 +366,43 @@ static volatile void *init_queue_mapping( struct thread *thread )
      thread->queue_shared_mapping = create_shared_mapping( dir, &name, sizeof(struct queue_shared_memory),
                                                            NULL, (void **)&thread->queue_shared );
      release_object( dir );
@@ -264,7 +236,7 @@ index 93a66bbe9a7..74269b05a63 100644
  /* create a new thread */
  struct thread *create_thread( int fd, struct process *process, const struct security_descriptor *sd )
  {
-@@ -529,6 +561,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+@@ -441,6 +473,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
          release_object( thread );
          return NULL;
      }
@@ -276,7 +248,7 @@ index 93a66bbe9a7..74269b05a63 100644
  
      if (do_fsync())
      {
-@@ -604,6 +641,8 @@ static void cleanup_thread( struct thread *thread )
+@@ -516,6 +553,8 @@ static void cleanup_thread( struct thread *thread )
      free( thread->desc );
      if (thread->queue_shared_mapping) release_object( thread->queue_shared_mapping );
      thread->queue_shared_mapping = NULL;
@@ -286,10 +258,10 @@ index 93a66bbe9a7..74269b05a63 100644
      thread->reply_data = NULL;
      thread->request_fd = NULL;
 diff --git a/server/thread.h b/server/thread.h
-index d9b5ef4d51b..45bdd0ac5e2 100644
+index b1e3278c483..af553a2935d 100644
 --- a/server/thread.h
 +++ b/server/thread.h
-@@ -98,6 +98,8 @@ struct thread
+@@ -97,6 +97,8 @@ struct thread
      WCHAR                 *desc;          /* thread description string */
      struct object         *queue_shared_mapping; /* thread queue shared memory mapping */
      volatile struct queue_shared_memory *queue_shared;  /* thread queue shared memory ptr */

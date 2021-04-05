@@ -1,43 +1,21 @@
-From e95e4d1c95a2e0b7abb5bda64f897efddd7dc24c Mon Sep 17 00:00:00 2001
+From 741f9986478b393a06ce1a872705629ece4c76dd Mon Sep 17 00:00:00 2001
 From: Huw Davies <huw@codeweavers.com>
 Date: Wed, 8 Jul 2020 08:26:21 +0100
 Subject: [PATCH 13/15] server: Move the desktop keystate to shared memory.
 
 Signed-off-by: Huw Davies <huw@codeweavers.com>
 ---
- include/wine/server_protocol.h |  3 +-
- server/protocol.def            |  1 +
- server/queue.c                 | 66 +++++++++++++++++++---------------
- server/user.h                  |  1 -
- server/winstation.c            |  1 -
- 5 files changed, 40 insertions(+), 32 deletions(-)
+ server/protocol.def |  1 +
+ server/queue.c      | 62 +++++++++++++++++++++++++--------------------
+ server/user.h       |  1 -
+ server/winstation.c |  1 -
+ 4 files changed, 35 insertions(+), 30 deletions(-)
 
-diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
-index 6fb02232eac..2fb345a7f77 100644
---- a/include/wine/server_protocol.h
-+++ b/include/wine/server_protocol.h
-@@ -812,6 +812,7 @@ struct desktop_shared_memory
- {
-     unsigned int         seq;
-     struct shared_cursor cursor;
-+    unsigned char        keystate[256];
- };
- 
- 
-@@ -6739,7 +6740,7 @@ union generic_reply
- 
- /* ### protocol_version begin ### */
- 
--#define SERVER_PROTOCOL_VERSION 695
-+#define SERVER_PROTOCOL_VERSION 696
- 
- /* ### protocol_version end ### */
- 
 diff --git a/server/protocol.def b/server/protocol.def
-index adfc53097cd..329fb9e2ad8 100644
+index 14212496558..4dc17dc7baa 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -828,6 +828,7 @@ struct desktop_shared_memory
+@@ -864,6 +864,7 @@ struct desktop_shared_memory
  {
      unsigned int         seq;              /* sequence number - server updating if (seq_no & SEQUENCE_MASK) != 0 */
      struct shared_cursor cursor;           /* global cursor information */
@@ -46,10 +24,30 @@ index adfc53097cd..329fb9e2ad8 100644
  
  /* Bits that must be clear for client to read */
 diff --git a/server/queue.c b/server/queue.c
-index 129d731f7fd..81703e0aaf7 100644
+index a06e10bfafb..84704c9bd30 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -1384,7 +1384,7 @@ static struct timer *set_timer( struct msg_queue *queue, unsigned int rate )
+@@ -332,7 +332,7 @@ static struct thread_input *create_thread_input( struct thread *thread )
+             release_object( input );
+             return NULL;
+         }
+-        memcpy( input->desktop_keystate, input->desktop->keystate, sizeof(input->desktop_keystate) );
++        memcpy( input->desktop_keystate, input->desktop->shared->keystate, sizeof(input->desktop_keystate) );
+     }
+     return input;
+ }
+@@ -416,8 +416,8 @@ static void sync_input_keystate( struct thread_input *input )
+     if (!input->desktop || input->keystate_lock) return;
+     for (i = 0; i < sizeof(input->keystate); ++i)
+     {
+-        if (input->desktop_keystate[i] == input->desktop->keystate[i]) continue;
+-        input->keystate[i] = input->desktop_keystate[i] = input->desktop->keystate[i];
++        if (input->desktop_keystate[i] == input->desktop->shared->keystate[i]) continue;
++        input->keystate[i] = input->desktop_keystate[i] = input->desktop->shared->keystate[i];
+     }
+ }
+ 
+@@ -1386,7 +1386,7 @@ static struct timer *set_timer( struct msg_queue *queue, unsigned int rate )
  }
  
  /* change the input key state for a given key */
@@ -58,16 +56,16 @@ index 129d731f7fd..81703e0aaf7 100644
  {
      if (down)
      {
-@@ -1395,7 +1395,7 @@ static void set_input_key_state( unsigned char *keystate, unsigned char key, uns
+@@ -1397,7 +1397,7 @@ static void set_input_key_state( unsigned char *keystate, unsigned char key, uns
  }
  
- /* update the key state for a keyboard message */
+ /* update the input key state for a keyboard message */
 -static void update_key_state( unsigned char *keystate, unsigned int msg,
 +static void update_key_state( volatile unsigned char *keystate, unsigned int msg,
                                lparam_t wparam, int desktop )
  {
      unsigned char key, down = 0, down_val = desktop ? 0xc0 : 0x80;
-@@ -1464,7 +1464,9 @@ static void update_input_key_state( struct thread_input *input, unsigned int msg
+@@ -1466,7 +1466,9 @@ static void update_input_key_state( struct thread_input *input, unsigned int msg
  
  static void update_desktop_key_state( struct desktop *desktop, unsigned int msg, lparam_t wparam )
  {
@@ -78,21 +76,7 @@ index 129d731f7fd..81703e0aaf7 100644
  }
  
  /* update the desktop key state according to a mouse message flags */
-@@ -1504,10 +1506,10 @@ static void synchronize_input_key_state( struct thread_input *input )
- 
-         for (i = 0; i < 256; i++)
-         {
--            if (input->desktop->keystate[i] != shadow_keystate[i])
-+            if (input->desktop->shared->keystate[i] != shadow_keystate[i])
-             {
--                keystate[i] = input->desktop->keystate[i] & ~0x40;
--                shadow_keystate[i] = input->desktop->keystate[i];
-+                keystate[i] = input->desktop->shared->keystate[i] & ~0x40;
-+                shadow_keystate[i] = input->desktop->shared->keystate[i];
-             }
-         }
-     }
-@@ -1528,10 +1530,10 @@ static int queue_hotkey_message( struct desktop *desktop, struct message *msg )
+@@ -1530,10 +1532,10 @@ static int queue_hotkey_message( struct desktop *desktop, struct message *msg )
  
      if (msg->msg != WM_KEYDOWN) return 0;
  
@@ -107,7 +91,7 @@ index 129d731f7fd..81703e0aaf7 100644
  
      LIST_FOR_EACH_ENTRY( hotkey, &desktop->hotkeys, struct hotkey, entry )
      {
-@@ -1652,7 +1654,7 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
+@@ -1654,7 +1656,7 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
      if (is_keyboard_msg( msg ))
      {
          if (queue_hotkey_message( desktop, msg )) return;
@@ -116,7 +100,7 @@ index 129d731f7fd..81703e0aaf7 100644
          if (msg->wparam == VK_SHIFT || msg->wparam == VK_LSHIFT || msg->wparam == VK_RSHIFT)
              msg->lparam &= ~(KF_EXTENDED << 16);
      }
-@@ -1663,13 +1665,13 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
+@@ -1665,13 +1667,13 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
              prepend_cursor_history( msg->x, msg->y, msg->time, msg_data->info );
              if (update_desktop_cursor_pos( desktop, msg->x, msg->y )) always_queue = 1;
          }
@@ -137,7 +121,7 @@ index 129d731f7fd..81703e0aaf7 100644
      }
      msg->x = desktop->shared->cursor.x;
      msg->y = desktop->shared->cursor.y;
-@@ -1992,14 +1994,14 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
+@@ -2006,14 +2008,14 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
          if (input->kbd.flags & KEYEVENTF_KEYUP)
          {
              /* send WM_SYSKEYUP if Alt still pressed and no other key in between */
@@ -154,7 +138,7 @@ index 129d731f7fd..81703e0aaf7 100644
              message_code = WM_SYSKEYDOWN;
              desktop->last_press_alt = 1;
          }
-@@ -2009,15 +2011,15 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
+@@ -2023,15 +2025,15 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
      case VK_RCONTROL:
          /* send WM_SYSKEYUP on release if Alt still pressed */
          if (!(input->kbd.flags & KEYEVENTF_KEYUP)) break;
@@ -173,7 +157,7 @@ index 129d731f7fd..81703e0aaf7 100644
          /* fall through */
      case VK_F10:
          message_code = (input->kbd.flags & KEYEVENTF_KEYUP) ? WM_SYSKEYUP : WM_SYSKEYDOWN;
-@@ -2074,7 +2076,7 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
+@@ -2091,7 +2093,7 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
          if (input->kbd.flags & KEYEVENTF_EXTENDEDKEY) flags |= KF_EXTENDED;
          /* FIXME: set KF_DLGMODE and KF_MENUMODE when needed */
          if (input->kbd.flags & KEYEVENTF_KEYUP) flags |= KF_REPEAT | KF_UP;
@@ -182,7 +166,7 @@ index 129d731f7fd..81703e0aaf7 100644
  
          msg->wparam = vkey;
          msg->lparam |= flags << 16;
-@@ -2671,7 +2673,7 @@ DECL_HANDLER(send_hardware_message)
+@@ -2698,7 +2700,7 @@ DECL_HANDLER(send_hardware_message)
  
      reply->new_x = desktop->shared->cursor.x;
      reply->new_y = desktop->shared->cursor.y;
@@ -191,7 +175,7 @@ index 129d731f7fd..81703e0aaf7 100644
      release_object( desktop );
  }
  
-@@ -3154,10 +3156,12 @@ DECL_HANDLER(get_key_state)
+@@ -3182,10 +3184,12 @@ DECL_HANDLER(get_key_state)
          if (!(desktop = get_thread_desktop( current, 0 ))) return;
          if (req->key >= 0)
          {
@@ -206,43 +190,22 @@ index 129d731f7fd..81703e0aaf7 100644
 +        set_reply_data( (void *)desktop->shared->keystate, size );
          release_object( desktop );
      }
-     else
-@@ -3175,11 +3179,11 @@ DECL_HANDLER(get_key_state)
+     else if (!input)
+@@ -3223,10 +3227,12 @@ DECL_HANDLER(set_key_state)
+     data_size_t size = min( 256, get_req_data_size() );
  
-         /* fallback to desktop keystate */
-         if (!(desktop = get_thread_desktop( current, 0 ))) return;
--        if (req->key >= 0) reply->state = desktop->keystate[req->key & 0xff] & ~0x40;
-+        if (req->key >= 0) reply->state = desktop->shared->keystate[req->key & 0xff] & ~0x40;
-         if ((keystate = set_reply_data_size( size )))
-         {
-             unsigned int i;
--            for (i = 0; i < size; i++) keystate[i] = desktop->keystate[i] & ~0x40;
-+            for (i = 0; i < size; i++) keystate[i] = desktop->shared->keystate[i] & ~0x40;
-         }
-         release_object( desktop );
-     }
-@@ -3196,7 +3200,9 @@ DECL_HANDLER(set_key_state)
-     if (!req->tid)  /* set global async key state */
+     memcpy( queue->input->keystate, get_req_data(), size );
+-    memcpy( queue->input->desktop_keystate, queue->input->desktop->keystate, 256 );
++    memcpy( queue->input->desktop_keystate, queue->input->desktop->shared->keystate, 256 );
+     if (req->async && (desktop = get_thread_desktop( current, 0 )))
      {
-         if (!(desktop = get_thread_desktop( current, 0 ))) return;
 -        memcpy( desktop->keystate, get_req_data(), size );
 +        SHARED_WRITE_BEGIN( &desktop->shared->seq );
 +        memcpy( (void *)desktop->shared->keystate, get_req_data(), size );
 +        SHARED_WRITE_END( &desktop->shared->seq );
          release_object( desktop );
      }
-     else
-@@ -3205,7 +3211,9 @@ DECL_HANDLER(set_key_state)
-         if (thread->queue) memcpy( thread->queue->input->keystate, get_req_data(), size );
-         if (req->async && (desktop = get_thread_desktop( thread, 0 )))
-         {
--            memcpy( desktop->keystate, get_req_data(), size );
-+            SHARED_WRITE_BEGIN( &desktop->shared->seq );
-+            memcpy( (void *)desktop->shared->keystate, get_req_data(), size );
-+            SHARED_WRITE_END( &desktop->shared->seq );
-             release_object( desktop );
-         }
-         release_object( thread );
+ }
 diff --git a/server/user.h b/server/user.h
 index 59b6a741df0..2806e06832c 100644
 --- a/server/user.h
@@ -256,10 +219,10 @@ index 59b6a741df0..2806e06832c 100644
  
  /* user handles functions */
 diff --git a/server/winstation.c b/server/winstation.c
-index e3249322adc..62e31e8942b 100644
+index 90d62005cfd..9a482a7fd25 100644
 --- a/server/winstation.c
 +++ b/server/winstation.c
-@@ -250,7 +250,6 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned
+@@ -258,7 +258,6 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned
              desktop->cursor_clip_msg = 0;
              desktop->cursor_win = 0;
              desktop->last_press_alt = 0;

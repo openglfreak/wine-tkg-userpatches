@@ -1,0 +1,138 @@
+From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
+Subject: [PATCH 4/5] mountmgr.sys: Add the ability to query filesystem attributes on a file handle.
+Message-Id: <CAEU2+vrm7gYrDdPNNQiycA-6bE=QfP3PS8Ue-ObkRMTiLDkkBw@mail.gmail.com>
+Date: Thu, 18 Mar 2021 10:54:04 -0600
+
+This patch adds capability to the new IOCTL_MOUNTMGR_QUERY_VOLUME
+ioctl to be able to return volume information on a file handle.  This
+code represents the "fallback" case when standard volume information
+is unavailable (for more details see the code removed from
+dlls/ntdll/unix/file.c in patch 5 in the case where
+get_mountmgr_fs_info() fails).
+
+Best,
+Erich
+
+From 05fdc0539f5a5ecc5f8b690ef332c96c1ea64bb7 Mon Sep 17 00:00:00 2001
+From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
+Date: Sun, 28 Feb 2021 11:44:43 -0700
+#Subject: mountmgr.sys: Add the ability to query filesystem attributes on a
+ file handle.
+
+Signed-off-by: Erich E. Hoover <erich.e.hoover@gmail.com>
+---
+ dlls/mountmgr.sys/device.c | 62 ++++++++++++++++++++++++++++++++++++++
+ include/ddk/mountmgr.h     |  2 ++
+ 2 files changed, 64 insertions(+)
+
+diff --git a/dlls/mountmgr.sys/device.c b/dlls/mountmgr.sys/device.c
+index 7d6487ccc6a..dffb8387972 100644
+--- a/dlls/mountmgr.sys/device.c
++++ b/dlls/mountmgr.sys/device.c
+@@ -31,6 +31,9 @@
+ #ifdef HAVE_SYS_IOCTL_H
+ # include <sys/ioctl.h>
+ #endif
++#ifdef HAVE_SYS_STATFS_H
++#include <sys/statfs.h>
++#endif
+ 
+ #define NONAMELESSUNION
+ 
+@@ -42,6 +45,7 @@
+ #include "wine/list.h"
+ #include "wine/unicode.h"
+ #include "wine/debug.h"
++#include "wine/server.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(mountmgr);
+ 
+@@ -1995,6 +1999,40 @@ static NTSTATUS WINAPI fill_volume_info( FS_INFORMATION_CLASS info_class, enum f
+     return status;
+ }
+ 
++static enum fs_type get_fd_fs_type( int fd )
++{
++    enum fs_type fs_type = FS_UNKNOWN;
++    struct statfs stfs;
++
++    if (!fstatfs( fd, &stfs ))
++    {
++#if defined(linux) && defined(HAVE_FSTATFS)
++        switch (stfs.f_type)
++        {
++        case 0x9660:
++            fs_type = FS_ISO9660;
++            break;
++        case 0x15013346:
++            fs_type = FS_UDF;
++            break;
++        case 0x4d44:
++            fs_type = FS_FAT32;
++            break;
++        }
++#elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__OpenBSD__) || defined(__DragonFly__) || defined(__APPLE__)
++        if (!strcmp( stfs.f_fstypename, "cd9660" ))
++            fs_type = FS_ISO9660;
++        else if (!strcmp( stfs.f_fstypename, "udf" ))
++            fs_type = FS_UDF;
++        else if (!strcmp( stfs.f_fstypename, "msdos" )) /* FreeBSD < 5, Apple */
++            fs_type = FS_FAT32;
++        else if (!strcmp( stfs.f_fstypename, "msdosfs" )) /* FreeBSD >= 5 */
++            fs_type = FS_FAT32;
++#endif
++    }
++    return fs_type;
++}
++
+ /* implementation of IOCTL_MOUNTMGR_QUERY_VOLUME */
+ NTSTATUS query_volume( void *buff, SIZE_T insize, SIZE_T outsize, IO_STATUS_BLOCK *iosb )
+ {
+@@ -2019,6 +2057,30 @@ NTSTATUS query_volume( void *buff, SIZE_T insize, SIZE_T outsize, IO_STATUS_BLOC
+     }
+     LeaveCriticalSection( &device_section );
+ 
++    if (!volume && input->info_class == FileFsAttributeInformation)
++    {
++        enum fs_type fs_type = FS_UNKNOWN;
++        HANDLE hProcess, handle;
++        BOOL ret;
++        int fd;
++
++        if (!(hProcess = OpenProcess( PROCESS_DUP_HANDLE, FALSE, input->process )))
++            return status;
++        ret = DuplicateHandle( hProcess, input->handle, GetCurrentProcess(), &handle, 0, FALSE,
++                               DUPLICATE_SAME_ACCESS );
++        CloseHandle( hProcess );
++        if (!ret) return status;
++        status = wine_server_handle_to_fd( handle, 0, &fd, NULL );
++        if (!status)
++        {
++            fs_type = get_fd_fs_type( fd );
++            close( fd );
++        }
++        CloseHandle( handle );
++        status = fill_volume_info( info_class, fs_type, 0, NULL, buff, outsize,
++                                   &iosb->Information );
++    }
++
+     return status;
+ }
+ 
+diff --git a/include/ddk/mountmgr.h b/include/ddk/mountmgr.h
+index 7310adb3fdc..8d593cddd1b 100644
+--- a/include/ddk/mountmgr.h
++++ b/include/ddk/mountmgr.h
+@@ -82,6 +82,8 @@ struct mountmgr_volume
+     FS_INFORMATION_CLASS info_class;
+     ULONGLONG            unix_dev;
+     WCHAR                letter;
++    DWORD                process;
++    HANDLE               handle;
+ };
+ 
+ #define IOCTL_MOUNTMGR_READ_CREDENTIAL       CTL_CODE(MOUNTMGRCONTROLTYPE, 48, METHOD_BUFFERED, FILE_READ_ACCESS)
+
+-- 
+2.17.1
+

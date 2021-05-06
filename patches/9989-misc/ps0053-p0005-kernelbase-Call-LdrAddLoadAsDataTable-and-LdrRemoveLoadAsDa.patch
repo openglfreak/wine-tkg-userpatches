@@ -1,0 +1,59 @@
+From: Mark Harmstone <mark@harmstone.com>
+Subject: [PATCH 05/10] kernelbase: Call LdrAddLoadAsDataTable and LdrRemoveLoadAsDataTable when necessary.
+Message-Id: <20210327194737.13026-5-mark@harmstone.com>
+Date: Sat, 27 Mar 2021 19:47:32 +0000
+In-Reply-To: <20210327194737.13026-1-mark@harmstone.com>
+References: <20210327194737.13026-1-mark@harmstone.com>
+
+Signed-off-by: Mark Harmstone <mark@harmstone.com>
+---
+ dlls/kernelbase/loader.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/dlls/kernelbase/loader.c b/dlls/kernelbase/loader.c
+index fc9b0ce0083..38eeccc0b61 100644
+--- a/dlls/kernelbase/loader.c
++++ b/dlls/kernelbase/loader.c
+@@ -85,6 +85,8 @@ static BOOL load_library_as_datafile( LPCWSTR load_path, DWORD flags, LPCWSTR na
+     HANDLE mapping, file = INVALID_HANDLE_VALUE;
+     HMODULE module = 0;
+     DWORD protect = PAGE_READONLY;
++    SECTION_BASIC_INFORMATION sect_info;
++    size_t size = 0;
+ 
+     *mod_ret = 0;
+ 
+@@ -101,6 +103,10 @@ static BOOL load_library_as_datafile( LPCWSTR load_path, DWORD flags, LPCWSTR na
+     if (!mapping) goto failed;
+ 
+     module = MapViewOfFile( mapping, FILE_MAP_READ, 0, 0, 0 );
++
++    if (NT_SUCCESS(NtQuerySection( mapping, SectionBasicInformation, &sect_info, sizeof(sect_info), NULL )))
++        size = sect_info.Size.QuadPart;
++
+     CloseHandle( mapping );
+     if (!module) goto failed;
+ 
+@@ -123,6 +129,8 @@ static BOOL load_library_as_datafile( LPCWSTR load_path, DWORD flags, LPCWSTR na
+     }
+     else *mod_ret = (HMODULE)((char *)module + 2); /* set bit 1 for image resource module */
+ 
++    LdrAddLoadAsDataTable( *mod_ret, filenameW, size, NULL );
++
+     CloseHandle( file );
+     return TRUE;
+ 
+@@ -261,6 +269,9 @@ BOOL WINAPI DECLSPEC_HOTPATCH FreeLibrary( HINSTANCE module )
+             }
+             LdrUnlockLoaderLock( 0, magic );
+         }
++
++        LdrRemoveLoadAsDataTable( module, NULL, NULL, 0 );
++
+         return UnmapViewOfFile( ptr );
+     }
+ 
+
+-- 
+2.26.3
+

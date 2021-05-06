@@ -1,0 +1,34 @@
+From 13e26f7bec66ab42132ef9f478ca2684a31a7eab Mon Sep 17 00:00:00 2001
+From: Zebediah Figura <z.figura12@gmail.com>
+Date: Tue, 20 Apr 2021 17:55:59 -0500
+Subject: [PATCH 26/32] ntdll: Use server_wait_for_object() when waiting on
+ only the queue object.
+
+---
+ dlls/ntdll/unix/sync.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index 9687a338a2c..4750fe1e429 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -990,6 +990,17 @@ static NTSTATUS fast_wait( DWORD count, const HANDLE *handles, BOOLEAN wait_any,
+         objs[i] = cache[i]->obj;
+     }
+ 
++    /* It's common to wait on the message queue alone. Some applications wait
++     * on it in fast paths, with a zero timeout. Since we take two server calls
++     * instead of one when going through fast_wait_objs(), and since we only
++     * need to go through that path if we're waiting on other objects, just
++     * delegate to the server if we're only waiting on the message queue. */
++    if (count == 1 && queue)
++    {
++        release_fast_sync_obj( cache[0] );
++        return server_wait_for_object( handles[0], alertable, timeout );
++    }
++
+     if (queue) select_queue( queue );
+ 
+     ret = fast_wait_objs( device, count, objs, wait_any, alertable, timeout, &apc );
+-- 
+2.31.1

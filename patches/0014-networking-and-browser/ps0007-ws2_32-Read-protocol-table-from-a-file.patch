@@ -1,0 +1,245 @@
+From: Alex Henrie <alexhenrie24@gmail.com>
+Subject: [PATCH] ws2_32: Read protocol table from a file
+Message-Id: <20201116072813.230680-1-alexhenrie24@gmail.com>
+Date: Mon, 16 Nov 2020 00:28:13 -0700
+
+Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
+---
+I intend to extend read_protocol_table and parse_next_protocol to read
+and parse the services file as well, since the file formats are nearly
+identical.
+---
+ dlls/ws2_32/socket.c      | 163 ++++++++++++++++++++++++++++++--------
+ 4 files changed, 181 insertions(+), 36 deletions(-)
+ create mode 100644 dlls/ws2_32/protocols.tsv
+
+diff --git a/dlls/ws2_32/protocol.c b/dlls/ws2_32/protocol.c
+index 3efa4ebd64f..81f4a998e50 100644
+--- a/dlls/ws2_32/protocol.c
++++ b/dlls/ws2_32/protocol.c
+@@ -182,6 +182,8 @@
+ 
+ #include "ws2_32_private.h"
+ 
++#define MAX_NAMES 4
++
+ WINE_DEFAULT_DEBUG_CHANNEL(winsock);
+ WINE_DECLARE_DEBUG_CHANNEL(winediag);
+ 
+@@ -6310,33 +6312,112 @@ struct WS_hostent* WINAPI WS_gethostbyname(const char* name)
+     return p - (char *)dst;
+ }
+ 
+-static const struct
+-{
+-    int prot;
+-    const char *names[3];
+-}
+-protocols[] =
+-{
+-    { 0, {"ip", "IP"}},
+-    { 1, {"icmp", "ICMP"}},
+-    { 3, {"ggp", "GGP"}},
+-    { 6, {"tcp", "TCP"}},
+-    { 8, {"egp", "EGP"}},
+-    {12, {"pup", "PUP"}},
+-    {17, {"udp", "UDP"}},
+-    {20, {"hmp", "HMP"}},
+-    {22, {"xns-idp", "XNS-IDP"}},
+-    {27, {"rdp", "RDP"}},
+-    {41, {"ipv6", "IPv6"}},
+-    {43, {"ipv6-route", "IPv6-Route"}},
+-    {44, {"ipv6-frag", "IPv6-Frag"}},
+-    {50, {"esp", "ESP"}},
+-    {51, {"ah", "AH"}},
+-    {58, {"ipv6-icmp", "IPv6-ICMP"}},
+-    {59, {"ipv6-nonxt", "IPv6-NoNxt"}},
+-    {60, {"ipv6-opts", "IPv6-Opts"}},
+-    {66, {"rvd", "RVD"}},
+-};
++static char * read_protocol_table(void)
++{
++    static const WCHAR drivers_etc_protocol[] = {'\\','d','r','i','v','e','r','s',
++                                                 '\\','e','t','c',
++                                                 '\\','p','r','o','t','o','c','o','l',0};
++    WCHAR table_path[MAX_PATH];
++    HANDLE table_file;
++    DWORD table_len, bytes_read;
++    BOOL ret;
++    char *table_text;
++
++    GetSystemDirectoryW(table_path, ARRAY_SIZE(table_path));
++    lstrcatW(table_path, drivers_etc_protocol);
++
++    table_file = CreateFileW(table_path, GENERIC_READ, FILE_SHARE_READ, NULL,
++                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
++    if (table_file == INVALID_HANDLE_VALUE)
++        return NULL;
++
++    table_len = GetFileSize(table_file, NULL);
++    if (!table_len)
++    {
++        CloseHandle(table_file);
++        return NULL;
++    }
++
++    table_text = HeapAlloc(GetProcessHeap(), 0, table_len + 1);
++    if (!table_text)
++    {
++        CloseHandle(table_file);
++        return NULL;
++    }
++
++    ret = ReadFile(table_file, table_text, table_len, &bytes_read, NULL);
++    if (!ret || bytes_read != table_len)
++    {
++        CloseHandle(table_file);
++        HeapFree(GetProcessHeap(), 0, table_text);
++        return NULL;
++    }
++
++    CloseHandle(table_file);
++    table_text[table_len] = 0;
++    return table_text;
++}
++
++static char * get_field(char *line)
++{
++    char *field;
++    /* ignore sequences of whitespace between fields */
++    while ((field = strtok(line, " \t\r")))
++    {
++        if (field[0])
++            break;
++    }
++    return field;
++}
++
++static char * parse_next_protocol(char *current_line, int *number, char *names[MAX_NAMES])
++{
++    char *next_line;
++    char *comment;
++    int i;
++
++    while (current_line)
++    {
++        next_line = strchr(current_line, '\n');
++        if (next_line)
++        {
++            next_line[0] = 0;
++            next_line++;
++        }
++
++        comment = strchr(current_line, '#');
++        if (comment)
++            *comment = 0;
++
++        names[0] = get_field(current_line);
++        if (!names[0])
++        {
++            /* this line is empty, all whitespace, or a comment */
++            current_line = next_line;
++            continue;
++        }
++
++        names[1] = get_field(NULL);
++        if (!names[1])
++        {
++            /* lines that only have one field are ignored too */
++            current_line = next_line;
++            continue;
++        }
++        /* if the second field is not actually a number, it is treated as 0 */
++        *number = atoi(names[1]);
++
++        for (i = 1;; i++)
++        {
++            names[i] = (i == MAX_NAMES - 1 ? NULL : get_field(NULL));
++            if (!names[i]) break;
++        }
++
++        return next_line;
++    }
++
++    return NULL;
++}
+ 
+ static struct WS_protoent *get_protoent_buffer( unsigned int size )
+ {
+@@ -6339,23 +6425,31 @@ static const struct { int prot; const char *names[3]; } protocols[] =
+ struct WS_protoent * WINAPI WS_getprotobyname( const char *name )
+ {
+     struct WS_protoent *retval = NULL;
++    char *table_text = read_protocol_table();
++    char *current_line = table_text;
++    int row_number;
++    char *row_names[MAX_NAMES];
+     unsigned int i;
+ 
+-    for (i = 0; i < ARRAY_SIZE(protocols); i++)
++    while ((current_line = parse_next_protocol( current_line, &row_number, row_names )))
+     {
+-        if (!_strnicmp( protocols[i].names[0], name, -1 ))
+-        {
+-            retval = create_protoent( protocols[i].names[0], (char **)protocols[i].names + 1,
+-                                      protocols[i].prot );
+-            break;
+-        }
++        for (i = 0; row_names[i]; i++)
++        {
++            if (!_strnicmp( row_names[i], name, -1 ))
++            {
++                retval = create_protoent( row_names[0], (char **)row_names + 1, row_number );
++                goto found;
++            }
++        }
+     }
+     if (!retval)
+     {
+         WARN( "protocol %s not found\n", debugstr_a(name) );
+         SetLastError( WSANO_DATA );
+     }
++found:
+     TRACE( "%s ret %p\n", debugstr_a(name), retval );
++    if (table_text) HeapFree( GetProcessHeap(), 0, table_text );
+     return retval;
+ }
+ 
+@@ -6364,16 +6460,16 @@ struct WS_protoent* WINAPI WS_getprotobyname(const char* name)
+ struct WS_protoent * WINAPI WS_getprotobynumber( int number )
+ {
+     struct WS_protoent *retval = NULL;
+-    unsigned int i;
++    char *table_text = read_protocol_table();
++    char *current_line = table_text;
++    int row_number;
++    char *row_names[MAX_NAMES];
+ 
+-    for (i = 0; i < ARRAY_SIZE(protocols); i++)
++    while ((current_line = parse_next_protocol( current_line, &row_number, row_names )))
+     {
+-        if (protocols[i].prot == number)
+-        {
+-            retval = create_protoent( protocols[i].names[0], (char **)protocols[i].names + 1,
+-                                      protocols[i].prot );
+-            break;
+-        }
++        if (row_number != number) continue;
++        retval = create_protoent( row_names[0], (char **)row_names + 1, row_number );
++        break;
+     }
+     if (!retval)
+     {
+@@ -6379,6 +6477,7 @@ struct WS_protoent* WINAPI WS_getprotobynumber(int number)
+         SetLastError(WSANO_DATA);
+     }
+     TRACE( "%d ret %p\n", number, retval );
++    if (table_text) HeapFree( GetProcessHeap(), 0, table_text );
+     return retval;
+ }
+ 
+-- 
+2.29.2
+
+
+

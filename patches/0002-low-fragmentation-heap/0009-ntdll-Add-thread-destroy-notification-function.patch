@@ -1,0 +1,65 @@
+From afd8f2acea0066e87e8fd9b24eedb60d29114cde Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 28 Aug 2019 22:24:40 +0200
+Subject: [PATCH 09/16] ntdll: Add thread destroy notification function.
+
+This will be used in LFH to recycle the thread local data.
+---
+ dlls/ntdll/heap.c       | 4 ++++
+ dlls/ntdll/loader.c     | 1 +
+ dlls/ntdll/ntdll_misc.h | 2 ++
+ dlls/ntdll/thread.c     | 1 +
+ 4 files changed, 8 insertions(+)
+
+diff --git a/dlls/ntdll/heap.c b/dlls/ntdll/heap.c
+index b9a6204a959..2145f70e868 100644
+--- a/dlls/ntdll/heap.c
++++ b/dlls/ntdll/heap.c
+@@ -2390,3 +2390,7 @@ NTSTATUS WINAPI RtlSetHeapInformation( HANDLE heap, HEAP_INFORMATION_CLASS info_
+     FIXME("%p %d %p %ld stub\n", heap, info_class, info, size);
+     return STATUS_SUCCESS;
+ }
++
++void HEAP_notify_thread_destroy( BOOLEAN last )
++{
++}
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index efde83629e6..1998c814c90 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -3411,6 +3411,7 @@ void WINAPI RtlExitUserProcess( DWORD status )
+     RtlAcquirePebLock();
+     NtTerminateProcess( 0, status );
+     LdrShutdownProcess();
++    HEAP_notify_thread_destroy(TRUE);
+     for (;;) NtTerminateProcess( GetCurrentProcess(), status );
+ }
+ 
+diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
+index 9df9f4d3f0b..29bf0ee5957 100644
+--- a/dlls/ntdll/ntdll_misc.h
++++ b/dlls/ntdll/ntdll_misc.h
+@@ -134,6 +134,8 @@ NTSTATUS HEAP_std_free( HANDLE heap, ULONG flags, void *ptr );
+ NTSTATUS HEAP_std_reallocate( HANDLE heap, ULONG flags, void *ptr, SIZE_T size, void **out );
+ NTSTATUS HEAP_std_get_allocated_size( HANDLE heap, ULONG flags, const void *ptr, SIZE_T *out );
+ 
++void HEAP_notify_thread_destroy( BOOLEAN last );
++
+ #define HASH_STRING_ALGORITHM_DEFAULT  0
+ #define HASH_STRING_ALGORITHM_X65599   1
+ #define HASH_STRING_ALGORITHM_INVALID  0xffffffff
+diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+index df5245b9f10..c2ce7a66391 100644
+--- a/dlls/ntdll/thread.c
++++ b/dlls/ntdll/thread.c
+@@ -84,6 +84,7 @@ void WINAPI RtlExitUserThread( ULONG status )
+     NtQueryInformationThread( GetCurrentThread(), ThreadAmILastThread, &last, sizeof(last), NULL );
+     if (last) RtlExitUserProcess( status );
+     LdrShutdownThread();
++    HEAP_notify_thread_destroy(FALSE);
+     for (;;) NtTerminateThread( GetCurrentThread(), status );
+ }
+ 
+-- 
+2.31.1
+

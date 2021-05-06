@@ -1,0 +1,506 @@
+From 3b8184657210f2d0c427c52fcbe2475f69d6b679 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sat, 21 Nov 2020 00:20:27 +0100
+Subject: [PATCH 1/3] user32: Add a per-thread shared section for peek_message
+ optimization.
+
+---
+ dlls/user32/message.c          | 31 ++++++++++++++++++++-
+ dlls/user32/user_private.h     |  5 +++-
+ dlls/user32/winstation.c       | 51 +++++++++++++++++++++++++++++++---
+ include/wine/server_protocol.h | 11 +++++++-
+ server/directory.c             | 15 ++++++++++
+ server/file.h                  |  5 ++--
+ server/mapping.c               |  4 +--
+ server/protocol.def            |  9 ++++++
+ server/queue.c                 | 47 ++++++++++++++++++++++++++++++-
+ server/thread.c                | 32 +++++++++++++++++++++
+ server/thread.h                |  2 ++
+ server/winstation.c            |  4 +--
+ 12 files changed, 202 insertions(+), 14 deletions(-)
+
+diff --git a/dlls/user32/message.c b/dlls/user32/message.c
+index 92dee28c808..05194e3abd9 100644
+--- a/dlls/user32/message.c
++++ b/dlls/user32/message.c
+@@ -2651,12 +2651,14 @@ static inline void call_sendmsg_callback( SENDASYNCPROC callback, HWND hwnd, UIN
+ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags, UINT changed_mask )
+ {
+     LRESULT result;
++    volatile struct thread_shared_memory *shared = get_thread_shared_memory();
+     struct user_thread_info *thread_info = get_user_thread_info();
+     INPUT_MESSAGE_SOURCE prev_source = thread_info->msg_source;
+     struct received_message_info info, *old_info;
+     unsigned int hw_id = 0;  /* id of previous hardware message */
+     void *buffer;
+     size_t buffer_size = 256;
++    BOOL skip = FALSE;
+ 
+     if (!(buffer = HeapAlloc( GetProcessHeap(), 0, buffer_size ))) return -1;
+ 
+@@ -2668,10 +2670,37 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+         NTSTATUS res;
+         size_t size = 0;
+         const message_data_t *msg_data = buffer;
++        UINT wake_mask = changed_mask & (QS_SENDMESSAGE | QS_SMRESULT);
++        DWORD clear_bits = 0, filter = flags >> 16 ? flags >> 16 : QS_ALLINPUT;
++        if (filter & QS_POSTMESSAGE)
++        {
++            clear_bits |= QS_POSTMESSAGE | QS_HOTKEY | QS_TIMER;
++            if (first == 0 && last == ~0U) clear_bits |= QS_ALLPOSTMESSAGE;
++        }
++        if (filter & QS_INPUT) clear_bits |= QS_INPUT;
++        if (filter & QS_PAINT) clear_bits |= QS_PAINT;
+ 
+         thread_info->msg_source = prev_source;
+ 
+-        SERVER_START_REQ( get_message )
++        if (!shared) skip = FALSE;
++        else SHARED_READ_BEGIN( &shared->seq )
++        {
++            /* if the masks need an update */
++            if (shared->wake_mask != wake_mask) skip = FALSE;
++            else if (shared->changed_mask != changed_mask) skip = FALSE;
++            /* or if the queue is signaled */
++            else if (shared->wake_bits & wake_mask) skip = FALSE;
++            else if (shared->changed_bits & changed_mask) skip = FALSE;
++            /* or if the filter matches some bits */
++            else if (shared->wake_bits & filter) skip = FALSE;
++            /* or if we should clear some bits */
++            else if (shared->changed_bits & clear_bits) skip = FALSE;
++            else skip = TRUE;
++        }
++        SHARED_READ_END( &shared->seq );
++
++        if (skip) res = STATUS_PENDING;
++        else SERVER_START_REQ( get_message )
+         {
+             req->flags     = flags;
+             req->get_win   = wine_server_user_handle( hwnd );
+diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
+index bab8a131a60..f53c5ea33b4 100644
+--- a/dlls/user32/user_private.h
++++ b/dlls/user32/user_private.h
+@@ -203,7 +203,9 @@ struct user_thread_info
+     HWND                          msg_window;             /* HWND_MESSAGE parent window */
+     struct rawinput_thread_data  *rawinput;               /* RawInput thread local data / buffer */
+     HANDLE                        desktop_shared_map;     /* HANDLE to server's desktop shared memory */
+-    struct desktop_shared_memory *shared_memory;          /* Ptr to server's desktop shared memory */
++    struct desktop_shared_memory *desktop_shared_memory;  /* Ptr to server's desktop shared memory */
++    HANDLE                        thread_shared_map;      /* HANDLE to server's thread shared memory */
++    struct thread_shared_memory  *thread_shared_memory;   /* Ptr to server's thread shared memory */
+ };
+ 
+ C_ASSERT( sizeof(struct user_thread_info) <= sizeof(((TEB *)0)->Win32ClientInfo) );
+@@ -289,6 +291,7 @@ extern BOOL WINPROC_call_window( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
+ extern const WCHAR *CLASS_GetVersionedName(const WCHAR *classname, UINT *basename_offset,
+         WCHAR *combined, BOOL register_class) DECLSPEC_HIDDEN;
+ extern volatile struct desktop_shared_memory *get_desktop_shared_memory( void ) DECLSPEC_HIDDEN;
++extern volatile struct thread_shared_memory *get_thread_shared_memory( void ) DECLSPEC_HIDDEN;
+ 
+ /* message spy definitions */
+ 
+diff --git a/dlls/user32/winstation.c b/dlls/user32/winstation.c
+index 54f9bc42090..575420c1f37 100644
+--- a/dlls/user32/winstation.c
++++ b/dlls/user32/winstation.c
+@@ -117,7 +117,7 @@ volatile struct desktop_shared_memory *get_desktop_shared_memory( void )
+     NTSTATUS status;
+     SIZE_T size;
+ 
+-    if (thread_info->shared_memory) return thread_info->shared_memory;
++    if (thread_info->desktop_shared_memory) return thread_info->desktop_shared_memory;
+ 
+     handles[0] = GetProcessWindowStation();
+     handles[1] = GetThreadDesktop( GetCurrentThreadId() );
+@@ -153,8 +153,51 @@ volatile struct desktop_shared_memory *get_desktop_shared_memory( void )
+     }
+ 
+     thread_info->desktop_shared_map = handles[0];
+-    thread_info->shared_memory = (struct desktop_shared_memory *)ptr;
+-    return thread_info->shared_memory;
++    thread_info->desktop_shared_memory = (struct desktop_shared_memory *)ptr;
++    return thread_info->desktop_shared_memory;
++}
++
++
++volatile struct thread_shared_memory *get_thread_shared_memory( void )
++{
++    static const WCHAR dir_thread_mapsW[] = {'\\','K','e','r','n','e','l','O','b','j','e','c','t','s',
++                                             '\\','_','_','w','i','n','e','_','t','h','r','e','a','d','_','m','a','p','p','i','n','g','s',
++                                             '\\','%','0','8','x',0};
++    struct user_thread_info *thread_info = get_user_thread_info();
++    HANDLE handle;
++    WCHAR buf[MAX_PATH];
++    OBJECT_ATTRIBUTES attr;
++    UNICODE_STRING section_str;
++    NTSTATUS status;
++    SIZE_T size;
++    void *ptr;
++
++    if (thread_info->thread_shared_memory) return thread_info->thread_shared_memory;
++
++    _snwprintf( buf, ARRAY_SIZE(buf), dir_thread_mapsW, GetCurrentThreadId() );
++    RtlInitUnicodeString( &section_str, buf );
++    InitializeObjectAttributes( &attr, &section_str, 0, NULL, NULL );
++    status = NtOpenSection( &handle, SECTION_ALL_ACCESS, &attr );
++    if (status)
++    {
++        ERR( "failed to open the thread section: %08x\n", status );
++        return NULL;
++    }
++
++    ptr = NULL;
++    size = sizeof(struct thread_shared_memory);
++    status = NtMapViewOfSection( handle, GetCurrentProcess(), (void *)&ptr, 0, 0, NULL,
++                                 &size, ViewUnmap, 0, PAGE_READONLY );
++    if (status)
++    {
++        ERR( "failed to map view of the thread section: %08x\n", status );
++        CloseHandle( handle );
++        return NULL;
++    }
++
++    thread_info->thread_shared_map = handle;
++    thread_info->thread_shared_memory = (struct thread_shared_memory *)ptr;
++    return thread_info->thread_shared_memory;
+ }
+ 
+ 
+@@ -520,7 +563,7 @@ BOOL WINAPI SetThreadDesktop( HDESK handle )
+         {
+             CloseHandle( thread_info->desktop_shared_map );
+             thread_info->desktop_shared_map = NULL;
+-            thread_info->shared_memory = NULL;
++            thread_info->desktop_shared_memory = NULL;
+         }
+     }
+     return ret;
+diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
+index 59c5d040f4e..a34b22f7298 100644
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -815,6 +815,15 @@ struct desktop_shared_memory
+     unsigned char        keystate[256];
+ };
+ 
++struct thread_shared_memory
++{
++    unsigned int         seq;
++    unsigned int         wake_bits;
++    unsigned int         changed_bits;
++    unsigned int         wake_mask;
++    unsigned int         changed_mask;
++};
++
+ 
+ #define SEQUENCE_MASK_BITS  4
+ #define SEQUENCE_MASK ((1UL << SEQUENCE_MASK_BITS) - 1)
+@@ -6756,7 +6765,7 @@ union generic_reply
+ 
+ /* ### protocol_version begin ### */
+ 
+-#define SERVER_PROTOCOL_VERSION 698
++#define SERVER_PROTOCOL_VERSION 699
+ 
+ /* ### protocol_version end ### */
+ 
+diff --git a/server/directory.c b/server/directory.c
+index d6c7330a60e..b68dd91bb5e 100644
+--- a/server/directory.c
++++ b/server/directory.c
+@@ -265,6 +265,21 @@ struct object *create_desktop_map_directory( struct winstation *winstation )
+     return &ret->obj;
+ }
+ 
++struct object *create_thread_map_directory( void )
++{
++    static const WCHAR dir_kernelW[] = {'K','e','r','n','e','l','O','b','j','e','c','t','s'};
++    static const WCHAR dir_thread_mapsW[] = {'_','_','w','i','n','e','_','t','h','r','e','a','d','_','m','a','p','p','i','n','g','s'};
++    static const struct unicode_str dir_kernel_str = {dir_kernelW, sizeof(dir_kernelW)};
++    static const struct unicode_str dir_thread_maps_str = {dir_thread_mapsW, sizeof(dir_thread_mapsW)};
++    struct directory *mapping_root, *ret;
++
++    mapping_root = create_directory( &root_directory->obj, &dir_kernel_str, OBJ_OPENIF, HASH_SIZE, NULL );
++    ret = create_directory( &mapping_root->obj, &dir_thread_maps_str, OBJ_OPENIF, HASH_SIZE, NULL );
++    release_object( &mapping_root->obj );
++
++    return &ret->obj;
++}
++
+ /* Global initialization */
+ 
+ static void create_session( unsigned int id )
+diff --git a/server/file.h b/server/file.h
+index f688a19d174..4def4ac760e 100644
+--- a/server/file.h
++++ b/server/file.h
+@@ -159,6 +159,7 @@ extern const char *get_timeout_str( timeout_t timeout );
+ /* directory functions */
+ 
+ extern struct object *create_desktop_map_directory( struct winstation *winstation );
++extern struct object *create_thread_map_directory( void );
+ 
+ /* file functions */
+ 
+@@ -182,8 +183,8 @@ extern void free_mapped_views( struct process *process );
+                                                 unsigned int attr, const struct security_descriptor *sd );
+ extern struct object *create_hypervisor_data_mapping( struct object *root, const struct unicode_str *name,
+                                                       unsigned int attr, const struct security_descriptor *sd );
+-extern struct object *create_desktop_mapping( struct object *root, const struct unicode_str *name,
+-                                              mem_size_t size, const struct security_descriptor *sd, void **ptr );
++extern struct object *create_shared_mapping( struct object *root, const struct unicode_str *name,
++                                             mem_size_t size, const struct security_descriptor *sd, void **ptr );
+ 
+ /* device functions */
+ 
+diff --git a/server/mapping.c b/server/mapping.c
+index e4418879703..ecbb8f801ef 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -978,8 +978,8 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
+     return &mapping->obj;
+ }
+ 
+-struct object *create_desktop_mapping( struct object *root, const struct unicode_str *name,
+-                                       mem_size_t size, const struct security_descriptor *sd, void **ptr )
++struct object *create_shared_mapping( struct object *root, const struct unicode_str *name,
++                                      mem_size_t size, const struct security_descriptor *sd, void **ptr )
+ {
+     struct mapping *mapping;
+ 
+diff --git a/server/protocol.def b/server/protocol.def
+index ba3e7db7a60..90a384112f5 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -831,6 +831,15 @@ struct desktop_shared_memory
+     unsigned char        keystate[256];    /* asynchronous key state */
+ };
+ 
++struct thread_shared_memory
++{
++    unsigned int         seq;              /* sequence number - server updating if (seq_no & SEQUENCE_MASK) != 0 */
++    unsigned int         wake_bits;
++    unsigned int         changed_bits;
++    unsigned int         wake_mask;
++    unsigned int         changed_mask;
++};
++
+ /* Bits that must be clear for client to read */
+ #define SEQUENCE_MASK_BITS  4
+ #define SEQUENCE_MASK ((1UL << SEQUENCE_MASK_BITS) - 1)
+diff --git a/server/queue.c b/server/queue.c
+index 43ab91dc671..585a2230654 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -146,6 +146,7 @@ struct msg_queue
+     int                    fsync_in_msgwait; /* our thread is currently waiting on us */
+     struct fast_sync      *fast_sync;       /* fast synchronization object */
+     int                    in_fast_wait;    /* are we in a fast wait? */
++    volatile struct thread_shared_memory *shared;  /* thread shared memory ptr */
+ };
+ 
+ struct hotkey
+@@ -319,6 +320,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+         queue->fsync_in_msgwait = 0;
+         queue->fast_sync       = NULL;
+         queue->in_fast_wait    = 0;
++        queue->shared          = thread->shared;
+         list_init( &queue->send_result );
+         list_init( &queue->callback_result );
+         list_init( &queue->pending_timers );
+@@ -546,6 +548,12 @@ static inline void set_queue_bits( struct msg_queue *queue, unsigned int bits )
+ {
+     queue->wake_bits |= bits;
+     queue->changed_bits |= bits;
++
++    SHARED_WRITE_BEGIN( &queue->shared->seq );
++    queue->shared->wake_bits = queue->wake_bits;
++    queue->shared->changed_bits = queue->changed_bits;
++    SHARED_WRITE_END( &queue->shared->seq );
++
+     if (is_signaled( queue ))
+     {
+         wake_up( &queue->obj, 0 );
+@@ -555,6 +563,11 @@ static inline void clear_queue_bits( struct msg_queue *queue, unsigned int bits
+     queue->wake_bits &= ~bits;
+     queue->changed_bits &= ~bits;
+ 
++    SHARED_WRITE_BEGIN( &queue->shared->seq );
++    queue->shared->wake_bits = queue->wake_bits;
++    queue->shared->changed_bits = queue->changed_bits;
++    SHARED_WRITE_END( &queue->shared->seq );
++
+     if (do_fsync() && !is_signaled( queue ))
+         fsync_clear( &queue->obj );
+ 
+@@ -1090,6 +1103,11 @@ static void msg_queue_satisfied( struct object *obj, struct wait_queue_entry *en
+     struct msg_queue *queue = (struct msg_queue *)obj;
+     queue->wake_mask = 0;
+     queue->changed_mask = 0;
+     fast_reset_event( queue->fast_sync );
++
++    SHARED_WRITE_BEGIN( &queue->shared->seq );
++    queue->shared->wake_mask = queue->wake_mask;
++    queue->shared->changed_mask = queue->changed_mask;
++    SHARED_WRITE_END( &queue->shared->seq );
+ }
+ 
+ static void msg_queue_destroy( struct object *obj )
+@@ -2515,12 +2533,22 @@ DECL_HANDLER(set_queue_mask)
+         queue->changed_mask = req->changed_mask;
+         reply->wake_bits    = queue->wake_bits;
+         reply->changed_bits = queue->changed_bits;
++
++        SHARED_WRITE_BEGIN( &queue->shared->seq );
++        queue->shared->wake_mask = queue->wake_mask;
++        queue->shared->changed_mask = queue->changed_mask;
++        SHARED_WRITE_END( &queue->shared->seq );
++
+         if (is_signaled( queue ))
+         {
+             /* if skip wait is set, do what would have been done in the subsequent wait */
+             if (req->skip_wait)
+             {
+                 queue->wake_mask = queue->changed_mask = 0;
++                SHARED_WRITE_BEGIN( &queue->shared->seq );
++                queue->shared->wake_mask = queue->wake_mask;
++                queue->shared->changed_mask = queue->changed_mask;
++                SHARED_WRITE_END( &queue->shared->seq );
+             }
+             else
+             {
+@@ -2530,6 +2561,10 @@ DECL_HANDLER(get_queue_status)
+         reply->changed_bits = queue->changed_bits;
+         queue->changed_bits &= ~req->clear_bits;
+ 
++        SHARED_WRITE_BEGIN( &queue->shared->seq );
++        queue->shared->changed_bits = queue->changed_bits;
++        SHARED_WRITE_END( &queue->shared->seq );
++
+         if (do_fsync() && !is_signaled( queue ))
+             fsync_clear( &queue->obj );
+ 
+@@ -2725,6 +2760,10 @@ DECL_HANDLER(get_message)
+     if (filter & QS_INPUT) queue->changed_bits &= ~QS_INPUT;
+     if (filter & QS_PAINT) queue->changed_bits &= ~QS_PAINT;
+ 
++    SHARED_WRITE_BEGIN( &queue->shared->seq );
++    queue->shared->changed_bits = queue->changed_bits;
++    SHARED_WRITE_END( &queue->shared->seq );
++
+     /* then check for posted messages */
+     if ((filter & QS_POSTMESSAGE) &&
+         get_posted_message( queue, get_win, req->get_first, req->get_last, req->flags, reply ))
+@@ -2778,6 +2817,12 @@ DECL_HANDLER(get_message)
+     queue->wake_mask = req->wake_mask;
+     queue->changed_mask = req->changed_mask;
+     fast_reset_event( queue->fast_sync );
++
++    SHARED_WRITE_BEGIN( &queue->shared->seq );
++    queue->shared->wake_mask = queue->wake_mask;
++    queue->shared->changed_mask = queue->changed_mask;
++    SHARED_WRITE_END( &queue->shared->seq );
++
+     return;
+ 
+ found_msg:
+diff --git a/server/thread.c b/server/thread.c
+index 31043c3df33..d38136c05c2 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -51,6 +51,7 @@
+ #include "request.h"
+ #include "user.h"
+ #include "security.h"
++#include "unicode.h"
+ #include "esync.h"
+ #include "fsync.h"
+ 
+@@ -252,6 +253,8 @@ static inline void init_thread_structure( struct thread *thread )
+     thread->desc_len        = 0;
+     thread->exit_poll       = NULL;
+     thread->fast_sync       = NULL;
++    thread->shared_mapping  = NULL;
++    thread->shared          = NULL;
+ 
+     thread->creation_time = current_time;
+     thread->exit_time     = 0;
+@@ -300,6 +303,28 @@ static struct context *create_thread_context( struct thread *thread )
+ }
+ 
+ 
++static volatile void *init_thread_mapping( struct thread *thread )
++{
++    struct unicode_str name;
++    struct object *dir = create_thread_map_directory();
++    char nameA[MAX_PATH];
++    WCHAR *nameW;
++
++    if (!dir) return NULL;
++
++    sprintf( nameA, "%08x", thread->id );
++    nameW = ascii_to_unicode_str( nameA, &name );
++
++    thread->shared_mapping = create_shared_mapping( dir, &name, sizeof(struct thread_shared_memory),
++                                                    NULL, (void **)&thread->shared );
++    release_object( dir );
++    if (thread->shared) memset( (void *)thread->shared, 0, sizeof(*thread->shared) );
++
++    free( nameW );
++    return thread->shared;
++}
++
++
+ /* create a new thread */
+ struct thread *create_thread( int fd, struct process *process, const struct security_descriptor *sd )
+ {
+@@ -365,6 +390,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+         release_object( thread );
+         return NULL;
+     }
++    if (!init_thread_mapping( thread ))
++    {
++        release_object( thread );
++        return NULL;
++    }
+ 
+     if (do_fsync())
+     {
+@@ -435,6 +465,8 @@ static void cleanup_thread( struct thread *thread )
+         }
+     }
+     free( thread->desc );
++    if (thread->shared_mapping) release_object( thread->shared_mapping );
++    thread->shared_mapping = NULL;
+     thread->req_data = NULL;
+     thread->reply_data = NULL;
+     thread->request_fd = NULL;
+diff --git a/server/thread.h b/server/thread.h
+index f947edb94a6..6c801ad6421 100644
+--- a/server/thread.h
++++ b/server/thread.h
+@@ -95,6 +95,8 @@ struct thread
+     WCHAR                 *desc;          /* thread description string */
+     struct timeout_user   *exit_poll;     /* poll if the thread/process has exited already */
+     struct fast_sync      *fast_sync;     /* fast synchronization object */
++    struct object         *shared_mapping;         /* thread shared memory mapping */
++    volatile struct thread_shared_memory *shared;  /* thread shared memory ptr */
+ };
+ 
+ extern struct thread *current;
+diff --git a/server/winstation.c b/server/winstation.c
+index 62e31e8942b..842c9afdbec 100644
+--- a/server/winstation.c
++++ b/server/winstation.c
+@@ -221,8 +221,8 @@ static volatile void *init_desktop_mapping( struct desktop *desktop, const struc
+ 
+     if (!dir) return NULL;
+ 
+-    desktop->shared_mapping = create_desktop_mapping( dir, name, sizeof(struct desktop_shared_memory),
+-                                                      NULL, (void **)&desktop->shared );
++    desktop->shared_mapping = create_shared_mapping( dir, name, sizeof(struct desktop_shared_memory),
++                                                     NULL, (void **)&desktop->shared );
+     release_object( dir );
+     if (desktop->shared) memset( (void *)desktop->shared, 0, sizeof(*desktop->shared) );
+     return desktop->shared;

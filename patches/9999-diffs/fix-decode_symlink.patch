@@ -1,0 +1,52 @@
+diff --git a/server/fd.c b/server/fd.c
+index fae3bbc30ec..5c97df7a096 100644
+--- a/server/fd.c
++++ b/server/fd.c
+@@ -1942,9 +1942,9 @@ void get_nt_name( struct fd *fd, struct unicode_str *name )
+     name->len = fd->nt_namelen;
+ }
+ 
+-static char *decode_symlink(const char *name, ULONG *tag, int *is_dir)
++static char *decode_symlink(const char *name, ULONG *tag, int *is_dir, char *link)
+ {
+-    char link[MAX_PATH], *p;
++    char *p;
+     ULONG reparse_tag;
+     int len, i;
+ 
+@@ -1996,7 +1996,7 @@ static char *decode_symlink(const char *name, ULONG *tag, int *is_dir)
+ static void rewrite_symlink( const char *path )
+ {
+     static char marker[] = "////.//.//"; /* "P" (0x50) encoded as a path (0=/ 1=./) */
+-    char *link, *prefix_end, *local_link;
++    char tmp[MAX_PATH], *link, *prefix_end, *local_link;
+     static char config_dir[MAX_PATH];
+     static int config_dir_len = 0;
+     char new_target[PATH_MAX];
+@@ -2016,7 +2016,7 @@ static void rewrite_symlink( const char *path )
+     }
+ 
+     /* grab the current link contents */
+-    link = decode_symlink( path, &tag, &is_dir );
++    link = decode_symlink( path, &tag, &is_dir, tmp );
+     if (link == NULL) return;
+ 
+     /* find out if the prefix matches, if it does then do not modify the link */
+@@ -2060,7 +2060,7 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
+     struct fd *fd;
+     int root_fd = -1;
+     int rw_mode;
+-    char *path;
++    char *path, tmp[MAX_PATH];
+     int do_chmod = 0;
+     int created = (flags & O_CREAT);
+ #ifdef HAVE_POSIX_FADVISE
+@@ -2204,7 +2204,7 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
+         *mode = st.st_mode;
+         is_dir = S_ISDIR(st.st_mode);
+         if (is_link)
+-            decode_symlink(fd->unlink_name, NULL, &is_dir);
++            decode_symlink(fd->unlink_name, NULL, &is_dir, tmp);
+ 
+         /* check directory options */
+         if ((options & FILE_DIRECTORY_FILE) && !is_dir)

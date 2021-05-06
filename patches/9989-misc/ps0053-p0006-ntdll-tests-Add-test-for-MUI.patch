@@ -1,0 +1,826 @@
+From: Mark Harmstone <mark@harmstone.com>
+Subject: [PATCH 06/10] ntdll/tests: Add test for MUI.
+Message-Id: <20210327194737.13026-6-mark@harmstone.com>
+Date: Sat, 27 Mar 2021 19:47:33 +0000
+In-Reply-To: <20210327194737.13026-1-mark@harmstone.com>
+References: <20210327194737.13026-1-mark@harmstone.com>
+
+Signed-off-by: Mark Harmstone <mark@harmstone.com>
+---
+ dlls/ntdll/tests/mui.c | 782 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 782 insertions(+)
+
+diff --git a/dlls/ntdll/tests/mui.c b/dlls/ntdll/tests/mui.c
+index 2b424dce5f7..5e732210783 100644
+--- a/dlls/ntdll/tests/mui.c
++++ b/dlls/ntdll/tests/mui.c
+@@ -22,9 +22,86 @@
+ #include "winternl.h"
+ #include "winuser.h"
+ 
++typedef struct _MUI_DATA_BLOCK
++{
++    DWORD Signature;
++    DWORD Size;
++    DWORD RCConfigVersion;
++    DWORD PathType;
++    DWORD FileType;
++    DWORD SystemAttributes;
++    DWORD UltimateFallbackLocation;
++    BYTE ServiceChecksum[16];
++    BYTE Checksum[16];
++    DWORD Unknown1;
++    DWORD Unknown2;
++    DWORD Unknown3;
++    DWORD Unknown4;
++    DWORD Unknown5;
++    DWORD Unknown6;
++    DWORD MainNameTypesOffset;
++    DWORD MainNameTypesLength;
++    DWORD MainIDTypesOffset;
++    DWORD MainIDTypesLength;
++    DWORD MuiNameTypesOffset;
++    DWORD MuiNameTypesLength;
++    DWORD MuiIDTypesOffset;
++    DWORD MuiIDTypesLength;
++    DWORD LanguageOffset;
++    DWORD LanguageLength;
++    DWORD UltimateFallbackLanguageOffset;
++    DWORD UltimateFallbackLanguageLength;
++} MUI_DATA_BLOCK;
++
++#define MUI_TYPE L"MUI"
++#define MUI_SIGNATURE 0xfecdfecd
++#define MUI_TYPE_LANGUAGE_NEUTRAL       0x01
++#define MUI_TYPE_LANGUAGE_SPECIFIC      0x02
++
++#define SECTION_ALIGNMENT   0x1000
++#define FILE_ALIGNMENT      0x200
++
++#define ALIGN(x, a) (((x) + a - 1) & ~((unsigned int)a - 1))
++
++static const WCHAR greeting_type[] = L"GREETING";
++
++static const char generic_greeting[] = "hello";
++static const char en_US_greeting[] = "howdy";
++static const char en_AU_greeting[] = "g'day";
++static const char fr_greeting[] = "bonjour";
++static const char hr_greeting[] = "zdravo";
++static const char az_Latn_greeting[] = "salam";
++static const char es_greeting[] = "hola";
++static const char it_greeting[] = "ciao";
++static const char de_greeting[] = "guten Tag";
++static const char et_greeting[] = "tere";
++static const char pt_greeting[] = "oi";
++
++static const unsigned char checksum1[] = { 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
++                                           0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10 };
++static const unsigned char checksum2[] = { 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
++                                           0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef };
++static const unsigned char checksum3[] = { 0xfe, 0xba, 0x76, 0x32, 0xdc, 0x98, 0x54, 0x10,
++                                           0x23, 0x67, 0xab, 0xef, 0x01, 0x45, 0x89, 0xcd };
++static const unsigned char checksum4[] = { 0x23, 0x67, 0xab, 0xef, 0x01, 0x45, 0x89, 0xcd,
++                                           0xfe, 0xba, 0x76, 0x32, 0xdc, 0x98, 0x54, 0x10};
++
++enum mui_error
++{
++    mui_error_none,
++    mui_error_wrong_checksum,
++    mui_error_wrong_language,
++    mui_error_wrong_signature,
++    mui_error_not_an_image,
++    mui_error_missing_file,
++    mui_error_wrong_file_type
++};
++
+ static BOOLEAN (NTAPI *pRtlLCIDToCultureName)(LCID, PUNICODE_STRING);
+ static NTSTATUS (NTAPI *pNtQueryDefaultLocale)(BOOLEAN, PLCID);
+ static LONG (NTAPI *pRtlCompareUnicodeString)(PCUNICODE_STRING, PCUNICODE_STRING, BOOLEAN);
++static NTSTATUS (NTAPI *pLdrFindResource_U)(HMODULE, const LDR_RESOURCE_INFO*, ULONG, const IMAGE_RESOURCE_DATA_ENTRY**);
++static NTSTATUS (NTAPI *pLdrAccessResource)(HMODULE, const IMAGE_RESOURCE_DATA_ENTRY*, void**, ULONG*);
+ 
+ static const char *debugstr_us( const UNICODE_STRING *us )
+ {
+@@ -613,6 +690,708 @@ static void test_lcid_to_culture_name(void)
+     }
+ }
+ 
++static void create_main_mui_block(MUI_DATA_BLOCK **ret)
++{
++    MUI_DATA_BLOCK *mui;
++    unsigned int size;
++
++    static const WCHAR fallback_language[] = L"en-US";
++    static const WCHAR main_name_types[] = L"MUI\0\0";
++    static const WCHAR mui_name_types[] = L"MUI\0GREETING\0\0";
++
++    size = sizeof(MUI_DATA_BLOCK);
++    size += sizeof(main_name_types) - sizeof(WCHAR);
++    size += sizeof(mui_name_types) - sizeof(WCHAR);
++    size += sizeof(fallback_language) - sizeof(WCHAR);
++
++    mui = malloc(size);
++
++    memset(mui, 0, size);
++
++    mui->Signature = MUI_SIGNATURE;
++    mui->Size = size;
++    mui->RCConfigVersion = 0x10000;
++    mui->FileType = MUI_TYPE_LANGUAGE_NEUTRAL;
++    mui->UltimateFallbackLocation = 2; /* 1 = internal, 2 = external */
++    memcpy(mui->ServiceChecksum, checksum1, sizeof(checksum1));
++    memcpy(mui->Checksum, checksum2, sizeof(checksum2));
++
++    mui->MainNameTypesOffset = sizeof(MUI_DATA_BLOCK);
++    mui->MainNameTypesLength = sizeof(main_name_types) - sizeof(WCHAR);
++
++    mui->MuiNameTypesOffset = mui->MainNameTypesOffset + mui->MainNameTypesLength;
++    mui->MuiNameTypesLength = sizeof(mui_name_types) - sizeof(WCHAR);
++
++    mui->UltimateFallbackLanguageOffset = mui->MuiNameTypesOffset + mui->MuiNameTypesLength;
++    mui->UltimateFallbackLanguageLength = sizeof(fallback_language) - sizeof(WCHAR);
++
++    memcpy((char*)mui + mui->MainNameTypesOffset, main_name_types, mui->MainNameTypesLength);
++    memcpy((char*)mui + mui->MuiNameTypesOffset, mui_name_types, mui->MuiNameTypesLength);
++    memcpy((char*)mui + mui->UltimateFallbackLanguageOffset, fallback_language, mui->UltimateFallbackLanguageLength);
++
++    *ret = mui;
++}
++
++#pragma pack(push,1)
++
++typedef struct {
++    IMAGE_RESOURCE_DIRECTORY type_dir;
++    IMAGE_RESOURCE_DIRECTORY_ENTRY type_dir_entry;
++    IMAGE_RESOURCE_DIRECTORY_ENTRY type_dir_entry2;
++    IMAGE_RESOURCE_DIRECTORY name_dir;
++    IMAGE_RESOURCE_DIRECTORY_ENTRY name_dir_entry;
++    IMAGE_RESOURCE_DIRECTORY name_dir2;
++    IMAGE_RESOURCE_DIRECTORY_ENTRY name_dir_entry2;
++    IMAGE_RESOURCE_DIRECTORY lang_dir;
++    IMAGE_RESOURCE_DIRECTORY_ENTRY lang_dir_entry;
++    IMAGE_RESOURCE_DIRECTORY lang_dir2;
++    IMAGE_RESOURCE_DIRECTORY_ENTRY lang_dir_entry2;
++    IMAGE_RESOURCE_DATA_ENTRY entry;
++    IMAGE_RESOURCE_DATA_ENTRY entry2;
++    USHORT mui_name_len;
++    WCHAR mui[sizeof(MUI_TYPE) / sizeof(WCHAR)];
++    USHORT name_len;
++} rsrc;
++
++#pragma pack(pop)
++
++static void make_rsrc(void **data, unsigned int *len, MUI_DATA_BLOCK *mui, const char *value)
++{
++    rsrc *h;
++    unsigned char *ptr;
++    size_t value_len = (DWORD)strlen(value);
++
++    *len = (unsigned int)(sizeof(rsrc) + sizeof(greeting_type) - sizeof(WCHAR) + value_len + mui->Size);
++    *data = malloc(*len);
++
++    h = (rsrc*)*data;
++
++    h->type_dir.Characteristics = 0;
++    h->type_dir.TimeDateStamp = 0;
++    h->type_dir.MajorVersion = 0;
++    h->type_dir.MinorVersion = 0;
++    h->type_dir.NumberOfNamedEntries = 2;
++    h->type_dir.NumberOfIdEntries = 0;
++
++    h->type_dir_entry.NameOffset = offsetof(rsrc, name_len);
++    h->type_dir_entry.NameIsString = 1;
++    h->type_dir_entry.OffsetToDirectory = offsetof(rsrc, name_dir);
++    h->type_dir_entry.DataIsDirectory = 1;
++
++    h->type_dir_entry2.NameOffset = offsetof(rsrc, mui_name_len);
++    h->type_dir_entry2.NameIsString = 1;
++    h->type_dir_entry2.OffsetToDirectory = offsetof(rsrc, name_dir2);
++    h->type_dir_entry2.DataIsDirectory = 1;
++
++    h->name_dir.Characteristics = 0;
++    h->name_dir.TimeDateStamp = 0;
++    h->name_dir.MajorVersion = 0;
++    h->name_dir.MinorVersion = 0;
++    h->name_dir.NumberOfNamedEntries = 0;
++    h->name_dir.NumberOfIdEntries = 1;
++
++    h->name_dir_entry.Name = 1;
++    h->name_dir_entry.OffsetToDirectory = offsetof(rsrc, lang_dir);
++    h->name_dir_entry.DataIsDirectory = 1;
++
++    h->name_dir2.Characteristics = 0;
++    h->name_dir2.TimeDateStamp = 0;
++    h->name_dir2.MajorVersion = 0;
++    h->name_dir2.MinorVersion = 0;
++    h->name_dir2.NumberOfNamedEntries = 0;
++    h->name_dir2.NumberOfIdEntries = 1;
++
++    h->name_dir_entry2.Name = 1;
++    h->name_dir_entry2.OffsetToDirectory = offsetof(rsrc, lang_dir2);
++    h->name_dir_entry2.DataIsDirectory = 1;
++
++    h->lang_dir.Characteristics = 0;
++    h->lang_dir.TimeDateStamp = 0;
++    h->lang_dir.MajorVersion = 0;
++    h->lang_dir.MinorVersion = 0;
++    h->lang_dir.NumberOfNamedEntries = 0;
++    h->lang_dir.NumberOfIdEntries = 1;
++
++    h->lang_dir_entry.Name = MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
++    h->lang_dir_entry.OffsetToData = offsetof(rsrc, entry);
++
++    h->lang_dir2.Characteristics = 0;
++    h->lang_dir2.TimeDateStamp = 0;
++    h->lang_dir2.MajorVersion = 0;
++    h->lang_dir2.MinorVersion = 0;
++    h->lang_dir2.NumberOfNamedEntries = 0;
++    h->lang_dir2.NumberOfIdEntries = 1;
++
++    h->lang_dir_entry2.Name = 0;
++    h->lang_dir_entry2.OffsetToData = offsetof(rsrc, entry2);
++
++    h->entry.OffsetToData = 0x1000 + sizeof(rsrc) + sizeof(greeting_type) - sizeof(WCHAR);
++    h->entry.Size = (DWORD)value_len;
++    h->entry.CodePage = 0;
++    h->entry.Reserved = 0;
++
++    h->entry2.OffsetToData = h->entry.OffsetToData + h->entry.Size;
++    h->entry2.Size = mui->Size;
++    h->entry2.CodePage = 0;
++    h->entry2.Reserved = 0;
++
++    h->mui_name_len = (sizeof(MUI_TYPE) / sizeof(WCHAR)) - 1;
++
++    memcpy(h->mui, MUI_TYPE, sizeof(MUI_TYPE));
++
++    h->name_len = (sizeof(greeting_type) / sizeof(WCHAR)) - 1;
++
++    ptr = (unsigned char*)*data + sizeof(rsrc);
++
++    memcpy(ptr, greeting_type, sizeof(greeting_type) - sizeof(WCHAR));
++    ptr += sizeof(greeting_type) - sizeof(WCHAR);
++
++    memcpy(ptr, value, value_len);
++    ptr += value_len;
++
++    memcpy(ptr, mui, mui->Size);
++}
++
++static BOOLEAN make_image(const WCHAR *fn, void *rsrc, unsigned int rsrclen)
++{
++    IMAGE_DOS_HEADER h;
++    IMAGE_NT_HEADERS32 nth;
++    IMAGE_SECTION_HEADER sect;
++    HANDLE file;
++    ULONG header_size;
++    DWORD written;
++
++    /* Write PE file consisting of .rsrc section only */
++
++    static const char stub[] = "\x0e\x1f\xba\x0e\x00\xb4\x09\xcd\x21\xb8\x01\x4c\xcd\x21This program cannot be run in DOS mode.\r\r\n\x24\x00\x00\x00\x00\x00\x00\x00";
++
++    file = CreateFileW(fn, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
++    ok(file != INVALID_HANDLE_VALUE, "CreateFile failed creating image %s (error %u)\n",
++       debugstr_w(fn), GetLastError());
++
++    if (file == INVALID_HANDLE_VALUE)
++        return FALSE;
++
++    memset(&h, 0, sizeof(h));
++
++    h.e_magic = IMAGE_DOS_SIGNATURE;
++    h.e_cblp = 0x90;
++    h.e_cp = 0x3;
++    h.e_cparhdr = 0x4;
++    h.e_maxalloc = 0xffff;
++    h.e_sp = 0xb8;
++    h.e_lfarlc = 0x40;
++    h.e_lfanew = sizeof(h) + sizeof(stub) - 1;
++
++    if (!WriteFile(file, &h, sizeof(h), &written, NULL))
++    {
++        fprintf(stderr, "WriteFile failed (error %u)\n", GetLastError());
++        CloseHandle(file);
++        return FALSE;
++    }
++
++    if (!WriteFile(file, stub, sizeof(stub) - 1, &written, NULL))
++    {
++        fprintf(stderr, "WriteFile failed (error %u)\n", GetLastError());
++        CloseHandle(file);
++        return FALSE;
++    }
++
++    memset(&nth, 0, sizeof(nth));
++
++    nth.Signature = IMAGE_NT_SIGNATURE;
++    nth.FileHeader.Machine = IMAGE_FILE_MACHINE_I386;
++    nth.FileHeader.NumberOfSections = 1;
++    nth.FileHeader.SizeOfOptionalHeader = sizeof(IMAGE_OPTIONAL_HEADER32);
++    nth.FileHeader.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE;
++
++    header_size = (ULONG)ALIGN((unsigned int)h.e_lfanew + sizeof(nth) + sizeof(sect), FILE_ALIGNMENT);
++
++    nth.OptionalHeader.Magic = IMAGE_NT_OPTIONAL_HDR32_MAGIC;
++    nth.OptionalHeader.MajorLinkerVersion = 0x2;
++    nth.OptionalHeader.MinorLinkerVersion = 0x23;
++    nth.OptionalHeader.SizeOfCode = 0;
++    nth.OptionalHeader.SizeOfInitializedData = (ULONG)ALIGN(rsrclen, SECTION_ALIGNMENT);
++    nth.OptionalHeader.SizeOfUninitializedData = 0;
++    nth.OptionalHeader.AddressOfEntryPoint = 0;
++    nth.OptionalHeader.BaseOfCode = 0x1000;
++    nth.OptionalHeader.BaseOfData = 0x1000;
++    nth.OptionalHeader.ImageBase = 0x10000000;
++    nth.OptionalHeader.SectionAlignment = SECTION_ALIGNMENT;
++    nth.OptionalHeader.FileAlignment = FILE_ALIGNMENT;
++    nth.OptionalHeader.MajorOperatingSystemVersion = 4;
++    nth.OptionalHeader.MinorOperatingSystemVersion = 0;
++    nth.OptionalHeader.MajorImageVersion = 0;
++    nth.OptionalHeader.MinorImageVersion = 0;
++    nth.OptionalHeader.MajorSubsystemVersion = 5;
++    nth.OptionalHeader.MinorSubsystemVersion = 2;
++    nth.OptionalHeader.Win32VersionValue = 0;
++    nth.OptionalHeader.SizeOfImage =
++        (ULONG)(ALIGN(header_size, SECTION_ALIGNMENT) + ALIGN(rsrclen, SECTION_ALIGNMENT));
++    nth.OptionalHeader.SizeOfHeaders = header_size;
++    nth.OptionalHeader.Subsystem = IMAGE_SUBSYSTEM_WINDOWS_GUI;
++    nth.OptionalHeader.DllCharacteristics = 0;
++    nth.OptionalHeader.SizeOfStackReserve = 0x100000;
++    nth.OptionalHeader.SizeOfStackCommit = 0x1000;
++    nth.OptionalHeader.SizeOfHeapReserve = 0x100000;
++    nth.OptionalHeader.SizeOfHeapCommit = 0x1000;
++    nth.OptionalHeader.LoaderFlags = 0;
++    nth.OptionalHeader.NumberOfRvaAndSizes = IMAGE_NUMBEROF_DIRECTORY_ENTRIES;
++
++    nth.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress =
++        ALIGN(header_size, SECTION_ALIGNMENT);
++    nth.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE].Size = rsrclen;
++
++    if (!WriteFile(file, &nth, sizeof(nth), &written, NULL))
++    {
++        fprintf(stderr, "WriteFile failed (error %u)\n", GetLastError());
++        CloseHandle(file);
++        return FALSE;
++    }
++
++    memcpy(sect.Name, ".rsrc\0\0\0", 8);
++    sect.Misc.VirtualSize = (ULONG)ALIGN(rsrclen, SECTION_ALIGNMENT);
++    sect.VirtualAddress = ALIGN(header_size, SECTION_ALIGNMENT);
++    sect.SizeOfRawData = (ULONG)ALIGN(rsrclen, FILE_ALIGNMENT);
++    sect.PointerToRawData = header_size;
++    sect.PointerToRelocations = 0;
++    sect.PointerToLinenumbers = 0;
++    sect.NumberOfRelocations = 0;
++    sect.NumberOfLinenumbers = 0;
++    sect.Characteristics = IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_INITIALIZED_DATA;
++
++    if (!WriteFile(file, &sect, sizeof(sect), &written, NULL))
++    {
++        fprintf(stderr, "WriteFile failed (error %u)\n", GetLastError());
++        CloseHandle(file);
++        return FALSE;
++    }
++
++    if (SetFilePointer(file, (LONG)header_size, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER)
++    {
++        fprintf(stderr, "SetFilePointer failed (error %u)\n", GetLastError());
++        CloseHandle(file);
++        return FALSE;
++    }
++
++    if (!SetEndOfFile(file))
++    {
++        fprintf(stderr, "SetEndOfFile failed (error %u)\n", GetLastError());
++        CloseHandle(file);
++        return FALSE;
++    }
++
++    if (!WriteFile(file, rsrc, rsrclen, &written, NULL))
++    {
++        fprintf(stderr, "WriteFile failed (error %u)\n", GetLastError());
++        CloseHandle(file);
++        return FALSE;
++    }
++
++    if (SetFilePointer(file, (LONG)(header_size + sect.SizeOfRawData), NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER)
++    {
++        fprintf(stderr, "SetFilePointer failed (error %u)\n", GetLastError());
++        CloseHandle(file);
++        return FALSE;
++    }
++
++    if (!SetEndOfFile(file))
++    {
++        fprintf(stderr, "SetEndOfFile failed (error %u)\n", GetLastError());
++        CloseHandle(file);
++        return FALSE;
++    }
++
++    CloseHandle(file);
++
++    return TRUE;
++}
++
++static void create_lang_mui_block(MUI_DATA_BLOCK **ret, const WCHAR *lang, enum mui_error error)
++{
++    MUI_DATA_BLOCK *mui;
++    unsigned int size;
++    size_t lang_size = wcslen( lang ) * sizeof(WCHAR);
++
++    static const WCHAR main_name_types[] = L"MUI\0GREETING\0\0";
++
++    size = sizeof(MUI_DATA_BLOCK);
++    size += sizeof(main_name_types) - sizeof(WCHAR);
++    size += (unsigned int)lang_size;
++
++    mui = malloc(size);
++
++    memset(mui, 0, size);
++
++    mui->Signature = error == mui_error_wrong_signature ? 0x12345678 : MUI_SIGNATURE;
++    mui->Size = size;
++    mui->RCConfigVersion = 0x10000;
++    mui->FileType = error == mui_error_wrong_file_type ?
++                    MUI_TYPE_LANGUAGE_NEUTRAL : MUI_TYPE_LANGUAGE_SPECIFIC;
++
++    if (error == mui_error_wrong_checksum)
++    {
++        memcpy(mui->ServiceChecksum, checksum3, sizeof(checksum3));
++        memcpy(mui->Checksum, checksum4, sizeof(checksum4));
++    }
++    else
++    {
++        memcpy(mui->ServiceChecksum, checksum1, sizeof(checksum1));
++        memcpy(mui->Checksum, checksum2, sizeof(checksum2));
++    }
++
++    mui->MainNameTypesOffset = sizeof(MUI_DATA_BLOCK);
++    mui->MainNameTypesLength = sizeof(main_name_types) - sizeof(WCHAR);
++
++    mui->LanguageOffset = mui->MainNameTypesOffset + mui->MainNameTypesLength;
++    mui->LanguageLength = (unsigned int)lang_size;
++
++    memcpy((char*)mui + mui->MainNameTypesOffset, main_name_types, mui->MainNameTypesLength);
++    memcpy((char*)mui + mui->LanguageOffset, lang, mui->LanguageLength);
++
++    *ret = mui;
++}
++
++static BOOLEAN create_lang( const WCHAR *lang, const char *greeting, enum mui_error error )
++{
++    void *rsrc;
++    unsigned int rsrclen;
++    MUI_DATA_BLOCK *mui;
++    WCHAR filename[MAX_PATH];
++    BOOL ret;
++
++    if (error != mui_error_not_an_image && error != mui_error_missing_file)
++    {
++        create_lang_mui_block(&mui, error == mui_error_wrong_language ? L"en-NZ" : lang, error);
++        make_rsrc(&rsrc, &rsrclen, mui, greeting);
++        free(mui);
++    }
++
++    ret = CreateDirectoryW(lang, NULL);
++    ok(ret || GetLastError() == ERROR_ALREADY_EXISTS,
++       "CreateDirectory failed (error %u)\n", GetLastError());
++    if (!ret && GetLastError() != ERROR_ALREADY_EXISTS)
++        return FALSE;
++
++    wcscpy(filename, lang);
++    wcscat(filename, L"\\out.exe.mui");
++
++    if (error == mui_error_not_an_image)
++    {
++        HANDLE file;
++        DWORD written;
++
++        static const char msg[] = "not an image";
++
++        file = CreateFileW(filename, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
++        ok(file != INVALID_HANDLE_VALUE, "CreateFile failed for %s (error %u)\n",
++           debugstr_w(filename), GetLastError());
++        if (file == INVALID_HANDLE_VALUE)
++            return FALSE;
++
++        ret = WriteFile(file, msg, sizeof(msg) - 1, &written, NULL);
++        ok(ret, "WriteFile failed (error %u)\n", GetLastError());
++
++        CloseHandle(file);
++
++        if (!ret)
++            return FALSE;
++    }
++    else if (error != mui_error_missing_file)
++    {
++        if (!make_image(filename, rsrc, rsrclen))
++        {
++            free(rsrc);
++            return FALSE;
++        }
++
++        free(rsrc);
++    }
++
++    return TRUE;
++}
++
++static NTSTATUS get_greeting( HMODULE mod, LCID lang, void **ptr, ULONG *size, const char *text_lang )
++{
++    LDR_RESOURCE_INFO info;
++    const IMAGE_RESOURCE_DATA_ENTRY *entry;
++    NTSTATUS status, status2;
++
++    info.Type = (ULONG_PTR)greeting_type;
++    info.Name = 1;
++    info.Language = lang;
++
++    status = pLdrFindResource_U(mod, &info, 3, &entry);
++
++    if (!NT_SUCCESS(status))
++        return status;
++
++    status2 = pLdrAccessResource(mod, entry, ptr, size);
++    ok(status2 == STATUS_SUCCESS, "LdrFindResource_U returned %08x for lang %04x (%s), expected STATUS_SUCCESS\n",
++       status2, lang, text_lang);
++
++    return status;
++}
++
++static void test_mui(void)
++{
++    void *rsrc;
++    unsigned int rsrclen;
++    MUI_DATA_BLOCK *mui;
++    HMODULE mod;
++    void *ptr;
++    ULONG size;
++    NTSTATUS status;
++
++    /* Create language-neutral file */
++
++    create_main_mui_block(&mui);
++    make_rsrc(&rsrc, &rsrclen, mui, generic_greeting);
++    free(mui);
++
++    if (!make_image(L"out.exe", rsrc, rsrclen)) {
++        free(rsrc);
++        return;
++    }
++
++    free(rsrc);
++
++    /* Create MUI files */
++
++    if (!create_lang( L"en-US", en_US_greeting, mui_error_none ))
++        return;
++
++    if (!create_lang( L"en-AU", en_AU_greeting, mui_error_none ))
++        return;
++
++    if (!create_lang( L"fr", fr_greeting, mui_error_none ))
++        return;
++
++    if (!create_lang( L"hr", hr_greeting, mui_error_none ))
++        return;
++
++    if (!create_lang( L"az-Latn", az_Latn_greeting, mui_error_none ))
++        return;
++
++    if (!create_lang( L"es", es_greeting, mui_error_wrong_checksum ))
++        return;
++
++    if (!create_lang( L"it", it_greeting, mui_error_wrong_language ))
++        return;
++
++    if (!create_lang( L"de", de_greeting, mui_error_wrong_signature ))
++        return;
++
++    if (!create_lang( L"et", et_greeting, mui_error_not_an_image ))
++        return;
++
++    if (!create_lang( L"pt", pt_greeting, mui_error_wrong_file_type ))
++        return;
++
++    mod = LoadLibraryExW( L"out.exe", NULL, LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE );
++    ok(!!mod, "LoadLibraryEx failed (error %u)\n", GetLastError() );
++    if (!mod)
++        return;
++
++    /* Test en-US */
++
++    size = 0;
++    status = get_greeting( mod, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), &ptr, &size,
++                           "en-US" );
++
++    ok(status == STATUS_SUCCESS, "LdrFindResource_U returned %08x for lang en-US, expected STATUS_SUCCESS\n",
++       status);
++
++    if (NT_SUCCESS(status))
++    {
++        if (size == sizeof(generic_greeting) - 1 && !memcmp( ptr, generic_greeting, size ))
++        {
++            win_skip("MUI not supported on this platform\n");
++            FreeLibrary(mod);
++            return;
++        }
++
++        ok(size == sizeof(en_US_greeting) - 1 && !memcmp( ptr, en_US_greeting, size ),
++           "en-US greeting was %.*s, expected %s\n",
++        size, (char*)ptr, en_US_greeting);
++    }
++
++    /* Test en-AU */
++
++    size = 0;
++    status = get_greeting( mod, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_AUS), &ptr, &size,
++                           "en-AU" );
++
++    ok(status == STATUS_SUCCESS, "LdrFindResource_U returned %08x for lang en-AU, expected STATUS_SUCCESS\n",
++       status);
++
++    if (NT_SUCCESS(status))
++    {
++        ok(size == sizeof(en_AU_greeting) - 1 && !memcmp( ptr, en_AU_greeting, size ),
++            "en-AU greeting was %.*s, expected %s\n",
++            size, (char*)ptr, en_AU_greeting);
++    }
++
++    /* Test fr-FR (falls back to fr) */
++
++    size = 0;
++    status = get_greeting( mod, MAKELANGID(LANG_FRENCH, SUBLANG_FRENCH), &ptr, &size,
++                           "fr-FR" );
++
++    ok(status == STATUS_SUCCESS, "LdrFindResource_U returned %08x for lang fr-FR, expected STATUS_SUCCESS\n",
++       status);
++
++    if (NT_SUCCESS(status))
++    {
++        ok(size == sizeof(fr_greeting) - 1 && !memcmp(ptr, fr_greeting, size),
++           "fr greeting was %.*s, expected %s\n",
++           size, (char*)ptr, fr_greeting);
++    }
++
++    /* Test sr-Latn (doesn't fall back to hr on 7+) */
++
++    size = 0;
++    status = get_greeting( mod, 0x701a, &ptr, &size, "sr-Latn" );
++
++    ok(status == STATUS_MUI_FILE_NOT_FOUND || status == STATUS_SUCCESS,
++       "LdrFindResource_U returned %08x for lang sr-Latn, expected STATUS_MUI_FILE_NOT_FOUND or STATUS_SUCCESS\n",
++       status);
++
++    if (NT_SUCCESS(status))
++    {
++        /* On w1064v1809, uses value in LN file if language MUI not found. */
++        ok((size == sizeof(hr_greeting) - 1 && !memcmp( ptr, hr_greeting, size )) ||
++            broken(size == sizeof(generic_greeting) - 1 && !memcmp( ptr, generic_greeting, size )),
++            "sr-Latn greeting was %.*s, expected %s\n",
++            size, (char*)ptr, hr_greeting);
++    }
++
++    /* Test az-Latn-AZ (falls back to az-Latn on 7+) */
++
++    size = 0;
++    status = get_greeting( mod, 0x042c, &ptr, &size, "az-Latn-AZ" );
++
++    ok(status == STATUS_SUCCESS || status == STATUS_MUI_FILE_NOT_FOUND,
++       "LdrFindResource_U returned %08x for lang az-Latn-AZ, expected STATUS_SUCCESS or STATUS_MUI_FILE_NOT_FOUND\n",
++       status);
++
++    if (NT_SUCCESS(status))
++    {
++        ok(size == sizeof(az_Latn_greeting) - 1 && !memcmp( ptr, az_Latn_greeting, size ),
++           "az-Latn-AZ greeting was %.*s, expected %s\n",
++           size, (char*)ptr, az_Latn_greeting);
++    }
++
++    /* Test with invalid language */
++
++    size = 0;
++    status = get_greeting( mod, 0x0805, &ptr, &size, "???" );
++
++    ok(status == STATUS_INVALID_PARAMETER || status == STATUS_MUI_FILE_NOT_FOUND,
++       "LdrFindResource_U returned %08x for invalid language, expected STATUS_INVALID_PARAMETER or STATUS_MUI_FILE_NOT_FOUND\n",
++       status);
++
++    if (NT_SUCCESS(status))
++    {
++        ok(FALSE, "invalid language greeting was %.*s, expected error\n",
++           size, (char*)ptr);
++    }
++
++    /* Test es (wrong checksum) */
++
++    size = 0;
++    status = get_greeting( mod, MAKELANGID(LANG_SPANISH, SUBLANG_NEUTRAL), &ptr, &size,
++                           "es" );
++
++    ok(status == STATUS_MUI_INVALID_FILE,
++       "LdrFindResource_U returned %08x for lang es, expected STATUS_MUI_INVALID_FILE\n",
++       status);
++
++    if (NT_SUCCESS(status))
++    {
++        ok(FALSE, "es greeting was %.*s, expected error\n",
++           size, (char*)ptr);
++    }
++
++    /* Test it (wrong language) */
++
++    size = 0;
++    status = get_greeting( mod, MAKELANGID(LANG_ITALIAN, SUBLANG_NEUTRAL), &ptr, &size,
++                           "it" );
++
++    ok(status == STATUS_MUI_INVALID_FILE,
++       "LdrFindResource_U returned %08x for lang it, expected STATUS_MUI_INVALID_FILE\n",
++       status);
++
++    if (NT_SUCCESS(status))
++    {
++        ok(FALSE, "it greeting was %.*s, expected error\n",
++           size, (char*)ptr);
++    }
++
++    /* Test de (wrong signature) */
++
++    size = 0;
++    status = get_greeting( mod, MAKELANGID(LANG_GERMAN, SUBLANG_NEUTRAL), &ptr, &size,
++                           "de" );
++
++    ok(status == STATUS_MUI_INVALID_FILE,
++       "LdrFindResource_U returned %08x for lang de, expected STATUS_MUI_INVALID_FILE\n",
++       status);
++
++    if (NT_SUCCESS(status))
++    {
++        ok(FALSE, "de greeting was %.*s, expected error\n",
++           size, (char*)ptr);
++    }
++
++    /* Test et (not an image) */
++
++    size = 0;
++    status = get_greeting( mod, MAKELANGID(LANG_ESTONIAN, SUBLANG_NEUTRAL), &ptr, &size,
++                           "et" );
++
++    ok(status == STATUS_INVALID_IMAGE_FORMAT,
++       "LdrFindResource_U returned %08x for lang et, expected STATUS_INVALID_IMAGE_FORMAT\n",
++       status);
++
++    if (NT_SUCCESS(status))
++    {
++        ok(FALSE, "et greeting was %.*s, expected error\n",
++           size, (char*)ptr);
++    }
++
++    /* Test hu (missing file) */
++
++    size = 0;
++    status = get_greeting( mod, MAKELANGID(LANG_HUNGARIAN, SUBLANG_NEUTRAL), &ptr, &size,
++                           "hu" );
++
++    /* On w1064v1809, uses value in LN file if language MUI not found. */
++    ok(status == STATUS_MUI_FILE_NOT_FOUND || broken(status == STATUS_SUCCESS),
++        "LdrFindResource_U returned %08x for lang hu, expected STATUS_MUI_FILE_NOT_FOUND\n",
++        status);
++
++    /* Test pt (wrong file type) */
++
++    size = 0;
++    status = get_greeting( mod, MAKELANGID(LANG_PORTUGUESE, SUBLANG_NEUTRAL), &ptr,
++                           &size, "pt" );
++
++    ok(status == STATUS_SUCCESS,
++       "LdrFindResource_U returned %08x for lang pt, expected STATUS_SUCCESS\n",
++       status);
++
++    if (NT_SUCCESS(status))
++    {
++        ok(size == sizeof(pt_greeting) - 1 && !memcmp(ptr, pt_greeting, size),
++           "pt greeting was %.*s, expected %s\n",
++           size, (char*)ptr, pt_greeting);
++    }
++
++    FreeLibrary(mod);
++}
++
+ START_TEST(mui)
+ {
+     HMODULE hntdll = GetModuleHandleA( "ntdll.dll" );
+@@ -620,6 +1399,9 @@ START_TEST(mui)
+     pRtlCompareUnicodeString = (void*)GetProcAddress( hntdll, "RtlCompareUnicodeString" );
+     pRtlLCIDToCultureName = (void*)GetProcAddress( hntdll, "RtlLCIDToCultureName" );
+     pNtQueryDefaultLocale = (void*)GetProcAddress( hntdll, "NtQueryDefaultLocale" );
++    pLdrFindResource_U = (void*)GetProcAddress( hntdll, "LdrFindResource_U" );
++    pLdrAccessResource = (void*)GetProcAddress( hntdll, "LdrAccessResource" );
+ 
+     test_lcid_to_culture_name();
++    test_mui();
+ }
+
+-- 
+2.26.3
+

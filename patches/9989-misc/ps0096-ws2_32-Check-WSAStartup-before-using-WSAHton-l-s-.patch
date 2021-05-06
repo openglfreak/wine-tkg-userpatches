@@ -1,0 +1,65 @@
+From: Walter Procyk <minion.procyk@gmail.com>
+Subject: [PATCH] ws2_32: Check WSAStartup before using WSAHton(l|s)
+Message-Id: <20210418203612.90269-1-minion.procyk@gmail.com>
+Date: Sun, 18 Apr 2021 16:36:12 -0400
+
+---
+ dlls/ws2_32/protocol.c   | 17 +++++++++--------
+ dlls/ws2_32/tests/sock.c | 10 ++++++++++
+ 2 files changed, 19 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/ws2_32/protocol.c b/dlls/ws2_32/protocol.c
+index 262171ebab0..1d0caab5d1c 100644
+--- a/dlls/ws2_32/protocol.c
++++ b/dlls/ws2_32/protocol.c
+@@ -4253,6 +4253,12 @@ WS_u_short WINAPI WS_htons(WS_u_short hostshort)
+  */
+ int WINAPI WSAHtonl( SOCKET s, WS_u_long hostlong, WS_u_long *netlong )
+ {
++    if (!num_startup)
++    {
++        SetLastError(WSANOTINITIALISED);
++        return SOCKET_ERROR;
++    }
++
+     if (netlong)
+     {
+         *netlong = htonl( hostlong );
+@@ -4271,6 +4272,12 @@ int WINAPI WSAHtonl(SOCKET s, WS_u_long hostlong, WS_u_long *lpnetlong)
+  */
+ int WINAPI WSAHtons( SOCKET s, WS_u_short hostshort, WS_u_short *netshort )
+ {
++    if (!num_startup)
++    {
++        SetLastError(WSANOTINITIALISED);
++        return SOCKET_ERROR;
++    }
++
+     if (netshort)
+     {
+         *netshort = htons( hostshort );
+diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
+index 5a1a271b099..90987532b03 100644
+--- a/dlls/ws2_32/tests/sock.c
++++ b/dlls/ws2_32/tests/sock.c
+@@ -1089,6 +1089,16 @@ static void test_WithoutWSAStartup(void)
+     ok(gethostbyname("localhost") == NULL, "gethostbyname() succeeded unexpectedly\n");
+     err = WSAGetLastError();
+     ok(err == WSANOTINITIALISED, "Expected 10093, received %d\n", err);
++
++    WSASetLastError(0xdeadbeef);
++    ok(SOCKET_ERROR == WSAHtonl(0, 0, 0), "Expected SOCKET_ERROR, but was successful\n");
++    err = WSAGetLastError();
++    ok(err == WSANOTINITIALISED, "Expected 10093, received %d\n", err);
++
++    WSASetLastError(0xdeadbeef);
++    ok(SOCKET_ERROR == WSAHtons(0, 0, 0), "Expected SOCKET_ERROR, but was successful\n");
++    err = WSAGetLastError();
++    ok(err == WSANOTINITIALISED, "Expected 10093, received %d\n", err);
+ }
+ 
+ static void test_WithWSAStartup(void)
+
+-- 
+2.30.2
+

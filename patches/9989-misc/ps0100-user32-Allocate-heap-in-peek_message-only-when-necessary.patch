@@ -1,0 +1,80 @@
+From 6037f38928d8d0143e3d3ee742222a2d9a7ebf0d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 29 Apr 2021 11:36:15 +0200
+Subject: [PATCH] user32: Allocate heap in peek_message only when necessary.
+
+---
+ dlls/user32/message.c | 18 ++++++++++--------
+ 1 file changed, 10 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/user32/message.c b/dlls/user32/message.c
+index 82657c1eb74..e837ca4cdd1 100644
+--- a/dlls/user32/message.c
++++ b/dlls/user32/message.c
+@@ -2671,12 +2671,11 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+     INPUT_MESSAGE_SOURCE prev_source = thread_info->msg_source;
+     struct received_message_info info, *old_info;
+     unsigned int hw_id = 0;  /* id of previous hardware message */
+-    void *buffer;
++    char buffer_init[256];
+     size_t buffer_size = 256;
++    void *buffer = buffer_init;
+     BOOL skip = FALSE;
+ 
+-    if (!(buffer = HeapAlloc( GetProcessHeap(), 0, buffer_size ))) return -1;
+-
+     if (!first && !last) last = ~0;
+     if (hwnd == HWND_BROADCAST) hwnd = HWND_TOPMOST;
+ 
+@@ -2748,19 +2747,22 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+ 
+         if (res)
+         {
+-            HeapFree( GetProcessHeap(), 0, buffer );
+             if (res == STATUS_PENDING)
+             {
+                 thread_info->wake_mask = changed_mask & (QS_SENDMESSAGE | QS_SMRESULT);
+                 thread_info->changed_mask = changed_mask;
++                if (buffer != buffer_init) HeapFree( GetProcessHeap(), 0, buffer );
+                 return 0;
+             }
+             if (res != STATUS_BUFFER_OVERFLOW)
+             {
+                 SetLastError( RtlNtStatusToDosError(res) );
++                if (buffer != buffer_init) HeapFree( GetProcessHeap(), 0, buffer );
+                 return -1;
+             }
+-            if (!(buffer = HeapAlloc( GetProcessHeap(), 0, buffer_size ))) return -1;
++            if (buffer == buffer_init) buffer = HeapAlloc( GetProcessHeap(), 0, buffer_size );
++            else buffer = HeapReAlloc( GetProcessHeap(), 0, buffer, buffer_size );
++            if (!buffer) return -1;
+             continue;
+         }
+ 
+@@ -2882,7 +2884,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+                 thread_info->GetMessagePosVal = MAKELONG( info.msg.pt.x, info.msg.pt.y );
+                 thread_info->GetMessageTimeVal = info.msg.time;
+                 thread_info->GetMessageExtraInfoVal = msg_data->hardware.info;
+-                HeapFree( GetProcessHeap(), 0, buffer );
++                if (buffer != buffer_init) HeapFree( GetProcessHeap(), 0, buffer );
+                 HOOK_CallHooks( WH_GETMESSAGE, HC_ACTION, flags & PM_REMOVE, (LPARAM)msg, TRUE );
+                 return 1;
+             }
+@@ -2897,7 +2899,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+                     /* if this is a nested call return right away */
+                     if (first == info.msg.message && last == info.msg.message)
+                     {
+-                        HeapFree( GetProcessHeap(), 0, buffer );
++                        if (buffer != buffer_init) HeapFree( GetProcessHeap(), 0, buffer );
+                         return 0;
+                     }
+                 }
+@@ -2918,7 +2920,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+             thread_info->GetMessageTimeVal = info.msg.time;
+             thread_info->GetMessageExtraInfoVal = 0;
+             thread_info->msg_source = msg_source_unavailable;
+-            HeapFree( GetProcessHeap(), 0, buffer );
++            if (buffer != buffer_init) HeapFree( GetProcessHeap(), 0, buffer );
+             HOOK_CallHooks( WH_GETMESSAGE, HC_ACTION, flags & PM_REMOVE, (LPARAM)msg, TRUE );
+             return 1;
+         }

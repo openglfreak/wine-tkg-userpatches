@@ -1,0 +1,428 @@
+From b6c3e1b71a9221445f71011b8e6b25b65e6ab425 Mon Sep 17 00:00:00 2001
+From: Zebediah Figura <z.figura12@gmail.com>
+Date: Mon, 8 Mar 2021 16:38:18 -0600
+Subject: [PATCH 02/28] server: Create fast synchronization objects for events.
+
+---
+ configure.ac        |   1 +
+ server/Makefile.in  |   1 +
+ server/event.c      |  19 ++-
+ server/fast_sync.c  | 280 ++++++++++++++++++++++++++++++++++++++++++++
+ server/object.h     |   4 +
+ server/protocol.def |   2 +-
+ 6 files changed, 305 insertions(+), 2 deletions(-)
+ create mode 100644 server/fast_sync.c
+
+diff --git a/configure.ac b/configure.ac
+index 2f495ba2fbb..8b557ecd5c3 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -485,6 +485,7 @@ AC_CHECK_HEADERS(\
+ 	linux/serial.h \
+ 	linux/types.h \
+ 	linux/ucdrom.h \
++	linux/winesync.h \
+ 	lwp.h \
+ 	mach-o/loader.h \
+ 	mach/mach.h \
+diff --git a/server/Makefile.in b/server/Makefile.in
+index a8ef46dc27b..66b1d790dcd 100644
+--- a/server/Makefile.in
++++ b/server/Makefile.in
+@@ -13,6 +13,7 @@ C_SRCS = \
+ 	directory.c \
+ 	esync.c \
+ 	event.c \
++	fast_sync.c \
+ 	fd.c \
+ 	file.c \
+ 	fsync.c \
+diff --git a/server/event.c b/server/event.c
+index 300261a1b74..f717d862d10 100644
+--- a/server/event.c
++++ b/server/event.c
+@@ -60,6 +60,7 @@ struct event
+     int            signaled;        /* event has been signaled */
+     int            esync_fd;        /* esync file descriptor */
+     unsigned int   fsync_idx;
++    struct fast_sync *fast_sync;    /* fast synchronization object */
+ };
+ 
+ static void event_dump( struct object *obj, int verbose );
+@@ -69,6 +70,7 @@ static int event_get_esync_fd( struct object *obj, enum esync_type *type );
+ static unsigned int event_get_fsync_idx( struct object *obj, enum fsync_type *type );
+ static int event_signal( struct object *obj, unsigned int access);
+ static struct list *event_get_kernel_obj_list( struct object *obj );
++static struct fast_sync *event_get_fast_sync( struct object *obj );
+ static void event_destroy( struct object *obj );
+ 
+ static const struct object_ops event_ops =
+@@ -93,7 +95,7 @@ static const struct object_ops event_ops =
+     default_unlink_name,       /* unlink_name */
+     no_open_file,              /* open_file */
+     event_get_kernel_obj_list, /* get_kernel_obj_list */
+-    no_get_fast_sync,          /* get_fast_sync */
++    event_get_fast_sync,       /* get_fast_sync */
+     no_close_handle,           /* close_handle */
+     event_destroy              /* destroy */
+ };
+@@ -169,6 +171,8 @@ struct event *create_event( struct object *root, const struct unicode_str *name,
+ 
+             if (do_esync())
+                 event->esync_fd = esync_create_fd( initial_state, 0 );
++
++            event->fast_sync    = NULL;
+         }
+     }
+     return event;
+@@ -215,6 +219,7 @@ void set_event( struct event *event )
+     event->signaled = 1;
+     /* wake up all waiters if manual reset, a single one otherwise */
+     wake_up( &event->obj, !event->manual_reset );
++    fast_set_event( event->fast_sync );
+ }
+ 
+ void reset_event( struct event *event )
+@@ -237,6 +242,8 @@ void reset_event( struct event *event )
+ 
+     if (do_esync())
+         esync_clear( event->esync_fd );
++
++    fast_reset_event( event->fast_sync );
+ }
+ 
+ static void event_dump( struct object *obj, int verbose )
+@@ -296,6 +303,16 @@ static struct list *event_get_kernel_obj_list( struct object *obj )
+     return &event->kernel_object;
+ }
+ 
++static struct fast_sync *event_get_fast_sync( struct object *obj )
++{
++    struct event *event = (struct event *)obj;
++
++    if (!event->fast_sync)
++        event->fast_sync = fast_create_event( FAST_SYNC_EVENT, event->manual_reset, event->signaled );
++    if (event->fast_sync) grab_object( event->fast_sync );
++    return event->fast_sync;
++}
++
+ static void event_destroy( struct object *obj )
+ {
+     struct event *event = (struct event *)obj;
+diff --git a/server/fast_sync.c b/server/fast_sync.c
+new file mode 100644
+index 00000000000..57fda29dec1
+--- /dev/null
++++ b/server/fast_sync.c
+@@ -0,0 +1,280 @@
++/*
++ * Fast synchronization primitives
++ *
++ * Copyright (C) 2021 Zebediah Figura for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "config.h"
++
++#include <assert.h>
++#include <fcntl.h>
++#ifdef HAVE_LINUX_WINESYNC_H
++# include <linux/winesync.h>
++#endif
++#include <stdio.h>
++#ifdef HAVE_SYS_IOCTL_H
++# include <sys/ioctl.h>
++#endif
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "winternl.h"
++
++#include "file.h"
++#include "thread.h"
++
++#ifdef HAVE_LINUX_WINESYNC_H
++
++struct fast_sync_device
++{
++    struct object obj;      /* object header */
++    struct fd *fd;          /* fd for unix fd */
++};
++
++static struct fast_sync_device *fast_sync_device_object;
++
++static void fast_sync_device_dump( struct object *obj, int verbose );
++static struct fd *fast_sync_device_get_fd( struct object *obj );
++static void fast_sync_device_destroy( struct object *obj );
++static enum server_fd_type fast_sync_device_get_fd_type( struct fd *fd );
++
++static const struct object_ops fast_sync_device_ops =
++{
++    sizeof(struct fast_sync_device),    /* size */
++    &no_type,                           /* type */
++    fast_sync_device_dump,              /* dump */
++    no_add_queue,                       /* add_queue */
++    NULL,                               /* remove_queue */
++    NULL,                               /* signaled */
++    NULL,                               /* get_esync_fd */
++    NULL,                               /* get_fsync_idx */
++    NULL,                               /* satisfied */
++    no_signal,                          /* signal */
++    fast_sync_device_get_fd,            /* get_fd */
++    default_map_access,                 /* map_access */
++    default_get_sd,                     /* get_sd */
++    default_set_sd,                     /* set_sd */
++    no_get_full_name,                   /* get_full_name */
++    no_lookup_name,                     /* lookup_name */
++    no_link_name,                       /* link_name */
++    NULL,                               /* unlink_name */
++    no_open_file,                       /* open_file */
++    no_kernel_obj_list,                 /* get_kernel_obj_list */
++    no_get_fast_sync,                   /* get_fast_sync */
++    no_close_handle,                    /* close_handle */
++    fast_sync_device_destroy            /* destroy */
++};
++
++static const struct fd_ops fast_sync_device_fd_ops =
++{
++    default_fd_get_poll_events,     /* get_poll_events */
++    default_poll_event,             /* poll_event */
++    fast_sync_device_get_fd_type,   /* get_fd_type */
++    no_fd_read,                     /* read */
++    no_fd_write,                    /* write */
++    no_fd_flush,                    /* flush */
++    no_fd_get_file_info,            /* get_file_info */
++    no_fd_get_volume_info,          /* get_volume_info */
++    no_fd_ioctl,                    /* ioctl */
++    no_fd_queue_async,              /* queue_async */
++    default_fd_reselect_async       /* reselect_async */
++};
++
++static void fast_sync_device_dump( struct object *obj, int verbose )
++{
++    struct fast_sync_device *device = (struct fast_sync_device *)obj;
++    assert( obj->ops == &fast_sync_device_ops );
++    fprintf( stderr, "Fast synchronization device fd=%p\n", device->fd );
++}
++
++static struct fd *fast_sync_device_get_fd( struct object *obj )
++{
++    struct fast_sync_device *device = (struct fast_sync_device *)obj;
++    return (struct fd *)grab_object( device->fd );
++}
++
++static void fast_sync_device_destroy( struct object *obj )
++{
++    struct fast_sync_device *device = (struct fast_sync_device *)obj;
++    assert( obj->ops == &fast_sync_device_ops );
++    if (device->fd) release_object( device->fd );
++    fast_sync_device_object = NULL;
++}
++
++static enum server_fd_type fast_sync_device_get_fd_type( struct fd *fd )
++{
++    return FD_TYPE_FILE;
++}
++
++static struct fast_sync_device *get_fast_sync_device(void)
++{
++    struct fast_sync_device *device;
++    int unix_fd;
++
++    if (fast_sync_device_object)
++        return (struct fast_sync_device *)grab_object( fast_sync_device_object );
++
++    unix_fd = open( "/dev/winesync", O_CLOEXEC | O_RDONLY );
++    if (unix_fd == -1)
++    {
++        file_set_error();
++        return NULL;
++    }
++
++    if (!(device = alloc_object( &fast_sync_device_ops )))
++    {
++        close( unix_fd );
++        set_error( STATUS_NO_MEMORY );
++        return NULL;
++    }
++
++    if (!(device->fd = create_anonymous_fd( &fast_sync_device_fd_ops, unix_fd, &device->obj, 0 )))
++    {
++        release_object( device );
++        set_error( STATUS_NO_MEMORY );
++        return NULL;
++    }
++
++    fast_sync_device_object = device;
++    return device;
++}
++
++struct fast_sync
++{
++    struct object obj;
++    struct fast_sync_device *device;
++    enum fast_sync_type type;
++    int linux_obj;
++};
++
++static void fast_sync_dump( struct object *obj, int verbose );
++static void fast_sync_destroy( struct object *obj );
++
++static const struct object_ops fast_sync_ops =
++{
++    sizeof(struct fast_sync),   /* size */
++    &no_type,                   /* type */
++    fast_sync_dump,             /* dump */
++    no_add_queue,               /* add_queue */
++    NULL,                       /* remove_queue */
++    NULL,                       /* signaled */
++    NULL,                       /* get_esync_fd */
++    NULL,                       /* get_fsync_idx */
++    NULL,                       /* satisfied */
++    no_signal,                  /* signal */
++    no_get_fd,                  /* get_fd */
++    default_map_access,         /* map_access */
++    default_get_sd,             /* get_sd */
++    default_set_sd,             /* set_sd */
++    no_get_full_name,           /* get_full_name */
++    no_lookup_name,             /* lookup_name */
++    no_link_name,               /* link_name */
++    NULL,                       /* unlink_name */
++    no_open_file,               /* open_file */
++    no_kernel_obj_list,         /* get_kernel_obj_list */
++    no_get_fast_sync,           /* get_fast_sync */
++    no_close_handle,            /* close_handle */
++    fast_sync_destroy           /* destroy */
++};
++
++static void fast_sync_dump( struct object *obj, int verbose )
++{
++    struct fast_sync *fast_sync = (struct fast_sync *)obj;
++    assert( obj->ops == &fast_sync_ops );
++    fprintf( stderr, "Fast synchronization object type=%u linux_obj=%d\n",
++             fast_sync->type, fast_sync->linux_obj );
++}
++
++static void fast_sync_destroy( struct object *obj )
++{
++    struct fast_sync *fast_sync = (struct fast_sync *)obj;
++
++    if (fast_sync->linux_obj >= 0)
++        ioctl( get_unix_fd( fast_sync->device->fd ), WINESYNC_IOC_DELETE, &fast_sync->linux_obj );
++    release_object( fast_sync->device );
++}
++
++struct fast_sync *fast_create_event( enum fast_sync_type type, int manual_reset, int signaled )
++{
++    struct winesync_sem_args args = {0};
++    struct fast_sync_device *device;
++    struct fast_sync *fast_sync;
++
++    if (!(device = get_fast_sync_device())) return NULL;
++
++    if (!(fast_sync = alloc_object( &fast_sync_ops ))) return NULL;
++
++    fast_sync->device = device;
++    fast_sync->type = type;
++    fast_sync->linux_obj = -1;
++
++    args.count = signaled;
++    args.max = 1;
++    if (!manual_reset)
++        args.flags |= WINESYNC_SEM_GETONWAIT;
++    if (ioctl( get_unix_fd( device->fd ), WINESYNC_IOC_CREATE_SEM, &args ) < 0)
++    {
++        file_set_error();
++        release_object( fast_sync );
++        return NULL;
++    }
++    fast_sync->linux_obj = args.sem;
++
++    return fast_sync;
++}
++
++void fast_set_event( struct fast_sync *fast_sync )
++{
++    struct winesync_sem_args args = {0};
++
++    if (!fast_sync) return;
++
++    if (debug_level) fprintf( stderr, "fast_set_event %d\n", fast_sync->linux_obj );
++
++    args.sem = fast_sync->linux_obj;
++    args.count = 1;
++    ioctl( get_unix_fd( fast_sync->device->fd ), WINESYNC_IOC_PUT_SEM, &args );
++}
++
++void fast_reset_event( struct fast_sync *fast_sync )
++{
++    if (!fast_sync) return;
++
++    if (debug_level) fprintf( stderr, "fast_reset_event %d\n", fast_sync->linux_obj );
++
++    ioctl( get_unix_fd( fast_sync->device->fd ), WINESYNC_IOC_GET_SEM, &fast_sync->linux_obj );
++}
++
++#else
++
++struct fast_sync *fast_create_event( enum fast_sync_type type, int manual_reset, int signaled )
++{
++    set_error( STATUS_NOT_IMPLEMENTED );
++    return NULL;
++}
++
++void fast_set_event( struct fast_sync *fast_sync )
++{
++}
++
++void fast_reset_event( struct fast_sync *obj )
++{
++}
++
++#endif
+diff --git a/server/object.h b/server/object.h
+index 8cde328b434..01888542fa6 100644
+--- a/server/object.h
++++ b/server/object.h
+@@ -234,6 +234,10 @@ extern void abandon_mutexes( struct thread *thread );
+ 
+ /* fast-synchronization functions */
+ 
++extern struct fast_sync *fast_create_event( enum fast_sync_type type, int manual_reset, int signaled );
++extern void fast_set_event( struct fast_sync *obj );
++extern void fast_reset_event( struct fast_sync *obj );
++
+ extern struct fast_sync *no_get_fast_sync( struct object *obj );
+ 
+ /* serial functions */
+diff --git a/server/protocol.def b/server/protocol.def
+index 8a40963e130..c2c7a3bb3c0 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -3849,7 +3849,7 @@ enum fsync_type
+ 
+ enum fast_sync_type
+ {
+-    FAST_SYNC_SEMAPHORE,
++    FAST_SYNC_SEMAPHORE = 1,
+     FAST_SYNC_MUTEX,
+     FAST_SYNC_EVENT,
+     FAST_SYNC_SERVER,
+-- 
+2.31.1
+

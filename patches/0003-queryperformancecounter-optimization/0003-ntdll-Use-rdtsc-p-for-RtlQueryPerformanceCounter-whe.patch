@@ -1,0 +1,52 @@
+From 790f1d849fb2d8e0b9d3d50b49bf01fa59a2a2ff Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 4 Mar 2021 10:46:06 +0100
+Subject: [PATCH 03/10] ntdll: Use rdtsc(p) for RtlQueryPerformanceCounter when
+ enabled.
+
+---
+ dlls/ntdll/time.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/dlls/ntdll/time.c b/dlls/ntdll/time.c
+index f9187f98627..68000061923 100644
+--- a/dlls/ntdll/time.c
++++ b/dlls/ntdll/time.c
+@@ -39,6 +39,7 @@
+ #include "wine/exception.h"
+ #include "wine/debug.h"
+ #include "ntdll_misc.h"
++#include "intrin.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(ntdll);
+ 
+@@ -380,6 +381,26 @@ LONGLONG WINAPI RtlGetSystemTimePrecise( void )
+  */
+ BOOL WINAPI DECLSPEC_HOTPATCH RtlQueryPerformanceCounter( LARGE_INTEGER *counter )
+ {
++    if (user_shared_data->u3.QpcBypassEnabled & SHARED_GLOBAL_FLAGS_QPC_BYPASS_ENABLED)
++    {
++        unsigned __int64 tsc;
++        unsigned int aux;
++
++        if (user_shared_data->u3.QpcBypassEnabled & SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_RDTSCP)
++            tsc = __rdtscp(&aux);
++        else
++        {
++            if (user_shared_data->u3.QpcBypassEnabled & SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_MFENCE)
++                __asm__ __volatile__ ( "mfence" : : : "memory" );
++            if (user_shared_data->u3.QpcBypassEnabled & SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_LFENCE)
++                __asm__ __volatile__ ( "lfence" : : : "memory" );
++            tsc = __rdtsc();
++        }
++
++        counter->QuadPart = (tsc + user_shared_data->QpcBias) >> user_shared_data->u3.QpcShift;
++        return TRUE;
++    }
++
+     NtQueryPerformanceCounter( counter, NULL );
+     return TRUE;
+ }
+-- 
+2.31.1
+

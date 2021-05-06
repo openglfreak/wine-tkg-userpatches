@@ -1,0 +1,232 @@
+From: Mark Harmstone <mark@harmstone.com>
+Subject: [PATCH 10/10] ntdll: Cleanup MUI structures when modules are unloaded.
+Message-Id: <20210327194737.13026-10-mark@harmstone.com>
+Date: Sat, 27 Mar 2021 19:47:37 +0000
+In-Reply-To: <20210327194737.13026-1-mark@harmstone.com>
+References: <20210327194737.13026-1-mark@harmstone.com>
+
+Signed-off-by: Mark Harmstone <mark@harmstone.com>
+---
+ dlls/ntdll/loader.c     | 72 ++++++++++++++++++++++++++++++++++++++---
+ dlls/ntdll/mui.c        | 51 +++++++++++++++++++++++++++++
+ dlls/ntdll/ntdll_misc.h |  1 +
+ 3 files changed, 120 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 7dada146044..c1746955558 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -3286,12 +3286,42 @@ static void free_modref( WINE_MODREF *wm )
+  * for the library type.
+  *
+  * The loader_section must be locked while calling this function.
++ *
++ * If anything is unloaded, the modules array is allocated and populated,
++ * so that cleanup_mui can be called for these outside of the lock.
+  */
+-static void MODULE_FlushModrefs(void)
++static void MODULE_FlushModrefs( void ***modules, unsigned int *num_modules )
+ {
+     PLIST_ENTRY mark, entry, prev;
+     LDR_DATA_TABLE_ENTRY *mod;
+     WINE_MODREF*wm;
++    unsigned int max_num_modules = 0;
++    void **m;
++
++    mark = &NtCurrentTeb()->Peb->LdrData->InInitializationOrderModuleList;
++    for (entry = mark->Blink; entry != mark; entry = prev)
++    {
++        mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InInitializationOrderLinks);
++        wm = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
++        prev = entry->Blink;
++        if (!mod->LoadCount) max_num_modules++;
++    }
++
++    /* check load order list too for modules that haven't been initialized yet */
++    mark = &NtCurrentTeb()->Peb->LdrData->InLoadOrderModuleList;
++    for (entry = mark->Blink; entry != mark; entry = prev)
++    {
++        mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
++        wm = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
++        prev = entry->Blink;
++        if (!mod->LoadCount) max_num_modules++;
++    }
++
++    if (max_num_modules == 0)
++        return;
++
++    *modules = m = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(void*) * max_num_modules);
++    *num_modules = 0;
+ 
+     mark = &NtCurrentTeb()->Peb->LdrData->InInitializationOrderModuleList;
+     for (entry = mark->Blink; entry != mark; entry = prev)
+@@ -3299,7 +3329,17 @@ static void MODULE_FlushModrefs(void)
+         mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InInitializationOrderLinks);
+         wm = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
+         prev = entry->Blink;
+-        if (!mod->LoadCount) free_modref( wm );
++        if (!mod->LoadCount)
++        {
++            if (m)
++            {
++                *m = wm->ldr.DllBase;
++                m++;
++                (*num_modules)++;
++            }
++
++            free_modref( wm );
++        }
+     }
+ 
+     /* check load order list too for modules that haven't been initialized yet */
+@@ -3309,7 +3349,17 @@ static void MODULE_FlushModrefs(void)
+         mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+         wm = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
+         prev = entry->Blink;
+-        if (!mod->LoadCount) free_modref( wm );
++        if (!mod->LoadCount)
++        {
++            if (m)
++            {
++                *m = wm->ldr.DllBase;
++                m++;
++                (*num_modules)++;
++            }
++
++            free_modref( wm );
++        }
+     }
+ }
+ 
+@@ -3354,6 +3404,8 @@ NTSTATUS WINAPI LdrUnloadDll( HMODULE hModule )
+ {
+     WINE_MODREF *wm;
+     NTSTATUS retv = STATUS_SUCCESS;
++    void **modules;
++    unsigned int num_freed = 0;
+ 
+     if (process_detaching) return retv;
+ 
+@@ -3373,7 +3425,7 @@ NTSTATUS WINAPI LdrUnloadDll( HMODULE hModule )
+         if ( free_lib_count <= 1 )
+         {
+             process_detach();
+-            MODULE_FlushModrefs();
++            MODULE_FlushModrefs( &modules, &num_freed );
+         }
+ 
+         TRACE("END\n");
+@@ -3385,6 +3437,18 @@ NTSTATUS WINAPI LdrUnloadDll( HMODULE hModule )
+ 
+     RtlLeaveCriticalSection( &loader_section );
+ 
++    if (num_freed > 0)
++    {
++        unsigned int i;
++
++        for (i = 0; i < num_freed; i++)
++        {
++            cleanup_mui(modules[i]);
++        }
++
++        RtlFreeHeap( GetProcessHeap(), 0, modules);
++    }
++
+     return retv;
+ }
+ 
+diff --git a/dlls/ntdll/mui.c b/dlls/ntdll/mui.c
+index a9758c71f82..4921d710a2e 100644
+--- a/dlls/ntdll/mui.c
++++ b/dlls/ntdll/mui.c
+@@ -1244,6 +1244,7 @@ NTSTATUS NTAPI LdrRemoveLoadAsDataTable( PVOID init_module, PVOID *base_module,
+                                          ULONG flags )
+ {
+     data_module *dm;
++    BOOLEAN found = FALSE;
+ 
+     TRACE("(%p, %p, %p, %x)\n", init_module, base_module, size, flags);
+ 
+@@ -1254,6 +1255,7 @@ NTSTATUS NTAPI LdrRemoveLoadAsDataTable( PVOID init_module, PVOID *base_module,
+         if (dm->module == init_module)
+         {
+             list_remove( &dm->entry );
++            found = TRUE;
+             RtlFreeHeap( GetProcessHeap(), 0, dm );
+             break;
+         }
+@@ -1261,6 +1263,9 @@ NTSTATUS NTAPI LdrRemoveLoadAsDataTable( PVOID init_module, PVOID *base_module,
+ 
+     RtlLeaveCriticalSection( &data_modules_section );
+ 
++    if (found)
++        cleanup_mui( init_module );
++
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -1332,3 +1337,49 @@ void try_mui_redirect_module( HMODULE *mod, const IMAGE_RESOURCE_DATA_ENTRY *ent
+ 
+     RtlLeaveCriticalSection( &mm->list_section );
+ }
++
++/***********************************************************************
++ *           cleanup_mui
++ *
++ * Free MUI structures when module is unloaded.
++ */
++void cleanup_mui( HMODULE mod )
++{
++    mui_module *mm = NULL, *mm2;
++
++    TRACE("(%p)\n", mod);
++
++    RtlEnterCriticalSection( &mui_section );
++
++    LIST_FOR_EACH_ENTRY( mm2, &mui_modules, mui_module, entry )
++    {
++        if (mm2->module == mod)
++        {
++            mm = mm2;
++            list_remove( &mm2->entry );
++            break;
++        }
++    }
++
++    RtlLeaveCriticalSection( &mui_section );
++
++    if (!mm)
++        return;
++
++    while (!list_empty( &mm->langs ))
++    {
++        mui_lang_module *mlm = LIST_ENTRY(mm->langs.next, mui_lang_module, entry);
++
++        TRACE("unmapping MUI file loaded at %p\n", mlm->addr);
++
++        list_remove( &mlm->entry );
++
++        NtUnmapViewOfSection( NtCurrentProcess(), mlm->addr );
++
++        RtlFreeHeap( GetProcessHeap(), 0, mlm);
++    }
++
++    RtlDeleteCriticalSection( &mm->list_section );
++
++    RtlFreeHeap( GetProcessHeap(), 0, mm );
++}
+diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
+index 563d599d426..552ff2013db 100644
+--- a/dlls/ntdll/ntdll_misc.h
++++ b/dlls/ntdll/ntdll_misc.h
+@@ -118,5 +118,6 @@ extern NTSTATUS find_resource_entry( HMODULE hmod, const LDR_RESOURCE_INFO *info
+ extern BOOLEAN try_mui_find_entry( HMODULE mod, const LDR_RESOURCE_INFO *info, ULONG level,
+                                    const void **ret, NTSTATUS *status) DECLSPEC_HIDDEN;
+ extern void try_mui_redirect_module( HMODULE *mod, const IMAGE_RESOURCE_DATA_ENTRY *entry ) DECLSPEC_HIDDEN;
++extern void cleanup_mui( HMODULE mod ) DECLSPEC_HIDDEN;
+ 
+ #endif
+
+-- 
+2.26.3
+

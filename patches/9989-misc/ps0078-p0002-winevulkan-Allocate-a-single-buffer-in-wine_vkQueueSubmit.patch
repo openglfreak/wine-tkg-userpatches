@@ -1,0 +1,72 @@
+From c769efeb3bdfcb520edd49376f85adefac07f4cb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 4 Mar 2021 01:24:40 +0100
+Subject: [PATCH 2/2] winevulkan: Allocate a single buffer in
+ wine_vkQueueSubmit.
+
+---
+ dlls/winevulkan/vulkan.c | 25 ++++++++-----------------
+ 1 file changed, 8 insertions(+), 17 deletions(-)
+
+diff --git a/dlls/winevulkan/vulkan.c b/dlls/winevulkan/vulkan.c
+index 18668a112e0..5ff0103a8fd 100644
+--- a/dlls/winevulkan/vulkan.c
++++ b/dlls/winevulkan/vulkan.c
+@@ -1419,7 +1419,7 @@ VkResult WINAPI wine_vkQueueSubmit(VkQueue queue, uint32_t count,
+     VkSubmitInfo *submits_host;
+     VkResult res;
+     VkCommandBuffer *command_buffers;
+-    unsigned int i, j, num_command_buffers;
++    unsigned int i, j, num_command_buffers, buf_size;
+ 
+     TRACE("%p %u %p 0x%s\n", queue, count, submits, wine_dbgstr_longlong(fence));
+ 
+@@ -1428,40 +1428,31 @@ VkResult WINAPI wine_vkQueueSubmit(VkQueue queue, uint32_t count,
+         return queue->device->funcs.p_vkQueueSubmit(queue->queue, 0, NULL, fence);
+     }
+ 
+-    submits_host = calloc(count, sizeof(*submits_host));
++    buf_size = count * sizeof(*submits_host);
++    for (i = 0; i < count; i++) buf_size += submits[i].commandBufferCount * sizeof(*command_buffers);
++
++    submits_host = malloc(buf_size);
+     if (!submits_host)
+     {
+         ERR("Unable to allocate memory for submit buffers!\n");
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+     }
+ 
++    command_buffers = (VkCommandBuffer *)(submits_host + count);
+     for (i = 0; i < count; i++)
+     {
+         memcpy(&submits_host[i], &submits[i], sizeof(*submits_host));
+-
+-        num_command_buffers = submits[i].commandBufferCount;
+-        command_buffers = calloc(num_command_buffers, sizeof(*command_buffers));
+-        if (!command_buffers)
+-        {
+-            ERR("Unable to allocate memory for command buffers!\n");
+-            res = VK_ERROR_OUT_OF_HOST_MEMORY;
+-            goto done;
+-        }
+-
++        if (!(num_command_buffers = submits[i].commandBufferCount)) continue;
+         for (j = 0; j < num_command_buffers; j++)
+         {
+             command_buffers[j] = submits[i].pCommandBuffers[j]->command_buffer;
+         }
+         submits_host[i].pCommandBuffers = command_buffers;
++        command_buffers += num_command_buffers;
+     }
+ 
+     res = queue->device->funcs.p_vkQueueSubmit(queue->queue, count, submits_host, fence);
+ 
+-done:
+-    for (i = 0; i < count; i++)
+-    {
+-        free((void *)submits_host[i].pCommandBuffers);
+-    }
+     free(submits_host);
+ 
+     TRACE("Returning %d\n", res);
+

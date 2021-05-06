@@ -1,0 +1,86 @@
+From 8c3cb99d75777b43169c533974ab6f891dfe1766 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 16 Mar 2021 15:09:12 +0100
+Subject: [PATCH 06/16] ntdll: Split RtlFreeHeap standard implementation.
+
+---
+ dlls/ntdll/heap.c       | 30 ++++++++++++++++++------------
+ dlls/ntdll/ntdll_misc.h |  1 +
+ 2 files changed, 19 insertions(+), 12 deletions(-)
+
+diff --git a/dlls/ntdll/heap.c b/dlls/ntdll/heap.c
+index 7bdc0190b92..febec963c8c 100644
+--- a/dlls/ntdll/heap.c
++++ b/dlls/ntdll/heap.c
+@@ -1853,8 +1853,7 @@ void * WINAPI DECLSPEC_HOTPATCH RtlAllocateHeap( HANDLE heap, ULONG flags, SIZE_
+  */
+ BOOLEAN WINAPI DECLSPEC_HOTPATCH RtlFreeHeap( HANDLE heap, ULONG flags, void *ptr )
+ {
+-    ARENA_INUSE *pInUse;
+-    SUBHEAP *subheap;
++    NTSTATUS status;
+     HEAP *heapPtr;
+ 
+     /* Validate the parameters */
+@@ -1870,29 +1869,36 @@ BOOLEAN WINAPI DECLSPEC_HOTPATCH RtlFreeHeap( HANDLE heap, ULONG flags, void *pt
+ 
+     flags &= HEAP_NO_SERIALIZE;
+     flags |= heapPtr->flags;
++
+     if (!(flags & HEAP_NO_SERIALIZE)) enter_critical_section( &heapPtr->critSection );
++    status = HEAP_std_free( heap, flags, ptr );
++    if (!(flags & HEAP_NO_SERIALIZE)) leave_critical_section( &heapPtr->critSection );
++
++    TRACE("(%p,%08x,%p), status %#x\n", heapPtr, flags, ptr, status );
++    if (!status) return TRUE;
++    RtlSetLastWin32ErrorAndNtStatusFromNtStatus( status );
++    return FALSE;
++}
++
++NTSTATUS HEAP_std_free( HANDLE heap, ULONG flags, void *ptr )
++{
++    ARENA_INUSE *pInUse;
++    HEAP *heapPtr = heap;
++    SUBHEAP *subheap;
+ 
+     /* Inform valgrind we are trying to free memory, so it can throw up an error message */
+     notify_free( ptr );
+ 
+     /* Some sanity checks */
+     pInUse  = (ARENA_INUSE *)ptr - 1;
+-    if (!validate_block_pointer( heapPtr, &subheap, pInUse )) goto error;
++    if (!validate_block_pointer( heapPtr, &subheap, pInUse )) return STATUS_INVALID_PARAMETER;
+ 
+     if (!subheap)
+         free_large_block( heapPtr, flags, ptr );
+     else
+         HEAP_MakeInUseBlockFree( subheap, pInUse );
+ 
+-    if (!(flags & HEAP_NO_SERIALIZE)) leave_critical_section( &heapPtr->critSection );
+-    TRACE("(%p,%08x,%p): returning TRUE\n", heap, flags, ptr );
+-    return TRUE;
+-
+-error:
+-    if (!(flags & HEAP_NO_SERIALIZE)) leave_critical_section( &heapPtr->critSection );
+-    RtlSetLastWin32ErrorAndNtStatusFromNtStatus( STATUS_INVALID_PARAMETER );
+-    TRACE("(%p,%08x,%p): returning FALSE\n", heap, flags, ptr );
+-    return FALSE;
++    return STATUS_SUCCESS;
+ }
+ 
+ 
+diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
+index c32ff27877e..ac9483c1957 100644
+--- a/dlls/ntdll/ntdll_misc.h
++++ b/dlls/ntdll/ntdll_misc.h
+@@ -129,6 +129,7 @@ static inline TEB64 *NtCurrentTeb64(void) { return NULL; }
+ static inline TEB64 *NtCurrentTeb64(void) { return (TEB64 *)NtCurrentTeb()->GdiBatchCount; }
+ #endif
+ 
++NTSTATUS HEAP_std_free( HANDLE heap, ULONG flags, void *ptr );
+ NTSTATUS HEAP_std_get_allocated_size( HANDLE heap, ULONG flags, const void *ptr, SIZE_T *out );
+ 
+ #define HASH_STRING_ALGORITHM_DEFAULT  0
+-- 
+2.31.1
+

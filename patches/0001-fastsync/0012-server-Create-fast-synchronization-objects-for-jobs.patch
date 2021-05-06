@@ -1,0 +1,76 @@
+From 6516e6c5d34133e0931f9c292830bec9d99f5ea7 Mon Sep 17 00:00:00 2001
+From: Zebediah Figura <z.figura12@gmail.com>
+Date: Mon, 8 Mar 2021 17:17:35 -0600
+Subject: [PATCH 12/28] server: Create fast synchronization objects for jobs.
+
+---
+ server/process.c | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/server/process.c b/server/process.c
+index 38d3a631448..2d48a79a909 100644
+--- a/server/process.c
++++ b/server/process.c
+@@ -188,6 +188,7 @@ struct type_descr job_type =
+ 
+ static void job_dump( struct object *obj, int verbose );
+ static int job_signaled( struct object *obj, struct wait_queue_entry *entry );
++static struct fast_sync *job_get_fast_sync( struct object *obj );
+ static int job_close_handle( struct object *obj, struct process *process, obj_handle_t handle );
+ static void job_destroy( struct object *obj );
+ 
+@@ -202,6 +203,7 @@ struct job
+     int signaled;                  /* job is signaled */
+     struct completion *completion_port; /* associated completion port */
+     apc_param_t completion_key;    /* key to send with completion messages */
++    struct fast_sync *fast_sync;   /* fast synchronization object */
+ };
+ 
+ static const struct object_ops job_ops =
+@@ -226,7 +228,7 @@ static const struct object_ops job_ops =
+     default_unlink_name,           /* unlink_name */
+     no_open_file,                  /* open_file */
+     no_kernel_obj_list,            /* get_kernel_obj_list */
+-    no_get_fast_sync,              /* get_fast_sync */
++    job_get_fast_sync,             /* get_fast_sync */
+     job_close_handle,              /* close_handle */
+     job_destroy                    /* destroy */
+ };
+@@ -249,6 +251,7 @@ static struct job *create_job_object( struct object *root, const struct unicode_
+             job->signaled = 0;
+             job->completion_port = NULL;
+             job->completion_key = 0;
++            job->fast_sync = NULL;
+         }
+     }
+     return job;
+@@ -314,6 +317,17 @@ static void terminate_job( struct job *job, int exit_code )
+     job->terminating = 0;
+     job->signaled = 1;
+     wake_up( &job->obj, 0 );
++    fast_set_event( job->fast_sync );
++}
++
++static struct fast_sync *job_get_fast_sync( struct object *obj )
++{
++    struct job *job = (struct job *)obj;
++
++    if (!job->fast_sync)
++        job->fast_sync = fast_create_event( FAST_SYNC_SERVER, 1, job->signaled );
++    if (job->fast_sync) grab_object( job->fast_sync );
++    return job->fast_sync;
+ }
+ 
+ static int job_close_handle( struct object *obj, struct process *process, obj_handle_t handle )
+@@ -338,6 +352,8 @@ static void job_destroy( struct object *obj )
+     assert( list_empty(&job->process_list) );
+ 
+     if (job->completion_port) release_object( job->completion_port );
++
++    if (job->fast_sync) release_object( job->fast_sync );
+ }
+ 
+ static void job_dump( struct object *obj, int verbose )
+-- 
+2.31.1
+

@@ -1,0 +1,111 @@
+From 1f0830e635bc9d9a33a6cab158ac5bb9af001ff2 Mon Sep 17 00:00:00 2001
+From: Zebediah Figura <z.figura12@gmail.com>
+Date: Mon, 8 Mar 2021 17:00:51 -0600
+Subject: [PATCH 07/28] server: Create fast synchronization objects for console
+ servers.
+
+---
+ server/console.c | 25 ++++++++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/server/console.c b/server/console.c
+index c9544ed448d..eba746c3875 100644
+--- a/server/console.c
++++ b/server/console.c
+@@ -146,6 +146,7 @@ struct console_server
+     struct termios        termios;     /* original termios */
+     int                   esync_fd;
+     unsigned int          fsync_idx;
++    struct fast_sync     *fast_sync;   /* fast synchronization object */
+ };
+ 
+ static void console_server_dump( struct object *obj, int verbose );
+@@ -158,6 +159,7 @@ static struct object *console_server_lookup_name( struct object *obj, struct uni
+                                                 unsigned int attr, struct object *root );
+ static struct object *console_server_open_file( struct object *obj, unsigned int access,
+                                                 unsigned int sharing, unsigned int options );
++static struct fast_sync *console_server_get_fast_sync( struct object *obj );
+ 
+ static const struct object_ops console_server_ops =
+ {
+@@ -181,7 +183,7 @@ static const struct object_ops console_server_ops =
+     NULL,                             /* unlink_name */
+     console_server_open_file,         /* open_file */
+     no_kernel_obj_list,               /* get_kernel_obj_list */
+-    no_get_fast_sync,                 /* get_fast_sync */
++    console_server_get_fast_sync,     /* get_fast_sync */
+     no_close_handle,                  /* close_handle */
+     console_server_destroy            /* destroy */
+ };
+@@ -588,6 +590,7 @@ static int queue_host_ioctl( struct console_server *server, unsigned int code, u
+     }
+     list_add_tail( &server->queue, &ioctl->entry );
+     wake_up( &server->obj, 0 );
++    fast_set_event( server->fast_sync );
+     if (async) set_error( STATUS_PENDING );
+     return 1;
+ }
+@@ -627,6 +630,7 @@ static void disconnect_console_server( struct console_server *server )
+         server->console->server = NULL;
+         server->console = NULL;
+         wake_up( &server->obj, 0 );
++        fast_set_event( server->fast_sync );
+     }
+ }
+ 
+@@ -889,6 +893,7 @@ static void console_server_destroy( struct object *obj )
+     assert( obj->ops == &console_server_ops );
+     disconnect_console_server( server );
+     if (server->fd) release_object( server->fd );
++    if (server->fast_sync) release_object( server->fast_sync );
+ }
+ 
+ static struct object *console_server_lookup_name( struct object *obj, struct unicode_str *name,
+@@ -957,6 +962,17 @@ static struct object *console_server_open_file( struct object *obj, unsigned int
+     return grab_object( obj );
+ }
+ 
++static struct fast_sync *console_server_get_fast_sync( struct object *obj )
++{
++    struct console_server *server = (struct console_server *)obj;
++    int signaled = !server->console || !list_empty( &server->queue );
++
++    if (!server->fast_sync)
++        server->fast_sync = fast_create_event( FAST_SYNC_SERVER, 1, signaled );
++    if (server->fast_sync) grab_object( server->fast_sync );
++    return server->fast_sync;
++}
++
+ static struct object *create_console_server( void )
+ {
+     struct console_server *server;
+@@ -967,6 +983,7 @@ static struct object *create_console_server( void )
+     server->term_fd = -1;
+     list_init( &server->queue );
+     list_init( &server->read_queue );
++    server->fast_sync = NULL;
+     server->fd = alloc_pseudo_fd( &console_server_fd_ops, &server->obj, FILE_SYNCHRONOUS_IO_NONALERT );
+     if (!server->fd)
+     {
+@@ -1609,6 +1626,9 @@ DECL_HANDLER(get_next_console_request)
+ 
+         if (do_esync() && list_empty( &server->queue ))
+             esync_clear( server->esync_fd );
++
++        if (list_empty( &server->queue ))
++            fast_reset_event( server->fast_sync );
+     }
+ 
+     if (ioctl)
+@@ -1714,5 +1734,8 @@ DECL_HANDLER(get_next_console_request)
+     if (do_esync() && list_empty( &server->queue ))
+         esync_clear( server->esync_fd );
+ 
++    if (list_empty( &server->queue ))
++        fast_reset_event( server->fast_sync );
++
+     release_object( server );
+ }
+-- 
+2.31.1
+

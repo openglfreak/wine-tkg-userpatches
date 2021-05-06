@@ -1,0 +1,89 @@
+From 910efb529606b569f3706855d3bceb613bebfbe8 Mon Sep 17 00:00:00 2001
+From: Zebediah Figura <z.figura12@gmail.com>
+Date: Mon, 8 Mar 2021 17:26:35 -0600
+Subject: [PATCH 14/28] server: Create fast synchronization objects for
+ threads.
+
+---
+ server/thread.c | 17 ++++++++++++++++-
+ server/thread.h |  1 +
+ 2 files changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/server/thread.c b/server/thread.c
+index c80a14c5bf8..70894924068 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -196,6 +196,7 @@ static unsigned int thread_get_fsync_idx( struct object *obj, enum fsync_type *t
+ static unsigned int thread_map_access( struct object *obj, unsigned int access );
+ static void thread_poll_event( struct fd *fd, int event );
+ static struct list *thread_get_kernel_obj_list( struct object *obj );
++static struct fast_sync *thread_get_fast_sync( struct object *obj );
+ static void destroy_thread( struct object *obj );
+ 
+ static const struct object_ops thread_ops =
+@@ -220,7 +221,7 @@ static const struct object_ops thread_ops =
+     NULL,                       /* unlink_name */
+     no_open_file,               /* open_file */
+     thread_get_kernel_obj_list, /* get_kernel_obj_list */
+-    no_get_fast_sync,           /* get_fast_sync */
++    thread_get_fast_sync,       /* get_fast_sync */
+     no_close_handle,            /* close_handle */
+     destroy_thread              /* destroy */
+ };
+@@ -272,6 +273,7 @@ static inline void init_thread_structure( struct thread *thread )
+     thread->desc            = NULL;
+     thread->desc_len        = 0;
+     thread->exit_poll       = NULL;
++    thread->fast_sync       = NULL;
+ 
+     thread->creation_time = current_time;
+     thread->exit_time     = 0;
+@@ -422,6 +424,16 @@ static struct list *thread_get_kernel_obj_list( struct object *obj )
+     return &thread->kernel_object;
+ }
+ 
++static struct fast_sync *thread_get_fast_sync( struct object *obj )
++{
++    struct thread *thread = (struct thread *)obj;
++
++    if (!thread->fast_sync)
++        thread->fast_sync = fast_create_event( FAST_SYNC_SERVER, 1, thread->state == TERMINATED );
++    if (thread->fast_sync) grab_object( thread->fast_sync );
++    return thread->fast_sync;
++}
++
+ /* cleanup everything that is no longer needed by a dead thread */
+ /* used by destroy_thread and kill_thread */
+ static void cleanup_thread( struct thread *thread )
+@@ -480,6 +492,8 @@ static void destroy_thread( struct object *obj )
+ 
+     if (do_esync())
+         close( thread->esync_fd );
++
++    if (thread->fast_sync) release_object( thread->fast_sync );
+ }
+ 
+ /* dump a thread on stdout for debugging purposes */
+@@ -1388,6 +1402,7 @@ void kill_thread( struct thread *thread, int violent_death )
+         check_terminated( thread );
+     }
+     else wake_up( &thread->obj, 0 );
++    fast_set_event( thread->fast_sync );
+     cleanup_thread( thread );
+     remove_process_thread( thread->process, thread );
+     release_object( thread );
+diff --git a/server/thread.h b/server/thread.h
+index 60dd65bf63c..53ab5209066 100644
+--- a/server/thread.h
++++ b/server/thread.h
+@@ -95,6 +95,7 @@ struct thread
+     data_size_t            desc_len;      /* thread description length in bytes */
+     WCHAR                 *desc;          /* thread description string */
+     struct timeout_user   *exit_poll;     /* poll if the thread/process has exited already */
++    struct fast_sync      *fast_sync;     /* fast synchronization object */
+ };
+ 
+ extern struct thread *current;
+-- 
+2.31.1
+

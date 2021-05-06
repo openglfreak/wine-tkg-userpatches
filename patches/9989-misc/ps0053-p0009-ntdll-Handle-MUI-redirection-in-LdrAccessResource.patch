@@ -1,0 +1,119 @@
+From: Mark Harmstone <mark@harmstone.com>
+Subject: [PATCH 09/10] ntdll: Handle MUI redirection in LdrAccessResource.
+Message-Id: <20210327194737.13026-9-mark@harmstone.com>
+Date: Sat, 27 Mar 2021 19:47:36 +0000
+In-Reply-To: <20210327194737.13026-1-mark@harmstone.com>
+References: <20210327194737.13026-1-mark@harmstone.com>
+
+Signed-off-by: Mark Harmstone <mark@harmstone.com>
+---
+ dlls/ntdll/mui.c        | 69 +++++++++++++++++++++++++++++++++++++++++
+ dlls/ntdll/ntdll_misc.h |  1 +
+ dlls/ntdll/resource.c   |  2 ++
+ 3 files changed, 72 insertions(+)
+
+diff --git a/dlls/ntdll/mui.c b/dlls/ntdll/mui.c
+index dcdfefcbeb8..a9758c71f82 100644
+--- a/dlls/ntdll/mui.c
++++ b/dlls/ntdll/mui.c
+@@ -1263,3 +1263,72 @@ NTSTATUS NTAPI LdrRemoveLoadAsDataTable( PVOID init_module, PVOID *base_module,
+ 
+     return STATUS_SUCCESS;
+ }
++
++/***********************************************************************
++ *           try_mui_redirect_module
++ *
++ * Called by LdrAccessResource - see if we should be redirecting this to
++ * a MUI file.
++ */
++void try_mui_redirect_module( HMODULE *mod, const IMAGE_RESOURCE_DATA_ENTRY *entry )
++{
++    mui_module *mm = NULL, *mm2;
++    mui_lang_module *mm_lang;
++
++    /* no need to get size if entry is before start of image */
++    if ((void*)entry > (void*)*mod)
++    {
++        void *base = (void*)((uintptr_t)*mod & ~3);
++        size_t size = 0;
++        PIMAGE_NT_HEADERS nth;
++
++        nth = RtlImageNtHeader(base);
++        if (!nth)
++            return;
++
++        if (nth->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC)
++            size = ((IMAGE_OPTIONAL_HEADER32*)&nth->OptionalHeader)->SizeOfImage;
++        else if (nth->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
++            size = ((IMAGE_OPTIONAL_HEADER64*)&nth->OptionalHeader)->SizeOfImage;
++        else
++            return;
++
++        /* return if entry is within bounds of original image */
++
++        if ((char*)entry < (char*)base + size)
++            return;
++    }
++
++    /* find mui_module entry, and return if not found */
++
++    RtlEnterCriticalSection( &mui_section );
++
++    LIST_FOR_EACH_ENTRY( mm2, &mui_modules, mui_module, entry )
++    {
++        if (mm2->module == *mod)
++        {
++            mm = mm2;
++            break;
++        }
++    }
++
++    RtlLeaveCriticalSection( &mui_section );
++
++    if (!mm)
++        return;
++
++    /* loop through loaded languages */
++
++    RtlEnterCriticalSection( &mm->list_section );
++
++    LIST_FOR_EACH_ENTRY( mm_lang, &mm->langs, mui_lang_module, entry )
++    {
++        if ((void*)entry >= (void*)mm_lang->addr && (char*)entry < (char*)mm_lang->addr + mm_lang->size)
++        {
++            *mod = mm_lang->addr;
++            break;
++        }
++    }
++
++    RtlLeaveCriticalSection( &mm->list_section );
++}
+diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
+index 8583c28dff6..563d599d426 100644
+--- a/dlls/ntdll/ntdll_misc.h
++++ b/dlls/ntdll/ntdll_misc.h
+@@ -117,5 +117,6 @@ extern NTSTATUS find_resource_entry( HMODULE hmod, const LDR_RESOURCE_INFO *info
+ /* MUI */
+ extern BOOLEAN try_mui_find_entry( HMODULE mod, const LDR_RESOURCE_INFO *info, ULONG level,
+                                    const void **ret, NTSTATUS *status) DECLSPEC_HIDDEN;
++extern void try_mui_redirect_module( HMODULE *mod, const IMAGE_RESOURCE_DATA_ENTRY *entry ) DECLSPEC_HIDDEN;
+ 
+ #endif
+diff --git a/dlls/ntdll/resource.c b/dlls/ntdll/resource.c
+index a8cff12652a..6ed93f5d6d8 100644
+--- a/dlls/ntdll/resource.c
++++ b/dlls/ntdll/resource.c
+@@ -328,6 +328,8 @@ static inline NTSTATUS access_resource( HMODULE hmod, const IMAGE_RESOURCE_DATA_
+     {
+         ULONG dirsize;
+ 
++        try_mui_redirect_module( &hmod, entry );
++
+         if (!RtlImageDirectoryEntryToData( hmod, TRUE, IMAGE_DIRECTORY_ENTRY_RESOURCE, &dirsize ))
+             status = STATUS_RESOURCE_DATA_NOT_FOUND;
+         else
+
+-- 
+2.26.3
+

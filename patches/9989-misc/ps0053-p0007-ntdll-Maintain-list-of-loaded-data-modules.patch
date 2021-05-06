@@ -1,0 +1,110 @@
+From: Mark Harmstone <mark@harmstone.com>
+Subject: [PATCH 07/10] ntdll: Maintain list of loaded data modules.
+Message-Id: <20210327194737.13026-7-mark@harmstone.com>
+Date: Sat, 27 Mar 2021 19:47:34 +0000
+In-Reply-To: <20210327194737.13026-1-mark@harmstone.com>
+References: <20210327194737.13026-1-mark@harmstone.com>
+
+Signed-off-by: Mark Harmstone <mark@harmstone.com>
+---
+ dlls/ntdll/mui.c | 66 +++++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 62 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/mui.c b/dlls/ntdll/mui.c
+index 36b1af72591..132525967bb 100644
+--- a/dlls/ntdll/mui.c
++++ b/dlls/ntdll/mui.c
+@@ -24,9 +24,30 @@
+ #define WIN32_NO_STATUS
+ #include "winternl.h"
+ #include "wine/debug.h"
++#include "wine/list.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(mui);
+ 
++static RTL_CRITICAL_SECTION data_modules_section;
++static RTL_CRITICAL_SECTION_DEBUG data_modules_critsect_debug =
++{
++    0, 0, &data_modules_section,
++    { &data_modules_critsect_debug.ProcessLocksList, &data_modules_critsect_debug.ProcessLocksList },
++    0, 0, { (DWORD_PTR)(__FILE__ ": data_modules_section") }
++};
++static RTL_CRITICAL_SECTION data_modules_section = { &data_modules_critsect_debug, -1, 0, 0, 0, 0 };
++
++typedef struct
++{
++    struct list entry;
++    HMODULE module;
++    SIZE_T size;
++    HANDLE handle;
++    WCHAR path[1];
++} data_module;
++
++static struct list data_modules = LIST_INIT(data_modules);
++
+ /***********************************************************************
+  *           RtlLCIDToCultureName (NTDLL.@)
+  *
+@@ -520,9 +541,30 @@ BOOLEAN WINAPI RtlLCIDToCultureName( LCID lcid, PUNICODE_STRING string )
+  */
+ NTSTATUS NTAPI LdrAddLoadAsDataTable( PVOID module, PWSTR file_path, SIZE_T size, HANDLE handle )
+ {
+-    FIXME("(%p, %s, %lx, %p)\n", module, debugstr_w(file_path), size, handle);
++    data_module *dm;
++    size_t path_len = wcslen( file_path );
++
++    TRACE("(%p, %s, %lx, %p)\n", module, debugstr_w(file_path), size, handle);
++
++    dm = RtlAllocateHeap( GetProcessHeap(), 0, offsetof(data_module, path) + ((path_len + 1) * sizeof(WCHAR)) );
++    if (!dm)
++        return STATUS_INSUFFICIENT_RESOURCES;
++
++    dm->module = module;
++
++    if (file_path)
++        memcpy(dm->path, file_path, (path_len + 1) * sizeof(WCHAR));
++    else
++        dm->path[0] = 0;
++
++    dm->size = size;
++    dm->handle = handle;
+ 
+-    return STATUS_NOT_IMPLEMENTED;
++    RtlEnterCriticalSection( &data_modules_section );
++    list_add_tail( &data_modules, &dm->entry );
++    RtlLeaveCriticalSection( &data_modules_section );
++
++    return STATUS_SUCCESS;
+ }
+ 
+ /***********************************************************************
+@@ -534,7 +576,23 @@ NTSTATUS NTAPI LdrAddLoadAsDataTable( PVOID module, PWSTR file_path, SIZE_T size
+ NTSTATUS NTAPI LdrRemoveLoadAsDataTable( PVOID init_module, PVOID *base_module, PSIZE_T size,
+                                          ULONG flags )
+ {
+-    FIXME("(%p, %p, %p, %x)\n", init_module, base_module, size, flags);
++    data_module *dm;
++
++    TRACE("(%p, %p, %p, %x)\n", init_module, base_module, size, flags);
++
++    RtlEnterCriticalSection( &data_modules_section );
++
++    LIST_FOR_EACH_ENTRY( dm, &data_modules, data_module, entry )
++    {
++        if (dm->module == init_module)
++        {
++            list_remove( &dm->entry );
++            RtlFreeHeap( GetProcessHeap(), 0, dm );
++            break;
++        }
++    }
++
++    RtlLeaveCriticalSection( &data_modules_section );
+ 
+-    return STATUS_NOT_IMPLEMENTED;
++    return STATUS_SUCCESS;
+ }
+
+-- 
+2.26.3
+

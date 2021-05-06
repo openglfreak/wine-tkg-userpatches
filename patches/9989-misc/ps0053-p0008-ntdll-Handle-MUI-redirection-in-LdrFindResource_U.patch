@@ -1,0 +1,772 @@
+From: Mark Harmstone <mark@harmstone.com>
+Subject: [PATCH 08/10] ntdll: Handle MUI redirection in LdrFindResource_U.
+Message-Id: <20210327194737.13026-8-mark@harmstone.com>
+Date: Sat, 27 Mar 2021 19:47:35 +0000
+In-Reply-To: <20210327194737.13026-1-mark@harmstone.com>
+References: <20210327194737.13026-1-mark@harmstone.com>
+
+Signed-off-by: Mark Harmstone <mark@harmstone.com>
+---
+ dlls/ntdll/mui.c        | 667 ++++++++++++++++++++++++++++++++++++++++
+ dlls/ntdll/ntdll_misc.h |   8 +
+ dlls/ntdll/resource.c   |  10 +-
+ 3 files changed, 681 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/mui.c b/dlls/ntdll/mui.c
+index 132525967bb..dcdfefcbeb8 100644
+--- a/dlls/ntdll/mui.c
++++ b/dlls/ntdll/mui.c
+@@ -25,9 +25,19 @@
+ #include "winternl.h"
+ #include "wine/debug.h"
+ #include "wine/list.h"
++#include "ntdll_misc.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(mui);
+ 
++static RTL_CRITICAL_SECTION mui_section;
++static RTL_CRITICAL_SECTION_DEBUG mui_critsect_debug =
++{
++    0, 0, &mui_section,
++    { &mui_critsect_debug.ProcessLocksList, &mui_critsect_debug.ProcessLocksList },
++    0, 0, { (DWORD_PTR)(__FILE__ ": mui_section") }
++};
++static RTL_CRITICAL_SECTION mui_section = { &mui_critsect_debug, -1, 0, 0, 0, 0 };
++
+ static RTL_CRITICAL_SECTION data_modules_section;
+ static RTL_CRITICAL_SECTION_DEBUG data_modules_critsect_debug =
+ {
+@@ -37,6 +47,61 @@ static RTL_CRITICAL_SECTION_DEBUG data_modules_critsect_debug =
+ };
+ static RTL_CRITICAL_SECTION data_modules_section = { &data_modules_critsect_debug, -1, 0, 0, 0, 0 };
+ 
++typedef struct _MUI_DATA_BLOCK
++{
++    DWORD Signature;
++    DWORD Size;
++    DWORD RCConfigVersion;
++    DWORD PathType;
++    DWORD FileType;
++    DWORD SystemAttributes;
++    DWORD UltimateFallbackLocation;
++    BYTE ServiceChecksum[16];
++    BYTE Checksum[16];
++    DWORD Unknown1;
++    DWORD Unknown2;
++    DWORD Unknown3;
++    DWORD Unknown4;
++    DWORD Unknown5;
++    DWORD Unknown6;
++    DWORD MainNameTypesOffset;
++    DWORD MainNameTypesLength;
++    DWORD MainIDTypesOffset;
++    DWORD MainIDTypesLength;
++    DWORD MuiNameTypesOffset;
++    DWORD MuiNameTypesLength;
++    DWORD MuiIDTypesOffset;
++    DWORD MuiIDTypesLength;
++    DWORD LanguageOffset;
++    DWORD LanguageLength;
++    DWORD UltimateFallbackLanguageOffset;
++    DWORD UltimateFallbackLanguageLength;
++} MUI_DATA_BLOCK;
++
++#define MUI_SIGNATURE 0xfecdfecd
++
++#define MUI_TYPE_LANGUAGE_NEUTRAL       0x01
++#define MUI_TYPE_LANGUAGE_SPECIFIC      0x02
++
++typedef struct
++{
++    struct list entry;
++    void *addr;
++    size_t size;
++    MUI_DATA_BLOCK *block;
++} mui_lang_module;
++
++typedef struct
++{
++    struct list entry;
++    HMODULE module;
++    MUI_DATA_BLOCK *block;
++    RTL_CRITICAL_SECTION list_section;
++    struct list langs;
++} mui_module;
++
++#define IS_INTRESOURCE(x)       (((ULONG_PTR)(x) >> 16) == 0)
++
+ typedef struct
+ {
+     struct list entry;
+@@ -46,6 +111,7 @@ typedef struct
+     WCHAR path[1];
+ } data_module;
+ 
++static struct list mui_modules = LIST_INIT(mui_modules);
+ static struct list data_modules = LIST_INIT(data_modules);
+ 
+ /***********************************************************************
+@@ -534,6 +600,607 @@ BOOLEAN WINAPI RtlLCIDToCultureName( LCID lcid, PUNICODE_STRING string )
+     return FALSE;
+ }
+ 
++/***********************************************************************
++ *           find_mui_block
++ *
++ * Return the address of the MUI data block within an image.
++ */
++static MUI_DATA_BLOCK *find_mui_block( HMODULE mod )
++{
++    LDR_RESOURCE_INFO info;
++    const IMAGE_RESOURCE_DATA_ENTRY *entry;
++    NTSTATUS status;
++    MUI_DATA_BLOCK *block;
++    ULONG block_size;
++
++    info.Type = (ULONG_PTR)L"MUI";
++    info.Name = 1;
++    info.Language = 0;
++
++    status = LdrFindResource_U( mod, &info, 3, &entry );
++    if (!NT_SUCCESS(status))
++        return NULL;
++
++    status = LdrAccessResource( mod, entry, (void*)&block, &block_size );
++    if (!NT_SUCCESS(status))
++        return NULL;
++
++    if (block_size < sizeof(MUI_DATA_BLOCK))
++        return NULL;
++
++    if (block->Signature != MUI_SIGNATURE)
++        return NULL;
++
++    if (block->Size > block_size)
++        return NULL;
++
++    if (block->LanguageLength != 0)
++    {
++        if (block->LanguageOffset >= block->Size)
++            return NULL;
++
++        if (block->LanguageOffset + block->LanguageLength > block->Size)
++            return NULL;
++    }
++
++    if (block->UltimateFallbackLanguageLength != 0)
++    {
++        if (block->UltimateFallbackLanguageOffset >= block->Size)
++            return NULL;
++
++        if (block->UltimateFallbackLanguageOffset + block->UltimateFallbackLanguageLength > block->Size)
++            return NULL;
++    }
++
++    if (block->MuiNameTypesLength != 0)
++    {
++        if (block->MuiNameTypesOffset >= block->Size)
++            return NULL;
++
++        if (block->MuiNameTypesOffset + block->MuiNameTypesLength > block->Size)
++            return NULL;
++    }
++
++    if (block->MuiIDTypesLength != 0)
++    {
++        if (block->MuiIDTypesOffset >= block->Size)
++            return NULL;
++
++        if (block->MuiIDTypesOffset + block->MuiIDTypesLength > block->Size)
++            return NULL;
++    }
++
++    if (block->MainNameTypesLength != 0)
++    {
++        if (block->MainNameTypesOffset >= block->Size)
++            return NULL;
++
++        if (block->MainNameTypesOffset + block->MainNameTypesLength > block->Size)
++            return NULL;
++    }
++
++    if (block->MainIDTypesLength != 0)
++    {
++        if (block->MainIDTypesOffset >= block->Size)
++            return NULL;
++
++        if (block->MainIDTypesOffset + block->MainIDTypesLength > block->Size)
++            return NULL;
++    }
++
++    return block;
++}
++
++/***********************************************************************
++ *           get_image_filename
++ *
++ * Find the path of a mapped image. If this is a data-only file, check the
++ * list maintained by LdrAddLoadAsDataTable / LdrRemoveLoadAsDataTable.
++ * Otherwise, check the list of loaded modules.
++ */
++static NTSTATUS get_image_filename( HMODULE mod, UNICODE_STRING *path )
++{
++    NTSTATUS status;
++    WCHAR *dospath = NULL;
++    ULONG_PTR magic;
++    LDR_DATA_TABLE_ENTRY *pldr;
++    data_module *dm;
++
++    LdrLockLoaderLock( 0, NULL, &magic );
++
++    if (NT_SUCCESS(LdrFindEntryForAddress( mod, &pldr )))
++    {
++        dospath = RtlAllocateHeap( GetProcessHeap(), 0, pldr->FullDllName.Length + sizeof(WCHAR) );
++        if (!dospath)
++        {
++            LdrUnlockLoaderLock( 0, magic );
++            return STATUS_INSUFFICIENT_RESOURCES;
++        }
++
++        memcpy(dospath, pldr->FullDllName.Buffer, pldr->FullDllName.Length);
++        dospath[pldr->FullDllName.Length / sizeof(WCHAR)] = 0;
++    }
++
++    LdrUnlockLoaderLock( 0, magic );
++
++    if (!dospath)
++    {
++        RtlEnterCriticalSection( &data_modules_section );
++
++        LIST_FOR_EACH_ENTRY( dm, &data_modules, data_module, entry )
++        {
++            if (dm->module == mod)
++            {
++                size_t len = wcslen( dm->path );
++
++                dospath = RtlAllocateHeap( GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR) );
++                if (!dospath)
++                {
++                    RtlLeaveCriticalSection( &data_modules_section );
++                    return STATUS_INSUFFICIENT_RESOURCES;
++                }
++
++                memcpy(dospath, dm->path, (len + 1) * sizeof(WCHAR));
++
++                break;
++            }
++        }
++
++        RtlLeaveCriticalSection( &data_modules_section );
++    }
++
++    if (!dospath)
++        return STATUS_INTERNAL_ERROR;
++
++    status = RtlDosPathNameToNtPathName_U_WithStatus( dospath, path, NULL, NULL );
++
++    RtlFreeHeap( GetProcessHeap(), 0, dospath );
++
++    return status;
++}
++
++/***********************************************************************
++ *           form_mui_path
++ *
++ * Given the path of a LN file and a language, form the expected path of
++ * the MUI file.
++ */
++static NTSTATUS form_mui_path( const UNICODE_STRING *img_path, const UNICODE_STRING *lang,
++                               UNICODE_STRING *mui_path )
++{
++    unsigned int i, bs = (img_path->Length / sizeof(WCHAR) - 1);
++    WCHAR *buf;
++
++    static const WCHAR suffix[] = L".mui";
++
++    for (i = 0; i < img_path->Length / sizeof(WCHAR); i++)
++    {
++        if (img_path->Buffer[i] == '\\')
++            bs = i;
++    }
++
++    mui_path->Length = mui_path->MaximumLength = img_path->Length + lang->Length + sizeof(suffix);
++
++    buf = RtlAllocateHeap( GetProcessHeap(), 0, mui_path->Length);
++    if (!buf)
++        return STATUS_INSUFFICIENT_RESOURCES;
++
++    memcpy(buf, img_path->Buffer, (bs + 1) * sizeof(WCHAR));
++    memcpy(buf + bs + 1, lang->Buffer, lang->Length);
++    memcpy(buf + bs + 1 + (lang->Length / sizeof(WCHAR)),
++           img_path->Buffer + bs, img_path->Length - (bs * sizeof(WCHAR)));
++    memcpy(buf + ((img_path->Length + lang->Length) / sizeof(WCHAR)) + 1,
++           suffix, sizeof(suffix) - sizeof(WCHAR));
++
++    mui_path->Buffer = buf;
++
++    return STATUS_SUCCESS;
++}
++
++/***********************************************************************
++ *           load_mui_file
++ *
++ * Map the MUI file as a section, and return its size and address.
++ */
++static NTSTATUS load_mui_file( UNICODE_STRING *filename, void **ptr, SIZE_T *size )
++{
++    HANDLE file, section;
++    NTSTATUS status;
++    OBJECT_ATTRIBUTES oa;
++    IO_STATUS_BLOCK iosb;
++
++    InitializeObjectAttributes( &oa, filename, 0, NULL, NULL );
++
++    status = NtCreateFile( &file, GENERIC_READ, &oa, &iosb, NULL, 0,
++                           FILE_SHARE_READ | FILE_SHARE_DELETE, FILE_OPEN,
++                           0, NULL, 0);
++    if (!NT_SUCCESS(status))
++        return status;
++
++    status = NtCreateSection( &section, SECTION_MAP_READ , NULL, NULL,
++                              PAGE_READONLY, SEC_IMAGE, file );
++
++    NtClose( file );
++
++    if (status == STATUS_INVALID_IMAGE_NOT_MZ)
++        return STATUS_INVALID_IMAGE_FORMAT;
++    else if (!NT_SUCCESS(status))
++        return status;
++
++    *ptr = NULL;
++
++    status = NtMapViewOfSection( section, NtCurrentProcess(), ptr, 0, 0, NULL, size,
++                                 ViewShare, 0, PAGE_READONLY );
++
++    NtClose( section );
++
++    if (!NT_SUCCESS(status))
++        return status;
++
++    TRACE("%s mapped at %p\n", debugstr_us(filename), *ptr);
++
++    return STATUS_SUCCESS;
++}
++
++/***********************************************************************
++ *           add_mui_lang_to_list
++ *
++ * Checks the data block of the newly mapped MUI file, and add it to
++ * the internal list if it's valid.
++ */
++static NTSTATUS add_mui_lang_to_list( mui_module *mm, SIZE_T size, void *lang_mui,
++                                      const UNICODE_STRING *lang )
++{
++    MUI_DATA_BLOCK *block;
++    mui_lang_module *mlm;
++    ULONG lang_length;
++    WCHAR *block_lang;
++
++    block = find_mui_block( lang_mui );
++
++    if (!block)
++        return STATUS_MUI_INVALID_FILE;
++
++    if (memcmp( block->ServiceChecksum, mm->block->ServiceChecksum, sizeof(block->ServiceChecksum) ))
++        return STATUS_MUI_INVALID_FILE;
++
++    if (memcmp( block->Checksum, mm->block->Checksum, sizeof(block->Checksum) ))
++        return STATUS_MUI_INVALID_FILE;
++
++    lang_length = block->LanguageLength;
++    block_lang = (WCHAR*)((char*)block + block->LanguageOffset);
++
++    /* remove trailing nuls */
++    while (lang_length >= sizeof(WCHAR) && block_lang[(lang_length / sizeof(WCHAR)) - 1] == 0)
++    {
++        lang_length -= sizeof(WCHAR);
++    }
++
++    if (lang_length != lang->Length)
++        return STATUS_MUI_INVALID_FILE;
++
++    if (memcmp( (char*)block + block->LanguageOffset, lang->Buffer, lang_length) )
++        return STATUS_MUI_INVALID_FILE;
++
++    mlm = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(mui_lang_module) );
++    if (!mlm)
++        return STATUS_INSUFFICIENT_RESOURCES;
++
++    mlm->addr = lang_mui;
++    mlm->size = size;
++    mlm->block = block;
++
++    list_add_tail( &mm->langs, &mlm->entry );
++
++    return STATUS_SUCCESS;
++}
++
++/***********************************************************************
++ *           check_mui_type_list
++ *
++ * Returns TRUE if the resource type is one that should be redirected.
++ */
++static BOOLEAN check_mui_type_list( MUI_DATA_BLOCK *block, ULONG_PTR type, BOOL mui_list )
++{
++    if (IS_INTRESOURCE(type))
++    {
++        const ULONG *ids;
++        unsigned int i;
++        ULONG length = mui_list ? block->MuiIDTypesLength : block->MainIDTypesLength;
++        ULONG offset = mui_list ? block->MuiIDTypesOffset : block->MainIDTypesOffset;
++
++        if (length == 0)
++            return FALSE;
++
++        ids = (const ULONG*)((char*)block + offset);
++
++        for (i = 0; i < block->MuiIDTypesLength / sizeof(ULONG); i++)
++        {
++            if (ids[i] == type)
++                return TRUE;
++        }
++    }
++    else
++    {
++        const WCHAR *s;
++        ULONG length = mui_list ? block->MuiNameTypesLength : block->MainNameTypesLength;
++        ULONG offset = mui_list ? block->MuiNameTypesOffset : block->MainNameTypesOffset;
++
++        if (length == 0)
++            return FALSE;
++
++        s = (const WCHAR*)((char*)block + offset);
++
++        do
++        {
++            size_t len = wcslen( s );
++
++            if (len == 0)
++                return FALSE;
++
++            if (!wcsncmp(s, (WCHAR*)type, len))
++                return TRUE;
++
++            s += len + 1;
++        } while (1);
++    }
++
++    return FALSE;
++}
++
++static NTSTATUS try_language( HMODULE *mod, const UNICODE_STRING *img_path, mui_module *mm,
++                              const UNICODE_STRING *orig_lang )
++{
++    NTSTATUS nts;
++    unsigned int i;
++    mui_lang_module *mm_lang;
++    UNICODE_STRING lang = *orig_lang;
++
++    RtlEnterCriticalSection( &mm->list_section );
++
++    while (1)
++    {
++        UNICODE_STRING mui_path;
++        void *mui_lang;
++        SIZE_T size;
++
++        TRACE("trying language %s\n", debugstr_us(&lang));
++
++        LIST_FOR_EACH_ENTRY( mm_lang, &mm->langs, mui_lang_module, entry )
++        {
++            UNICODE_STRING lang2;
++
++            lang2.Buffer = (WCHAR*)((char*)mm_lang->block + mm_lang->block->LanguageOffset);
++            lang2.Length = lang2.MaximumLength = mm_lang->block->LanguageLength;
++
++            while (lang2.Length >= sizeof(WCHAR) && lang2.Buffer[(lang2.Length / sizeof(WCHAR)) - 1] == 0)
++            {
++                lang2.Length -= sizeof(WCHAR);
++            }
++
++            if (!RtlCompareUnicodeString(&lang, &lang2, FALSE))
++            {
++                *mod = mm_lang->addr;
++                nts = STATUS_SUCCESS;
++                goto end;
++            }
++        }
++
++        nts = form_mui_path( img_path, &lang, &mui_path );
++
++        if (!NT_SUCCESS(nts))
++            goto end;
++
++        TRACE("mui path %s\n", debugstr_us(&mui_path));
++
++        nts = load_mui_file( &mui_path, &mui_lang, &size );
++
++        if (mui_path.Buffer)
++            RtlFreeHeap( GetProcessHeap(), 0, mui_path.Buffer );
++
++        if (nts == STATUS_OBJECT_NAME_NOT_FOUND || nts == STATUS_OBJECT_PATH_NOT_FOUND)
++        {
++            /* if not found, lop end off and try again */
++
++            if (lang.Length == 0)
++                break;
++
++            i = (lang.Length / sizeof(WCHAR)) - 1;
++            while (i > 0 && lang.Buffer[i] != '-')
++            {
++                i--;
++            }
++
++            if (lang.Buffer[i] != '-')
++                break;
++
++            lang.Length = i * sizeof(WCHAR);
++            continue;
++        }
++        else if (!NT_SUCCESS(nts))
++            goto end;
++
++        nts = add_mui_lang_to_list( mm, size, mui_lang, &lang );
++
++        if (NT_SUCCESS(nts))
++            *mod = mui_lang;
++        else
++            NtUnmapViewOfSection( NtCurrentProcess(), mui_lang );
++
++        goto end;
++    }
++
++    nts = STATUS_MUI_FILE_NOT_FOUND;
++
++end:
++    RtlLeaveCriticalSection( &mm->list_section );
++
++    return nts;
++}
++
++/***********************************************************************
++ *           try_mui_find_entry
++ *
++ * Called from LdrFindResource_U. Returns TRUE if we've handled the
++ * lookup via a MUI file.
++ */
++BOOLEAN try_mui_find_entry( HMODULE mod, const LDR_RESOURCE_INFO *info, ULONG level,
++                            const void **ret, NTSTATUS *status)
++{
++    UNICODE_STRING lang;
++    WCHAR langbuf[20];
++    mui_module *mm = NULL, *mm2;
++    MUI_DATA_BLOCK *block;
++    UNICODE_STRING img_path;
++    NTSTATUS nts;
++
++    TRACE("(%p, %p, %p)\n", mod, info, status);
++
++    /* avoid infinite loop */
++
++    if (!IS_INTRESOURCE(info->Type) && !wcscmp((WCHAR*)info->Type, L"MUI"))
++        return FALSE;
++
++    /* find mui_module in list */
++
++    RtlEnterCriticalSection( &mui_section );
++
++    LIST_FOR_EACH_ENTRY( mm2, &mui_modules, mui_module, entry )
++    {
++        if (mm2->module == mod)
++        {
++            mm = mm2;
++            break;
++        }
++    }
++
++    /* if doesn't exist, allocate new entry, and find MUI block if present */
++
++    if (!mm)
++    {
++        mm = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(*mm) );
++
++        if (!mm)
++        {
++            ERR("could not allocate mui_module entry\n");
++            RtlLeaveCriticalSection( &mui_section );
++            *status = STATUS_INSUFFICIENT_RESOURCES;
++            return TRUE;
++        }
++
++        mm->module = mod;
++        mm->block = find_mui_block( mod );
++        RtlInitializeCriticalSection( &mm->list_section );
++        list_init( &mm->langs );
++
++        list_add_tail( &mui_modules, &mm->entry );
++    }
++
++    block = mm->block;
++
++    RtlLeaveCriticalSection( &mui_section );
++
++    /* return FALSE if not MUI language-neutral file */
++
++    if (!block || !(block->FileType & MUI_TYPE_LANGUAGE_NEUTRAL))
++        return FALSE;
++
++    if (!check_mui_type_list( block, info->Type, TRUE ))
++        return FALSE;
++
++    nts = get_image_filename( mod, &img_path );
++
++    if (!NT_SUCCESS(nts))
++    {
++        *status = nts;
++        return TRUE;
++    }
++
++    /* translate info->Language to string */
++
++    lang.Buffer = langbuf;
++    lang.Length = 0;
++    lang.MaximumLength = sizeof(langbuf);
++
++    if (!RtlLCIDToCultureName( info->Language == 0 ? LOCALE_USER_DEFAULT : info->Language, &lang ))
++    {
++        TRACE("could not find language string for LCID %04x\n", info->Language);
++        *status = STATUS_INVALID_PARAMETER;
++        return TRUE;
++    }
++
++    nts = try_language( &mod, &img_path, mm, &lang );
++
++    /* if not found and Language == 0, try system language */
++
++    if (nts == STATUS_MUI_FILE_NOT_FOUND && info->Language == 0)
++    {
++        WCHAR langbuf2[20];
++        UNICODE_STRING sys_lang;
++
++        sys_lang.Buffer = langbuf2;
++        sys_lang.Length = 0;
++        sys_lang.MaximumLength = sizeof(langbuf2);
++
++        if (RtlLCIDToCultureName( LOCALE_SYSTEM_DEFAULT, &sys_lang ) &&
++            RtlCompareUnicodeString( &lang, &sys_lang, FALSE ))
++        {
++            nts = try_language( &mod, &img_path, mm, &sys_lang );
++        }
++
++        /* if still not found, try ultimate fallback */
++
++        if (nts == STATUS_MUI_FILE_NOT_FOUND && mm->block->UltimateFallbackLanguageLength != 0)
++        {
++            UNICODE_STRING fallback;
++
++            fallback.Length = fallback.MaximumLength = mm->block->UltimateFallbackLanguageLength;
++            fallback.Buffer = (WCHAR*)((char*)mm->block + mm->block->UltimateFallbackLanguageOffset);
++
++            while (fallback.Length >= sizeof(WCHAR) &&
++                   fallback.Buffer[(fallback.Length / sizeof(WCHAR)) - 1] == 0)
++            {
++                fallback.Length -= sizeof(WCHAR);
++            }
++
++            if (RtlCompareUnicodeString( &lang, &fallback, FALSE) &&
++                RtlCompareUnicodeString( &sys_lang, &fallback, FALSE))
++            {
++                nts = try_language( &mod, &img_path, mm, &fallback );
++            }
++        }
++    }
++
++    if (img_path.Buffer)
++        RtlFreeHeap( GetProcessHeap(), 0, img_path.Buffer );
++
++    if (NT_SUCCESS(nts))
++    {
++        if (level == 3)
++        {
++            LDR_RESOURCE_INFO info2;
++
++            /* return whatever we find */
++
++            info2.Type = info->Type;
++            info2.Name = info->Name;
++            info2.Language = 0;
++
++            nts = find_resource_entry( mod, &info2, level, ret, FALSE );
++        } else
++            nts = find_resource_entry( mod, info, level, ret, FALSE );
++    }
++
++    /* If type is in both lists, fall back to main image if MUI load fails */
++
++    if (!NT_SUCCESS(nts) && check_mui_type_list( block, info->Type, FALSE ))
++        return FALSE;
++
++    *status = nts;
++
++    return TRUE;
++}
++
+ /***********************************************************************
+  *           LdrAddLoadAsDataTable (NTDLL.@)
+  *
+diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
+index b8f9dc28e63..8583c28dff6 100644
+--- a/dlls/ntdll/ntdll_misc.h
++++ b/dlls/ntdll/ntdll_misc.h
+@@ -110,4 +110,12 @@ static inline void ascii_to_unicode( WCHAR *dst, const char *src, size_t len )
+ extern void init_global_fls_data(void) DECLSPEC_HIDDEN;
+ extern TEB_FLS_DATA *fls_alloc_data(void) DECLSPEC_HIDDEN;
+ 
++/* resources */
++extern NTSTATUS find_resource_entry( HMODULE hmod, const LDR_RESOURCE_INFO *info,
++                                     ULONG level, const void **ret, int want_dir ) DECLSPEC_HIDDEN;
++
++/* MUI */
++extern BOOLEAN try_mui_find_entry( HMODULE mod, const LDR_RESOURCE_INFO *info, ULONG level,
++                                   const void **ret, NTSTATUS *status) DECLSPEC_HIDDEN;
++
+ #endif
+diff --git a/dlls/ntdll/resource.c b/dlls/ntdll/resource.c
+index 58a0fc7d2e2..a8cff12652a 100644
+--- a/dlls/ntdll/resource.c
++++ b/dlls/ntdll/resource.c
+@@ -172,8 +172,8 @@ static const IMAGE_RESOURCE_DIRECTORY *find_entry_by_name( const IMAGE_RESOURCE_
+  *
+  * Find a resource entry
+  */
+-static NTSTATUS find_entry( HMODULE hmod, const LDR_RESOURCE_INFO *info,
+-                            ULONG level, const void **ret, int want_dir )
++NTSTATUS find_resource_entry( HMODULE hmod, const LDR_RESOURCE_INFO *info,
++                              ULONG level, const void **ret, int want_dir )
+ {
+     static LCID user_lcid, system_lcid;
+     ULONG size;
+@@ -271,7 +271,7 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrFindResourceDirectory_U( HMODULE hmod, cons
+                      level > 1 ? debugstr_w((LPCWSTR)info->Name) : "",
+                      level > 2 ? info->Language : 0, level );
+ 
+-        status = find_entry( hmod, info, level, &res, TRUE );
++        status = find_resource_entry( hmod, info, level, &res, TRUE );
+         if (status == STATUS_SUCCESS) *dir = res;
+     }
+     __EXCEPT_PAGE_FAULT
+@@ -299,7 +299,9 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrFindResource_U( HMODULE hmod, const LDR_RES
+                      level > 1 ? debugstr_w((LPCWSTR)info->Name) : "",
+                      level > 2 ? info->Language : 0, level );
+ 
+-        status = find_entry( hmod, info, level, &res, FALSE );
++        if (!try_mui_find_entry( hmod, info, level, &res, &status ))
++            status = find_resource_entry( hmod, info, level, &res, FALSE );
++
+         if (status == STATUS_SUCCESS) *entry = res;
+     }
+     __EXCEPT_PAGE_FAULT
+
+-- 
+2.26.3
+

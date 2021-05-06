@@ -1,0 +1,218 @@
+From e4ae5649760519bd7f31e2c7ef5950280be3a115 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 15 Mar 2021 12:10:01 +0100
+Subject: [PATCH 2/2] WIP: msvcrt: Add AVX memset implementation.
+
+---
+ dlls/msvcrt/string.c | 165 +++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 161 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/msvcrt/string.c b/dlls/msvcrt/string.c
+index f6a89ba20ac..28df0fdb127 100644
+--- a/dlls/msvcrt/string.c
++++ b/dlls/msvcrt/string.c
+@@ -2653,6 +2653,79 @@ static void *__cdecl memmove_ ## name(char *d, const char *s, size_t n) \
+     return d; \
+ }
+ 
++#define MEMSETV_UNALIGNED_DECLARE(name, type, size, cast64, storeu) \
++static FORCEINLINE void memset_ ## name ## _unaligned(char *d, type v, size_t n) \
++{ \
++    if (unlikely(n > 4 * size)) \
++    { \
++        storeu((type *)(d + 0 * size), v); \
++        storeu((type *)(d + 1 * size), v); \
++        storeu((type *)(d + 2 * size), v); \
++        storeu((type *)(d + n - 3 * size), v); \
++        storeu((type *)(d + n - 2 * size), v); \
++        storeu((type *)(d + n - 1 * size), v); \
++    } \
++    else if (unlikely(n > 2 * size)) \
++    { \
++        storeu((type *)(d + 0 * size), v); \
++        storeu((type *)(d + 1 * size), v); \
++        storeu((type *)(d + n - 2 * size), v); \
++        storeu((type *)(d + n - 1 * size), v); \
++    } \
++    else if (unlikely(n > size)) \
++    { \
++        storeu((type *)(d + 0 * size), v); \
++        storeu((type *)(d + n - 1 * size), v); \
++    } \
++    else memset_c_unaligned_32(d, cast64(v), n); \
++}
++
++#define MEMSETV_DECLARE(name, type, size, bcast, storeu, store) \
++static void *__cdecl memset_ ## name(char *d, int c, size_t n) \
++{ \
++    type v = bcast(c); \
++    if (likely(n <= 6 * size)) memset_ ## name ## _unaligned(d, v, n); \
++    else \
++    { \
++        size_t k = n - ((uintptr_t)(d + n) & (size - 1)); \
++        storeu((type *)(d + n - 1 * size), v); \
++        store((type *)(d + k - 1 * size), v); \
++        store((type *)(d + k - 2 * size), v); \
++        store((type *)(d + k - 3 * size), v); \
++        store((type *)(d + k - 4 * size), v); \
++        store((type *)(d + k - 5 * size), v); \
++        k -= 5 * size; \
++        while (unlikely(k >= 12 * size)) \
++        { \
++            store((type *)(d + k -  1 * size), v); \
++            store((type *)(d + k -  2 * size), v); \
++            store((type *)(d + k -  3 * size), v); \
++            store((type *)(d + k -  4 * size), v); \
++            store((type *)(d + k -  5 * size), v); \
++            store((type *)(d + k -  6 * size), v); \
++            store((type *)(d + k -  7 * size), v); \
++            store((type *)(d + k -  8 * size), v); \
++            store((type *)(d + k -  9 * size), v); \
++            store((type *)(d + k - 10 * size), v); \
++            store((type *)(d + k - 11 * size), v); \
++            store((type *)(d + k - 12 * size), v); \
++            k -= 12 * size; \
++        } \
++        while (unlikely(k >= 6 * size)) \
++        { \
++            store((type *)(d + k - 1 * size), v); \
++            store((type *)(d + k - 2 * size), v); \
++            store((type *)(d + k - 3 * size), v); \
++            store((type *)(d + k - 4 * size), v); \
++            store((type *)(d + k - 5 * size), v); \
++            store((type *)(d + k - 6 * size), v); \
++            k -= 6 * size; \
++        } \
++        memset_ ## name ## _unaligned(d, v, k); \
++    } \
++    return d; \
++}
++
+ static FORCEINLINE void __cdecl memmove_c_unaligned_32(char *d, const char *s, size_t n)
+ {
+     uint64_t tmp0, tmp1, tmp2, tmpn;
+@@ -2775,6 +2848,70 @@ static void *__cdecl memmove_c(char *d, const char *s, size_t n)
+     return d;
+ }
+ 
++static FORCEINLINE void __cdecl memset_c_unaligned_32(char *d, uint64_t v, size_t n)
++{
++    if (unlikely(n >= 24))
++    {
++        *(uint64_t *)d = v;
++        *(uint64_t *)(d + 8) = v;
++        *(uint64_t *)(d + 16) = v;
++        *(uint64_t *)(d + n - 8) = v;
++    }
++    else if (unlikely(n >= 16))
++    {
++        *(uint64_t *)d = v;
++        *(uint64_t *)(d + 8) = v;
++        *(uint64_t *)(d + n - 8) = v;
++    }
++    else if (unlikely(n >= 8))
++    {
++        *(uint64_t *)d = v;
++        *(uint64_t *)(d + n - 8) = v;
++    }
++    else if (unlikely(n >= 4))
++    {
++        *(uint32_t *)d = v;
++        *(uint32_t *)(d + n - 4) = v;
++    }
++    else if (unlikely(n >= 2))
++    {
++        *(uint16_t *)d = v;
++        *(uint16_t *)(d + n - 2) = v;
++    }
++    else if (likely(n >= 1))
++    {
++        *(uint8_t *)d = v;
++    }
++}
++
++static void *__cdecl memset_c(char *d, unsigned char c, size_t n)
++{
++    uint16_t tmp16 = ((uint16_t)c << 8) | c;
++    uint32_t tmp32 = ((uint32_t)tmp16 << 16) | tmp16;
++    uint64_t v = ((uint64_t)tmp32 << 32) | tmp32;
++
++    while (unlikely(n >= 48))
++    {
++        *(uint64_t*)(d + n -  8) = v;
++        *(uint64_t*)(d + n - 16) = v;
++        *(uint64_t*)(d + n - 24) = v;
++        *(uint64_t*)(d + n - 32) = v;
++        *(uint64_t*)(d + n - 40) = v;
++        *(uint64_t*)(d + n - 48) = v;
++        n -= 48;
++    }
++    while (unlikely(n >= 24))
++    {
++        *(uint64_t*)(d + n -  8) = v;
++        *(uint64_t*)(d + n - 16) = v;
++        *(uint64_t*)(d + n - 24) = v;
++        n -= 24;
++    }
++
++    memset_c_unaligned_32(d, v, n);
++    return d;
++}
++
+ #ifndef __SSE2__
+ #ifdef __clang__
+ #pragma clang attribute push (__attribute__((target("sse2"))), apply_to=function)
+@@ -2788,6 +2925,11 @@ static void *__cdecl memmove_c(char *d, const char *s, size_t n)
+ MEMMOVEV_UNALIGNED_DECLARE(sse2, __m128i, 16, _mm_loadu_si128, _mm_storeu_si128)
+ MEMMOVEV_DECLARE(sse2, __m128i, 16, _mm_loadu_si128, _mm_storeu_si128, _mm_store_si128)
+ 
++#define __m128i_to_u64(x) ((x)[0])
++MEMSETV_UNALIGNED_DECLARE(sse2, __m128i, 16, __m128i_to_u64, _mm_storeu_si128)
++MEMSETV_DECLARE(sse2, __m128i, 16, _mm_set1_epi8, _mm_storeu_si128, _mm_store_si128)
++#undef __m128i_to_u64
++
+ #ifdef __DISABLE_SSE2__
+ #ifdef __clang__
+ #pragma clang attribute pop
+@@ -2810,6 +2952,11 @@ MEMMOVEV_DECLARE(sse2, __m128i, 16, _mm_loadu_si128, _mm_storeu_si128, _mm_store
+ MEMMOVEV_UNALIGNED_DECLARE(avx, __m256i, 32, _mm256_loadu_si256, _mm256_storeu_si256)
+ MEMMOVEV_DECLARE(avx, __m256i, 32, _mm256_loadu_si256, _mm256_storeu_si256, _mm256_store_si256)
+ 
++#define __m256i_to_u64(x) (_mm256_castsi256_si128(x)[0])
++MEMSETV_UNALIGNED_DECLARE(avx, __m256i, 32, __m256i_to_u64, _mm256_storeu_si256)
++MEMSETV_DECLARE(avx, __m256i, 32, _mm256_set1_epi8, _mm256_storeu_si256, _mm256_store_si256)
++#undef __m256i_to_u64
++
+ #ifdef __DISABLE_AVX__
+ #undef __DISABLE_AVX__
+ #ifdef __clang__
+@@ -2844,15 +2991,25 @@ void *__cdecl memcpy(void *dst, const void *src, size_t n)
+ /*********************************************************************
+  *		    memset (MSVCRT.@)
+  */
+-void *__cdecl memset(void *dst, int c, size_t n)
++void* __cdecl memset(void *dst, int c, size_t n)
+ {
+-    volatile unsigned char *d = dst;  /* avoid gcc optimizations */
+-    while (n--) *d++ = c;
+-    return dst;
++    if (unlikely(n <= 32))
++    {
++        uint16_t tmp16 = ((uint16_t)c << 8) | c;
++        uint32_t tmp32 = ((uint32_t)tmp16 << 16) | tmp16;
++        uint64_t v = ((uint64_t)tmp32 << 32) | tmp32;
++        memset_c_unaligned_32(dst, v, n);
++        return dst;
++    }
++    if (likely(avx_supported)) return memset_avx(dst, c, n);
++    if (likely(sse2_supported)) return memset_sse2(dst, c, n);
++    return memset_c(dst, c, n);
+ }
+ 
+ #undef MEMMOVEV_DECLARE
+ #undef MEMMOVEV_UNALIGNED_DECLARE
++#undef MEMSETV_DECLARE
++#undef MEMSETV_UNALIGNED_DECLARE
+ #undef likely
+ #undef unlikely
+ 

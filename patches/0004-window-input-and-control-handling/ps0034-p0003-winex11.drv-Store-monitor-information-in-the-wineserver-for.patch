@@ -1,0 +1,576 @@
+From: Zhiyi Zhang <zzhang@codeweavers.com>
+Subject: [PATCH v4 3/6] winex11.drv: Store monitor information in the wineserver for EnumDisplayMonitors().
+Message-Id: <9764621e-7ab1-2c71-d549-71a270cd449e@codeweavers.com>
+Date: Wed, 19 May 2021 16:14:47 +0800
+
+Fix a regression that Office 2016/365 has a 640x480 main window.
+
+Office 2016/365 hooks NtOpenKeyEx() and prevents access to SetupAPI device properties.
+After querying monitor information from SetupAPI failed, EnumDisplayMonitors() reports
+a fallback monitor of size 640x480.
+
+As to why store the monitor information in the wineserver, it seems that EnumDisplayMonitors()
+reports monitors connected to current user logon session. For instance, EnumDisplayMonitors()
+always report one monitor when called by services.
+
+Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
+---
+ dlls/user32/sysparams.c     |  82 ++++++++++++++++++++++
+ dlls/user32/tests/monitor.c |   1 -
+ dlls/winex11.drv/display.c  |  74 ++++++++++++++++++--
+ server/Makefile.in          |   1 +
+ server/display.c            | 133 ++++++++++++++++++++++++++++++++++++
+ server/protocol.def         |  39 +++++++++++
+ server/trace.c              |  38 +++++++++++
+ server/user.h               |  13 +++-
+ 8 files changed, 374 insertions(+), 7 deletions(-)
+ create mode 100644 server/display.c
+
+diff --git a/dlls/user32/sysparams.c b/dlls/user32/sysparams.c
+index 1c943767927..846d5b9cc36 100644
+--- a/dlls/user32/sysparams.c
++++ b/dlls/user32/sysparams.c
+@@ -46,6 +46,7 @@
+ #include "win.h"
+ #include "user_private.h"
+ #include "wine/gdi_driver.h"
++#include "wine/server.h"
+ #include "wine/asm.h"
+ #include "wine/debug.h"
+ 
+@@ -3974,9 +3975,35 @@ fail:
+ BOOL CDECL nulldrv_GetMonitorInfo( HMONITOR handle, MONITORINFO *info )
+ {
+     UINT index = (UINT_PTR)handle - 1;
++    NTSTATUS status;
+ 
+     TRACE("(%p, %p)\n", handle, info);
+ 
++    SERVER_START_REQ( get_monitor_info )
++    {
++        req->handle = wine_server_user_handle( handle );
++        if (info->cbSize >= sizeof(MONITORINFOEXW))
++            wine_server_set_reply( req, ((MONITORINFOEXW *)info)->szDevice,
++                                   sizeof(((MONITORINFOEXW *)info)->szDevice) - sizeof(WCHAR) );
++        if (!(status = wine_server_call( req )))
++        {
++            SetRect( &info->rcMonitor, reply->monitor_rect.left, reply->monitor_rect.top,
++                     reply->monitor_rect.right, reply->monitor_rect.bottom );
++            SetRect( &info->rcWork, reply->work_rect.left, reply->work_rect.top,
++                     reply->work_rect.right, reply->work_rect.bottom );
++            if (!info->rcMonitor.left && !info->rcMonitor.top && info->rcMonitor.right && info->rcMonitor.bottom)
++                info->dwFlags = MONITORINFOF_PRIMARY;
++            else
++                info->dwFlags = 0;
++            if (info->cbSize >= sizeof(MONITORINFOEXW))
++                ((MONITORINFOEXW *)info)->szDevice[wine_server_reply_size( req ) / sizeof(WCHAR)] = 0;
++        }
++    }
++    SERVER_END_REQ;
++
++    if (!status)
++        return TRUE;
++
+     /* Fallback to report one monitor */
+     if (handle == NULLDRV_DEFAULT_HMONITOR)
+     {
+@@ -3990,7 +4017,10 @@ BOOL CDECL nulldrv_GetMonitorInfo( HMONITOR handle, MONITORINFO *info )
+     }
+ 
+     if (!update_monitor_cache())
++    {
++        SetLastError( ERROR_INVALID_MONITOR_HANDLE );
+         return FALSE;
++    }
+ 
+     EnterCriticalSection( &monitors_section );
+     if (index < monitor_count)
+@@ -4111,11 +4141,63 @@ static BOOL CALLBACK enum_mon_callback( HMONITOR monitor, HDC hdc, LPRECT rect,
+ 
+ BOOL CDECL nulldrv_EnumDisplayMonitors( HDC hdc, RECT *rect, MONITORENUMPROC proc, LPARAM lp )
+ {
++    struct enum_monitor_entry entries[4], *entry_ptr;
++    unsigned int status, count, entry_count;
+     RECT monitor_rect;
++    HMONITOR monitor;
+     DWORD i = 0;
+ 
+     TRACE("(%p, %p, %p, 0x%lx)\n", hdc, rect, proc, lp);
+ 
++    entry_count = ARRAY_SIZE(entries);
++    entry_ptr = entries;
++    while (TRUE)
++    {
++        SERVER_START_REQ(enum_monitors)
++        {
++            wine_server_set_reply( req, entry_ptr, entry_count * sizeof(*entry_ptr) );
++            status = wine_server_call( req );
++            count = reply->count;
++        }
++        SERVER_END_REQ;
++
++        if (!status)
++        {
++            for (i = 0; i < count; ++i)
++            {
++                monitor = wine_server_ptr_handle( entry_ptr[i].handle );
++                monitor_rect.top = entry_ptr[i].monitor_rect.top;
++                monitor_rect.left = entry_ptr[i].monitor_rect.left;
++                monitor_rect.right = entry_ptr[i].monitor_rect.right;
++                monitor_rect.bottom = entry_ptr[i].monitor_rect.bottom;
++                if (!proc( monitor, hdc, &monitor_rect, lp ))
++                {
++                    if (entry_ptr != entries)
++                        heap_free( entry_ptr );
++                    return FALSE;
++                }
++            }
++
++            if (count)
++            {
++                if (entry_ptr != entries)
++                    heap_free( entry_ptr );
++                return TRUE;
++            }
++        }
++
++        if (entry_ptr != entries)
++            heap_free( entry_ptr );
++
++        if (count <= entry_count)
++            break;
++
++        entry_count = count;
++        entry_ptr = heap_calloc( entry_count, sizeof(*entry_ptr) );
++        if (!entry_ptr)
++            break;
++    }
++
+     if (update_monitor_cache())
+     {
+         while (TRUE)
+diff --git a/dlls/user32/tests/monitor.c b/dlls/user32/tests/monitor.c
+index ab03837f5e6..b73ea8cfc90 100644
+--- a/dlls/user32/tests/monitor.c
++++ b/dlls/user32/tests/monitor.c
+@@ -2004,7 +2004,6 @@ static BOOL CALLBACK test_handle_proc(HMONITOR full_monitor, HDC hdc, LPRECT rec
+         monitor = (HMONITOR)((ULONG_PTR)full_monitor | ((ULONG_PTR)~0u << 16));
+     SetLastError(0xdeadbeef);
+     ret = GetMonitorInfoW(monitor, &monitor_info);
+-    todo_wine_if(((ULONG_PTR)full_monitor >> 16) == 0)
+     ok(ret, "GetMonitorInfoW failed, error %#x.\n", GetLastError());
+ 
+     monitor = (HMONITOR)((ULONG_PTR)full_monitor & 0xffff);
+diff --git a/dlls/winex11.drv/display.c b/dlls/winex11.drv/display.c
+index b3ff213ae89..f6b1cead7a3 100644
+--- a/dlls/winex11.drv/display.c
++++ b/dlls/winex11.drv/display.c
+@@ -34,6 +34,8 @@
+ #define WIN32_NO_STATUS
+ #include "winternl.h"
+ #include "wine/debug.h"
++#include "wine/heap.h"
++#include "wine/server.h"
+ #include "wine/unicode.h"
+ #include "x11drv.h"
+ 
+@@ -47,7 +49,6 @@ DEFINE_DEVPROPKEY(DEVPROPKEY_MONITOR_OUTPUT_ID, 0xca085853, 0x16ce, 0x48aa, 0xb1
+ DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_GPU_VULKAN_UUID, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5c, 2);
+ DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_MONITOR_STATEFLAGS, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5b, 2);
+ DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_MONITOR_RCMONITOR, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5b, 3);
+-DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_MONITOR_RCWORK, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5b, 4);
+ DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_MONITOR_ADAPTERNAME, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5b, 5);
+ 
+ static const WCHAR driver_date_dataW[] = {'D','r','i','v','e','r','D','a','t','e','D','a','t','a',0};
+@@ -625,10 +626,6 @@ static BOOL X11DRV_InitMonitor(HDEVINFO devinfo, const struct x11drv_monitor *mo
+     if (!SetupDiSetDevicePropertyW(devinfo, &device_data, &WINE_DEVPROPKEY_MONITOR_RCMONITOR, DEVPROP_TYPE_BINARY,
+                                    (const BYTE *)&monitor->rc_monitor, sizeof(monitor->rc_monitor), 0))
+         goto done;
+-    /* RcWork */
+-    if (!SetupDiSetDevicePropertyW(devinfo, &device_data, &WINE_DEVPROPKEY_MONITOR_RCWORK, DEVPROP_TYPE_BINARY,
+-                                   (const BYTE *)&monitor->rc_work, sizeof(monitor->rc_work), 0))
+-        goto done;
+     /* Adapter name */
+     length = sprintfW(bufferW, adapter_name_fmtW, video_index + 1);
+     if (!SetupDiSetDevicePropertyW(devinfo, &device_data, &WINE_DEVPROPKEY_MONITOR_ADAPTERNAME, DEVPROP_TYPE_STRING,
+@@ -697,6 +694,62 @@ static void cleanup_devices(void)
+     SetupDiDestroyDeviceInfoList(devinfo);
+ }
+ 
++/* Wine server monitor list management */
++
++struct wine_server_monitor_info
++{
++    unsigned int entry_count;
++    unsigned int entry_capacity;
++    struct update_monitor_entry *entries;
++};
++
++static BOOL wine_server_add_monitor_info(struct wine_server_monitor_info *info,
++                                         const struct x11drv_monitor *monitor, int adapter_index)
++{
++    struct update_monitor_entry *entry, *new_entries;
++    unsigned int length;
++
++    if (info->entry_count <= info->entry_capacity)
++        info->entry_capacity = info->entry_capacity ? info->entry_capacity * 2 : 2;
++
++    if (info->entries)
++        new_entries = heap_realloc(info->entries, info->entry_capacity * sizeof(*new_entries));
++    else
++        new_entries = heap_calloc(info->entry_capacity, sizeof(*new_entries));
++
++    if (!new_entries)
++        return FALSE;
++
++    info->entries = new_entries;
++    entry = &info->entries[info->entry_count++];
++    entry->monitor_rect.top = monitor->rc_monitor.top;
++    entry->monitor_rect.left = monitor->rc_monitor.left;
++    entry->monitor_rect.right = monitor->rc_monitor.right;
++    entry->monitor_rect.bottom = monitor->rc_monitor.bottom;
++    entry->work_rect.top = monitor->rc_work.top;
++    entry->work_rect.left = monitor->rc_work.left;
++    entry->work_rect.right = monitor->rc_work.right;
++    entry->work_rect.bottom = monitor->rc_work.bottom;
++    length = sprintfW(entry->adapter_name, adapter_name_fmtW, adapter_index + 1);
++    entry->adapter_name_len = length * sizeof(WCHAR);
++    return TRUE;
++}
++
++static void wine_server_submit_monitor_info(const struct wine_server_monitor_info *info)
++{
++    unsigned int status;
++
++    SERVER_START_REQ(update_monitors)
++    {
++        wine_server_add_data(req, info->entries, info->entry_count * sizeof(*info->entries));
++        status = wine_server_call(req);
++    }
++    SERVER_END_REQ;
++
++    if (status)
++        ERR("Failed to update the monitor list in the wine server, status %#x\n", status);
++}
++
+ void X11DRV_DisplayDevices_Init(BOOL force)
+ {
+     HANDLE mutex;
+@@ -707,6 +760,7 @@ void X11DRV_DisplayDevices_Init(BOOL force)
+     INT gpu_count, adapter_count, monitor_count;
+     INT gpu, adapter, monitor;
+     HDEVINFO gpu_devinfo = NULL, monitor_devinfo = NULL;
++    struct wine_server_monitor_info info = {0};
+     HKEY video_hkey = NULL;
+     INT video_index = 0;
+     DWORD disposition = 0;
+@@ -766,6 +820,13 @@ void X11DRV_DisplayDevices_Init(BOOL force)
+                 TRACE("monitor: %#x %s\n", monitor, wine_dbgstr_w(monitors[monitor].name));
+                 if (!X11DRV_InitMonitor(monitor_devinfo, &monitors[monitor], monitor, video_index, &gpu_luid, output_id++))
+                     goto done;
++
++                /* EnumDisplayMonitors() doesn't enumerate mirrored replicas and inactive monitors */
++                if (monitor != 0 || !(monitors[monitor].state_flags & DISPLAY_DEVICE_ACTIVE))
++                    continue;
++
++                if (!wine_server_add_monitor_info(&info, &monitors[monitor], video_index))
++                    goto done;
+             }
+ 
+             handler->free_monitors(monitors);
+@@ -777,7 +838,10 @@ void X11DRV_DisplayDevices_Init(BOOL force)
+         adapters = NULL;
+     }
+ 
++    wine_server_submit_monitor_info(&info);
++
+ done:
++    heap_free(info.entries);
+     cleanup_devices();
+     SetupDiDestroyDeviceInfoList(monitor_devinfo);
+     SetupDiDestroyDeviceInfoList(gpu_devinfo);
+diff --git a/server/Makefile.in b/server/Makefile.in
+index 4264e3db108..b1aa85862c1 100644
+--- a/server/Makefile.in
++++ b/server/Makefile.in
+@@ -11,6 +11,7 @@ C_SRCS = \
+ 	debugger.c \
+ 	device.c \
+ 	directory.c \
++	display.c \
+ 	esync.c \
+ 	event.c \
+ 	fast_sync.c \
+diff --git a/server/display.c b/server/display.c
+new file mode 100644
+index 00000000000..8e8ac2d1338
+--- /dev/null
++++ b/server/display.c
+@@ -0,0 +1,133 @@
++/*
++ * Server-side display device management
++ *
++ * Copyright (C) 2021 Zhiyi Zhang for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++#include "config.h"
++
++#include <stdarg.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "winternl.h"
++
++#include "request.h"
++#include "user.h"
++
++static struct list monitor_list = LIST_INIT(monitor_list);
++static unsigned int monitor_count;
++
++/* retrieve a pointer to a monitor from its handle */
++static struct monitor *get_monitor( user_handle_t handle )
++{
++    struct monitor *monitor;
++
++    if (!(monitor = get_user_object( handle, USER_MONITOR )))
++        set_win32_error( ERROR_INVALID_MONITOR_HANDLE );
++    return monitor;
++}
++
++/* create a monitor */
++static void create_monitor( const struct update_monitor_entry *entry )
++{
++    struct monitor *monitor;
++
++    if (!(monitor = mem_alloc( sizeof(*monitor) )))
++        goto failed;
++
++    if (!(monitor->adapter_name = memdup( entry->adapter_name, entry->adapter_name_len )))
++        goto failed;
++    monitor->adapter_name_len = entry->adapter_name_len;
++
++    if (!(monitor->handle = alloc_user_handle( monitor, USER_MONITOR )))
++        goto failed;
++
++    monitor->monitor_rect = entry->monitor_rect;
++    monitor->work_rect = entry->work_rect;
++    list_add_tail( &monitor_list, &monitor->entry );
++    ++monitor_count;
++    return;
++
++failed:
++    if (monitor)
++    {
++        if (monitor->adapter_name)
++            free( monitor->adapter_name );
++        free( monitor );
++    }
++}
++
++/* modify the list of monitors */
++DECL_HANDLER(update_monitors)
++{
++    const struct update_monitor_entry *entries;
++    struct monitor *monitor, *monitor2;
++    unsigned int entry_count, i;
++
++    LIST_FOR_EACH_ENTRY_SAFE(monitor, monitor2, &monitor_list, struct monitor, entry)
++    {
++        list_remove( &monitor->entry );
++        free_user_handle( monitor->handle );
++        free( monitor->adapter_name );
++        free( monitor );
++    }
++    monitor_count = 0;
++
++    entries = get_req_data();
++    entry_count = get_req_data_size() / sizeof(*entries);
++    for (i = 0; i < entry_count; ++i)
++        create_monitor( &entries[i] );
++}
++
++/* get information about a monitor */
++DECL_HANDLER(get_monitor_info)
++{
++    struct monitor *monitor;
++
++    if (!(monitor = get_monitor( req->handle )))
++        return;
++
++    reply->monitor_rect = monitor->monitor_rect;
++    reply->work_rect = monitor->work_rect;
++    set_reply_data( monitor->adapter_name, min(monitor->adapter_name_len, get_reply_max_size()) );
++}
++
++/* enumerate monitors */
++DECL_HANDLER(enum_monitors)
++{
++    struct enum_monitor_entry *entries;
++    unsigned int size, i = 0;
++    struct monitor *monitor;
++
++    reply->count = monitor_count;
++    size = reply->count * sizeof(*entries);
++    if (size > get_reply_max_size())
++    {
++        set_error( STATUS_BUFFER_TOO_SMALL );
++        return;
++    }
++
++    if (!(entries = set_reply_data_size( size )))
++        return;
++
++    LIST_FOR_EACH_ENTRY(monitor, &monitor_list, struct monitor, entry)
++    {
++        entries[i].handle = monitor->handle;
++        entries[i].monitor_rect = monitor->monitor_rect;
++        ++i;
++    }
++}
+diff --git a/server/protocol.def b/server/protocol.def
+index 6d8208b128b..3d536a0a237 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -2693,6 +2693,45 @@ enum coords_relative
+ #define SET_USER_OBJECT_GET_FULL_NAME   2
+ 
+ 
++struct update_monitor_entry
++{
++    rectangle_t    monitor_rect;     /* monitor rectangle */
++    rectangle_t    work_rect;        /* monitor work area rectangle */
++    WCHAR          adapter_name[32]; /* adapter name */
++    data_size_t    adapter_name_len; /* adapter name length in bytes */
++};
++
++struct enum_monitor_entry
++{
++    user_handle_t  handle;         /* handle to the monitor */
++    rectangle_t    monitor_rect;   /* monitor rectangle */
++};
++
++
++/* Modify the list of monitors */
++@REQ(update_monitors)
++    VARARG(monitors,update_monitor_entry); /* A list of monitors to be created */
++@END
++
++
++/* Get information about a monitor */
++@REQ(get_monitor_info)
++    user_handle_t  handle;         /* handle to the monitor */
++@REPLY
++    rectangle_t    monitor_rect;   /* monitor rectangle */
++    rectangle_t    work_rect;      /* monitor work area rectangle */
++    VARARG(adapter,unicode_str);   /* adapter name */
++@END
++
++
++/* Enumerate monitors */
++@REQ(enum_monitors)
++@REPLY
++    unsigned int   count;          /* total count of monitors */
++    VARARG(monitors,enum_monitor_entry); /* A list of monitors enumerated */
++@END
++
++
+ /* Register a hotkey */
+ @REQ(register_hotkey)
+     user_handle_t  window;        /* handle to the window */
+diff --git a/server/trace.c b/server/trace.c
+index ad7236dd393..b11babfdecb 100644
+--- a/server/trace.c
++++ b/server/trace.c
+@@ -1372,6 +1372,44 @@ static void dump_varargs_handle_infos( const char *prefix, data_size_t size )
+     fputc( '}', stderr );
+ }
+ 
++static void dump_varargs_update_monitor_entry( const char *prefix, data_size_t size )
++{
++    const struct update_monitor_entry *entry;
++
++    fprintf( stderr, "%s{", prefix );
++    while (size >= sizeof(*entry))
++    {
++        entry = cur_data;
++        dump_rectangle( "{monitor_rect=", &entry->monitor_rect );
++        dump_rectangle( ",work_rect=", &entry->work_rect );
++        fprintf( stderr, ",adapter_name=L\"" );
++        dump_strW( entry->adapter_name, entry->adapter_name_len, stderr, "\"\"" );
++        fprintf( stderr, "\"}" );
++        size -= sizeof(*entry);
++        remove_data( sizeof(*entry) );
++        if (size) fputc( ',', stderr );
++    }
++    fputc( '}', stderr );
++}
++
++static void dump_varargs_enum_monitor_entry( const char *prefix, data_size_t size )
++{
++    const struct enum_monitor_entry *entry;
++
++    fprintf( stderr, "%s{", prefix );
++    while (size >= sizeof(*entry))
++    {
++        entry = cur_data;
++        fprintf( stderr, "{handle=%08x", entry->handle );
++        dump_rectangle( ",monitor_rect=", &entry->monitor_rect );
++        fputc( '}', stderr );
++        size -= sizeof(*entry);
++        remove_data( sizeof(*entry) );
++        if (size) fputc( ',', stderr );
++    }
++    fputc( '}', stderr );
++}
++
+ typedef void (*dump_func)( const void *req );
+ 
+ /* Everything below this line is generated automatically by tools/make_requests */
+diff --git a/server/user.h b/server/user.h
+index 80f7e91f12c..a9807f1402d 100644
+--- a/server/user.h
++++ b/server/user.h
+@@ -36,7 +36,8 @@ enum user_object
+ {
+     USER_WINDOW = 1,
+     USER_HOOK,
+-    USER_CLIENT  /* arbitrary client handle */
++    USER_CLIENT,  /* arbitrary client handle */
++    USER_MONITOR
+ };
+ 
+ #define DESKTOP_ATOM  ((atom_t)32769)
+@@ -79,6 +80,16 @@ struct desktop
+     unsigned char        keystate[256];    /* asynchronous key state */
+ };
+ 
++struct monitor
++{
++    user_handle_t        handle;           /* monitor handle */
++    struct list          entry;            /* entry in global monitor list */
++    rectangle_t          monitor_rect;     /* monitor rectangle */
++    rectangle_t          work_rect;        /* monitor work area rectangle */
++    WCHAR                *adapter_name;    /* adapter name */
++    data_size_t          adapter_name_len; /* adapter name length */
++};
++
+ /* user handles functions */
+ 
+ extern user_handle_t alloc_user_handle( void *ptr, enum user_object type );
+
+-- 
+2.30.2
+

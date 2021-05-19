@@ -1,0 +1,40 @@
+From: Jacek Caban <jacek@codeweavers.com>
+Subject: [PATCH v2] winevulkan: Use native vkGetPhysicalDeviceProperties in wine_vkCreateDevice.
+Message-Id: <e16d2481-60d9-be35-16ad-6e9d4e2c43f7@codeweavers.com>
+Date: Wed, 19 May 2021 20:35:03 +0200
+
+Signed-off-by: Jacek Caban <jacek@codeweavers.com>
+---
+  dlls/winevulkan/vulkan.c | 9 +++++----
+  1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/winevulkan/vulkan.c b/dlls/winevulkan/vulkan.c
+index 9f181d92bc5..843da9e8751 100644
+--- a/dlls/winevulkan/vulkan.c
++++ b/dlls/winevulkan/vulkan.c
+@@ -70,9 +70,6 @@ static uint32_t wine_vk_count_struct_(void *s, VkStructureType t)
+ static const struct vulkan_funcs *vk_funcs;
+ static VkResult (*p_vkEnumerateInstanceVersion)(uint32_t *version);
+ 
+-void WINAPI wine_vkGetPhysicalDeviceProperties(VkPhysicalDevice physical_device,
+-        VkPhysicalDeviceProperties *properties);
+-
+ #define WINE_VK_ADD_DISPATCHABLE_MAPPING(instance, object, native_handle) \
+     wine_vk_add_handle_mapping((instance), (uint64_t) (uintptr_t) (object), (uint64_t) (uintptr_t) (native_handle), &(object)->mapping)
+ #define WINE_VK_ADD_NON_DISPATCHABLE_MAPPING(instance, object, native_handle) \
+@@ -701,9 +698,13 @@ VkResult WINAPI wine_vkCreateDevice(VkPhysicalDevice phys_dev,
+ 
+     if (TRACE_ON(vulkan))
+     {
++#if defined(USE_STRUCT_CONVERSION)
++        VkPhysicalDeviceProperties_host properties;
++#else
+         VkPhysicalDeviceProperties properties;
++#endif
+ 
+-        wine_vkGetPhysicalDeviceProperties(phys_dev, &properties);
++        phys_dev->instance->funcs.p_vkGetPhysicalDeviceProperties(phys_dev->phys_dev, &properties);
+ 
+         TRACE("Device name: %s.\n", debugstr_a(properties.deviceName));
+         TRACE("Vendor ID: %#x, Device ID: %#x.\n", properties.vendorID, properties.deviceID);
+

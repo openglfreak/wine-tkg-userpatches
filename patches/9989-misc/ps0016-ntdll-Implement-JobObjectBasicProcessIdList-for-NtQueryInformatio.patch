@@ -92,7 +92,7 @@ diff --git a/server/process.c b/server/process.c
 index 1786493..5c330bd 100644
 --- a/server/process.c
 +++ b/server/process.c
-@@ -1739,6 +1739,29 @@ DECL_HANDLER(process_in_job)
+@@ -1739,6 +1739,36 @@ DECL_HANDLER(process_in_job)
      release_object( process );
  }
  
@@ -101,6 +101,7 @@ index 1786493..5c330bd 100644
 +{
 +    struct job *job = get_job_obj( current->process, req->job, JOB_OBJECT_QUERY );
 +    struct process *process;
++    struct job *curr_job;
 +    process_id_t *data;
 +    data_size_t len;
 +
@@ -111,10 +112,16 @@ index 1786493..5c330bd 100644
 +    if (len && ((data = set_reply_data_size( len ))))
 +    {
 +        process_id_t *end = data + len;
-+        LIST_FOR_EACH_ENTRY( process, &job->process_list, struct process, job_entry )
++        LIST_FOR_EACH_ENTRY( process, &process_list, struct process, entry )
 +        {
-+            if (data >= end) break;
-+            *data++ = process->id;
++            for(curr_job = process->job; curr_job; curr_job = curr_job->parent)
++                if (curr_job == job) break;
++
++            if (curr_job == job && process->running_threads)
++            {
++                *data++ = process->id;
++                if (data >= end) break;
++            }
 +        }
 +    }
 +}

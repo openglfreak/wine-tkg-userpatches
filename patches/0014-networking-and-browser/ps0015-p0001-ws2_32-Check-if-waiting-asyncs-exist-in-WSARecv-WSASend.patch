@@ -1,0 +1,261 @@
+From: Dongwan Kim <kdw6485@gmail.com>
+Subject: [PATCH v4 1/2] ws2_32: Check if waiting asyncs exist in WSARecv/WSASend
+Message-Id: <20210518064147.1125925-1-kdw6485@gmail.com>
+Date: Tue, 18 May 2021 15:41:46 +0900
+
+WSARecv call should not intercept message for the waiting overlapped WSARecv.
+To do that, We should know if waiting asyncs exist before trying ws2_recv/ws2_send.
+
+Signed-off-by: Dongwan Kim <kdw6485@gmail.com>
+---
+ dlls/ws2_32/socket.c           | 31 +++++++++++++++++++++++++++++--
+ include/wine/server_protocol.h | 20 +++++++++++++++++++-
+ server/protocol.def            |  8 ++++++++
+ server/request.h               |  8 ++++++++
+ server/sock.c                  | 26 ++++++++++++++++++++++++++
+ server/trace.c                 | 12 ++++++++++++
+ 6 files changed, 102 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
+index 2ba1982b1d9..b3d5b92c610 100644
+--- a/dlls/ws2_32/socket.c
++++ b/dlls/ws2_32/socket.c
+@@ -2016,6 +2016,23 @@ static void WINAPI ws2_async_apc( void *arg, IO_STATUS_BLOCK *iosb, ULONG reserv
+     release_async_io( &wsa->io );
+ }
+ 
++/* query if the socket has pending asyncs */
++static int WS_QueryAsyncWaiting( SOCKET sock, int type  )
++{
++    int result=0;
++
++    SERVER_START_REQ( query_async_waiting )
++    {
++        req->handle  = wine_server_obj_handle( SOCKET2HANDLE(sock) );
++        req->type   = type;
++        wine_server_call(req);
++	result =  reply->state;
++    }
++    SERVER_END_REQ;
++    return result;
++
++}
++
+ /***********************************************************************
+  *              WS2_recv                (INTERNAL)
+  *
+@@ -5048,7 +5065,12 @@ static int WS2_sendto( SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount,
+     }
+ 
+     flags = convert_flags(dwFlags);
+-    n = WS2_send( fd, wsa, flags );
++    if(WS_QueryAsyncWaiting(s , ASYNC_TYPE_WRITE))
++    {
++	n = -1; errno = EAGAIN;
++    }
++    else
++        n = WS2_send( fd, wsa, flags );
+     if (n == -1 && errno != EAGAIN)
+     {
+         err = wsaErrno();
+@@ -6128,7 +6150,12 @@ static int WS2_recv_base( SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount,
+     flags = convert_flags(wsa->flags);
+     for (;;)
+     {
+-        n = WS2_recv( fd, wsa, flags );
++	if(WS_QueryAsyncWaiting(s, ASYNC_TYPE_READ))
++        {
++	    n = -1; errno = EAGAIN;
++        }
++	else
++            n = WS2_recv( fd, wsa, flags );
+         if (n == -1)
+         {
+             /* Unix-like systems return EINVAL when attempting to read OOB data from
+diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
+index 27557f2c1d7..dd0b6f0ba65 100644
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -5403,6 +5403,21 @@ struct get_next_thread_reply
+     char __pad_12[4];
+ };
+ 
++struct query_async_waiting_request
++{
++    struct request_header __header;
++    obj_handle_t  handle;
++    int type;
++    char __pad_20[4];
++
++};
++struct query_async_waiting_reply
++{
++    struct reply_header __header;
++    int state;
++    char __pad_12[4];
++};
++
+ 
+ enum request
+ {
+@@ -5680,6 +5695,7 @@ enum request
+     REQ_get_esync_fd,
+     REQ_esync_msgwait,
+     REQ_get_esync_apc_fd,
++    REQ_query_async_waiting,
+     REQ_NB_REQUESTS
+ };
+ 
+@@ -5961,6 +5977,7 @@ union generic_request
+     struct get_esync_fd_request get_esync_fd_request;
+     struct esync_msgwait_request esync_msgwait_request;
+     struct get_esync_apc_fd_request get_esync_apc_fd_request;
++    struct query_async_waiting_request query_async_waiting_request;
+ };
+ union generic_reply
+ {
+@@ -6240,11 +6257,12 @@ union generic_reply
+     struct get_esync_fd_reply get_esync_fd_reply;
+     struct esync_msgwait_reply esync_msgwait_reply;
+     struct get_esync_apc_fd_reply get_esync_apc_fd_reply;
++    struct query_async_waiting_reply query_async_waiting_reply;
+ };
+ 
+ /* ### protocol_version begin ### */
+ 
+-#define SERVER_PROTOCOL_VERSION 703
++#define SERVER_PROTOCOL_VERSION 704
+ 
+ /* ### protocol_version end ### */
+ 
+diff --git a/server/protocol.def b/server/protocol.def
+index 6d8208b128b..da754cc89b6 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -3711,3 +3711,11 @@ struct handle_info
+ @REPLY
+     obj_handle_t handle;       /* next thread handle */
+ @END
++
++/* Query if there are waiting asyncs of the socket */
++@REQ(query_async_waiting)
++	obj_handle_t handle;		/* socket handle */
++	int type;					/* async type */
++@REPLY
++	int state;					/* waiting async exists */
++@END
+diff --git a/server/request.h b/server/request.h
+index 41810b89299..88eee241b9b 100644
+--- a/server/request.h
++++ b/server/request.h
+@@ -393,6 +393,7 @@ DECL_HANDLER(terminate_job);
+ DECL_HANDLER(get_esync_fd);
+ DECL_HANDLER(esync_msgwait);
+ DECL_HANDLER(get_esync_apc_fd);
++DECL_HANDLER(query_async_waiting);
+ 
+ #ifdef WANT_REQUEST_HANDLERS
+ 
+@@ -673,6 +674,7 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
+     (req_handler)req_get_esync_fd,
+     (req_handler)req_esync_msgwait,
+     (req_handler)req_get_esync_apc_fd,
++    (req_handler)req_query_async_waiting,
+ };
+ 
+ C_ASSERT( sizeof(abstime_t) == 8 );
+@@ -2236,6 +2238,12 @@ C_ASSERT( FIELD_OFFSET(struct get_next_thread_request, flags) == 28 );
+ C_ASSERT( FIELD_OFFSET(struct esync_msgwait_request, in_msgwait) == 12 );
+ C_ASSERT( sizeof(struct esync_msgwait_request) == 16 );
+ C_ASSERT( sizeof(struct get_esync_apc_fd_request) == 16 );
++C_ASSERT( FIELD_OFFSET(struct query_async_waiting_request, handle) == 12 );
++C_ASSERT( FIELD_OFFSET(struct query_async_waiting_request, type) == 16 );
++C_ASSERT( sizeof(struct query_async_waiting_request) == 24 );
++C_ASSERT( FIELD_OFFSET(struct query_async_waiting_reply, state) == 8 );
++C_ASSERT( sizeof(struct query_async_waiting_reply) == 16 );
++
+ 
+ #endif  /* WANT_REQUEST_HANDLERS */
+ 
+diff --git a/server/sock.c b/server/sock.c
+index 565fb4c5a2c..c1142d75e2f 100644
+--- a/server/sock.c
++++ b/server/sock.c
+@@ -1923,3 +1923,29 @@ DECL_HANDLER(get_socket_info)
+ 
+     release_object( &sock->obj );
+ }
++
++DECL_HANDLER( query_async_waiting )
++{
++    struct sock *sock;
++    struct async *async;
++    reply->state = 0;
++
++    if (!(sock = (struct sock *)get_handle_obj( current->process, req->handle,
++                                                FILE_READ_ATTRIBUTES, &sock_ops))) return;
++    if (get_unix_fd( sock->fd ) == -1) return;
++
++    if (is_fd_overlapped( sock->fd ))
++    {
++	if(req->type == ASYNC_TYPE_READ  &&  ( async = find_pending_async(&sock->read_q) )) {
++    reply->state = 1;
++    release_object(async);
++	}
++	if(req->type == ASYNC_TYPE_WRITE && ( async = find_pending_async(&sock->write_q )) )
++	{
++	    reply->state = 1;
++	    release_object(async);
++	}
++    }
++    release_object( &sock->obj );
++
++}
+diff --git a/server/trace.c b/server/trace.c
+index ad7236dd393..63960a5fec4 100644
+--- a/server/trace.c
++++ b/server/trace.c
+@@ -4478,6 +4478,15 @@ static void dump_get_next_thread_reply( const struct get_next_thread_reply *req
+ {
+     fprintf( stderr, " handle=%04x", req->handle );
+ }
++static void dump_query_async_waiting_request( const struct query_async_waiting_request *req )
++{
++	fprintf( stderr, " handle=%04x", req->handle );
++    fprintf( stderr, ", type=%d", req->type );
++}
++static void dump_query_async_waiting_reply( const struct query_async_waiting_reply *req )
++{
++    fprintf( stderr, " state=%d", req->state );
++}
+ 
+ static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
+     (dump_func)dump_new_process_request,
+@@ -4754,6 +4763,7 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
+     (dump_func)dump_get_esync_fd_request,
+     (dump_func)dump_esync_msgwait_request,
+     (dump_func)dump_get_esync_apc_fd_request,
++    (dump_func)dump_query_async_waiting_request,
+ };
+ 
+ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
+@@ -5031,6 +5041,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
+     (dump_func)dump_get_esync_fd_reply,
+     NULL,
+     NULL,
++    (dump_func)dump_query_async_waiting_reply,
+ };
+ 
+ static const char * const req_names[REQ_NB_REQUESTS] = {
+@@ -5308,6 +5319,7 @@ static const char * const req_names[REQ_NB_REQUESTS] = {
+     "get_esync_fd",
+     "esync_msgwait",
+     "get_esync_apc_fd",
++    "query_async_waiting",
+ };
+ 
+ static const struct
+
+-- 
+2.30.2
+

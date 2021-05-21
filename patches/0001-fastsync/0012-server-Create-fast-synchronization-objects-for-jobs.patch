@@ -1,7 +1,7 @@
 From 6516e6c5d34133e0931f9c292830bec9d99f5ea7 Mon Sep 17 00:00:00 2001
 From: Zebediah Figura <z.figura12@gmail.com>
 Date: Mon, 8 Mar 2021 17:17:35 -0600
-Subject: [PATCH 12/28] server: Create fast synchronization objects for jobs.
+Subject: [PATCH 12/29] server: Create fast synchronization objects for jobs.
 
 ---
  server/process.c | 18 +++++++++++++++++-
@@ -20,9 +20,9 @@ index 38d3a631448..2d48a79a909 100644
  static void job_destroy( struct object *obj );
  
 @@ -202,6 +203,7 @@ struct job
-     struct completion *completion_port; /* associated completion port */
-     apc_param_t completion_key;    /* key to send with completion messages */
      struct job *parent;
+     struct list parent_job_entry;  /* list entry for parent job */
+     struct list child_job_list;    /* list of child jobs */
 +    struct fast_sync *fast_sync;   /* fast synchronization object */
  };
  
@@ -63,9 +63,9 @@ index 38d3a631448..2d48a79a909 100644
  
  static int job_close_handle( struct object *obj, struct process *process, obj_handle_t handle )
 @@ -338,6 +352,8 @@ static void job_destroy( struct object *obj )
- 
-     if (job->completion_port) release_object( job->completion_port );
-     if (job->parent) release_object( job->parent );
+         list_remove( &job->parent_job_entry );
+         release_object( job->parent );
+     }
 +
 +    if (job->fast_sync) release_object( job->fast_sync );
  }

@@ -1,0 +1,139 @@
+From 32eb4d889408f32530907c8e01079f2237e2c4e9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 16 Apr 2021 12:54:16 +0200
+Subject: [PATCH 13/27] server: Implement WM_INPUT / RIM_TYPEHID message
+ dispatch.
+
+The messages are of variable size and carry the corresponding HID report
+data after each RAWINPUT struct.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=50506
+---
+ dlls/user32/message.c      |  9 +++++++++
+ dlls/user32/rawinput.c     | 31 +++++++++++++++++++++++++++++++
+ dlls/user32/user_private.h |  2 ++
+ server/queue.c             |  1 +
+ server/trace.c             |  1 +
+ 5 files changed, 44 insertions(+)
+
+diff --git a/dlls/user32/message.c b/dlls/user32/message.c
+index 4d6057840fd..8a2abda9dfb 100644
+--- a/dlls/user32/message.c
++++ b/dlls/user32/message.c
+@@ -3254,6 +3254,14 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
+             hid_usage_page = ((USAGE *)rawinput->data.hid.bRawData)[0];
+             hid_usage = ((USAGE *)rawinput->data.hid.bRawData)[1];
+         }
++        if (input->u.hi.uMsg == WM_INPUT)
++        {
++            if (!rawinput_device_get_usages( rawinput->header.hDevice, &hid_usage_page, &hid_usage ))
++            {
++                WARN( "unable to get HID usages for device %p\n", rawinput->header.hDevice );
++                return STATUS_INVALID_HANDLE;
++            }
++        }
+     }
+ 
+     SERVER_START_REQ( send_hardware_message )
+@@ -3283,6 +3291,7 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
+             req->input.hw.lparam = MAKELONG( input->u.hi.wParamL, input->u.hi.wParamH );
+             switch (input->u.hi.uMsg)
+             {
++            case WM_INPUT:
+             case WM_INPUT_DEVICE_CHANGE:
+                 req->input.hw.rawinput.type = rawinput->header.dwType;
+                 switch (rawinput->header.dwType)
+diff --git a/dlls/user32/rawinput.c b/dlls/user32/rawinput.c
+index 1556a7f6519..08607c9ae26 100644
+--- a/dlls/user32/rawinput.c
++++ b/dlls/user32/rawinput.c
+@@ -266,6 +266,21 @@ static struct device *find_device_from_handle(HANDLE handle)
+ }
+ 
+ 
++BOOL rawinput_device_get_usages(HANDLE handle, USAGE *usage_page, USAGE *usage)
++{
++    struct device *device;
++
++    *usage_page = *usage = 0;
++
++    if (!(device = find_device_from_handle(handle))) return FALSE;
++    if (device->info.dwType != RIM_TYPEHID) return FALSE;
++
++    *usage_page = device->info.u.hid.usUsagePage;
++    *usage = device->info.u.hid.usUsage;
++    return TRUE;
++}
++
++
+ struct rawinput_thread_data *rawinput_thread_data(void)
+ {
+     struct user_thread_info *thread_info = get_user_thread_info();
+@@ -370,6 +385,22 @@ BOOL rawinput_from_hardware_message(RAWINPUT *rawinput, const struct hardware_ms
+         rawinput->data.keyboard.Message          = msg_data->rawinput.kbd.message;
+         rawinput->data.keyboard.ExtraInformation = msg_data->info;
+     }
++    else if (msg_data->rawinput.type == RIM_TYPEHID)
++    {
++        if (sizeof(*rawinput) + msg_data->rawinput.hid.length > RAWINPUT_BUFFER_SIZE)
++        {
++            ERR( "unexpectedly large hardware message dropped\n" );
++            return FALSE;
++        }
++
++        rawinput->header.dwSize  = FIELD_OFFSET( RAWINPUT, data.hid.bRawData ) + msg_data->rawinput.hid.length;
++        rawinput->header.hDevice = ULongToHandle( msg_data->rawinput.hid.device );
++        rawinput->header.wParam  = 0;
++
++        rawinput->data.hid.dwSizeHid = msg_data->rawinput.hid.length;
++        rawinput->data.hid.dwCount = 1;
++        memcpy( rawinput->data.hid.bRawData, msg_data + 1, msg_data->rawinput.hid.length );
++    }
+     else
+     {
+         FIXME("Unhandled rawinput type %#x.\n", msg_data->rawinput.type);
+diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
+index a74b5a08cde..caabaf2022e 100644
+--- a/dlls/user32/user_private.h
++++ b/dlls/user32/user_private.h
+@@ -28,6 +28,7 @@
+ #include "winuser.h"
+ #include "winreg.h"
+ #include "winternl.h"
++#include "hidusage.h"
+ #include "wine/heap.h"
+ 
+ #define GET_WORD(ptr)  (*(const WORD *)(ptr))
+@@ -242,6 +243,7 @@ struct tagWND;
+ 
+ struct hardware_msg_data;
+ extern BOOL rawinput_from_hardware_message(RAWINPUT *rawinput, const struct hardware_msg_data *msg_data);
++extern BOOL rawinput_device_get_usages(HANDLE handle, USAGE *usage_page, USAGE *usage);
+ extern struct rawinput_thread_data *rawinput_thread_data(void);
+ 
+ extern void keyboard_init(void) DECLSPEC_HIDDEN;
+diff --git a/server/queue.c b/server/queue.c
+index 0063b1970e1..f73156815d6 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -2015,6 +2015,7 @@ static void queue_custom_hardware_message( struct desktop *desktop, user_handle_
+ 
+     switch (input->hw.msg)
+     {
++    case WM_INPUT:
+     case WM_INPUT_DEVICE_CHANGE:
+         raw_msg.foreground = NULL;
+         raw_msg.desktop    = NULL;
+diff --git a/server/trace.c b/server/trace.c
+index e7950d29f3b..206469b1eb7 100644
+--- a/server/trace.c
++++ b/server/trace.c
+@@ -458,6 +458,7 @@ static void dump_hw_input( const char *prefix, const hw_input_t *input )
+         dump_uint64( ",lparam=", &input->hw.lparam );
+         switch (input->hw.msg)
+         {
++        case WM_INPUT:
+         case WM_INPUT_DEVICE_CHANGE:
+             dump_rawinput( ",rawinput=", &input->hw.rawinput );
+         }
+

@@ -1,0 +1,191 @@
+From d25be77862907497b0aa18ca76688c88016638b6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 7 May 2021 12:47:27 +0200
+Subject: [PATCH 12/27] server: Add HID length and report to rawinput union.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=50506
+---
+ dlls/user32/message.c  |  2 ++
+ dlls/user32/rawinput.c |  6 ++++--
+ server/protocol.def    |  3 +++
+ server/queue.c         | 16 +++++++++-------
+ server/trace.c         | 38 ++++++++++++++++++++------------------
+ tools/make_requests    |  2 +-
+ 6 files changed, 39 insertions(+), 28 deletions(-)
+
+diff --git a/dlls/user32/message.c b/dlls/user32/message.c
+index 9af33c3291e..4d6057840fd 100644
+--- a/dlls/user32/message.c
++++ b/dlls/user32/message.c
+@@ -3293,6 +3293,8 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
+                     req->input.hw.rawinput.hid.param = rawinput->header.wParam;
+                     req->input.hw.rawinput.hid.usage_page = hid_usage_page;
+                     req->input.hw.rawinput.hid.usage = hid_usage;
++                    req->input.hw.rawinput.hid.length = rawinput->data.hid.dwSizeHid;
++                    wine_server_add_data( req, rawinput->data.hid.bRawData, rawinput->data.hid.dwSizeHid );
+                     break;
+                 default:
+                     assert( 0 );
+diff --git a/dlls/user32/rawinput.c b/dlls/user32/rawinput.c
+index 92103a4aca9..1556a7f6519 100644
+--- a/dlls/user32/rawinput.c
++++ b/dlls/user32/rawinput.c
+@@ -563,7 +563,7 @@ UINT WINAPI DECLSPEC_HOTPATCH GetRawInputBuffer(RAWINPUT *data, UINT *data_size,
+     struct hardware_msg_data *msg_data;
+     struct rawinput_thread_data *thread_data;
+     RAWINPUT *rawinput;
+-    UINT count = 0, rawinput_size, next_size, overhead;
++    UINT count = 0, rawinput_size, msg_size, next_size, overhead;
+     BOOL is_wow64;
+     int i;
+ 
+@@ -623,7 +623,9 @@ UINT WINAPI DECLSPEC_HOTPATCH GetRawInputBuffer(RAWINPUT *data, UINT *data_size,
+                               data->header.dwSize - sizeof(RAWINPUTHEADER));
+         data->header.dwSize += overhead;
+         data = NEXTRAWINPUTBLOCK(data);
+-        msg_data++;
++        msg_size = sizeof(*msg_data);
++        if (msg_data->rawinput.type == RIM_TYPEHID) msg_size += msg_data->rawinput.hid.length;
++        msg_data = (struct hardware_msg_data *)((char *)msg_data + msg_size);
+     }
+ 
+     if (count == 0 && next_size == 0) *data_size = 0;
+diff --git a/server/protocol.def b/server/protocol.def
+index eaffa886f21..d24070e7b9a 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -302,6 +302,9 @@ union rawinput
+         unsigned int   param;   /* rawinput message param */
+         unsigned short usage_page;/* HID usage page */
+         unsigned short usage;   /* HID usage */
++        unsigned int   length;  /* HID report length */
++        int            __pad;
++        /* followed by length bytes of HID report data  */
+     } hid;
+ };
+ 
+diff --git a/server/queue.c b/server/queue.c
+index bb6d8f820bd..0063b1970e1 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -2021,8 +2021,8 @@ static void queue_custom_hardware_message( struct desktop *desktop, user_handle_
+         raw_msg.source     = source;
+         raw_msg.time       = get_tick_count();
+         raw_msg.message    = input->hw.msg;
+-        raw_msg.extra      = NULL;
+-        raw_msg.extra_len  = 0;
++        raw_msg.extra      = get_req_data();
++        raw_msg.extra_len  = get_req_data_size();
+ 
+         msg_data = &raw_msg.data;
+         msg_data->info     = 0;
+@@ -3325,16 +3325,18 @@ DECL_HANDLER(get_rawinput_buffer)
+     {
+         struct message *msg = LIST_ENTRY( ptr, struct message, entry );
+         struct hardware_msg_data *data = msg->data;
++        data_size_t hid_size = data->rawinput.type != RIM_TYPEHID ? 0 : data->rawinput.hid.length;
++        data_size_t data_size = sizeof(*data) + hid_size;
+ 
+         ptr = list_next( &input->msg_list, ptr );
+         if (msg->msg != WM_INPUT) continue;
+ 
+-        next_size = req->rawinput_size;
++        next_size = req->rawinput_size + hid_size;
+         if (size + next_size > req->buffer_size) break;
+-        if (cur + sizeof(*data) > buf + get_reply_max_size()) break;
+-        if (cur + sizeof(*data) > buf + buf_size)
++        if (cur + data_size > buf + get_reply_max_size()) break;
++        if (cur + data_size > buf + buf_size)
+         {
+-            buf_size += buf_size / 2;
++            buf_size += buf_size / 2 + hid_size;
+             if (!(tmp = realloc( buf, buf_size )))
+             {
+                 set_error( STATUS_NO_MEMORY );
+@@ -3344,7 +3346,7 @@ DECL_HANDLER(get_rawinput_buffer)
+             buf = tmp;
+         }
+ 
+-        memcpy(cur, data, sizeof(*data));
++        memcpy( cur, data, data_size );
+         list_remove( &msg->entry );
+         free_message( msg );
+ 
+diff --git a/server/trace.c b/server/trace.c
+index e40f0769a35..e7950d29f3b 100644
+--- a/server/trace.c
++++ b/server/trace.c
+@@ -395,6 +395,22 @@ static void dump_irp_params( const char *prefix, const irp_params_t *data )
+     }
+ }
+ 
++static void dump_varargs_bytes( const char *prefix, data_size_t size )
++{
++    const unsigned char *data = cur_data;
++    data_size_t len = min( 1024, size );
++
++    fprintf( stderr, "%s{", prefix );
++    while (len > 0)
++    {
++        fprintf( stderr, "%02x", *data++ );
++        if (--len) fputc( ',', stderr );
++    }
++    if (size > 1024) fprintf( stderr, "...(total %u)", size );
++    fputc( '}', stderr );
++    remove_data( size );
++}
++
+ static void dump_rawinput( const char *prefix, const union rawinput *rawinput )
+ {
+     switch (rawinput->type)
+@@ -408,9 +424,11 @@ static void dump_rawinput( const char *prefix, const union rawinput *rawinput )
+                  rawinput->kbd.message, rawinput->kbd.vkey, rawinput->kbd.scan );
+         break;
+     case RIM_TYPEHID:
+-        fprintf( stderr, "%s{type=HID,device=%04x,param=%04x,page=%04hx,usage=%04hx}",
++        fprintf( stderr, "%s{type=HID,device=%04x,param=%04x,page=%04hx,usage=%04hx,length=%u",
+                  prefix, rawinput->hid.device, rawinput->hid.param, rawinput->hid.usage_page,
+-                 rawinput->hid.usage );
++                 rawinput->hid.usage, rawinput->hid.length );
++        dump_varargs_bytes( ",report=", rawinput->hid.length );
++        fputc( '}', stderr );
+         break;
+     default:
+         fprintf( stderr, "%s{type=%04x}", prefix, rawinput->type );
+@@ -586,22 +604,6 @@ static void dump_varargs_user_handles( const char *prefix, data_size_t size )
+     remove_data( size );
+ }
+ 
+-static void dump_varargs_bytes( const char *prefix, data_size_t size )
+-{
+-    const unsigned char *data = cur_data;
+-    data_size_t len = min( 1024, size );
+-
+-    fprintf( stderr,"%s{", prefix );
+-    while (len > 0)
+-    {
+-        fprintf( stderr, "%02x", *data++ );
+-        if (--len) fputc( ',', stderr );
+-    }
+-    if (size > 1024) fprintf( stderr, "...(total %u)", size );
+-    fputc( '}', stderr );
+-    remove_data( size );
+-}
+-
+ static void dump_varargs_string( const char *prefix, data_size_t size )
+ {
+     fprintf( stderr, "%s\"%.*s\"", prefix, (int)size, (const char *)cur_data );
+diff --git a/tools/make_requests b/tools/make_requests
+index a70b29df3d2..1c4e5977c8b 100755
+--- a/tools/make_requests
++++ b/tools/make_requests
+@@ -52,7 +52,7 @@ my %formats =
+     "luid_t"        => [  8,   4,  "&dump_luid" ],
+     "generic_map_t" => [  16,  4,  "&dump_generic_map" ],
+     "ioctl_code_t"  => [  4,   4,  "&dump_ioctl_code" ],
+-    "hw_input_t"    => [  32,  8,  "&dump_hw_input" ],
++    "hw_input_t"    => [  40,  8,  "&dump_hw_input" ],
+ );
+ 
+ my @requests = ();
+

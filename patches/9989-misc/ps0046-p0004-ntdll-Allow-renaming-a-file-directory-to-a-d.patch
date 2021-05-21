@@ -1,28 +1,38 @@
 From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
-Subject: [PATCH v7 4/4] ntdll: Allow renaming a file/directory to a different casing of itself.
-Message-Id: <5c871b3d4f064bab347fe0c2c762f5648cca6836.1619192997.git.gabrielopcode@gmail.com>
-Date: Fri, 23 Apr 2021 18:52:29 +0300
-In-Reply-To: <fc92a932bc3044f60ddda01f9846ef841c845f4c.1619192997.git.gabrielopcode@gmail.com>
-References: <fc92a932bc3044f60ddda01f9846ef841c845f4c.1619192997.git.gabrielopcode@gmail.com>
+Subject: [PATCH v12] ntdll: Allow renaming a file/directory to a different case of itself.
+Message-Id: <eb8de961308b3242c8526d87c02a52f5c202c592.1621603617.git.gabrielopcode@gmail.com>
+Date: Fri, 21 May 2021 16:29:10 +0300
 
-Renaming a file or directory from e.g. foobar to FooBar (or any other casing
+Renaming a file or directory from e.g. foobar to FooBar (or any other case
 change) should work, like on Windows, instead of being a no-op. Clobbering
-an existing file must also respect the new casing.
+an existing file must also respect the new case.
 
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=46203
 Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
 ---
 
-We just prepend the unix casing filename (without path) to the wineserver
-data before the actual unix filename, and a field `caselen` which is the
-length of this data.
+To simplify the code and avoid another trailing slash quirk, the case is
+not sent if the conversion fails (which keeps current behavior), because
+it should be very rare in practice so it's not worth the extra complication
+that doesn't really bring any benefit to begin with.
 
- dlls/kernel32/tests/file.c |  4 +-
- dlls/ntdll/tests/file.c    |  4 +-
- dlls/ntdll/unix/file.c     | 58 ++++++++++++++++++++--
- server/fd.c                | 98 +++++++++++++++++++++++++-------------
- server/protocol.def        |  2 +
- 5 files changed, 126 insertions(+), 40 deletions(-)
+Note that the server has to check for caselen == 0; it's not due to errors,
+it's due to the path mapping to a device or unix root directory. In this
+case, there is no such thing as "last component" because there are no
+components at all, so obviously there's no case to replace with. Handling
+the rare error above with the same code is just an implicit side effect
+without adding any extra code, so I see it as a bonus.
+
+If you find any other corner cases please let me know, but at this point
+I'd rather keep it with less code to avoid extra complications with trailing
+slashes and such.
+
+ dlls/kernel32/tests/file.c |   4 +-
+ dlls/ntdll/tests/file.c    |   4 +-
+ dlls/ntdll/unix/file.c     |  72 ++++++++++++++++++++++++--
+ server/fd.c                | 100 +++++++++++++++++++++++++------------
+ server/protocol.def        |   2 +
+ 5 files changed, 142 insertions(+), 40 deletions(-)
 
 diff --git a/dlls/kernel32/tests/file.c b/dlls/kernel32/tests/file.c
 index 8560524..9ca56e1 100644
@@ -47,7 +57,7 @@ index 8560524..9ca56e1 100644
      }
      CloseHandle(hfile);
 diff --git a/dlls/ntdll/tests/file.c b/dlls/ntdll/tests/file.c
-index d469b44..49f4e34 100644
+index b7b4636..591f425 100644
 --- a/dlls/ntdll/tests/file.c
 +++ b/dlls/ntdll/tests/file.c
 @@ -2315,7 +2315,7 @@ static void test_file_link_information(void)
@@ -69,53 +79,67 @@ index d469b44..49f4e34 100644
      }
  
 diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
-index e32de57..908beb6 100644
+index c033bb0..5b84dbd 100644
 --- a/dlls/ntdll/unix/file.c
 +++ b/dlls/ntdll/unix/file.c
-@@ -3400,6 +3400,50 @@ NTSTATUS nt_to_unix_file_name( const OBJECT_ATTRIBUTES *attr, char **name_ret, U
+@@ -3405,6 +3405,64 @@ NTSTATUS nt_to_unix_file_name( const OBJECT_ATTRIBUTES *attr, char **name_ret, U
  }
  
  
 +/***********************************************************************
-+ *           nt_to_unix_file_name_with_casing
++ *           nt_to_unix_file_name_with_case
 + *
 + * Same as nt_to_unix_file_name, but additionally return unix file name
-+ * without path, with the original casing from the NT file name.
++ * without path, with the actual case from the NT name's last component.
 + */
-+static NTSTATUS nt_to_unix_file_name_with_casing( const OBJECT_ATTRIBUTES *attr, char **name_ret,
-+                                                  char **casing_ret, UINT disposition )
++static NTSTATUS nt_to_unix_file_name_with_case( const OBJECT_ATTRIBUTES *attr, char **name_ret,
++                                                char **case_ret, UINT disposition )
 +{
++    const WCHAR *p, *nt_filename = attr->ObjectName->Buffer;
 +    int len = attr->ObjectName->Length / sizeof(WCHAR);
-+    const WCHAR *nt_filename;
 +    NTSTATUS status;
-+    char *casing;
-+
-+    /* NT name may not be NUL terminated; look for last \ character */
-+    for (nt_filename = attr->ObjectName->Buffer + len; nt_filename != attr->ObjectName->Buffer; nt_filename--)
-+        if (nt_filename[-1] == '\\')
-+            break;
-+    len = attr->ObjectName->Buffer + len - nt_filename;
-+
-+    if (!(casing = malloc( len * 3 + 1 ))) return STATUS_NO_MEMORY;
++    char *file_case;
 +
 +    status = nt_to_unix_file_name( attr, name_ret, disposition );
 +    if (status != STATUS_SUCCESS && status != STATUS_NO_SUCH_FILE)
-+    {
-+        free( casing );
 +        return status;
-+    }
 +
-+    len = ntdll_wcstoumbs( nt_filename, len, casing, len * 3, TRUE );
-+    if (len > 0)
-+        casing[len] = 0;
-+    else
++    /* skip the device and prefix (allow slashes for unix namespace) */
++    if (!attr->RootDirectory)
 +    {
-+        char *p = strrchr( *name_ret, '/' );
-+        p = p ? p + 1 : *name_ret;
-+        strcpy( casing, p );
++        int pos = get_dos_prefix_len( attr->ObjectName );
++        while (pos < len)
++        {
++            WCHAR c = nt_filename[pos++];
++            if (c == '\\' || c == '/') break;
++        }
++        nt_filename += pos;
++        len -= pos;
 +    }
 +
-+    *casing_ret = casing;
++    /* strip off trailing backslashes */
++    for (; len; len--)
++        if (nt_filename[len - 1] != '\\' && nt_filename[len - 1] != '/')
++            break;
++
++    /* get the last component */
++    for (p = nt_filename + len; p != nt_filename; p--)
++        if (p[-1] == '\\' || p[-1] == '/')
++            break;
++    len -= p - nt_filename;
++    nt_filename = p;
++
++    if (!(file_case = malloc( len * 3 + 1 )))
++    {
++        free( *name_ret );
++        return STATUS_NO_MEMORY;
++    }
++
++    len = ntdll_wcstoumbs( nt_filename, len, file_case, len * 3, TRUE );
++    if (len < 0 || len > MAX_DIR_ENTRY_LEN) len = 0;
++    file_case[len] = 0;
++
++    *case_ret = file_case;
 +    return status;
 +}
 +
@@ -123,135 +147,134 @@ index e32de57..908beb6 100644
  /******************************************************************************
   *           wine_nt_to_unix_file_name
   *
-@@ -4522,8 +4566,8 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4527,8 +4585,8 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
          {
              FILE_RENAME_INFORMATION *info = ptr;
              UNICODE_STRING name_str, redir;
-+            char *unix_name, *casing;
++            char *unix_name, *file_case;
              OBJECT_ATTRIBUTES attr;
 -            char *unix_name;
  
              name_str.Buffer = info->FileName;
              name_str.Length = info->FileNameLength;
-@@ -4531,7 +4575,7 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4536,7 +4594,7 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
              InitializeObjectAttributes( &attr, &name_str, OBJ_CASE_INSENSITIVE, info->RootDirectory, NULL );
              get_redirect( &attr, &redir );
  
 -            io->u.Status = nt_to_unix_file_name( &attr, &unix_name, FILE_OPEN_IF );
-+            io->u.Status = nt_to_unix_file_name_with_casing( &attr, &unix_name, &casing, FILE_OPEN_IF );
++            io->u.Status = nt_to_unix_file_name_with_case( &attr, &unix_name, &file_case, FILE_OPEN_IF );
              if (io->u.Status == STATUS_SUCCESS || io->u.Status == STATUS_NO_SUCH_FILE)
              {
                  SERVER_START_REQ( set_fd_name_info )
-@@ -4539,15 +4583,18 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4544,15 +4602,18 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
                      req->handle   = wine_server_obj_handle( handle );
                      req->rootdir  = wine_server_obj_handle( attr.RootDirectory );
                      req->namelen  = attr.ObjectName->Length;
-+                    req->caselen  = strlen( casing );
++                    req->caselen  = strlen( file_case );
                      req->link     = FALSE;
                      req->replace  = info->ReplaceIfExists;
                      wine_server_add_data( req, attr.ObjectName->Buffer, attr.ObjectName->Length );
-+                    wine_server_add_data( req, casing, req->caselen );
++                    wine_server_add_data( req, file_case, req->caselen );
                      wine_server_add_data( req, unix_name, strlen(unix_name) );
                      io->u.Status = wine_server_call( req );
                  }
                  SERVER_END_REQ;
  
                  free( unix_name );
-+                free( casing );
++                free( file_case );
              }
              free( redir.Buffer );
          }
-@@ -4559,8 +4606,8 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4564,8 +4625,8 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
          {
              FILE_LINK_INFORMATION *info = ptr;
              UNICODE_STRING name_str, redir;
-+            char *unix_name, *casing;
++            char *unix_name, *file_case;
              OBJECT_ATTRIBUTES attr;
 -            char *unix_name;
  
              name_str.Buffer = info->FileName;
              name_str.Length = info->FileNameLength;
-@@ -4568,7 +4615,7 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4573,7 +4634,7 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
              InitializeObjectAttributes( &attr, &name_str, OBJ_CASE_INSENSITIVE, info->RootDirectory, NULL );
              get_redirect( &attr, &redir );
  
 -            io->u.Status = nt_to_unix_file_name( &attr, &unix_name, FILE_OPEN_IF );
-+            io->u.Status = nt_to_unix_file_name_with_casing( &attr, &unix_name, &casing, FILE_OPEN_IF );
++            io->u.Status = nt_to_unix_file_name_with_case( &attr, &unix_name, &file_case, FILE_OPEN_IF );
              if (io->u.Status == STATUS_SUCCESS || io->u.Status == STATUS_NO_SUCH_FILE)
              {
                  SERVER_START_REQ( set_fd_name_info )
-@@ -4576,15 +4623,18 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4581,15 +4642,18 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
                      req->handle   = wine_server_obj_handle( handle );
                      req->rootdir  = wine_server_obj_handle( attr.RootDirectory );
                      req->namelen  = attr.ObjectName->Length;
-+                    req->caselen  = strlen( casing );
++                    req->caselen  = strlen( file_case );
                      req->link     = TRUE;
                      req->replace  = info->ReplaceIfExists;
                      wine_server_add_data( req, attr.ObjectName->Buffer, attr.ObjectName->Length );
-+                    wine_server_add_data( req, casing, req->caselen );
++                    wine_server_add_data( req, file_case, req->caselen );
                      wine_server_add_data( req, unix_name, strlen(unix_name) );
                      io->u.Status  = wine_server_call( req );
                  }
                  SERVER_END_REQ;
  
                  free( unix_name );
-+                free( casing );
++                free( file_case );
              }
              free( redir.Buffer );
          }
 diff --git a/server/fd.c b/server/fd.c
-index 481e9a8..0f7067d 100644
+index e7253ec..dcb7361 100644
 --- a/server/fd.c
 +++ b/server/fd.c
-@@ -2488,11 +2488,14 @@ static void set_fd_disposition( struct fd *fd, int unlink )
+@@ -2485,11 +2485,14 @@ static void set_fd_disposition( struct fd *fd, int unlink )
  
  /* set new name for the fd */
  static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr, data_size_t len,
 -                         struct unicode_str nt_name, int create_link, int replace )
-+                         const char *casing, data_size_t casinglen, struct unicode_str nt_name,
++                         const char *file_case, data_size_t caselen, struct unicode_str nt_name,
 +                         int create_link, int replace )
  {
-+    size_t pathlen, filenamelen;
-+    int different_casing;
++    size_t pathlen = 0, filenamelen;
      struct inode *inode;
      struct stat st, st2;
 -    char *name;
-+    char *name, *tmp;
++    int different_case;
++    char *name, *p;
  
      if (!fd->inode || !fd->unix_name)
      {
-@@ -2526,6 +2529,23 @@ static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr, da
+@@ -2523,6 +2526,22 @@ static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr, da
          name = combined_name;
      }
  
-+    tmp = strrchr( name, '/' );
-+    tmp = tmp ? tmp + 1 : name;
-+    pathlen = tmp - name;
-+    filenamelen = strlen( tmp );
-+    different_casing = (filenamelen != casinglen || memcmp( tmp, casing, casinglen ));
++    for (p = name; *p;) if (*p++ == '/' && *p) pathlen = p - name;
++    filenamelen = p - name - pathlen;
++    for (p = name + pathlen; filenamelen && p[filenamelen - 1] == '/'; filenamelen--) { }
++    different_case = caselen && (filenamelen != caselen || memcmp( p, file_case, caselen ));
 +
-+    if (filenamelen < casinglen)
++    if (filenamelen < caselen)
 +    {
-+        tmp = realloc( name, pathlen + casinglen + 1 );
-+        if (!tmp)
++        p = realloc( name, pathlen + caselen + 1 );
++        if (!p)
 +        {
 +            set_error( STATUS_NO_MEMORY );
 +            goto failed;
 +        }
-+        name = tmp;
++        name = p;
 +    }
 +
      /* when creating a hard link, source cannot be a dir */
      if (create_link && !fstat( fd->unix_fd, &st ) && S_ISDIR( st.st_mode ))
      {
-@@ -2538,47 +2558,58 @@ static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr, da
+@@ -2535,47 +2554,61 @@ static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr, da
          if (!fstat( fd->unix_fd, &st2 ) && st.st_ino == st2.st_ino && st.st_dev == st2.st_dev)
          {
              if (create_link && !replace) set_error( STATUS_OBJECT_NAME_COLLISION );
 -            free( name );
 -            return;
 -        }
-+            if (!different_casing)
++            if (!different_case)
 +            {
 +                free( name );
 +                return;
@@ -261,7 +284,7 @@ index 481e9a8..0f7067d 100644
 -        {
 -            set_error( STATUS_OBJECT_NAME_COLLISION );
 -            goto failed;
-+            /* creating a link with a different casing on itself renames the file */
++            /* creating a link with a different case on itself renames the file */
 +            create_link = 0;
          }
 -
@@ -313,7 +336,7 @@ index 481e9a8..0f7067d 100644
 +
 +            /* link() expects that the target doesn't exist */
 +            /* rename() cannot replace files with directories */
-+            if (create_link || S_ISDIR( st2.st_mode ) || different_casing)
++            if (create_link || S_ISDIR( st2.st_mode ) || different_case)
 +            {
 +                if (unlink( name ))
 +                {
@@ -324,17 +347,20 @@ index 481e9a8..0f7067d 100644
          }
      }
  
-+    memcpy( name + pathlen, casing, casinglen );
-+    name[pathlen + casinglen] = 0;
++    if (different_case)
++    {
++        memcpy( name + pathlen, file_case, caselen );
++        name[pathlen + caselen] = 0;
++    }
 +
      if (create_link)
      {
          if (link( fd->unix_name, name ))
-@@ -2879,16 +2910,19 @@ DECL_HANDLER(set_fd_disp_info)
+@@ -2876,16 +2909,19 @@ DECL_HANDLER(set_fd_disp_info)
  /* set fd name information */
  DECL_HANDLER(set_fd_name_info)
  {
-+    const char *fullname, *casing;
++    const char *fullname, *file_case;
      struct fd *fd, *root_fd = NULL;
      struct unicode_str nt_name;
  
@@ -346,38 +372,39 @@ index 481e9a8..0f7067d 100644
      }
      nt_name.str = get_req_data();
      nt_name.len = (req->namelen / sizeof(WCHAR)) * sizeof(WCHAR);
-+    casing      = (const char *)get_req_data() + req->namelen;
-+    fullname    = casing + req->caselen;
++    file_case   = (const char *)get_req_data() + req->namelen;
++    fullname    = file_case + req->caselen;
  
      if (req->rootdir)
      {
-@@ -2902,8 +2936,8 @@ DECL_HANDLER(set_fd_name_info)
+@@ -2899,8 +2935,8 @@ DECL_HANDLER(set_fd_name_info)
  
      if ((fd = get_handle_fd_obj( current->process, req->handle, 0 )))
      {
 -        set_fd_name( fd, root_fd, (const char *)get_req_data() + req->namelen,
 -                     get_req_data_size() - req->namelen, nt_name, req->link, req->replace );
 +        set_fd_name( fd, root_fd, fullname, (const char *)get_req_data() + get_req_data_size() - fullname,
-+                     casing, req->caselen, nt_name, req->link, req->replace );
++                     file_case, req->caselen, nt_name, req->link, req->replace );
          release_object( fd );
      }
      if (root_fd) release_object( root_fd );
 diff --git a/server/protocol.def b/server/protocol.def
-index 9ea6967..02e5ab0 100644
+index 4239be8..bc7b154 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -3531,9 +3531,11 @@ struct handle_info
+@@ -3533,9 +3533,11 @@ struct handle_info
      obj_handle_t handle;          /* handle to a file or directory */
      obj_handle_t rootdir;         /* root directory */
      data_size_t  namelen;         /* length of NT name in bytes */
-+    data_size_t  caselen;         /* length of the casing filename */
++    data_size_t  caselen;         /* length of the actual case filename */
      int          link;            /* link instead of renaming */
      int          replace;         /* replace an existing file? */
      VARARG(name,unicode_str,namelen); /* NT name */
-+    VARARG(casing,string,caselen);/* new file name's actual casing (without path) */
++    VARARG(actual_case,string,caselen); /* new file name's actual case (without path) */
      VARARG(filename,string);      /* new file name */
  @END
  
 
 -- 
 2.30.0
+

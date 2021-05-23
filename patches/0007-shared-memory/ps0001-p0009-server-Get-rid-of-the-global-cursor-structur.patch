@@ -5,16 +5,44 @@ Subject: [PATCH 09/15] server: Get rid of the global cursor structure.
 
 Signed-off-by: Huw Davies <huw@codeweavers.com>
 ---
- server/queue.c      | 10 +++++-----
- server/user.h       |  9 ++-------
- server/winstation.c |  3 ++-
- 3 files changed, 9 insertions(+), 13 deletions(-)
+ server/queue.c      | 22 +++++++++++-----------
+ server/user.h       | 13 ++++---------
+ server/winstation.c |  5 ++++-
+ 3 files changed, 19 insertions(+), 21 deletions(-)
 
 diff --git a/server/queue.c b/server/queue.c
-index 870c53abcbb..4a686b737d3 100644
+index b4f4b82de93..abe3f46b129 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -503,8 +503,8 @@ void set_clip_rectangle( struct desktop *desktop, const rectangle_t *rect, int s
+@@ -504,21 +504,21 @@ static int update_desktop_cursor_pos( struct desktop *desktop, user_handle_t win
+     else if (!win || !is_window_visible( win ) || is_window_transparent( win ))
+         win = shallow_window_from_point( desktop, x, y );
+ 
+-    if (win != desktop->cursor.win)
++    if (win != desktop->cursor_win)
+     {
+-        post_desktop_message( desktop, desktop->cursor.change_msg, win, desktop->cursor.handle );
++        post_desktop_message( desktop, desktop->cursor_change_msg, win, desktop->cursor_handle );
+         updated = 1;
+     }
+-    desktop->cursor.win = win;
++    desktop->cursor_win = win;
+ 
+     return updated;
+ }
+ 
+ static void update_desktop_cursor_handle( struct desktop *desktop, user_handle_t handle )
+ {
+-    if (desktop->cursor.change_msg && desktop->cursor.handle != handle)
+-        post_desktop_message( desktop, desktop->cursor.change_msg, desktop->cursor.win, handle );
+-    desktop->cursor.handle = handle;
++    if (desktop->cursor_change_msg && desktop->cursor_handle != handle)
++        post_desktop_message( desktop, desktop->cursor_change_msg, desktop->cursor_win, handle );
++    desktop->cursor_handle = handle;
+ }
+ 
+ void update_desktop_cursor_win( struct desktop *desktop )
+@@ -578,8 +578,8 @@ void set_clip_rectangle( struct desktop *desktop, const rectangle_t *rect, int s
      SHARED_WRITE_BEGIN( &desktop->shared->seq );
      desktop->shared->cursor.clip = new_rect;
  
@@ -25,18 +53,25 @@ index 870c53abcbb..4a686b737d3 100644
  
      /* warp the mouse to be inside the clip rect */
      x = max( min( desktop->shared->cursor.x, desktop->shared->cursor.clip.right - 1 ), desktop->shared->cursor.clip.left );
-@@ -1768,8 +1768,8 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg,
+@@ -1693,7 +1693,7 @@ static user_handle_t find_hardware_message_window( struct desktop *desktop, stru
      }
-     input = thread->queue->input;
+     else /* mouse message */
+     {
+-        win = desktop->cursor.win;
++        win = desktop->cursor_win;
+         *thread = window_thread_from_point( win, msg->x, msg->y );
+     }
  
--    if (win != desktop->cursor.win) always_queue = 1;
--    desktop->cursor.win = win;
-+    if (win != desktop->cursor_win) always_queue = 1;
-+    desktop->cursor_win = win;
+@@ -3524,7 +3524,7 @@ DECL_HANDLER(set_cursor)
  
-     if (!always_queue || merge_message( input, msg )) free_message( msg );
-     else
-@@ -3626,7 +3626,7 @@ DECL_HANDLER(set_cursor)
+         /* only the desktop owner can set the message */
+         if (req->change_msg && get_top_window_owner(desktop) == current->process)
+-            desktop->cursor.change_msg = req->change_msg;
++            desktop->cursor_change_msg = req->change_msg;
+ 
+         input->cursor = req->handle;
+     }
+@@ -3541,7 +3541,7 @@ DECL_HANDLER(set_cursor)
      {
          /* only the desktop owner can set the message */
          if (req->clip_msg && get_top_window_owner(desktop) == current->process)
@@ -46,43 +81,49 @@ index 870c53abcbb..4a686b737d3 100644
          set_clip_rectangle( desktop, (req->flags & SET_CURSOR_NOCLIP) ? NULL : &req->clip, 0 );
      }
 diff --git a/server/user.h b/server/user.h
-index 2ec1110cdef..7e9c53b47a9 100644
+index c13f43eb5c8..eacceafa0dc 100644
 --- a/server/user.h
 +++ b/server/user.h
-@@ -52,12 +52,6 @@ struct winstation
+@@ -53,14 +53,6 @@ struct winstation
      struct namespace  *desktop_names;      /* namespace for desktops of this winstation */
  };
  
 -struct global_cursor
 -{
 -    unsigned int         clip_msg;         /* message to post for cursor clip changes */
+-    unsigned int         change_msg;       /* message to post for cursor win / handle changes */
 -    user_handle_t        win;              /* window that contains the cursor */
+-    user_handle_t        handle;           /* last set cursor handle */
 -};
 -
  struct desktop
  {
      struct object                          obj;              /* object header */
-@@ -71,7 +65,8 @@ struct desktop
+@@ -74,7 +66,10 @@ struct desktop
      struct timeout_user                   *close_timeout;    /* timeout before closing the desktop */
      struct thread_input                   *foreground_input; /* thread input of foreground thread */
      unsigned int                           users;            /* processes and threads using this desktop */
 -    struct global_cursor                   cursor;           /* global cursor information */
 +    unsigned int                           cursor_clip_msg;  /* message to post for cursor clip changes */
++    unsigned int                           cursor_change_msg; /* message to post for cursor win / handle changes */
 +    user_handle_t                          cursor_win;       /* window that contains the cursor */
++    user_handle_t                          cursor_handle;    /* last set cursor handle */
      struct object                         *shared_mapping;   /* desktop shared memory mapping */
      volatile struct desktop_shared_memory *shared;           /* desktop shared memory ptr */
      unsigned char                          keystate[256];    /* asynchronous key state */
 diff --git a/server/winstation.c b/server/winstation.c
-index bbde98a10e3..7561e72b7aa 100644
+index 80161bae7d4..8c8390e9a39 100644
 --- a/server/winstation.c
 +++ b/server/winstation.c
-@@ -255,7 +255,8 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned
+@@ -257,7 +257,10 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned
              desktop->close_timeout = NULL;
              desktop->foreground_input = NULL;
              desktop->users = 0;
 -            memset( &desktop->cursor, 0, sizeof(desktop->cursor) );
 +            desktop->cursor_clip_msg = 0;
++            desktop->cursor_change_msg = 0;
 +            desktop->cursor_win = 0;
++            desktop->cursor_handle = 0;
              memset( desktop->keystate, 0, sizeof(desktop->keystate) );
              list_add_tail( &winstation->desktops, &desktop->entry );
              list_init( &desktop->hotkeys );

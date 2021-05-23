@@ -1,0 +1,70 @@
+From 43e12f60beb04301e1b87f6992588665081564e9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 16 Jan 2020 12:30:25 +0100
+Subject: [PATCH 14/16] winex11.drv: Implement SetForegroundWindow
+ specialization.
+
+SetForegroundWindow -when called from user code- now not always succeed
+in managed mode. It will fail if there already is an X11 active window,
+and if it does not belong to the calling process.
+
+When creating new windows, the Window Manager will activate them and set
+the foreground window accordingly in the event handler whenever they
+get focused.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=2155
+---
+ dlls/winex11.drv/event.c          | 26 ++++++++++++++++++++++++++
+ dlls/winex11.drv/winex11.drv.spec |  1 +
+ 2 files changed, 27 insertions(+)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 6a01efd11a4..47b1f5e0607 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -1549,6 +1549,32 @@ void CDECL X11DRV_SetFocus( HWND hwnd )
+ }
+ 
+ 
++/***********************************************************************
++ *      SetForegroundWindow  (X11DRV.@)
++ */
++BOOL CDECL X11DRV_SetForegroundWindow( HWND hwnd )
++{
++    struct x11drv_win_data *data;
++    BOOL foreign;
++    if (is_virtual_desktop()) return TRUE;
++    if (!hwnd || hwnd == GetDesktopWindow()) return TRUE;
++
++    TRACE("%p\n", hwnd);
++
++    if (!x11drv_get_active_window( gdi_display, DefaultRootWindow( gdi_display ), &foreign ) && foreign)
++    {
++        WARN( "refusing to set window foreground while not already in foreground\n" );
++        return FALSE;
++    }
++
++    if ((data = get_win_data( hwnd )) && data->managed && !data->mapped)
++        FIXME( "cannot set hidden window %p/%lx foreground\n", hwnd, data->whole_window );
++    if (data) release_win_data( data );
++
++    return TRUE;
++}
++
++
+ static HWND find_drop_window( HWND hQueryWnd, LPPOINT lpPt )
+ {
+     RECT tempRect;
+diff --git a/dlls/winex11.drv/winex11.drv.spec b/dlls/winex11.drv/winex11.drv.spec
+index 7e4c01125c1..90eac4b5a6e 100644
+--- a/dlls/winex11.drv/winex11.drv.spec
++++ b/dlls/winex11.drv/winex11.drv.spec
+@@ -26,6 +26,7 @@
+ @ cdecl ScrollDC(long long long long) X11DRV_ScrollDC
+ @ cdecl SetCapture(long long) X11DRV_SetCapture
+ @ cdecl SetFocus(long) X11DRV_SetFocus
++@ cdecl SetForegroundWindow(long) X11DRV_SetForegroundWindow
+ @ cdecl SetLayeredWindowAttributes(long long long long) X11DRV_SetLayeredWindowAttributes
+ @ cdecl SetParent(long long long) X11DRV_SetParent
+ @ cdecl SetWindowIcon(long long long) X11DRV_SetWindowIcon
+

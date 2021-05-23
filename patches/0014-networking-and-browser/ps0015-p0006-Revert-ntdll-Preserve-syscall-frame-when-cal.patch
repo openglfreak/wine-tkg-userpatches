@@ -1,0 +1,168 @@
+From: Zebediah Figura <z.figura12@gmail.com>
+Subject: [PATCH 6/6] Revert "ntdll: Preserve syscall frame when calling async IO system APC."
+Message-Id: <20210601031637.2463798-6-z.figura12@gmail.com>
+Date: Mon, 31 May 2021 22:16:37 -0500
+In-Reply-To: <20210601031637.2463798-1-z.figura12@gmail.com>
+References: <20210601031637.2463798-1-z.figura12@gmail.com>
+
+This reverts commit 8b8ddffa2152832908ced42191fa19dcb64d900e.
+
+ws2_32 no longer uses system APCs.
+
+Signed-off-by: Zebediah Figura <z.figura12@gmail.com>
+---
+ dlls/ntdll/unix/server.c        | 15 ---------------
+ dlls/ntdll/unix/signal_arm.c    |  9 ---------
+ dlls/ntdll/unix/signal_arm64.c  | 10 ----------
+ dlls/ntdll/unix/signal_i386.c   | 12 +-----------
+ dlls/ntdll/unix/signal_x86_64.c | 11 +----------
+ dlls/ntdll/unix/unix_private.h  |  3 ---
+ 6 files changed, 2 insertions(+), 58 deletions(-)
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index c0cf13b3cb4..cec2ef250a3 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -379,24 +379,9 @@ static void invoke_system_apc( const apc_call_t *call, apc_result_t *result, BOO
+     {
+         IO_STATUS_BLOCK *iosb = wine_server_get_ptr( call->async_io.sb );
+         struct async_fileio *user = wine_server_get_ptr( call->async_io.user );
+-        void *saved_frame = get_syscall_frame();
+-        void *frame;
+ 
+         result->type = call->type;
+         result->async_io.status = user->callback( user, iosb, call->async_io.status );
+-
+-        if ((frame = get_syscall_frame()) != saved_frame)
+-        {
+-            /* The frame can be altered by syscalls from ws2_32 async callbacks
+-             * which are currently in the user part. */
+-            static unsigned int once;
+-
+-            if (!once++)
+-                FIXME( "syscall frame changed in APC function, frame %p, saved_frame %p.\n", frame, saved_frame );
+-
+-            set_syscall_frame( saved_frame );
+-        }
+-
+         if (result->async_io.status != STATUS_PENDING)
+             result->async_io.total = iosb->Information;
+         break;
+diff --git a/dlls/ntdll/unix/signal_arm.c b/dlls/ntdll/unix/signal_arm.c
+index 11b6aa8d0ad..8ecdaa3995b 100644
+--- a/dlls/ntdll/unix/signal_arm.c
++++ b/dlls/ntdll/unix/signal_arm.c
+@@ -201,15 +201,6 @@ static inline struct arm_thread_data *arm_thread_data(void)
+     return (struct arm_thread_data *)ntdll_get_thread_data()->cpu_data;
+ }
+ 
+-void *get_syscall_frame(void)
+-{
+-    return arm_thread_data()->syscall_frame;
+-}
+-
+-void set_syscall_frame(void *frame)
+-{
+-    arm_thread_data()->syscall_frame = frame;
+-}
+ 
+ /***********************************************************************
+  *           unwind_builtin_dll
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index 2359b1838d6..e696ba41a66 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -157,16 +157,6 @@ static inline struct arm64_thread_data *arm64_thread_data(void)
+     return (struct arm64_thread_data *)ntdll_get_thread_data()->cpu_data;
+ }
+ 
+-void *get_syscall_frame(void)
+-{
+-    return arm64_thread_data()->syscall_frame;
+-}
+-
+-void set_syscall_frame(void *frame)
+-{
+-    arm64_thread_data()->syscall_frame = frame;
+-}
+-
+ extern void raise_func_trampoline( EXCEPTION_RECORD *rec, CONTEXT *context, void *dispatcher );
+ 
+ /***********************************************************************
+diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
+index 87024e1bfce..707e965d8b3 100644
+--- a/dlls/ntdll/unix/signal_i386.c
++++ b/dlls/ntdll/unix/signal_i386.c
+@@ -527,16 +527,6 @@ static inline struct x86_thread_data *x86_thread_data(void)
+     return (struct x86_thread_data *)ntdll_get_thread_data()->cpu_data;
+ }
+ 
+-void *get_syscall_frame(void)
+-{
+-    return x86_thread_data()->syscall_frame;
+-}
+-
+-void set_syscall_frame(void *frame)
+-{
+-    x86_thread_data()->syscall_frame = frame;
+-}
+-
+ static struct syscall_xsave *get_syscall_xsave( struct syscall_frame *frame )
+ {
+     return (struct syscall_xsave *)((ULONG_PTR)((struct syscall_xsave *)frame - 1) & ~63);
+@@ -973,7 +963,7 @@ __ASM_GLOBAL_FUNC( set_full_cpu_context,
+  */
+ void signal_restore_full_cpu_context(void)
+ {
+-    struct syscall_xsave *xsave = get_syscall_xsave( get_syscall_frame() );
++    struct syscall_xsave *xsave = get_syscall_xsave( x86_thread_data()->syscall_frame );
+ 
+     if (cpu_info.ProcessorFeatureBits & CPU_FEATURE_XSAVE)
+     {
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index dcb0e588c66..1ab991d3cb5 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -327,15 +327,6 @@ static inline struct amd64_thread_data *amd64_thread_data(void)
+     return (struct amd64_thread_data *)ntdll_get_thread_data()->cpu_data;
+ }
+ 
+-void *get_syscall_frame(void)
+-{
+-    return amd64_thread_data()->syscall_frame;
+-}
+-
+-void set_syscall_frame(void *frame)
+-{
+-    amd64_thread_data()->syscall_frame = frame;
+-}
+ 
+ static struct syscall_xsave *get_syscall_xsave( struct syscall_frame *frame )
+ {
+@@ -1598,7 +1589,7 @@ __ASM_GLOBAL_FUNC( set_full_cpu_context,
+  */
+ void signal_restore_full_cpu_context(void)
+ {
+-    struct syscall_xsave *xsave = get_syscall_xsave( get_syscall_frame() );
++    struct syscall_xsave *xsave = get_syscall_xsave( amd64_thread_data()->syscall_frame );
+ 
+     if (cpu_info.ProcessorFeatureBits & CPU_FEATURE_XSAVE)
+     {
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index f28d5cf4e99..5b9af322a68 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -290,9 +290,6 @@ extern void WINAPI DECLSPEC_NORETURN call_user_exception_dispatcher( EXCEPTION_R
+                                                                      NTSTATUS (WINAPI *dispatcher)(EXCEPTION_RECORD*,CONTEXT*) ) DECLSPEC_HIDDEN;
+ extern void WINAPI call_raise_user_exception_dispatcher( NTSTATUS (WINAPI *dispatcher)(void) ) DECLSPEC_HIDDEN;
+ 
+-extern void *get_syscall_frame(void) DECLSPEC_HIDDEN;
+-extern void set_syscall_frame(void *frame) DECLSPEC_HIDDEN;
+-
+ #define IMAGE_DLLCHARACTERISTICS_PREFER_NATIVE 0x0010 /* Wine extension */
+ 
+ #define TICKSPERSEC 10000000
+
+-- 
+2.30.2
+

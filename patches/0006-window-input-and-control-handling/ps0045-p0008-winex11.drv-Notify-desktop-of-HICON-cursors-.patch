@@ -1,0 +1,74 @@
+From 8d87a20fd16b451316ca2d7aa00f06001dc38849 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 22 Jan 2021 13:48:04 +0100
+Subject: [PATCH 08/13] winex11.drv: Notify desktop of HICON cursors creation.
+
+---
+ dlls/winex11.drv/mouse.c  |  2 ++
+ dlls/winex11.drv/window.c | 15 +++++++++++++++
+ dlls/winex11.drv/x11drv.h |  1 +
+ 3 files changed, 18 insertions(+)
+
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 90f2d10d5fa..c9f2fed3e4a 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -231,10 +231,12 @@ static Cursor get_cursor( HCURSOR handle )
+     else
+     {
+         XSaveContext( gdi_display, (XID)handle, cursor_context, (char *)cursor );
++        XSync( gdi_display, FALSE ); /* make sure it's actually created */
+         TRACE( "cursor %p created %lx\n", handle, cursor );
+     }
+     XUnlockDisplay( gdi_display );
+ 
++    SendNotifyMessageW( GetDesktopWindow(), WM_X11DRV_DESKTOP_SET_HICON_CURSOR, (WPARAM)handle, cursor );
+     return cursor;
+ }
+ 
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 7876cf7b663..ce1cdede76d 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -2606,6 +2606,18 @@ UINT CDECL X11DRV_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp )
+     return swp;
+ }
+ 
++/***********************************************************************
++ *             x11drv_desktop_set_hicon_cursor
++ *
++ * Function called upon receiving a WM_X11DRV_DESKTOP_SET_HICON_CURSOR.
++ */
++static void x11drv_desktop_set_hicon_cursor( HICON handle, Cursor cursor )
++{
++    XLockDisplay( gdi_display );
++    if (cursor) XSaveContext( gdi_display, (XID)handle, cursor_context, (char *)cursor );
++    else XDeleteContext( gdi_display, (XID)handle, cursor_context );
++    XUnlockDisplay( gdi_display );
++}
+ 
+ /**********************************************************************
+  *		SetWindowIcon (X11DRV.@)
+@@ -2815,6 +2827,9 @@ LRESULT CDECL X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
+         }
+         if (clipping_cursor) set_window_cursor( x11drv_thread_data()->clip_window, (HCURSOR)lp );
+         return 0;
++    case WM_X11DRV_DESKTOP_SET_HICON_CURSOR:
++        x11drv_desktop_set_hicon_cursor( (HICON)wp, (Cursor)lp );
++        return 0;
+     case WM_X11DRV_DESKTOP_SET_WINDOW_CURSOR:
+         SendNotifyMessageW( (HWND)wp, WM_X11DRV_SET_CURSOR, 0, lp );
+         return 0;
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 3085aade76a..dee71e5aa9d 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -546,6 +546,7 @@ enum x11drv_window_messages
+     WM_X11DRV_SET_WIN_REGION,
+     WM_X11DRV_RESIZE_DESKTOP,
+     WM_X11DRV_SET_CURSOR,
++    WM_X11DRV_DESKTOP_SET_HICON_CURSOR,
+     WM_X11DRV_DESKTOP_SET_WINDOW_CURSOR,
+     WM_X11DRV_CLIP_CURSOR_NOTIFY,
+     WM_X11DRV_CLIP_CURSOR_REQUEST
+

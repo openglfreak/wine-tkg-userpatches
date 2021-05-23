@@ -1,18 +1,18 @@
-From f791bcfd05b93cc41d132e9f4841009786ac0671 Mon Sep 17 00:00:00 2001
+From 021898b7cab5515193ac2833c3ebe903995bf0f6 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Mon, 22 Mar 2021 10:16:43 +0100
-Subject: [PATCH 04/10] wineboot: Initialize and calibrate user shared data Qpc
+Subject: [PATCH 04/12] wineboot: Initialize and calibrate user shared data Qpc
  frequency.
 
 ---
- programs/wineboot/wineboot.c | 88 ++++++++++++++++++++++++++++++++++++
- 1 file changed, 88 insertions(+)
+ programs/wineboot/wineboot.c | 117 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 117 insertions(+)
 
 diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
-index 63ff3fc3952..275f2726fbc 100644
+index 3aebd6c6e55..2d481ab5ae0 100644
 --- a/programs/wineboot/wineboot.c
 +++ b/programs/wineboot/wineboot.c
-@@ -246,10 +246,98 @@ static void initialize_xstate_features(struct _KUSER_SHARED_DATA *data)
+@@ -245,10 +245,127 @@ static void initialize_xstate_features(struct _KUSER_SHARED_DATA *data)
  
  static void initialize_qpc_features(struct _KUSER_SHARED_DATA *data)
  {
@@ -61,7 +61,36 @@ index 63ff3fc3952..275f2726fbc 100644
 +    regs[2] = regs[3];
 +    regs[3] = tmp;
 +
-+    data->QpcFrequency = 0;
++    /* only available on some intel CPUs */
++    if (memcmp(regs + 1, "GenuineIntel", 12)) data->QpcFrequency = 0;
++    else if ((cpuid_level = regs[0]) < 0x15) data->QpcFrequency = 0;
++    else
++    {
++        __cpuid(regs, 0x15);
++        if (!(denom = regs[0]) || !(numer = regs[1])) data->QpcFrequency = 0;
++        else
++        {
++            if (!(freq = regs[2]) && cpuid_level >= 0x16)
++            {
++                __cpuid(regs, 0x16); /* eax is base freq in MHz */
++                freq = regs[0] * 1000 * denom / numer;
++            }
++
++            data->QpcFrequency = freq * numer / denom;
++        }
++
++        if (!data->QpcFrequency)
++            WARN("Failed to read TSC frequency from CPUID, falling back to calibration.\n");
++        else
++        {
++            data->QpcFrequency = (data->QpcFrequency + (1 << 10) - 1) >> 10;
++            data->QpcShift = 10;
++            data->QpcBias = 0;
++
++            TRACE("TSC frequency read from CPUID, freq %I64d, shift %d, bias %I64d\n",
++                  data->QpcFrequency, data->QpcShift, data->QpcBias);
++        }
++    }
 +
 +    if (!data->QpcFrequency)
 +    {

@@ -1,0 +1,33 @@
+From ef2646a5c2167972688e7673743bd5ea546f8adb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 20 Jan 2020 16:47:51 +0100
+Subject: [PATCH 03/16] winex11.drv: Support large time skews in
+ EVENT_x11_time_to_win32_time.
+
+The time of the first few events on TestBot is sometimes completely off,
+and the difference is ignored as if the clock wrapped instead of
+readjusting the offset.
+---
+ dlls/winex11.drv/event.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 551aaacb82d..69ed729fd02 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -538,6 +538,14 @@ DWORD EVENT_x11_time_to_win32_time(Time time)
+     if (time == CurrentTime)
+         return now;
+ 
++    /* Sometimes the first events timestamps are completely off. This
++     * is happening for instance on TestBot runs. */
++    if (time_to_tick_diff && (int)time_to_tick_diff < (int)diff && diff - time_to_tick_diff > 10000)
++    {
++        FIXME( "unexpectedly large time skew detected, reajusting time.\n" );
++        time_to_tick_diff = 0;
++    }
++
+     if (!time_to_tick_diff)
+     {
+         time_to_tick_diff = diff;
+

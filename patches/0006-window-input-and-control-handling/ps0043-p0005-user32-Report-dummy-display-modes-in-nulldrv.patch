@@ -1,0 +1,137 @@
+From 89a3371e772357fc8900093328adccd5301d127d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 15 Apr 2021 12:17:35 +0200
+Subject: [PATCH 5/9] user32: Report dummy display modes in nulldrv.
+
+---
+ dlls/user32/driver.c       | 11 ------
+ dlls/user32/sysparams.c    | 70 ++++++++++++++++++++++++++++++++++++++
+ dlls/user32/user_private.h |  2 ++
+ 3 files changed, 72 insertions(+), 11 deletions(-)
+
+diff --git a/dlls/user32/driver.c b/dlls/user32/driver.c
+index 20aa259ccdc..68638758161 100644
+--- a/dlls/user32/driver.c
++++ b/dlls/user32/driver.c
+@@ -254,22 +254,11 @@ static void CDECL nulldrv_UpdateClipboard(void)
+ {
+ }
+ 
+-static LONG CDECL nulldrv_ChangeDisplaySettingsEx( LPCWSTR name, LPDEVMODEW mode, HWND hwnd,
+-                                             DWORD flags, LPVOID lparam )
+-{
+-    return DISP_CHANGE_FAILED;
+-}
+-
+ static UINT CDECL nulldrv_EnumDisplayMonitors( HDC hdc, RECT *rect, MONITORENUMPROC proc, LPARAM lp )
+ {
+     return ~0U; /* use default implementation */
+ }
+ 
+-static BOOL CDECL nulldrv_EnumDisplaySettingsEx( LPCWSTR name, DWORD num, LPDEVMODEW mode, DWORD flags )
+-{
+-    return FALSE;
+-}
+-
+ static BOOL CDECL nulldrv_CreateDesktopWindow( HWND hwnd )
+ {
+     return TRUE;
+diff --git a/dlls/user32/sysparams.c b/dlls/user32/sysparams.c
+index dd8c1cdb514..5b47c11c492 100644
+--- a/dlls/user32/sysparams.c
++++ b/dlls/user32/sysparams.c
+@@ -50,6 +50,7 @@
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(system);
++WINE_DECLARE_DEBUG_CHANNEL(nulldrv);
+ 
+ /* System parameter indexes */
+ enum spi_index
+@@ -4941,3 +4942,72 @@ LONG WINAPI SetDisplayConfig(UINT32 path_info_count, DISPLAYCONFIG_PATH_INFO *pa
+ 
+     return ERROR_SUCCESS;
+ }
++
++static int nulldrv_display_mode_reg;
++static int nulldrv_display_mode_cur;
++static const DEVMODEW nulldrv_display_modes[] =
++{
++    { { L"\\\\.\\DISPLAY1" }, DM_SPECVERSION, DM_SPECVERSION, FIELD_OFFSET(DEVMODEW, dmICMMethod), 0,
++    DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY | DM_POSITION,
++    { { 0 } }, 0, 0, 0, 0, 0, { 0 }, 0, 32, 640, 480, { 0 }, 60, 0, 0, 0, 0, 0, 0, 0, 0, },
++
++    { { L"\\\\.\\DISPLAY1" }, DM_SPECVERSION, DM_SPECVERSION, FIELD_OFFSET(DEVMODEW, dmICMMethod), 0,
++    DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY | DM_POSITION,
++    { { 0 } }, 0, 0, 0, 0, 0, { 0 }, 0, 32, 800, 600, { 0 }, 60, 0, 0, 0, 0, 0, 0, 0, 0, },
++
++    { { L"\\\\.\\DISPLAY1" }, DM_SPECVERSION, DM_SPECVERSION, FIELD_OFFSET(DEVMODEW, dmICMMethod), 0,
++    DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY | DM_POSITION,
++    { { 0 } }, 0, 0, 0, 0, 0, { 0 }, 0, 32, 1024, 768, { 0 }, 60, 0, 0, 0, 0, 0, 0, 0, 0, },
++};
++
++LONG CDECL nulldrv_ChangeDisplaySettingsEx( LPCWSTR name, LPDEVMODEW mode, HWND hwnd,
++                                             DWORD flags, LPVOID lparam )
++{
++    int i;
++
++    TRACE_(nulldrv)("name %s, mode %p, hwnd %p, flags %x, lparam %p.\n", wine_dbgstr_w(name), mode, hwnd, flags, lparam);
++
++    if (name && wcscmp( name, L"\\\\.\\DISPLAY1" )) return DISP_CHANGE_FAILED;
++    if (!mode) i = nulldrv_display_mode_reg;
++    else for (i = 0; i < ARRAY_SIZE( nulldrv_display_modes ); ++i)
++    {
++        const DEVMODEW *m = nulldrv_display_modes + i;
++        if (mode->dmFields & ~(DM_DISPLAYORIENTATION | DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY | DM_POSITION))
++            continue;
++        if ((mode->dmFields & DM_DISPLAYORIENTATION) && mode->u1.s1.dmOrientation &&
++            mode->u1.s1.dmOrientation != m->u1.s1.dmOrientation)
++            continue;
++        if ((mode->dmFields & DM_BITSPERPEL) && mode->dmBitsPerPel &&
++            mode->dmBitsPerPel != m->dmBitsPerPel)
++            continue;
++        if ((mode->dmFields & DM_PELSWIDTH) && mode->dmPelsWidth &&
++            mode->dmPelsWidth != m->dmPelsWidth)
++            continue;
++        if ((mode->dmFields & DM_PELSHEIGHT) && mode->dmPelsHeight &&
++            mode->dmPelsHeight != m->dmPelsHeight)
++            continue;
++        if ((mode->dmFields & DM_DISPLAYFLAGS) && mode->u2.dmDisplayFlags &&
++            mode->u2.dmDisplayFlags != m->u2.dmDisplayFlags)
++            continue;
++        if ((mode->dmFields & DM_DISPLAYFREQUENCY) && mode->dmDisplayFrequency &&
++            mode->dmDisplayFrequency != m->dmDisplayFrequency)
++            continue;
++        break;
++    }
++
++    if (i >= ARRAY_SIZE( nulldrv_display_modes )) return DISP_CHANGE_BADMODE;
++    if (flags & CDS_UPDATEREGISTRY) nulldrv_display_mode_reg = i;
++    if (flags & (CDS_TEST | CDS_NORESET)) return DISP_CHANGE_SUCCESSFUL;
++    nulldrv_display_mode_cur = i;
++    return DISP_CHANGE_SUCCESSFUL;
++}
++
++BOOL CDECL nulldrv_EnumDisplaySettingsEx( LPCWSTR name, DWORD num, LPDEVMODEW mode, DWORD flags )
++{
++    TRACE_(nulldrv)("name %s, num %#x, mode %p, flags %x.\n", wine_dbgstr_w(name), num, mode, flags);
++    if (num == ENUM_CURRENT_SETTINGS) num = nulldrv_display_mode_cur;
++    if (num == ENUM_REGISTRY_SETTINGS) num = nulldrv_display_mode_reg;
++    if (num >= ARRAY_SIZE(nulldrv_display_modes)) return FALSE;
++    *mode = nulldrv_display_modes[num];
++    return TRUE;
++}
+diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
+index 5239753b783..b0b99bb3631 100644
+--- a/dlls/user32/user_private.h
++++ b/dlls/user32/user_private.h
+@@ -119,6 +119,8 @@ extern const USER_DRIVER *USER_Driver DECLSPEC_HIDDEN;
+ extern void USER_unload_driver(void) DECLSPEC_HIDDEN;
+ 
+ extern BOOL CDECL nulldrv_GetMonitorInfo( HMONITOR handle, MONITORINFO *info ) DECLSPEC_HIDDEN;
++extern LONG CDECL nulldrv_ChangeDisplaySettingsEx( LPCWSTR name, LPDEVMODEW mode, HWND hwnd, DWORD flags, LPVOID lparam ) DECLSPEC_HIDDEN;
++extern BOOL CDECL nulldrv_EnumDisplaySettingsEx( LPCWSTR name, DWORD num, LPDEVMODEW mode, DWORD flags ) DECLSPEC_HIDDEN;
+ 
+ struct received_message_info;
+ 
+

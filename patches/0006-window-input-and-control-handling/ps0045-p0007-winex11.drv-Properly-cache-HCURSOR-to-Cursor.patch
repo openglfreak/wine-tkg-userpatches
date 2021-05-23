@@ -1,0 +1,99 @@
+From f3bbfc6f9b098670145d33c2a930f047245b8c25 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 22 Jan 2021 13:44:19 +0100
+Subject: [PATCH 07/13] winex11.drv: Properly cache HCURSOR to Cursor
+ associations.
+
+---
+ dlls/winex11.drv/mouse.c | 57 ++++++++++++++++++++++++----------------
+ 1 file changed, 35 insertions(+), 22 deletions(-)
+
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index f1dfd6aa154..90f2d10d5fa 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -204,35 +204,46 @@ static Cursor get_empty_cursor(void)
+     return cursor;
+ }
+ 
+-/***********************************************************************
+- *		set_window_cursor
+- */
+-void set_window_cursor( Window window, HCURSOR handle )
++static Cursor get_cursor( HCURSOR handle )
+ {
+     Cursor cursor, prev;
+ 
+-    if (!handle) cursor = get_empty_cursor();
+-    else if (XFindContext( gdi_display, (XID)handle, cursor_context, (char **)&cursor ))
+-    {
+-        /* try to create it */
+-        if (!(cursor = create_cursor( handle ))) return;
++    if (!handle) return get_empty_cursor();
+ 
+-        XLockDisplay( gdi_display );
+-        if (!XFindContext( gdi_display, (XID)handle, cursor_context, (char **)&prev ))
+-        {
+-            /* someone else was here first */
+-            XFreeCursor( gdi_display, cursor );
+-            cursor = prev;
+-        }
+-        else
+-        {
+-            XSaveContext( gdi_display, (XID)handle, cursor_context, (char *)cursor );
+-            TRACE( "cursor %p created %lx\n", handle, cursor );
+-        }
++    XLockDisplay( gdi_display );
++    if (!XFindContext( gdi_display, (XID)handle, cursor_context, (char **)&cursor ))
++    {
+         XUnlockDisplay( gdi_display );
++        return cursor;
++    }
++    XUnlockDisplay( gdi_display );
++
++    /* try to create it */
++    if (!(cursor = create_cursor( handle ))) return None;
++
++    XLockDisplay( gdi_display );
++    if (!XFindContext( gdi_display, (XID)handle, cursor_context, (char **)&prev ))
++    {
++        /* someone else was here first */
++        XFreeCursor( gdi_display, cursor );
++        cursor = prev;
+     }
++    else
++    {
++        XSaveContext( gdi_display, (XID)handle, cursor_context, (char *)cursor );
++        TRACE( "cursor %p created %lx\n", handle, cursor );
++    }
++    XUnlockDisplay( gdi_display );
+ 
+-    XDefineCursor( gdi_display, window, cursor );
++    return cursor;
++}
++
++/***********************************************************************
++ *		set_window_cursor
++ */
++void set_window_cursor( Window window, HCURSOR handle )
++{
++    XDefineCursor( gdi_display, window, get_cursor( handle ) );
+     /* make the change take effect immediately */
+     XFlush( gdi_display );
+ }
+@@ -1560,12 +1571,14 @@ void CDECL X11DRV_DestroyCursorIcon( HCURSOR handle )
+ {
+     Cursor cursor;
+ 
++    XLockDisplay( gdi_display );
+     if (!XFindContext( gdi_display, (XID)handle, cursor_context, (char **)&cursor ))
+     {
+         TRACE( "%p xid %lx\n", handle, cursor );
+         XFreeCursor( gdi_display, cursor );
+         XDeleteContext( gdi_display, (XID)handle, cursor_context );
+     }
++    XUnlockDisplay( gdi_display );
+ }
+ 
+ /***********************************************************************
+

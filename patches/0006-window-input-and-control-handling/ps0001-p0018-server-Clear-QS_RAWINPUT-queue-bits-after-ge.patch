@@ -1,0 +1,77 @@
+From e0d4ce9abb652de5f7636d1990f70b76c5a8867d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 17 May 2021 14:42:52 +0200
+Subject: [PATCH 18/18] server: Clear QS_RAWINPUT queue bits after
+ get_rawinput_buffer.
+
+---
+ dlls/user32/tests/input.c | 8 +++++++-
+ server/queue.c            | 6 +++++-
+ 2 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/user32/tests/input.c b/dlls/user32/tests/input.c
+index 654cabb76d9..7b500b4c8d4 100644
+--- a/dlls/user32/tests/input.c
++++ b/dlls/user32/tests/input.c
+@@ -2138,7 +2138,7 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
+ {
+     RAWINPUT ri;
+     char buffer[16 * sizeof(RAWINPUT64)];
+-    UINT size, count, rawinput_size, iteration = rawinputbuffer_wndproc_count++;
++    UINT size, count, status, rawinput_size, iteration = rawinputbuffer_wndproc_count++;
+     MSG message;
+ 
+     if (is_wow64) rawinput_size = sizeof(RAWINPUT64);
+@@ -2154,6 +2154,9 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
+         ok(count == 0, "GetRawInputBuffer returned %u\n", count);
+         ok(size == rawinput_size, "GetRawInputBuffer returned unexpected size: %u\n", size);
+ 
++        status = GetQueueStatus(QS_RAWINPUT);
++        ok(status == (QS_RAWINPUT << 16), "GetQueueStatus returned %x, expected 0x4000000.\n", status);
++
+         size = sizeof(buffer);
+         memset(buffer, 0, sizeof(buffer));
+         count = GetRawInputBuffer((RAWINPUT*)buffer, &size, sizeof(RAWINPUTHEADER));
+@@ -2163,6 +2166,9 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
+         ok(rawinput_buffer_mouse_x(buffer, 1) == 3, "Unexpected rawinput data: %d\n", rawinput_buffer_mouse_x(buffer, 1));
+         ok(rawinput_buffer_mouse_x(buffer, 2) == 4, "Unexpected rawinput data: %d\n", rawinput_buffer_mouse_x(buffer, 2));
+ 
++        status = GetQueueStatus(QS_RAWINPUT);
++        ok(status == 0, "GetQueueStatus returned %x, expected 0.\n", status);
++
+         /* the first event should be removed by the next GetRawInputBuffer call
+          * and the others should do another round through the message loop but not more */
+         if (iteration == 0)
+diff --git a/server/queue.c b/server/queue.c
+index 9c8813fa1ad..1fa0fb20b1a 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -3303,7 +3303,7 @@ DECL_HANDLER(get_rawinput_buffer)
+     struct thread_input *input = current->queue->input;
+     data_size_t size = 0, next_size = 0;
+     char *buf, *cur, *tmp;
+-    int count = 0, buf_size = 16 * sizeof(struct hardware_msg_data);
++    int pending = 0, count = 0, buf_size = 16 * sizeof(struct hardware_msg_data);
+     struct message *msg, *next;
+ 
+     if (!req->buffer_size) buf = NULL;
+@@ -3315,6 +3315,7 @@ DECL_HANDLER(get_rawinput_buffer)
+         struct hardware_msg_data *data = msg->data;
+         data_size_t hid_size = data->rawinput.type != RIM_TYPEHID ? 0 : msg->data_size - sizeof(*data);
+         if (msg->msg != WM_INPUT) continue;
++        pending++;
+ 
+         next_size = req->rawinput_size + hid_size;
+         if (size + next_size > req->buffer_size) break;
+@@ -3338,8 +3339,11 @@ DECL_HANDLER(get_rawinput_buffer)
+         size += next_size;
+         cur += sizeof(*data);
+         count++;
++        pending--;
+     }
+ 
++    if (!pending) clear_queue_bits( current->queue, QS_RAWINPUT );
++
+     reply->next_size = next_size;
+     reply->count = count;
+     set_reply_data_ptr( buf, cur - buf );

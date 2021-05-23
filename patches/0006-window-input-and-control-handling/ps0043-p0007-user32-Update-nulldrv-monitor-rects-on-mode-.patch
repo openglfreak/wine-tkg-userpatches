@@ -1,0 +1,68 @@
+From 8e8d41b42fb91fbea080b20dc1737d4983a12785 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sun, 18 Apr 2021 16:58:15 +0200
+Subject: [PATCH 7/9] user32: Update nulldrv monitor rects on mode change.
+
+---
+ dlls/user32/driver.c    |  2 +-
+ dlls/user32/sysparams.c | 12 +++++++++---
+ 2 files changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/user32/driver.c b/dlls/user32/driver.c
+index 4e4dcdc81d8..4db224dddba 100644
+--- a/dlls/user32/driver.c
++++ b/dlls/user32/driver.c
+@@ -159,7 +159,7 @@ static const USER_DRIVER *load_driver(void)
+         driver = prev;
+     }
+     else if (graphics_driver) LdrAddRefDll( 0, graphics_driver );
+-    else nulldrv_initialize_display();
++    else nulldrv_initialize_display( FALSE );
+ 
+     __wine_set_display_driver( graphics_driver );
+     register_builtin_classes();
+diff --git a/dlls/user32/sysparams.c b/dlls/user32/sysparams.c
+index 9b82e3bfea6..341a29a6aae 100644
+--- a/dlls/user32/sysparams.c
++++ b/dlls/user32/sysparams.c
+@@ -4988,7 +4988,7 @@ struct monitor_desc
+ 
+ static const struct gpu_desc nulldrv_gpu = {0, L"nulldrv", 0, 0, 0, 0, {0}};
+ static const struct adapter_desc nulldrv_adapter = {0, DISPLAY_DEVICE_ATTACHED_TO_DESKTOP | DISPLAY_DEVICE_PRIMARY_DEVICE};
+-static const struct monitor_desc nulldrv_monitor = {L"nulldrv", {0, 0, 640, 480}, {0, 0, 640, 480}, DISPLAY_DEVICE_ATTACHED | DISPLAY_DEVICE_ACTIVE};
++static struct monitor_desc nulldrv_monitor = {L"nulldrv", {0, 0, 640, 480}, {0, 0, 640, 480}, DISPLAY_DEVICE_ATTACHED | DISPLAY_DEVICE_ACTIVE};
+ 
+ static int nulldrv_display_mode_reg;
+ static int nulldrv_display_mode_cur;
+@@ -5046,6 +5046,12 @@ LONG CDECL nulldrv_ChangeDisplaySettingsEx( LPCWSTR name, LPDEVMODEW mode, HWND
+     if (flags & CDS_UPDATEREGISTRY) nulldrv_display_mode_reg = i;
+     if (flags & (CDS_TEST | CDS_NORESET)) return DISP_CHANGE_SUCCESSFUL;
+     nulldrv_display_mode_cur = i;
++
++    nulldrv_monitor.rc_monitor.right = nulldrv_display_modes[i].dmPelsWidth;
++    nulldrv_monitor.rc_monitor.bottom = nulldrv_display_modes[i].dmPelsHeight;
++    nulldrv_monitor.rc_work = nulldrv_monitor.rc_monitor;
++    nulldrv_initialize_display(TRUE);
++
+     return DISP_CHANGE_SUCCESSFUL;
+ }
+ 
+@@ -5351,7 +5357,7 @@ static void cleanup_devices(void)
+     SetupDiDestroyDeviceInfoList(devinfo);
+ }
+ 
+-void nulldrv_initialize_display(void)
++void nulldrv_initialize_display(BOOL force)
+ {
+     HDEVINFO gpu_devinfo = NULL, monitor_devinfo = NULL;
+     HANDLE mutex;
+@@ -5370,7 +5376,7 @@ void nulldrv_initialize_display(void)
+ 
+     if (RegCreateKeyExW( HKEY_LOCAL_MACHINE, L"HARDWARE\\DEVICEMAP\\VIDEO", 0, NULL, REG_OPTION_VOLATILE, KEY_ALL_ACCESS, NULL, &video_hkey, &disposition ))
+         ERR( "Failed to create video device key\n" );
+-    else if (disposition == REG_CREATED_NEW_KEY)
++    else if (disposition == REG_CREATED_NEW_KEY || force)
+     {
+         prepare_devices( video_hkey );
+ 
+

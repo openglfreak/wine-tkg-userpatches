@@ -1,0 +1,59 @@
+From 744f9e3326d88b9ca1214631d55c8bd59f02a950 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 7 May 2021 21:51:14 +0200
+Subject: [PATCH 4/9] user32: Use IsIconic rather than GetWindowLongW /
+ WS_MINIMIZE.
+
+---
+ dlls/wineandroid.drv/window.c | 3 +--
+ dlls/winemac.drv/window.c     | 2 +-
+ dlls/winex11.drv/window.c     | 3 +--
+ 3 files changed, 3 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
+index d169fb78d78..0f942309701 100644
+--- a/dlls/wineandroid.drv/window.c
++++ b/dlls/wineandroid.drv/window.c
+@@ -1387,9 +1387,8 @@ void CDECL ANDROID_WindowPosChanged( HWND hwnd, HWND insert_after, UINT swp_flag
+  */
+ UINT CDECL ANDROID_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp )
+ {
+-    if (!IsIconic( hwnd )) return swp;
+     /* always hide icons off-screen */
+-    if (rect->left != -32000 || rect->top != -32000)
++    if (IsIconic( hwnd ) && (rect->left != -32000 || rect->top != -32000))
+     {
+         OffsetRect( rect, -32000 - rect->left, -32000 - rect->top );
+         swp &= ~(SWP_NOMOVE | SWP_NOCLIENTMOVE);
+diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+index 14d6a6fd1b2..5814a8ae9ce 100644
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1798,7 +1798,7 @@ UINT CDECL macdrv_ShowWindow(HWND hwnd, INT cmd, RECT *rect, UINT swp)
+           hwnd, data ? data->cocoa_window : NULL, cmd, wine_dbgstr_rect(rect), swp);
+ 
+     if (!data || !data->cocoa_window) goto done;
+-    if (GetWindowLongW(hwnd, GWL_STYLE) & WS_MINIMIZE)
++    if (IsIconic( hwnd ))
+     {
+         if (rect->left != -32000 || rect->top != -32000)
+         {
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 86b17751e87..6b84a3e0c92 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -2560,12 +2560,11 @@ UINT CDECL X11DRV_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp )
+     unsigned int width, height, border, depth;
+     Window root, top;
+     POINT pos;
+-    DWORD style = GetWindowLongW( hwnd, GWL_STYLE );
+     struct x11drv_thread_data *thread_data = x11drv_thread_data();
+     struct x11drv_win_data *data = get_win_data( hwnd );
+ 
+     if (!data || !data->whole_window) goto done;
+-    if (style & WS_MINIMIZE)
++    if (IsIconic( hwnd ))
+     {
+         if (((rect->left != -32000 || rect->top != -32000)) && hide_icon( data ))
+         {
+

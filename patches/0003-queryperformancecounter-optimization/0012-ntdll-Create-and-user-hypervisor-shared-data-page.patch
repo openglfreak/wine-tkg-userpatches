@@ -1,0 +1,567 @@
+From fd5d14a9c85379ee975f0cf0453c56900a3fcd05 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 28 Apr 2021 11:50:36 +0200
+Subject: [PATCH 12/12] ntdll: Create and user hypervisor shared data page.
+
+---
+ dlls/ntdll/ntdll_misc.h        |   8 ++
+ dlls/ntdll/thread.c            |   1 +
+ dlls/ntdll/time.c              |  11 ++
+ dlls/ntdll/unix/loader.c       |   1 +
+ dlls/ntdll/unix/system.c       |  12 +++
+ dlls/ntdll/unix/unix_private.h |   2 +
+ dlls/ntdll/unix/virtual.c      |  38 +++++++
+ programs/wineboot/wineboot.c   | 192 ++++++++++++++++++++++++++-------
+ server/directory.c             |   3 +
+ server/fd.c                    |  27 ++++-
+ server/file.h                  |  10 ++
+ server/mapping.c               |  14 +++
+ 12 files changed, 275 insertions(+), 44 deletions(-)
+
+diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
+index 1e00dcda2ec..f52d1b0f8e1 100644
+--- a/dlls/ntdll/ntdll_misc.h
++++ b/dlls/ntdll/ntdll_misc.h
+@@ -80,6 +80,14 @@ extern HMODULE kernel32_handle DECLSPEC_HIDDEN;
+ extern void (FASTCALL *pBaseThreadInitThunk)(DWORD,LPTHREAD_START_ROUTINE,void *) DECLSPEC_HIDDEN;
+ extern const struct unix_funcs *unix_funcs DECLSPEC_HIDDEN;
+ 
++struct hypervisor_shared_data
++{
++    UINT64 unknown;
++    UINT64 QpcMultiplier;
++    UINT64 QpcBias;
++};
++
++extern struct hypervisor_shared_data *hypervisor_shared_data DECLSPEC_HIDDEN;
+ extern struct _KUSER_SHARED_DATA *user_shared_data DECLSPEC_HIDDEN;
+ 
+ extern int CDECL NTDLL__vsnprintf( char *str, SIZE_T len, const char *format, __ms_va_list args ) DECLSPEC_HIDDEN;
+diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+index a95880ca4bd..5904e070249 100644
+--- a/dlls/ntdll/thread.c
++++ b/dlls/ntdll/thread.c
+@@ -35,6 +35,7 @@
+ WINE_DECLARE_DEBUG_CHANNEL(relay);
+ WINE_DECLARE_DEBUG_CHANNEL(thread);
+ 
++struct hypervisor_shared_data *hypervisor_shared_data = (void *)0x7ffd0000;
+ struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
+ 
+ 
+diff --git a/dlls/ntdll/time.c b/dlls/ntdll/time.c
+index 68000061923..0ef3679a536 100644
+--- a/dlls/ntdll/time.c
++++ b/dlls/ntdll/time.c
+@@ -376,6 +376,14 @@ LONGLONG WINAPI RtlGetSystemTimePrecise( void )
+     return unix_funcs->RtlGetSystemTimePrecise();
+ }
+ 
++/* 128-bit multiply a by b and return the high 64 bits, same as __umulh */
++static UINT64 multiply_tsc(UINT64 a, UINT64 b)
++{
++    UINT64 ah = a >> 32, al = (UINT32)a, bh = b >> 32, bl = (UINT32)b, m;
++    m = (ah * bl) + (bh * al) + ((al * bl) >> 32);
++    return (ah * bh) + (m >> 32);
++}
++
+ /******************************************************************************
+  *  RtlQueryPerformanceCounter   [NTDLL.@]
+  */
+@@ -397,6 +405,9 @@ BOOL WINAPI DECLSPEC_HOTPATCH RtlQueryPerformanceCounter( LARGE_INTEGER *counter
+             tsc = __rdtsc();
+         }
+ 
++        if (user_shared_data->u3.QpcBypassEnabled & SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_HV_PAGE)
++            tsc = multiply_tsc(tsc, hypervisor_shared_data->QpcMultiplier) + hypervisor_shared_data->QpcBias;
++
+         counter->QuadPart = (tsc + user_shared_data->QpcBias) >> user_shared_data->u3.QpcShift;
+         return TRUE;
+     }
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 1b79b71b252..b3504df3a46 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1861,6 +1861,7 @@ static void start_main_thread(void)
+     dbg_init();
+     startup_info_size = server_init_process();
+     virtual_map_user_shared_data();
++    virtual_map_hypervisor_shared_data();
+     init_cpu_info();
+     syscall_dispatcher = signal_init_syscalls();
+     init_files();
+diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
+index 01381630600..b52484952f3 100644
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -2828,6 +2828,18 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+     case SystemCpuSetInformation:  /* 175 */
+         return NtQuerySystemInformationEx(class, NULL, 0, info, size, ret_size);
+ 
++    case SystemHypervisorSharedPageInformation:
++    {
++        len = sizeof(void *);
++        if (size >= len)
++        {
++            if (!info) ret = STATUS_ACCESS_VIOLATION;
++            else *(void **)info = hypervisor_shared_data;
++        }
++        else ret = STATUS_INFO_LENGTH_MISMATCH;
++        break;
++    }
++
+     /* Wine extensions */
+ 
+     case SystemWineVersionInformation:  /* 1000 */
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index bd00d4e9d42..3396970d52b 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -129,6 +129,7 @@ extern BOOL process_exiting DECLSPEC_HIDDEN;
+ extern HANDLE keyed_event DECLSPEC_HIDDEN;
+ extern timeout_t server_start_time DECLSPEC_HIDDEN;
+ extern sigset_t server_block_set DECLSPEC_HIDDEN;
++extern void *hypervisor_shared_data DECLSPEC_HIDDEN;
+ extern struct _KUSER_SHARED_DATA *user_shared_data DECLSPEC_HIDDEN;
+ extern SYSTEM_CPU_INFORMATION cpu_info DECLSPEC_HIDDEN;
+ #ifndef _WIN64
+@@ -203,6 +204,7 @@ extern NTSTATUS virtual_clear_tls_index( ULONG index ) DECLSPEC_HIDDEN;
+ extern NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR zero_bits, SIZE_T reserve_size,
+                                             SIZE_T commit_size, SIZE_T *pthread_size ) DECLSPEC_HIDDEN;
+ extern void virtual_map_user_shared_data(void) DECLSPEC_HIDDEN;
++extern void virtual_map_hypervisor_shared_data(void) DECLSPEC_HIDDEN;
+ extern NTSTATUS virtual_handle_fault( void *addr, DWORD err, void *stack ) DECLSPEC_HIDDEN;
+ extern unsigned int virtual_locked_server_call( void *req_ptr ) DECLSPEC_HIDDEN;
+ extern ssize_t virtual_locked_read( int fd, void *addr, size_t size ) DECLSPEC_HIDDEN;
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index bcab898b0fc..1283db69c28 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -168,6 +168,7 @@ static void *user_space_limit    = (void *)0x7fff0000;
+ static void *working_set_limit   = (void *)0x7fff0000;
+ #endif
+ 
++void *hypervisor_shared_data = (void *)0x7ffd0000;
+ struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
+ 
+ /* TEB allocation blocks */
+@@ -2912,6 +2913,14 @@ TEB *virtual_alloc_first_teb(void)
+         exit(1);
+     }
+ 
++    status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&hypervisor_shared_data, 0, &data_size,
++                                      MEM_RESERVE | MEM_COMMIT, PAGE_READONLY );
++    if (status)
++    {
++        ERR( "wine: failed to map the shared user data: %08x\n", status );
++        exit(1);
++    }
++
+     NtAllocateVirtualMemory( NtCurrentProcess(), &teb_block, is_win64 ? 0x7fffffff : 0, &total,
+                              MEM_RESERVE | MEM_TOP_DOWN, PAGE_READWRITE );
+     teb_block_pos = 30;
+@@ -3154,6 +3163,35 @@ void virtual_map_user_shared_data(void)
+ }
+ 
+ 
++/***********************************************************************
++ *           virtual_map_hypervisor_shared_data
++ */
++void virtual_map_hypervisor_shared_data(void)
++{
++    static const WCHAR nameW[] = {'\\','K','e','r','n','e','l','O','b','j','e','c','t','s',
++                                  '\\','_','_','w','i','n','e','_','h','y','p','e','r','v','i','s','o','r','_','s','h','a','r','e','d','_','d','a','t','a',0};
++    UNICODE_STRING name_str = { sizeof(nameW) - sizeof(WCHAR), sizeof(nameW), (WCHAR *)nameW };
++    OBJECT_ATTRIBUTES attr = { sizeof(attr), 0, &name_str };
++    NTSTATUS status;
++    HANDLE section;
++    int res, fd, needs_close;
++
++    if ((status = NtOpenSection( &section, SECTION_ALL_ACCESS, &attr )))
++    {
++        ERR( "failed to open the hypervisor shared data section: %08x\n", status );
++        exit(1);
++    }
++    if ((res = server_get_unix_fd( section, 0, &fd, &needs_close, NULL, NULL )) ||
++        (hypervisor_shared_data != mmap( hypervisor_shared_data, page_size, PROT_READ, MAP_SHARED|MAP_FIXED, fd, 0 )))
++    {
++        ERR( "failed to remap the process hypervisor shared data: %d\n", res );
++        exit(1);
++    }
++    if (needs_close) close( fd );
++    NtClose( section );
++}
++
++
+ /***********************************************************************
+  *           grow_thread_stack
+  */
+diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
+index 485f06c55c1..a18ef0f823f 100644
+--- a/programs/wineboot/wineboot.c
++++ b/programs/wineboot/wineboot.c
+@@ -243,9 +243,81 @@ static void initialize_xstate_features(struct _KUSER_SHARED_DATA *data)
+     TRACE("XSAVE feature 2 %#x, %#x, %#x, %#x.\n", regs[0], regs[1], regs[2], regs[3]);
+ }
+ 
++static UINT64 read_tsc_frequency(void)
++{
++    UINT64 freq = 0;
++
++/* FIXME: Intel provides TSC freq in some CPUID but it's been slightly broken,
++   fix it properly and test it on real Intel hardware */
++
++#if 0
++    int regs[4], cpuid_level, tmp;
++    UINT64 denom, numer;
++
++    __cpuid(regs, 0);
++    tmp = regs[2];
++    regs[2] = regs[3];
++    regs[3] = tmp;
++
++    /* only available on some intel CPUs */
++    if (memcmp(regs + 1, "GenuineIntel", 12)) freq = 0;
++    else if ((cpuid_level = regs[0]) < 0x15) freq = 0;
++    else
++    {
++        __cpuid(regs, 0x15);
++        if (!(denom = regs[0]) || !(numer = regs[1])) freq = 0;
++        else
++        {
++            if ((freq = regs[2])) freq = freq * numer / denom;
++            else if (cpuid_level >= 0x16)
++            {
++                __cpuid(regs, 0x16); /* eax is base freq in MHz */
++                freq = regs[0] * (UINT64)1000000;
++            }
++            else freq = 0;
++        }
++
++        if (!freq) WARN("Failed to read TSC frequency from CPUID, falling back to calibration.\n");
++        else TRACE("TSC frequency read from CPUID, found %I64u Hz\n", freq);
++    }
++#endif
++
++    if (freq == 0)
++    {
++        LONGLONG time0, time1, tsc0, tsc1, tsc2, tsc3, freq0, freq1, error;
++        unsigned int aux;
++        UINT retries = 50;
++
++        do
++        {
++            tsc0 = __rdtscp(&aux);
++            time0 = RtlGetSystemTimePrecise();
++            tsc1 = __rdtscp(&aux);
++            Sleep(1);
++            tsc2 = __rdtscp(&aux);
++            time1 = RtlGetSystemTimePrecise();
++            tsc3 = __rdtscp(&aux);
++
++            freq0 = (tsc2 - tsc0) * 10000000 / (time1 - time0);
++            freq1 = (tsc3 - tsc1) * 10000000 / (time1 - time0);
++            error = llabs((freq1 - freq0) * 1000000 / min(freq1, freq0));
++        }
++        while (error > 100 && retries--);
++
++        if (!retries) WARN("TSC frequency calibration failed, unstable TSC?\n");
++        else
++        {
++            freq = (freq0 + freq1) / 2;
++            TRACE("TSC frequency calibration complete, found %I64u Hz\n", freq);
++        }
++    }
++
++    return freq;
++}
++
+ static void initialize_qpc_features(struct _KUSER_SHARED_DATA *data)
+ {
+-    int regs[4], cpuid_level, denom, numer, freq, tmp;
++    int regs[4];
+ 
+     if (data->QpcBypassEnabled) return;
+ 
+@@ -285,48 +357,10 @@ static void initialize_qpc_features(struct _KUSER_SHARED_DATA *data)
+     else
+         data->QpcBypassEnabled |= SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_MFENCE;
+ 
+-    __cpuid(regs, 0);
+-    tmp = regs[2];
+-    regs[2] = regs[3];
+-    regs[3] = tmp;
+-
+-    data->QpcFrequency = 0;
+-
+-    if (!data->QpcFrequency)
++    if ((data->QpcFrequency = (read_tsc_frequency() >> 10)))
+     {
+-        LONGLONG time0, time1, tsc0, tsc1, tsc2, tsc3, freq0, freq1, error;
+-        unsigned int aux;
+-        UINT retries = 50;
+-
+-        data->QpcShift = 0;
++        data->QpcShift = 10;
+         data->QpcBias = 0;
+-
+-        do
+-        {
+-            tsc0 = __rdtscp(&aux);
+-            time0 = RtlGetSystemTimePrecise();
+-            tsc1 = __rdtscp(&aux);
+-            Sleep(1);
+-            tsc2 = __rdtscp(&aux);
+-            time1 = RtlGetSystemTimePrecise();
+-            tsc3 = __rdtscp(&aux);
+-
+-            freq0 = (tsc2 - tsc0) * 10000000 / (time1 - time0);
+-            freq1 = (tsc3 - tsc1) * 10000000 / (time1 - time0);
+-            error = llabs((freq1 - freq0) * 1000000 / min(freq1, freq0));
+-        }
+-        while (error > 100 && retries--);
+-
+-        if (!retries) WARN("TSC frequency calibration failed, unstable TSC?\n");
+-        else
+-        {
+-            data->QpcFrequency = (freq0 + freq1 + (1 << 10) - 1) >> 11;
+-            data->QpcShift = 10;
+-            data->QpcBias = 0;
+-
+-            TRACE("TSC frequency calibration complete, freq %I64d, shift %d, bias %I64d\n",
+-                  data->QpcFrequency, data->QpcShift, data->QpcBias);
+-        }
+     }
+ 
+     if (!data->QpcFrequency)
+@@ -355,6 +389,81 @@ static void initialize_qpc_features(struct _KUSER_SHARED_DATA *data)
+ 
+ #endif
+ 
++struct hypervisor_shared_data
++{
++    UINT64 unknown;
++    UINT64 QpcMultiplier;
++    UINT64 QpcBias;
++};
++
++static UINT64 muldiv_tsc(UINT64 a, UINT64 b, UINT64 c)
++{
++    UINT64 ka = a / c, ra = a % c, kb = b / c, rb = b % c;
++    return ka * kb * c + kb * ra + ka * rb + (ra * rb + c / 2) / c;
++}
++
++static void create_hypervisor_shared_data(void)
++{
++    struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
++    struct hypervisor_shared_data *hypervisor_shared_data;
++    OBJECT_ATTRIBUTES attr = {sizeof(attr)};
++    UNICODE_STRING name;
++    NTSTATUS status;
++    HANDLE handle;
++
++    RtlInitUnicodeString( &name, L"\\KernelObjects\\__wine_hypervisor_shared_data" );
++    InitializeObjectAttributes( &attr, &name, OBJ_OPENIF, NULL, NULL );
++    if ((status = NtOpenSection( &handle, SECTION_ALL_ACCESS, &attr )))
++    {
++        ERR( "cannot open __wine_hypervisor_shared_data: %x\n", status );
++        return;
++    }
++    hypervisor_shared_data = MapViewOfFile( handle, FILE_MAP_WRITE, 0, 0, sizeof(*hypervisor_shared_data) );
++    CloseHandle( handle );
++    if (!hypervisor_shared_data)
++    {
++        ERR( "cannot map __wine_hypervisor_shared_data\n" );
++        return;
++    }
++
++    RtlInitUnicodeString( &name, L"\\KernelObjects\\__wine_user_shared_data" );
++    InitializeObjectAttributes( &attr, &name, OBJ_OPENIF, NULL, NULL );
++    if ((status = NtOpenSection( &handle, SECTION_ALL_ACCESS, &attr )))
++    {
++        ERR( "cannot open __wine_user_shared_data: %x\n", status );
++        UnmapViewOfFile( hypervisor_shared_data );
++        return;
++    }
++    user_shared_data = MapViewOfFile( handle, FILE_MAP_WRITE, 0, 0, sizeof(*user_shared_data) );
++    CloseHandle( handle );
++    if (!user_shared_data)
++    {
++        ERR( "cannot map __wine_user_shared_data\n" );
++        UnmapViewOfFile( hypervisor_shared_data );
++        return;
++    }
++
++    hypervisor_shared_data->unknown = 0;
++    hypervisor_shared_data->QpcMultiplier = 0;
++    hypervisor_shared_data->QpcBias = 0;
++
++    if (user_shared_data->QpcBypassEnabled & SHARED_GLOBAL_FLAGS_QPC_BYPASS_ENABLED)
++    {
++        hypervisor_shared_data->QpcMultiplier = muldiv_tsc((UINT64)5000 << 32, (UINT64)2000 << 32, read_tsc_frequency());
++        user_shared_data->QpcBypassEnabled |= SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_HV_PAGE;
++        user_shared_data->QpcInterruptTimeIncrement = (ULONGLONG)1 << 63;
++        user_shared_data->QpcInterruptTimeIncrementShift = 1;
++        user_shared_data->QpcSystemTimeIncrement = (ULONGLONG)1 << 63;
++        user_shared_data->QpcSystemTimeIncrementShift = 1;
++        user_shared_data->QpcFrequency = 10000000;
++        user_shared_data->QpcShift = 0;
++        user_shared_data->QpcBias = 0;
++    }
++
++    UnmapViewOfFile( user_shared_data );
++    UnmapViewOfFile( hypervisor_shared_data );
++}
++
+ static void create_user_shared_data(void)
+ {
+     struct _KUSER_SHARED_DATA *data;
+@@ -1802,6 +1911,7 @@ int __cdecl main( int argc, char *argv[] )
+     ResetEvent( event );  /* in case this is a restart */
+ 
+     create_user_shared_data();
++    create_hypervisor_shared_data();
+     create_hardware_registry_keys();
+     create_dynamic_registry_keys();
+     create_environment_registry_keys();
+diff --git a/server/directory.c b/server/directory.c
+index 30d69459984..211f3a70c6f 100644
+--- a/server/directory.c
++++ b/server/directory.c
+@@ -438,8 +438,10 @@ void init_directories( struct fd *intl_fd )
+     /* mappings */
+     static const WCHAR intlW[] = {'N','l','s','S','e','c','t','i','o','n','L','A','N','G','_','I','N','T','L'};
+     static const WCHAR user_dataW[] = {'_','_','w','i','n','e','_','u','s','e','r','_','s','h','a','r','e','d','_','d','a','t','a'};
++    static const WCHAR hypervisor_dataW[] = {'_','_','w','i','n','e','_','h','y','p','e','r','v','i','s','o','r','_','s','h','a','r','e','d','_','d','a','t','a'};
+     static const struct unicode_str intl_str = {intlW, sizeof(intlW)};
+     static const struct unicode_str user_data_str = {user_dataW, sizeof(user_dataW)};
++    static const struct unicode_str hypervisor_data_str = {hypervisor_dataW, sizeof(hypervisor_dataW)};
+ 
+     struct directory *dir_driver, *dir_device, *dir_global, *dir_kernel, *dir_nls;
+     struct object *named_pipe_device, *mailslot_device, *null_device;
+@@ -487,6 +489,7 @@ void init_directories( struct fd *intl_fd )
+     /* mappings */
+     release_object( create_fd_mapping( &dir_nls->obj, &intl_str, intl_fd, OBJ_PERMANENT, NULL ));
+     release_object( create_user_data_mapping( &dir_kernel->obj, &user_data_str, OBJ_PERMANENT, NULL ));
++    release_object( create_hypervisor_data_mapping( &dir_kernel->obj, &hypervisor_data_str, OBJ_PERMANENT, NULL ));
+     release_object( intl_fd );
+ 
+     release_object( named_pipe_device );
+diff --git a/server/fd.c b/server/fd.c
+index 4488d97b8b3..e354f5e8104 100644
+--- a/server/fd.c
++++ b/server/fd.c
+@@ -385,9 +385,18 @@ static struct list rel_timeout_list = LIST_INIT(rel_timeout_list); /* sorted rel
+ timeout_t current_time;
+ timeout_t monotonic_time;
+ 
++struct hypervisor_shared_data *hypervisor_shared_data = NULL;
+ struct _KUSER_SHARED_DATA *user_shared_data = NULL;
+ static const int user_shared_data_timeout = 16;
+ 
++/* 128-bit multiply a by b and return the high 64 bits, same as __umulh */
++static UINT64 multiply_tsc(UINT64 a, UINT64 b)
++{
++    UINT64 ah = a >> 32, al = (UINT32)a, bh = b >> 32, bl = (UINT32)b, m;
++    m = (ah * bl) + (bh * al) + ((al * bl) >> 32);
++    return (ah * bh) + (m >> 32);
++}
++
+ static void set_user_shared_data_time(void)
+ {
+     timeout_t tick_count = monotonic_time / 10000;
+@@ -410,7 +419,13 @@ static void set_user_shared_data_time(void)
+     }
+ #endif
+ 
+-    qpc_bias = ((monotonic_time * qpc_freq / 10000000) << qpc_shift) - tsc;
++    if (!(qpc_bypass & SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_HV_PAGE))
++        qpc_bias = ((monotonic_time * qpc_freq / 10000000) << qpc_shift) - tsc;
++    else
++    {
++        tsc = multiply_tsc(tsc, hypervisor_shared_data->QpcMultiplier);
++        qpc_bias = monotonic_time - tsc;
++    }
+ 
+     /* on X86 there should be total store order guarantees, so volatile is enough
+      * to ensure the stores aren't reordered by the compiler, and then they will
+@@ -429,7 +444,10 @@ static void set_user_shared_data_time(void)
+     user_shared_data->TickCount.LowPart   = tick_count;
+     user_shared_data->TickCount.High1Time = tick_count >> 32;
+     *(volatile ULONG *)&user_shared_data->TickCountLowDeprecated = tick_count;
+-    user_shared_data->QpcBias = qpc_bias;
++    if (qpc_bypass & SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_HV_PAGE)
++        hypervisor_shared_data->QpcBias = qpc_bias;
++    else
++        user_shared_data->QpcBias = qpc_bias;
+ #else
+     __atomic_store_n(&user_shared_data->SystemTime.High2Time, current_time >> 32, __ATOMIC_SEQ_CST);
+     __atomic_store_n(&user_shared_data->SystemTime.LowPart, current_time, __ATOMIC_SEQ_CST);
+@@ -443,7 +461,10 @@ static void set_user_shared_data_time(void)
+     __atomic_store_n(&user_shared_data->TickCount.LowPart, tick_count, __ATOMIC_SEQ_CST);
+     __atomic_store_n(&user_shared_data->TickCount.High1Time, tick_count >> 32, __ATOMIC_SEQ_CST);
+     __atomic_store_n(&user_shared_data->TickCountLowDeprecated, tick_count, __ATOMIC_SEQ_CST);
+-    __atomic_store_n(&user_shared_data->QpcBias, qpc_bias, __ATOMIC_SEQ_CST);
++    if (qpc_bypass & SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_HV_PAGE)
++        __atomic_store_n(&hypervisor_shared_data->QpcBias, qpc_bias, __ATOMIC_SEQ_CST);
++    else
++        __atomic_store_n(&user_shared_data->QpcBias, qpc_bias, __ATOMIC_SEQ_CST);
+ #endif
+ }
+ 
+diff --git a/server/file.h b/server/file.h
+index 0fa66e5750a..4611ffbf131 100644
+--- a/server/file.h
++++ b/server/file.h
+@@ -129,6 +129,14 @@ static inline struct fd *get_obj_fd( struct object *obj ) { return obj->ops->get
+ struct timeout_user;
+ extern timeout_t current_time;
+ extern timeout_t monotonic_time;
++
++struct hypervisor_shared_data
++{
++    UINT64 unknown;
++    UINT64 QpcMultiplier;
++    UINT64 QpcBias;
++};
++extern struct hypervisor_shared_data *hypervisor_shared_data;
+ extern struct _KUSER_SHARED_DATA *user_shared_data;
+ 
+ #define TICKS_PER_SEC 10000000
+@@ -178,6 +186,8 @@ extern struct mapping *create_fd_mapping( struct object *root, const struct unic
+                                           unsigned int attr, const struct security_descriptor *sd );
+ extern struct object *create_user_data_mapping( struct object *root, const struct unicode_str *name,
+                                                 unsigned int attr, const struct security_descriptor *sd );
++extern struct object *create_hypervisor_data_mapping( struct object *root, const struct unicode_str *name,
++                                                      unsigned int attr, const struct security_descriptor *sd );
+ 
+ /* device functions */
+ 
+diff --git a/server/mapping.c b/server/mapping.c
+index 9cb24a4213f..d5da8c907db 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -1086,6 +1086,20 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
+     return &mapping->obj;
+ }
+ 
++struct object *create_hypervisor_data_mapping( struct object *root, const struct unicode_str *name,
++                                               unsigned int attr, const struct security_descriptor *sd )
++{
++    void *ptr;
++    struct mapping *mapping;
++
++    if (!(mapping = create_mapping( root, name, attr, sizeof(struct hypervisor_shared_data),
++                                    SEC_COMMIT, 0, FILE_READ_DATA | FILE_WRITE_DATA, sd ))) return NULL;
++    ptr = mmap( NULL, mapping->size, PROT_WRITE, MAP_SHARED, get_unix_fd( mapping->fd ), 0 );
++    if (ptr != MAP_FAILED)
++        hypervisor_shared_data = ptr;
++    return &mapping->obj;
++}
++
+ /* create a file mapping */
+ DECL_HANDLER(create_mapping)
+ {
+-- 
+2.31.1
+

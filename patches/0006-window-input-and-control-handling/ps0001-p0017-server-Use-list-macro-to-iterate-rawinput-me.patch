@@ -1,0 +1,39 @@
+From 36dcaec182b22b46634cb298637f1c03126e6f3b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 17 May 2021 14:42:38 +0200
+Subject: [PATCH 17/18] server: Use list macro to iterate rawinput messages.
+
+---
+ server/queue.c | 8 ++------
+ 1 file changed, 2 insertions(+), 6 deletions(-)
+
+diff --git a/server/queue.c b/server/queue.c
+index a622121dfae..9c8813fa1ad 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -3302,22 +3302,18 @@ DECL_HANDLER(get_rawinput_buffer)
+ {
+     struct thread_input *input = current->queue->input;
+     data_size_t size = 0, next_size = 0;
+-    struct list *ptr;
+     char *buf, *cur, *tmp;
+     int count = 0, buf_size = 16 * sizeof(struct hardware_msg_data);
++    struct message *msg, *next;
+ 
+     if (!req->buffer_size) buf = NULL;
+     else if (!(buf = mem_alloc( buf_size ))) return;
+ 
+     cur = buf;
+-    ptr = list_head( &input->msg_list );
+-    while (ptr)
++    LIST_FOR_EACH_ENTRY_SAFE( msg, next, &input->msg_list, struct message, entry )
+     {
+-        struct message *msg = LIST_ENTRY( ptr, struct message, entry );
+         struct hardware_msg_data *data = msg->data;
+         data_size_t hid_size = data->rawinput.type != RIM_TYPEHID ? 0 : msg->data_size - sizeof(*data);
+-
+-        ptr = list_next( &input->msg_list, ptr );
+         if (msg->msg != WM_INPUT) continue;
+ 
+         next_size = req->rawinput_size + hid_size;
+

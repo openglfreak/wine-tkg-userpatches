@@ -1,0 +1,70 @@
+From: luoriyuhui21@163.com
+Subject: [PATCH] qcap:fix the bug which camera device can't be released correctly.
+Message-Id: <20210603042532.65022-1-luoriyuhui21@163.com>
+Date: Thu,  3 Jun 2021 12:25:32 +0800
+
+From: Keming Liang <liangkeming@kylinos.cn>
+
+Signed-off-by: Keming Liang <liangkeming@kylinos.cn>
+---
+ dlls/qcap/qcap_private.h | 1 +
+ dlls/qcap/v4l.c          | 8 ++++++++
+ dlls/qcap/vfwcapture.c   | 3 +++
+ 3 files changed, 12 insertions(+)
+
+diff --git a/dlls/qcap/qcap_private.h b/dlls/qcap/qcap_private.h
+index 104dba6a649..22dcecf40fd 100644
+--- a/dlls/qcap/qcap_private.h
++++ b/dlls/qcap/qcap_private.h
+@@ -44,6 +44,7 @@ struct video_capture_funcs
+ {
+     struct video_capture_device *(CDECL *create)(USHORT index);
+     void (CDECL *destroy)(struct video_capture_device *device);
++    void (CDECL *close)(struct video_capture_device *device);
+     HRESULT (CDECL *check_format)(struct video_capture_device *device, const AM_MEDIA_TYPE *mt);
+     HRESULT (CDECL *set_format)(struct video_capture_device *device, const AM_MEDIA_TYPE *mt);
+     void (CDECL *get_format)(struct video_capture_device *device, AM_MEDIA_TYPE *mt, VIDEOINFOHEADER *format);
+diff --git a/dlls/qcap/v4l.c b/dlls/qcap/v4l.c
+index ccc06194b99..8102be50aec 100644
+--- a/dlls/qcap/v4l.c
++++ b/dlls/qcap/v4l.c
+@@ -118,6 +118,13 @@ static int xioctl(int fd, int request, void * arg)
+     return r;
+ }
+ 
++static void CDECL v4l_device_close(struct video_capture_device *device)
++{
++    if (device->fd != -1)
++        video_close(device->fd);
++    device->fd = -1;
++}
++
+ static void CDECL v4l_device_destroy(struct video_capture_device *device)
+ {
+     if (device->fd != -1)
+@@ -552,6 +559,7 @@ error:
+ const struct video_capture_funcs v4l_funcs =
+ {
+     .create = v4l_device_create,
++    .close = v4l_device_close,
+     .destroy = v4l_device_destroy,
+     .check_format = v4l_device_check_format,
+     .set_format = v4l_device_set_format,
+diff --git a/dlls/qcap/vfwcapture.c b/dlls/qcap/vfwcapture.c
+index 48401344ac4..155cfda20ba 100644
+--- a/dlls/qcap/vfwcapture.c
++++ b/dlls/qcap/vfwcapture.c
+@@ -254,6 +254,9 @@ static HRESULT vfw_capture_cleanup_stream(struct strmbase_filter *iface)
+     if (hr != S_OK && hr != VFW_E_NOT_COMMITTED)
+         ERR("Failed to decommit allocator, hr %#x.\n", hr);
+ 
++    if (filter->init)
++        capture_funcs->close(filter->device);
++
+     return S_OK;
+ }
+ 
+
+-- 
+2.25.1
+

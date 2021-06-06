@@ -1,7 +1,7 @@
 From: Zhiyi Zhang <zzhang@codeweavers.com>
-Subject: [PATCH v4 3/6] winex11.drv: Store monitor information in the wineserver for EnumDisplayMonitors().
-Message-Id: <9764621e-7ab1-2c71-d549-71a270cd449e@codeweavers.com>
-Date: Wed, 19 May 2021 16:14:47 +0800
+Subject: [PATCH v6 3/6] winex11.drv: Store monitor information in the wineserver for EnumDisplayMonitors().
+Message-Id: <115fcc79-8d0c-24c3-c608-6f598ed42875@codeweavers.com>
+Date: Wed, 2 Jun 2021 11:03:47 +0800
 
 Fix a regression that Office 2016/365 has a 640x480 main window.
 
@@ -15,19 +15,19 @@ always report one monitor when called by services.
 
 Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
 ---
- dlls/user32/sysparams.c     |  82 ++++++++++++++++++++++
+ dlls/user32/sysparams.c     |  82 +++++++++++++++++++++++
  dlls/user32/tests/monitor.c |   1 -
  dlls/winex11.drv/display.c  |  74 ++++++++++++++++++--
  server/Makefile.in          |   1 +
- server/display.c            | 133 ++++++++++++++++++++++++++++++++++++
+ server/display.c            | 130 ++++++++++++++++++++++++++++++++++++
  server/protocol.def         |  39 +++++++++++
  server/trace.c              |  38 +++++++++++
  server/user.h               |  13 +++-
- 8 files changed, 374 insertions(+), 7 deletions(-)
+ 8 files changed, 371 insertions(+), 7 deletions(-)
  create mode 100644 server/display.c
 
 diff --git a/dlls/user32/sysparams.c b/dlls/user32/sysparams.c
-index 1c943767927..846d5b9cc36 100644
+index 1c943767927..40c26cba1c0 100644
 --- a/dlls/user32/sysparams.c
 +++ b/dlls/user32/sysparams.c
 @@ -46,6 +46,7 @@
@@ -49,7 +49,7 @@ index 1c943767927..846d5b9cc36 100644
 +    SERVER_START_REQ( get_monitor_info )
 +    {
 +        req->handle = wine_server_user_handle( handle );
-+        if (info->cbSize >= sizeof(MONITORINFOEXW))
++        if (info->cbSize == sizeof(MONITORINFOEXW))
 +            wine_server_set_reply( req, ((MONITORINFOEXW *)info)->szDevice,
 +                                   sizeof(((MONITORINFOEXW *)info)->szDevice) - sizeof(WCHAR) );
 +        if (!(status = wine_server_call( req )))
@@ -62,7 +62,7 @@ index 1c943767927..846d5b9cc36 100644
 +                info->dwFlags = MONITORINFOF_PRIMARY;
 +            else
 +                info->dwFlags = 0;
-+            if (info->cbSize >= sizeof(MONITORINFOEXW))
++            if (info->cbSize == sizeof(MONITORINFOEXW))
 +                ((MONITORINFOEXW *)info)->szDevice[wine_server_reply_size( req ) / sizeof(WCHAR)] = 0;
 +        }
 +    }
@@ -162,7 +162,7 @@ index ab03837f5e6..b73ea8cfc90 100644
  
      monitor = (HMONITOR)((ULONG_PTR)full_monitor & 0xffff);
 diff --git a/dlls/winex11.drv/display.c b/dlls/winex11.drv/display.c
-index b3ff213ae89..f6b1cead7a3 100644
+index b3ff213ae89..a70b5c811dc 100644
 --- a/dlls/winex11.drv/display.c
 +++ b/dlls/winex11.drv/display.c
 @@ -34,6 +34,8 @@
@@ -199,15 +199,15 @@ index b3ff213ae89..f6b1cead7a3 100644
  
 +/* Wine server monitor list management */
 +
-+struct wine_server_monitor_info
++struct server_monitor_info
 +{
 +    unsigned int entry_count;
 +    unsigned int entry_capacity;
 +    struct update_monitor_entry *entries;
 +};
 +
-+static BOOL wine_server_add_monitor_info(struct wine_server_monitor_info *info,
-+                                         const struct x11drv_monitor *monitor, int adapter_index)
++static BOOL server_add_monitor_info(struct server_monitor_info *info,
++                                    const struct x11drv_monitor *monitor, int adapter_index)
 +{
 +    struct update_monitor_entry *entry, *new_entries;
 +    unsigned int length;
@@ -238,7 +238,7 @@ index b3ff213ae89..f6b1cead7a3 100644
 +    return TRUE;
 +}
 +
-+static void wine_server_submit_monitor_info(const struct wine_server_monitor_info *info)
++static void server_submit_monitor_info(const struct server_monitor_info *info)
 +{
 +    unsigned int status;
 +
@@ -260,7 +260,7 @@ index b3ff213ae89..f6b1cead7a3 100644
      INT gpu_count, adapter_count, monitor_count;
      INT gpu, adapter, monitor;
      HDEVINFO gpu_devinfo = NULL, monitor_devinfo = NULL;
-+    struct wine_server_monitor_info info = {0};
++    struct server_monitor_info info = {0};
      HKEY video_hkey = NULL;
      INT video_index = 0;
      DWORD disposition = 0;
@@ -273,7 +273,7 @@ index b3ff213ae89..f6b1cead7a3 100644
 +                if (monitor != 0 || !(monitors[monitor].state_flags & DISPLAY_DEVICE_ACTIVE))
 +                    continue;
 +
-+                if (!wine_server_add_monitor_info(&info, &monitors[monitor], video_index))
++                if (!server_add_monitor_info(&info, &monitors[monitor], video_index))
 +                    goto done;
              }
  
@@ -282,7 +282,7 @@ index b3ff213ae89..f6b1cead7a3 100644
          adapters = NULL;
      }
  
-+    wine_server_submit_monitor_info(&info);
++    server_submit_monitor_info(&info);
 +
  done:
 +    heap_free(info.entries);
@@ -303,10 +303,10 @@ index 4264e3db108..b1aa85862c1 100644
  	fast_sync.c \
 diff --git a/server/display.c b/server/display.c
 new file mode 100644
-index 00000000000..8e8ac2d1338
+index 00000000000..aaaf4da126f
 --- /dev/null
 +++ b/server/display.c
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,130 @@
 +/*
 + * Server-side display device management
 + *
@@ -356,7 +356,7 @@ index 00000000000..8e8ac2d1338
 +    struct monitor *monitor;
 +
 +    if (!(monitor = mem_alloc( sizeof(*monitor) )))
-+        goto failed;
++        return;
 +
 +    if (!(monitor->adapter_name = memdup( entry->adapter_name, entry->adapter_name_len )))
 +        goto failed;
@@ -372,12 +372,9 @@ index 00000000000..8e8ac2d1338
 +    return;
 +
 +failed:
-+    if (monitor)
-+    {
-+        if (monitor->adapter_name)
-+            free( monitor->adapter_name );
-+        free( monitor );
-+    }
++    if (monitor->adapter_name)
++        free( monitor->adapter_name );
++    free( monitor );
 +}
 +
 +/* modify the list of monitors */
@@ -441,10 +438,10 @@ index 00000000000..8e8ac2d1338
 +    }
 +}
 diff --git a/server/protocol.def b/server/protocol.def
-index 6d8208b128b..3d536a0a237 100644
+index 8a68c9a5eb7..47948fb3588 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -2693,6 +2693,45 @@ enum coords_relative
+@@ -2734,6 +2734,45 @@ enum coords_relative
  #define SET_USER_OBJECT_GET_FULL_NAME   2
  
  
@@ -491,10 +488,10 @@ index 6d8208b128b..3d536a0a237 100644
  @REQ(register_hotkey)
      user_handle_t  window;        /* handle to the window */
 diff --git a/server/trace.c b/server/trace.c
-index ad7236dd393..b11babfdecb 100644
+index 8bfc9e56cc5..e613f88d144 100644
 --- a/server/trace.c
 +++ b/server/trace.c
-@@ -1372,6 +1372,44 @@ static void dump_varargs_handle_infos( const char *prefix, data_size_t size )
+@@ -1401,6 +1401,44 @@ static void dump_varargs_poll_socket_output( const char *prefix, data_size_t siz
      fputc( '}', stderr );
  }
  

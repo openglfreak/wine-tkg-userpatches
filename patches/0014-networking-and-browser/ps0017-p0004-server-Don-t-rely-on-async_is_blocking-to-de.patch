@@ -1,0 +1,94 @@
+From: Zebediah Figura <z.figura12@gmail.com>
+Subject: [PATCH 4/5] server: Don't rely on async_is_blocking() to determine whether IOCTL_AFD_WINE_ADDRESS_LIST_CHANGE should block.
+Message-Id: <20210604024156.2055561-4-z.figura12@gmail.com>
+Date: Thu,  3 Jun 2021 21:41:55 -0500
+In-Reply-To: <20210604024156.2055561-1-z.figura12@gmail.com>
+References: <20210604024156.2055561-1-z.figura12@gmail.com>
+
+Signed-off-by: Zebediah Figura <z.figura12@gmail.com>
+---
+ dlls/ws2_32/socket.c |  3 ++-
+ server/async.c       |  5 -----
+ server/file.h        |  1 -
+ server/sock.c        | 13 ++++++++++++-
+ 4 files changed, 14 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
+index ab736947807..3c7bfdf6edb 100644
+--- a/dlls/ws2_32/socket.c
++++ b/dlls/ws2_32/socket.c
+@@ -3639,9 +3639,10 @@ INT WINAPI WSAIoctl(SOCKET s, DWORD code, LPVOID in_buff, DWORD in_size, LPVOID
+ 
+     case WS_SIO_ADDRESS_LIST_CHANGE:
+     {
++        int force_async = !!overlapped;
+         DWORD ret;
+ 
+-        ret = server_ioctl_sock( s, IOCTL_AFD_WINE_ADDRESS_LIST_CHANGE, in_buff, in_size,
++        ret = server_ioctl_sock( s, IOCTL_AFD_WINE_ADDRESS_LIST_CHANGE, &force_async, sizeof(force_async),
+                                  out_buff, out_size, ret_size, overlapped, completion );
+         SetLastError( ret );
+         return ret ? -1 : 0;
+diff --git a/server/async.c b/server/async.c
+index d6d3a8ad86a..4dedb27f3d8 100644
+--- a/server/async.c
++++ b/server/async.c
+@@ -557,11 +557,6 @@ struct thread *async_get_thread( struct async *async )
+     return async->thread;
+ }
+ 
+-int async_is_blocking( struct async *async )
+-{
+-    return !async->event && !async->data.apc && !async->data.apc_context;
+-}
+-
+ /* find the first pending async in queue */
+ struct async *find_pending_async( struct async_queue *queue )
+ {
+diff --git a/server/file.h b/server/file.h
+index ba97a833c71..b8bc7645b19 100644
+--- a/server/file.h
++++ b/server/file.h
+@@ -232,7 +232,6 @@ extern void fd_copy_completion( struct fd *src, struct fd *dst );
+ extern struct iosb *create_iosb( const void *in_data, data_size_t in_size, data_size_t out_size );
+ extern struct iosb *async_get_iosb( struct async *async );
+ extern struct thread *async_get_thread( struct async *async );
+-extern int async_is_blocking( struct async *async );
+ extern struct async *find_pending_async( struct async_queue *queue );
+ extern void cancel_process_asyncs( struct process *process );
+ 
+diff --git a/server/sock.c b/server/sock.c
+index 700d4c0761a..f2450fcc541 100644
+--- a/server/sock.c
++++ b/server/sock.c
+@@ -1882,7 +1882,17 @@ static int sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
+     }
+ 
+     case IOCTL_AFD_WINE_ADDRESS_LIST_CHANGE:
+-        if ((sock->state & FD_WINE_NONBLOCKING) && async_is_blocking( async ))
++    {
++        int force_async;
++
++        if (get_req_data_size() < sizeof(int))
++        {
++            set_error( STATUS_BUFFER_TOO_SMALL );
++            return 0;
++        }
++        force_async = *(int *)get_req_data();
++
++        if ((sock->state & FD_WINE_NONBLOCKING) && !force_async)
+         {
+             set_error( STATUS_DEVICE_NOT_READY );
+             return 0;
+@@ -1891,6 +1901,7 @@ static int sock_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
+         queue_async( &sock->ifchange_q, async );
+         set_error( STATUS_PENDING );
+         return 1;
++    }
+ 
+     case IOCTL_AFD_WINE_FIONBIO:
+         if (get_req_data_size() < sizeof(int))
+
+-- 
+2.30.2
+

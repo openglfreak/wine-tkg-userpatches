@@ -1,7 +1,7 @@
 From: Zhiyi Zhang <zzhang@codeweavers.com>
-Subject: [PATCH v4 4/6] winemac.drv: Store monitor information in the wineserver for EnumDisplayMonitors().
-Message-Id: <c5065e10-836e-6d1f-53e6-be2d445965d3@codeweavers.com>
-Date: Wed, 19 May 2021 16:14:55 +0800
+Subject: [PATCH v6 4/6] winemac.drv: Store monitor information in the wineserver for EnumDisplayMonitors().
+Message-Id: <25c0014e-4535-b4e1-328e-5e79ec9889ac@codeweavers.com>
+Date: Wed, 2 Jun 2021 11:03:57 +0800
 
 Fix a regression that Office 2016/365 has a 640x480 main window.
 
@@ -19,7 +19,7 @@ Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
  1 file changed, 72 insertions(+), 13 deletions(-)
 
 diff --git a/dlls/winemac.drv/display.c b/dlls/winemac.drv/display.c
-index 5a87e2331be..fc6a308eb4b 100644
+index 5a87e2331be..ee0061d6c05 100644
 --- a/dlls/winemac.drv/display.c
 +++ b/dlls/winemac.drv/display.c
 @@ -32,6 +32,8 @@
@@ -71,15 +71,15 @@ index 5a87e2331be..fc6a308eb4b 100644
  
 +/* Wine server monitor list management */
 +
-+struct wine_server_monitor_info
++struct server_monitor_info
 +{
 +    unsigned int entry_count;
 +    unsigned int entry_capacity;
 +    struct update_monitor_entry *entries;
 +};
 +
-+static BOOL wine_server_add_monitor_info(struct wine_server_monitor_info *info,
-+                                         const struct macdrv_monitor *monitor, int adapter_index)
++static BOOL server_add_monitor_info(struct server_monitor_info *info,
++                                    const struct macdrv_monitor *monitor, int adapter_index)
 +{
 +    struct update_monitor_entry *entry, *new_entries;
 +    RECT monitor_rect, work_rect;
@@ -113,7 +113,7 @@ index 5a87e2331be..fc6a308eb4b 100644
 +    return TRUE;
 +}
 +
-+static void wine_server_submit_monitor_info(const struct wine_server_monitor_info *info)
++static void server_submit_monitor_info(const struct server_monitor_info *info)
 +{
 +    unsigned int status;
 +
@@ -135,7 +135,7 @@ index 5a87e2331be..fc6a308eb4b 100644
      INT gpu_count, adapter_count, monitor_count;
      INT gpu, adapter, monitor;
      HDEVINFO gpu_devinfo = NULL, monitor_devinfo = NULL;
-+    struct wine_server_monitor_info info = {0};
++    struct server_monitor_info info = {0};
      HKEY video_hkey = NULL;
      INT video_index = 0;
      DWORD disposition = 0;
@@ -148,7 +148,7 @@ index 5a87e2331be..fc6a308eb4b 100644
 +                if (monitor != 0 || !(monitors[monitor].state_flags & DISPLAY_DEVICE_ACTIVE))
 +                    continue;
 +
-+                if (!wine_server_add_monitor_info(&info, &monitors[monitor], video_index))
++                if (!server_add_monitor_info(&info, &monitors[monitor], video_index))
 +                    goto done;
              }
  
@@ -157,7 +157,7 @@ index 5a87e2331be..fc6a308eb4b 100644
          adapters = NULL;
      }
  
-+    wine_server_submit_monitor_info(&info);
++    server_submit_monitor_info(&info);
 +
  done:
 +    heap_free(info.entries);

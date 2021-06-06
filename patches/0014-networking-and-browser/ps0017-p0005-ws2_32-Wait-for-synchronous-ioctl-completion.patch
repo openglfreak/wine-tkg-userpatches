@@ -1,0 +1,44 @@
+From: Zebediah Figura <z.figura12@gmail.com>
+Subject: [PATCH 5/5] ws2_32: Wait for synchronous ioctl completion in server_ioctl_sock().
+Message-Id: <20210604024156.2055561-5-z.figura12@gmail.com>
+Date: Thu,  3 Jun 2021 21:41:56 -0500
+In-Reply-To: <20210604024156.2055561-1-z.figura12@gmail.com>
+References: <20210604024156.2055561-1-z.figura12@gmail.com>
+
+Signed-off-by: Zebediah Figura <z.figura12@gmail.com>
+---
+ dlls/ws2_32/socket.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
+index 3c7bfdf6edb..a425905e5af 100644
+--- a/dlls/ws2_32/socket.c
++++ b/dlls/ws2_32/socket.c
+@@ -3188,6 +3188,10 @@ static DWORD server_ioctl_sock( SOCKET s, DWORD code, LPVOID in_buff, DWORD in_s
+         if (!((ULONG_PTR)overlapped->hEvent & 1)) cvalue = overlapped;
+         event = overlapped->hEvent;
+     }
++    else
++    {
++        if (!(event = get_sync_event())) return GetLastError();
++    }
+ 
+     if (completion)
+     {
+@@ -3198,6 +3202,12 @@ static DWORD server_ioctl_sock( SOCKET s, DWORD code, LPVOID in_buff, DWORD in_s
+ 
+     status = NtDeviceIoControlFile( handle, event, apc, cvalue, piosb, code,
+                                     in_buff, in_size, out_buff, out_size );
++    if (status == STATUS_PENDING && !overlapped)
++    {
++        if (WaitForSingleObject( event, INFINITE ) == WAIT_FAILED)
++            return -1;
++        status = piosb->u.Status;
++    }
+     if (status == STATUS_NOT_SUPPORTED)
+     {
+         FIXME("Unsupported ioctl %x (device=%x access=%x func=%x method=%x)\n",
+
+-- 
+2.30.2
+

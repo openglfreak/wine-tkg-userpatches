@@ -1,0 +1,78 @@
+From f5f1b13e8520d9d1a447f8ca957529bbc7a3facc Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Mon, 7 Jun 2021 02:29:04 +0200
+Subject: [PATCH 1/2] ntdll: Use macro for user shared data.
+
+---
+ dlls/ntdll/ntdll_misc.h        | 2 +-
+ dlls/ntdll/thread.c            | 2 +-
+ dlls/ntdll/unix/unix_private.h | 2 +-
+ dlls/ntdll/unix/virtual.c      | 1 -
+ 4 files changed, 3 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
+index 1394d7dbe26..8926804604b 100644
+--- a/dlls/ntdll/ntdll_misc.h
++++ b/dlls/ntdll/ntdll_misc.h
+@@ -88,7 +88,7 @@ struct hypervisor_shared_data
+ };
+ 
+ extern struct hypervisor_shared_data *hypervisor_shared_data DECLSPEC_HIDDEN;
+-extern struct _KUSER_SHARED_DATA *user_shared_data DECLSPEC_HIDDEN;
++#define user_shared_data ((struct _KUSER_SHARED_DATA*)0x7ffe0000)
+ 
+ extern int CDECL NTDLL__vsnprintf( char *str, SIZE_T len, const char *format, __ms_va_list args ) DECLSPEC_HIDDEN;
+ extern int CDECL NTDLL__vsnwprintf( WCHAR *str, SIZE_T len, const WCHAR *format, __ms_va_list args ) DECLSPEC_HIDDEN;
+diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+index a63095c500d..dcfee3909a1 100644
+--- a/dlls/ntdll/thread.c
++++ b/dlls/ntdll/thread.c
+@@ -36,7 +36,7 @@ WINE_DECLARE_DEBUG_CHANNEL(relay);
+ WINE_DECLARE_DEBUG_CHANNEL(thread);
+ 
+ struct hypervisor_shared_data *hypervisor_shared_data = (void *)0x7ffd0000;
+-struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
++#define user_shared_data ((struct _KUSER_SHARED_DATA*)0x7ffe0000)
+ 
+ static int nb_debug_options;
+ static struct __wine_debug_channel *debug_options;
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index a35ad05c192..de2ffaaf52f 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -150,7 +150,7 @@ extern HANDLE keyed_event DECLSPEC_HIDDEN;
+ extern timeout_t server_start_time DECLSPEC_HIDDEN;
+ extern sigset_t server_block_set DECLSPEC_HIDDEN;
+ extern void *hypervisor_shared_data DECLSPEC_HIDDEN;
+-extern struct _KUSER_SHARED_DATA *user_shared_data DECLSPEC_HIDDEN;
++#define user_shared_data ((struct _KUSER_SHARED_DATA*)0x7ffe0000)
+ extern SYSTEM_CPU_INFORMATION cpu_info DECLSPEC_HIDDEN;
+ #ifndef _WIN64
+ extern BOOL is_wow64 DECLSPEC_HIDDEN;
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index ef3e00c3b84..02a5ca37daa 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -198,7 +198,6 @@ static void *working_set_limit   = (void *)0x7fff0000;
+ #endif
+ 
+ void *hypervisor_shared_data = (void *)0x7ffd0000;
+-struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
+ 
+ /* TEB allocation blocks */
+ static void *teb_block;
+@@ -3038,9 +3037,10 @@ TEB *virtual_alloc_first_teb(void)
+     SIZE_T data_size = page_size;
+     SIZE_T block_size = signal_stack_mask + 1;
+     SIZE_T total = 32 * block_size;
++    void* usd = user_shared_data;
+ 
+     /* reserve space for shared user data */
+-    status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&user_shared_data, 0, &data_size,
++    status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&usd, 0, &data_size,
+                                       MEM_RESERVE | MEM_COMMIT, PAGE_READONLY );
+     if (status)
+     {
+-- 
+2.32.0
+

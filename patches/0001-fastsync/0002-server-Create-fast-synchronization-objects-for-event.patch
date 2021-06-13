@@ -1,4 +1,4 @@
-From b6c3e1b71a9221445f71011b8e6b25b65e6ab425 Mon Sep 17 00:00:00 2001
+From d1852bb0a3a8381602cb679e2df137d13539f067 Mon Sep 17 00:00:00 2001
 From: Zebediah Figura <z.figura12@gmail.com>
 Date: Mon, 8 Mar 2021 16:38:18 -0600
 Subject: [PATCH 02/29] server: Create fast synchronization objects for events.
@@ -6,18 +6,18 @@ Subject: [PATCH 02/29] server: Create fast synchronization objects for events.
 ---
  configure.ac        |   1 +
  server/Makefile.in  |   1 +
- server/event.c      |  19 ++-
- server/fast_sync.c  | 280 ++++++++++++++++++++++++++++++++++++++++++++
+ server/event.c      |  21 +++-
+ server/fast_sync.c  | 279 ++++++++++++++++++++++++++++++++++++++++++++
  server/object.h     |   4 +
  server/protocol.def |   2 +-
- 6 files changed, 305 insertions(+), 2 deletions(-)
+ 6 files changed, 306 insertions(+), 2 deletions(-)
  create mode 100644 server/fast_sync.c
 
 diff --git a/configure.ac b/configure.ac
-index 2f495ba2fbb..8b557ecd5c3 100644
+index 9f0cdfe3259..69ee941d31b 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -485,6 +485,7 @@ AC_CHECK_HEADERS(\
+@@ -493,6 +493,7 @@ AC_CHECK_HEADERS(\
  	linux/serial.h \
  	linux/types.h \
  	linux/ucdrom.h \
@@ -38,7 +38,7 @@ index a8ef46dc27b..66b1d790dcd 100644
  	file.c \
  	fsync.c \
 diff --git a/server/event.c b/server/event.c
-index 300261a1b74..f717d862d10 100644
+index 300261a1b74..6610bc243c9 100644
 --- a/server/event.c
 +++ b/server/event.c
 @@ -60,6 +60,7 @@ struct event
@@ -119,10 +119,10 @@ index 300261a1b74..f717d862d10 100644
  struct keyed_event *create_keyed_event( struct object *root, const struct unicode_str *name,
 diff --git a/server/fast_sync.c b/server/fast_sync.c
 new file mode 100644
-index 00000000000..57fda29dec1
+index 00000000000..1dd3a4dcfa9
 --- /dev/null
 +++ b/server/fast_sync.c
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,279 @@
 +/*
 + * Fast synchronization primitives
 + *
@@ -285,7 +285,7 @@ index 00000000000..57fda29dec1
 +    struct object obj;
 +    struct fast_sync_device *device;
 +    enum fast_sync_type type;
-+    int linux_obj;
++    unsigned int linux_obj;
 +};
 +
 +static void fast_sync_dump( struct object *obj, int verbose );
@@ -322,7 +322,7 @@ index 00000000000..57fda29dec1
 +{
 +    struct fast_sync *fast_sync = (struct fast_sync *)obj;
 +    assert( obj->ops == &fast_sync_ops );
-+    fprintf( stderr, "Fast synchronization object type=%u linux_obj=%d\n",
++    fprintf( stderr, "Fast synchronization object type=%u linux_obj=%u\n",
 +             fast_sync->type, fast_sync->linux_obj );
 +}
 +
@@ -330,8 +330,7 @@ index 00000000000..57fda29dec1
 +{
 +    struct fast_sync *fast_sync = (struct fast_sync *)obj;
 +
-+    if (fast_sync->linux_obj >= 0)
-+        ioctl( get_unix_fd( fast_sync->device->fd ), WINESYNC_IOC_DELETE, &fast_sync->linux_obj );
++    ioctl( get_unix_fd( fast_sync->device->fd ), WINESYNC_IOC_DELETE, &fast_sync->linux_obj );
 +    release_object( fast_sync->device );
 +}
 +
@@ -343,12 +342,6 @@ index 00000000000..57fda29dec1
 +
 +    if (!(device = get_fast_sync_device())) return NULL;
 +
-+    if (!(fast_sync = alloc_object( &fast_sync_ops ))) return NULL;
-+
-+    fast_sync->device = device;
-+    fast_sync->type = type;
-+    fast_sync->linux_obj = -1;
-+
 +    args.count = signaled;
 +    args.max = 1;
 +    if (!manual_reset)
@@ -356,9 +349,15 @@ index 00000000000..57fda29dec1
 +    if (ioctl( get_unix_fd( device->fd ), WINESYNC_IOC_CREATE_SEM, &args ) < 0)
 +    {
 +        file_set_error();
-+        release_object( fast_sync );
++        release_object( device );
 +        return NULL;
 +    }
++
++    if (!(fast_sync = alloc_object( &fast_sync_ops ))) return NULL;
++
++    /* transfer our device reference to the fast sync object */
++    fast_sync->device = device;
++    fast_sync->type = type;
 +    fast_sync->linux_obj = args.sem;
 +
 +    return fast_sync;
@@ -370,7 +369,7 @@ index 00000000000..57fda29dec1
 +
 +    if (!fast_sync) return;
 +
-+    if (debug_level) fprintf( stderr, "fast_set_event %d\n", fast_sync->linux_obj );
++    if (debug_level) fprintf( stderr, "fast_set_event %u\n", fast_sync->linux_obj );
 +
 +    args.sem = fast_sync->linux_obj;
 +    args.count = 1;
@@ -381,7 +380,7 @@ index 00000000000..57fda29dec1
 +{
 +    if (!fast_sync) return;
 +
-+    if (debug_level) fprintf( stderr, "fast_reset_event %d\n", fast_sync->linux_obj );
++    if (debug_level) fprintf( stderr, "fast_reset_event %u\n", fast_sync->linux_obj );
 +
 +    ioctl( get_unix_fd( fast_sync->device->fd ), WINESYNC_IOC_GET_SEM, &fast_sync->linux_obj );
 +}
@@ -404,7 +403,7 @@ index 00000000000..57fda29dec1
 +
 +#endif
 diff --git a/server/object.h b/server/object.h
-index 8cde328b434..01888542fa6 100644
+index 01418fef6c7..bfe8e2c24c0 100644
 --- a/server/object.h
 +++ b/server/object.h
 @@ -234,6 +234,10 @@ extern void abandon_mutexes( struct thread *thread );
@@ -419,10 +418,10 @@ index 8cde328b434..01888542fa6 100644
  
  /* serial functions */
 diff --git a/server/protocol.def b/server/protocol.def
-index 8a40963e130..c2c7a3bb3c0 100644
+index 16394a0176c..c9ff2a57634 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -3849,7 +3849,7 @@ enum fsync_type
+@@ -3879,7 +3879,7 @@ enum fsync_type
  
  enum fast_sync_type
  {
@@ -432,5 +431,5 @@ index 8a40963e130..c2c7a3bb3c0 100644
      FAST_SYNC_EVENT,
      FAST_SYNC_SERVER,
 -- 
-2.31.1
+2.32.0
 

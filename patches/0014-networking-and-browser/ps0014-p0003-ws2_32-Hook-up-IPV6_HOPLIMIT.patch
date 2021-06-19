@@ -1,0 +1,147 @@
+From: Alex Henrie <alexhenrie24@gmail.com>
+Subject: [PATCH v2 3/4] ws2_32: Hook up IPV6_HOPLIMIT
+Message-Id: <20210607054723.155611-3-alexhenrie24@gmail.com>
+Date: Sun,  6 Jun 2021 23:47:02 -0600
+In-Reply-To: <20210607054723.155611-1-alexhenrie24@gmail.com>
+References: <20210607054723.155611-1-alexhenrie24@gmail.com>
+
+Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
+---
+FelgoLiveClient.exe from https://felgo.com/ sets this option.
+
+v2: Map WS_IPV6_HOPLIMIT to IPV6_RECVHOPLIMIT. RFC 2292 originally
+defined IPV6_HOPLIMIT as both an integer option for packets and as a
+boolean option for sockets, but RFC 3542 changed it to be only an
+integer per-packet option and created a new IPV6_RECVHOPIMIT boolean
+option for sockets.
+---
+ dlls/ntdll/unix/socket.c     | 22 +++++++++++++++++++++-
+ dlls/ws2_32/socket.c         | 10 ++++++++++
+ dlls/ws2_32/tests/sock.c     |  5 -----
+ dlls/ws2_32/ws2_32_private.h |  1 +
+ 4 files changed, 32 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index e5f4862bf3c..58e3bb308fe 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -32,7 +32,8 @@
+ #include <sys/socket.h>
+ #endif
+ #ifdef HAVE_NETINET_IN_H
+-#include <netinet/in.h>
++# define __APPLE_USE_RFC_3542
++# include <netinet/in.h>
+ #endif
+ 
+ #ifdef HAVE_NETIPX_IPX_H
+@@ -443,6 +444,25 @@ static int convert_control_headers(struct msghdr *hdr, WSABUF *control)
+                 }
+                 break;
+ 
++            case IPPROTO_IPV6:
++                switch (cmsg_unix->cmsg_type)
++                {
++#if defined(IPV6_HOPLIMIT)
++                    case IPV6_HOPLIMIT:
++                    {
++                        ptr = fill_control_message( WS_IPPROTO_IPV6, WS_IPV6_HOPLIMIT, ptr, &ctlsize,
++                                                    CMSG_DATA(cmsg_unix), sizeof(INT) );
++                        if (!ptr) goto error;
++                        break;
++                    }
++#endif /* IPV6_HOPLIMIT */
++
++                    default:
++                        FIXME("Unhandled IPPROTO_IPV6 message header type %d\n", cmsg_unix->cmsg_type);
++                        break;
++                }
++                break;
++
+             default:
+                 FIXME("Unhandled message header level %d\n", cmsg_unix->cmsg_level);
+                 break;
+diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
+index bfe5ab186ee..6cd1991c650 100644
+--- a/dlls/ws2_32/socket.c
++++ b/dlls/ws2_32/socket.c
+@@ -357,6 +357,7 @@ static inline const char *debugstr_sockopt(int level, int optname)
+         {
+             DEBUG_SOCKOPT(WS_IPV6_ADD_MEMBERSHIP);
+             DEBUG_SOCKOPT(WS_IPV6_DROP_MEMBERSHIP);
++            DEBUG_SOCKOPT(WS_IPV6_HOPLIMIT);
+             DEBUG_SOCKOPT(WS_IPV6_MULTICAST_IF);
+             DEBUG_SOCKOPT(WS_IPV6_MULTICAST_HOPS);
+             DEBUG_SOCKOPT(WS_IPV6_MULTICAST_LOOP);
+@@ -545,6 +546,9 @@ static const int ws_ipv6_map[][2] =
+ #endif
+ #ifdef IPV6_DROP_MEMBERSHIP
+     MAP_OPTION( IPV6_DROP_MEMBERSHIP ),
++#endif
++#ifdef IPV6_RECVHOPLIMIT
++    { WS_IPV6_HOPLIMIT, IPV6_RECVHOPLIMIT },
+ #endif
+     MAP_OPTION( IPV6_MULTICAST_IF ),
+     MAP_OPTION( IPV6_MULTICAST_HOPS ),
+@@ -3010,6 +3014,9 @@ INT WINAPI WS_getsockopt(SOCKET s, INT level,
+ #endif
+ #ifdef IPV6_DROP_MEMBERSHIP
+         case WS_IPV6_DROP_MEMBERSHIP:
++#endif
++#ifdef IPV6_RECVHOPLIMIT
++        case WS_IPV6_HOPLIMIT:
+ #endif
+         case WS_IPV6_MULTICAST_IF:
+         case WS_IPV6_MULTICAST_HOPS:
+@@ -4400,6 +4407,9 @@ int WINAPI WS_setsockopt(SOCKET s, int level, int optname,
+ #endif
+ #ifdef IPV6_DROP_MEMBERSHIP
+         case WS_IPV6_DROP_MEMBERSHIP:
++#endif
++#ifdef IPV6_RECVHOPLIMIT
++        case WS_IPV6_HOPLIMIT:
+ #endif
+         case WS_IPV6_MULTICAST_IF:
+         case WS_IPV6_MULTICAST_HOPS:
+diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
+index 101e0d24889..0126b9299ed 100644
+--- a/dlls/ws2_32/tests/sock.c
++++ b/dlls/ws2_32/tests/sock.c
+@@ -2027,21 +2027,16 @@ static void test_ipv6_cmsg(void)
+     memset(control, 0, sizeof(control));
+     msg.Control.len = sizeof(control);
+     rc = setsockopt(server, IPPROTO_IPV6, IPV6_HOPLIMIT, (const char *)&on, sizeof(on));
+-todo_wine
+     ok(!rc, "failed to set IPV6_HOPLIMIT, error %u\n", WSAGetLastError());
+     rc = send(client, payload, sizeof(payload), 0);
+     ok(rc == sizeof(payload), "send failed, error %u\n", WSAGetLastError());
+     rc = pWSARecvMsg(server, &msg, &count, NULL, NULL);
+     ok(!rc, "WSARecvMsg failed, error %u\n", WSAGetLastError());
+     ok(count == sizeof(payload), "expected length %i, got %i\n", (INT)sizeof(payload), count);
+-todo_wine
+     ok(header->cmsg_level == IPPROTO_IPV6, "expected IPPROTO_IPV6, got %i\n", header->cmsg_level);
+-todo_wine
+     ok(header->cmsg_type == IPV6_HOPLIMIT, "expected IPV6_HOPLIMIT, got %i\n", header->cmsg_type);
+-todo_wine
+     ok(header->cmsg_len == sizeof(*header) + sizeof(INT),
+        "expected length %i, got %i\n", (INT)(sizeof(*header) + sizeof(INT)), (INT)header->cmsg_len);
+-todo_wine
+     ok(*hop_limit >= 32, "expected at least 32, got %i\n", *hop_limit);
+     setsockopt(server, IPPROTO_IPV6, IPV6_HOPLIMIT, (const char *)&off, sizeof(off));
+     ok(!rc, "failed to clear IPV6_HOPLIMIT, error %u\n", WSAGetLastError());
+diff --git a/dlls/ws2_32/ws2_32_private.h b/dlls/ws2_32/ws2_32_private.h
+index 527dbe903b4..743ae3877bb 100644
+--- a/dlls/ws2_32/ws2_32_private.h
++++ b/dlls/ws2_32/ws2_32_private.h
+@@ -58,6 +58,7 @@
+ #include <sys/socket.h>
+ #endif
+ #ifdef HAVE_NETINET_IN_H
++# define __APPLE_USE_RFC_3542
+ # include <netinet/in.h>
+ #endif
+ #ifdef HAVE_NETINET_TCP_H
+
+-- 
+2.31.1
+

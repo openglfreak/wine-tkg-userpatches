@@ -1,0 +1,160 @@
+From: Haoyang Chen <chenhaoyang@uniontech.com>
+Subject: [PATCH v2] comctl32: Handle NULL text in COMBOEX_NotifyEndEdit().
+Message-Id: <20210602151635.30702-1-chenhaoyang@uniontech.com>
+Date: Wed,  2 Jun 2021 23:16:35 +0800
+
+Signed-off-by: Haoyang Chen <chenhaoyang@uniontech.com>
+---
+ dlls/comctl32/comboex.c     |  4 ++
+ dlls/comctl32/tests/combo.c | 87 ++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 90 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/comctl32/comboex.c b/dlls/comctl32/comboex.c
+index 0f7e46949e4..1642270c47f 100644
+--- a/dlls/comctl32/comboex.c
++++ b/dlls/comctl32/comboex.c
+@@ -223,6 +223,10 @@ static INT COMBOEX_NotifyEndEdit (const COMBOEX_INFO *infoPtr, NMCBEENDEDITW *ne
+ {
+     /* Change the Text item from Unicode to ANSI if necessary for NOTIFY */
+     if (infoPtr->NtfUnicode) {
++        if (!wstr) {
++            neew->szText[0] = 0;
++            return COMBOEX_Notify (infoPtr, CBEN_ENDEDITW, &neew->hdr);
++        }
+ 	lstrcpynW(neew->szText, wstr, CBEMAXSTRLEN);
+ 	return COMBOEX_Notify (infoPtr, CBEN_ENDEDITW, &neew->hdr);
+     } else {
+diff --git a/dlls/comctl32/tests/combo.c b/dlls/comctl32/tests/combo.c
+index 69cc7680827..611a66392d3 100644
+--- a/dlls/comctl32/tests/combo.c
++++ b/dlls/comctl32/tests/combo.c
+@@ -47,6 +47,7 @@ static struct msg_sequence *sequences[NUM_MSG_SEQUENCES];
+ static HWND hComboExParentWnd, hMainWnd;
+ static HINSTANCE hMainHinst;
+ static const char ComboExTestClass[] = "ComboExTestClass";
++static const WCHAR ComboExTestClassW[] = L"ComboExTestClass1";
+ 
+ static HBRUSH brush_red;
+ 
+@@ -148,11 +149,19 @@ static HWND subclass_editbox(HWND hwndComboEx)
+     return hwnd;
+ }
+ 
++static LRESULT CALLBACK ComboExTestWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+ static void test_comboex(void)
+ {
+     HWND myHwnd = 0;
+     LONG res;
+     COMBOBOXEXITEMA cbexItem;
++    HWND hwndMainWindow = 0;
++    HWND hCombo, hEdit, hList;
++    COMBOBOXINFO cbInfo;
++    UINT x, y, item_height;
++    LRESULT result;
++    RECT rect;
++    WNDCLASSW wc;
+     static const char *first_item  = "First Item",
+                 *second_item = "Second Item",
+                 *third_item  = "Third Item",
+@@ -249,6 +258,82 @@ static void test_comboex(void)
+     /* Cleanup */
+     heap_free(textBuffer);
+     DestroyWindow(myHwnd);
++
++    wc.style = CS_HREDRAW | CS_VREDRAW;
++    wc.cbClsExtra = 0;
++    wc.cbWndExtra = 0;
++    wc.hInstance = GetModuleHandleW(NULL);
++    wc.hIcon = NULL;
++    wc.hCursor = LoadCursorA(NULL, (LPCSTR)IDC_ARROW);
++    wc.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
++    wc.lpszMenuName = NULL;
++    wc.lpszClassName = ComboExTestClassW;
++    wc.lpfnWndProc = ComboExTestWndProc;
++    RegisterClassW(&wc);
++
++    hwndMainWindow = CreateWindowExW(0, ComboExTestClassW, L"ComboEx test", WS_OVERLAPPEDWINDOW|WS_VISIBLE,
++      CW_USEDEFAULT, CW_USEDEFAULT, 680, 260, NULL, NULL, GetModuleHandleA(NULL), 0);
++    ok(hwndMainWindow!= NULL, "failed to create parent window\n");
++
++    myHwnd = CreateWindowExA(0, WC_COMBOBOXEXA, NULL, WS_BORDER | WS_VISIBLE | WS_CHILD | CBS_DROPDOWN,
++            0, 0, 300, 300, hwndMainWindow, NULL, hMainHinst, NULL);
++    ok(myHwnd!= NULL, "failed to comboex window\n");
++
++    res = addItem(myHwnd, -1, NULL);
++    ok(res == 0, "Adding NULL text item failed (%d)\n", res);
++
++    hCombo = (HWND)SendMessageW(myHwnd, CBEM_GETCOMBOCONTROL, 0, 0);
++    hEdit = (HWND)SendMessageW(myHwnd, CBEM_GETEDITCONTROL, 0, 0);
++
++    get_combobox_info(hCombo, &cbInfo);
++    hList = cbInfo.hwndList;
++
++    item_height = SendMessageA(hCombo, CB_GETITEMHEIGHT, 0, 0);
++    ok(GetClientRect(hList, &rect), "Failed to get list's client rect.\n");
++
++    x = cbInfo.rcButton.left + (cbInfo.rcButton.right-cbInfo.rcButton.left)/2;
++    y = cbInfo.rcButton.top + (cbInfo.rcButton.bottom-cbInfo.rcButton.top)/2;
++    result = SendMessageA(hCombo, WM_LBUTTONDOWN, 0, MAKELPARAM(x, y));
++    ok(result, "WM_LBUTTONUP was not processed. LastError=%d\n",
++       GetLastError());
++    ok(GetFocus() == hCombo ||
++       broken(GetFocus() != hCombo), /* win98 */
++       "Focus not on ComboBoxEx's ComboBox Control, instead on %p\n",
++       GetFocus());
++    result = SendMessageA(hCombo, WM_LBUTTONUP, 0, MAKELPARAM(x, y));
++    ok(result, "WM_LBUTTONUP was not processed. LastError=%d\n",
++       GetLastError());
++    ok(GetFocus() == hCombo ||
++       broken(GetFocus() != hCombo), /* win98 */
++       "Focus not on ComboBoxEx's ComboBox Control, instead on %p\n",
++       GetFocus());
++    x = rect.left + (rect.right-rect.left)/2;
++    y = rect.top + item_height/2;
++    result = SendMessageA(hList, WM_MOUSEMOVE, 0, MAKELPARAM(x, y));
++    ok(!result, "WM_MOUSEMOVE was not processed. LastError=%d\n",
++       GetLastError());
++    ok(GetFocus() == hCombo ||
++       broken(GetFocus() != hCombo), /* win98 */
++       "Focus not on ComboBoxEx's ComboBox Control, instead on %p\n",
++       GetFocus());
++    result = SendMessageA(hList, WM_LBUTTONDOWN, 0, MAKELPARAM(x, y));
++    ok(!result, "WM_LBUTTONDOWN was not processed. LastError=%d\n",
++       GetLastError());
++    ok(GetFocus() == hCombo ||
++       broken(GetFocus() != hCombo), /* win98 */
++       "Focus not on ComboBoxEx's ComboBox Control, instead on %p\n",
++       GetFocus());
++    result = SendMessageA(hList, WM_LBUTTONUP, 0, MAKELPARAM(x, y));
++    ok(!result, "WM_LBUTTONUP was not processed. LastError=%d\n",
++       GetLastError());
++    todo_wine ok(GetFocus() == hEdit ||
++       broken(GetFocus() == hCombo), /* win98 */
++       "Focus not on ComboBoxEx's Edit Control, instead on %p\n",
++       GetFocus());
++
++    DestroyWindow(myHwnd);
++    DestroyWindow(hwndMainWindow);
++    UnregisterClassW(ComboExTestClassW, GetModuleHandleW(NULL));
+ }
+ 
+ static void test_comboex_WM_LBUTTONDOWN(void)
+@@ -1525,13 +1610,13 @@ START_TEST(combo)
+     init_msg_sequences(sequences, NUM_MSG_SEQUENCES);
+ 
+     /* ComboBoxEx32 tests. */
++    test_comboex_CBEN_GETDISPINFO();
+     test_comboex();
+     test_comboex_WM_LBUTTONDOWN();
+     test_comboex_CB_GETLBTEXT();
+     test_comboex_WM_WINDOWPOSCHANGING();
+     test_comboex_subclass();
+     test_comboex_get_set_item();
+-    test_comboex_CBEN_GETDISPINFO();
+ 
+     if (!load_v6_module(&ctx_cookie, &hCtx))
+     {
+
+-- 
+2.20.1
+

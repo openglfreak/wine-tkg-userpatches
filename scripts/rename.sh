@@ -8,6 +8,13 @@ set +C 2>/dev/null ||:
 set +f 2>/dev/null ||:
 set -u 2>/dev/null ||:
 
+# zsh: Force word splitting.
+setopt SH_WORD_SPLIT 2>/dev/null ||:
+# zsh: Don't exit when a glob doesn't match.
+unsetopt NOMATCH 2>/dev/null ||:
+# zsh: Don't treat ! specially.
+unsetopt BANG_HIST 2>/dev/null ||:
+
 # description:
 #   Replaces each sequence of unsafe characters in the input with a dash (-),
 #   and removes trailing dashes and dots. This is the same algorithm that Git
@@ -27,10 +34,10 @@ sanitize() {
 }
 
 # description:
-#   Formats a number as a four-digit decimal string.
+#   Formats an integer as a four-digit decimal string.
 # params:
-#   expr: string
-#     The number to format, as an expression in the format `bc` expects.
+#   number: integer
+#     The number to format.
 # outputs:
 #   The formatted string.
 format_number() {
@@ -43,10 +50,32 @@ format_number() {
         return 1
     fi
 
-    set -- "$(printf '%s\n' "$1" | bc)" || return
-    if [ x != "x$1" ]; then
-        printf '%04d\n' "$1"
+    if [ x = "x$1" ]; then
+        printf 'format_number: Invalid argument value: "%s"\n' "$1" >&2
+        return 2
     fi
+
+    printf '%04d\n' "$1"
+}
+
+# description:
+#   Removes leading zeroes from a string.
+# params:
+#   input: string
+#     The input to remove leading zeroes from.
+# outputs:
+#   The processed string.
+remove_leading_zeroes() {
+    if [ 1 -ne "$#" ]; then
+        if [ 1 -gt "$#" ]; then
+            printf 'remove_leading_zeroes: Not enough arguments (%d < 1)\n' "$#" >&2
+        elif [ 1 -lt "$#" ]; then
+            printf 'remove_leading_zeroes: Too many arguments (%d > 1)\n' "$#" >&2
+        fi
+        return 1
+    fi
+
+    printf '%s\n' "${1#"${1%?"${1#*[!0]}"}"}"
 }
 
 # description:
@@ -54,22 +83,22 @@ format_number() {
 # params:
 #   [prefix]: string
 #     A prefix for the file name.
-#   [number]: string
-#     The patch number, as an expression in the format `bc` expects.
+#   [number]: integer
+#     The patch number.
 #   [subject]: string
 #     The patch subject.
 #   [postfix]: string
 #     The file extension to use, including the dot.
 # outputs:
 #   The resulting file name.
-get_file_name() {
+make_patch_file_name() {
     if [ 4 -lt "$#" ]; then
-        printf 'get_file_name: Too many arguments (%d > 4)\n' "$#" >&2
+        printf 'make_patch_file_name: Too many arguments (%d > 4)\n' "$#" >&2
         return 1
     fi
 
     if [ x != "x$2" ]; then
-        set -- "$1" "$(format_number "$2")-" "$3" "$4"
+        set -- "$1" "$(format_number "$2" 2>/dev/null)-" "$3" "$4"
         if [ 'x-' = "x$2" ]; then
             return 1
         fi
@@ -160,7 +189,12 @@ _get_subject() {
 }
 
 _get_patch_number() {
-    printf '%s\n' "$1" | sed -n -e 's/^.*[^0-9]\([0-9][0-9]*\)\/[0-9][0-9]*.*$/\1/p'
+    printf '%s\n' "$1" | \
+    sed -n -e 's/^.*[^0-9]\([0-9][0-9]*\)\/[0-9][0-9]*.*$/\1/p'
+}
+
+_tty_filename() {
+    ls -Fdpq1 "$1"
 }
 
 main() (
@@ -185,7 +219,7 @@ main() (
         esac
 
         if [ 1 -ne "$(grep -c '^Subject: ' -- "${patch}")" ]; then
-            printf 'Error: Patch contains multiple Subjects: %s\n' "${patch}" >&2
+            printf 'Error: Patch contains multiple Subjects: %s\n' "$(_tty_filename "${patch}")" >&2
             continue
         fi
 
@@ -212,20 +246,25 @@ main() (
 
         prefix=
         if [ x != "x${patchset_number}" ]; then
-            prefix="ps$(format_number "${patchset_number}")-${patch_number:+p}"
+            patchset_number="$(remove_leading_zeroes "${patchset_number}")"
+            patchset_number="$(format_number "${patchset_number}" 2>/dev/null)"
+            prefix="ps${patchset_number}-${patch_number:+p}"
         fi
-        filename="$(get_file_name "${prefix}" "${patch_number}" \
+        patch_number="$(remove_leading_zeroes "${patch_number}")"
+        filename="$(make_patch_file_name "${prefix}" "${patch_number}" \
             "${subject_commit_msg}" "${file_extension+.${file_extension}}")"
 
-        if [ "x${patch}" != "x${filename}" ]; then
-            if [ xn != "x${answer}" ] && {
-                [ xy = "x${answer}" ] || yn "Rename ${patch} to ${filename}?"
-            }; then
-                printf 'Renaming %s to %s\n' "${patch}" "${filename}"
-                [ xfalse != "x${dry_run}" ] || mv -- "${patch}" "${filename}"
-            else
-                printf 'Skipping %s\n' "${patch}"
-            fi
+        if [ "x${patch}" = "x${filename}" ]; then
+            continue
+        fi
+
+        if [ xn != "x${answer}" ] && {
+            [ xy = "x${answer}" ] || yn "Rename $(_tty_filename "${patch}") to ${filename}?"
+        }; then
+            printf 'Renaming %s to %s\n' "$(_tty_filename "${patch}")" "${filename}"
+            [ xfalse != "x${dry_run}" ] || mv -- "${patch}" "${filename}"
+        else
+            printf 'Skipping %s\n' "$(_tty_filename "${patch}")"
         fi
     done
 )

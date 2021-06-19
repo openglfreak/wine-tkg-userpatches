@@ -1,0 +1,42 @@
+From 69f2470f937f46ae362d0ba5c144f170f5850a8e Mon Sep 17 00:00:00 2001
+From: Joshua Ashton <joshua@froggi.es>
+Date: Thu, 3 Jun 2021 20:27:49 +0100
+Subject: [PATCH 14/15] wineboot: Return TSC frequency in ~Mhz
+
+Some games such as Horizon Zero Dawn use this registry value to correlate values from rtdsc -> real time.
+
+In my testing across a few devices, Windows always returns the tsc frequency in this entry, not the current/maximum frequency of the processor.
+
+Returning the nominal/maximum cpu frequency here causes the game to run in slow motion as it may not match the tsc frequency of the processor.
+
+Ideally we'd not have to measure this and the kernel would return tsc_khz to userspace, but this is a good enough stop-gap until https://lkml.org/lkml/2020/12/31/72 or something similar is merged.
+
+Fixes: #4125 (Slow motion bug)
+
+Signed-off-by: Joshua Ashton <joshua@froggi.es>
+---
+ programs/wineboot/wineboot.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
+index 79a4bda4d67..0662feac9ce 100644
+--- a/programs/wineboot/wineboot.c
++++ b/programs/wineboot/wineboot.c
+@@ -969,12 +969,15 @@ static void create_hardware_registry_keys(void)
+         if (!RegCreateKeyExW( cpu_key, numW, 0, NULL, REG_OPTION_VOLATILE,
+                               KEY_ALL_ACCESS, NULL, &hkey, NULL ))
+         {
++            UINT64 tsc_freq = read_tsc_frequency(); /* Hz */
++            DWORD tsc_freq_mhz = (DWORD)(tsc_freq / 1000000ull);
++
+             RegSetValueExW( hkey, L"FeatureSet", 0, REG_DWORD, (BYTE *)&sci.ProcessorFeatureBits, sizeof(DWORD) );
+             set_reg_value( hkey, L"Identifier", id );
+             /* TODO: report ARM properly */
+             set_reg_value( hkey, L"ProcessorNameString", namestr );
+             set_reg_value( hkey, L"VendorIdentifier", vendorid );
+-            RegSetValueExW( hkey, L"~MHz", 0, REG_DWORD, (BYTE *)&power_info[i].MaxMhz, sizeof(DWORD) );
++            RegSetValueExW( hkey, L"~MHz", 0, REG_DWORD, (BYTE *)&tsc_freq_mhz, sizeof(DWORD) );
+             RegCloseKey( hkey );
+         }
+         if (sci.Architecture != PROCESSOR_ARCHITECTURE_ARM &&
+

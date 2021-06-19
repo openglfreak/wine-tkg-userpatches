@@ -1,0 +1,141 @@
+From: Alex Henrie <alexhenrie24@gmail.com>
+Subject: [PATCH 4/4] ws2_32: Hook up IPV6_PKTINFO
+Message-Id: <20210607054723.155611-4-alexhenrie24@gmail.com>
+Date: Sun,  6 Jun 2021 23:47:03 -0600
+In-Reply-To: <20210607054723.155611-1-alexhenrie24@gmail.com>
+References: <20210607054723.155611-1-alexhenrie24@gmail.com>
+
+Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
+---
+ configure.ac             |  7 +++++++
+ dlls/ntdll/unix/socket.c | 15 +++++++++++++++
+ dlls/ws2_32/socket.c     | 10 ++++++++++
+ dlls/ws2_32/tests/sock.c |  6 ------
+ 4 files changed, 32 insertions(+), 6 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index afb4dc7432a..440e03c3251 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -2550,6 +2550,13 @@ AC_CHECK_MEMBERS([struct icmpstat.icps_outhist],,,
+ #include <netinet/icmp_var.h>
+ #endif])
+ 
++dnl Check for struct in6_pktinfo
++AC_CHECK_MEMBERS([struct in6_pktinfo.ipi6_addr],,,
++[#ifdef HAVE_NETINET_IN_H
++#define _GNU_SOURCE
++#include <netinet/in.h>
++#endif])
++
+ dnl Check for struct ipstat
+ AC_CHECK_MEMBERS([struct ipstat.ips_total],,,
+ [#ifdef HAVE_SYS_TYPES_H
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index 58e3bb308fe..e42a5befb23 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -23,6 +23,7 @@
+ #endif
+ 
+ #include "config.h"
++#define _GNU_SOURCE /* for struct in6_pktinfo */
+ #include <errno.h>
+ #include <unistd.h>
+ #ifdef HAVE_SYS_IOCTL_H
+@@ -457,6 +458,20 @@ static int convert_control_headers(struct msghdr *hdr, WSABUF *control)
+                     }
+ #endif /* IPV6_HOPLIMIT */
+ 
++#if defined(IPV6_PKTINFO) && defined(HAVE_STRUCT_IN6_PKTINFO_IPI6_ADDR)
++                    case IPV6_PKTINFO:
++                    {
++                        struct in6_pktinfo *data_unix = (struct in6_pktinfo *)CMSG_DATA(cmsg_unix);
++                        struct WS_in6_pktinfo data_win;
++
++                        memcpy(&data_win.ipi6_addr, &data_unix->ipi6_addr.s6_addr, 16);
++                        data_win.ipi6_ifindex = data_unix->ipi6_ifindex;
++                        ptr = fill_control_message( WS_IPPROTO_IPV6, WS_IPV6_PKTINFO, ptr, &ctlsize,
++                                                    (void *)&data_win, sizeof(data_win) );
++                        if (!ptr) goto error;
++                    }
++#endif /* IPV6_PKTINFO */
++
+                     default:
+                         FIXME("Unhandled IPPROTO_IPV6 message header type %d\n", cmsg_unix->cmsg_type);
+                         break;
+diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
+index 6cd1991c650..75c1a03dc3d 100644
+--- a/dlls/ws2_32/socket.c
++++ b/dlls/ws2_32/socket.c
+@@ -361,6 +361,7 @@ static inline const char *debugstr_sockopt(int level, int optname)
+             DEBUG_SOCKOPT(WS_IPV6_MULTICAST_IF);
+             DEBUG_SOCKOPT(WS_IPV6_MULTICAST_HOPS);
+             DEBUG_SOCKOPT(WS_IPV6_MULTICAST_LOOP);
++            DEBUG_SOCKOPT(WS_IPV6_PKTINFO);
+             DEBUG_SOCKOPT(WS_IPV6_UNICAST_HOPS);
+             DEBUG_SOCKOPT(WS_IPV6_V6ONLY);
+             DEBUG_SOCKOPT(WS_IPV6_UNICAST_IF);
+@@ -553,6 +554,9 @@ static const int ws_ipv6_map[][2] =
+     MAP_OPTION( IPV6_MULTICAST_IF ),
+     MAP_OPTION( IPV6_MULTICAST_HOPS ),
+     MAP_OPTION( IPV6_MULTICAST_LOOP ),
++#if defined(IPV6_RECVPKTINFO)
++    { WS_IPV6_PKTINFO, IPV6_RECVPKTINFO },
++#endif
+     MAP_OPTION( IPV6_UNICAST_HOPS ),
+     MAP_OPTION( IPV6_V6ONLY ),
+ #ifdef IPV6_UNICAST_IF
+@@ -3021,6 +3025,9 @@ INT WINAPI WS_getsockopt(SOCKET s, INT level,
+         case WS_IPV6_MULTICAST_IF:
+         case WS_IPV6_MULTICAST_HOPS:
+         case WS_IPV6_MULTICAST_LOOP:
++#ifdef IPV6_RECVPKTINFO
++        case WS_IPV6_PKTINFO:
++#endif
+         case WS_IPV6_UNICAST_HOPS:
+         case WS_IPV6_V6ONLY:
+ #ifdef IPV6_UNICAST_IF
+@@ -4414,6 +4421,9 @@ int WINAPI WS_setsockopt(SOCKET s, int level, int optname,
+         case WS_IPV6_MULTICAST_IF:
+         case WS_IPV6_MULTICAST_HOPS:
+         case WS_IPV6_MULTICAST_LOOP:
++#ifdef IPV6_RECVPKTINFO
++        case WS_IPV6_PKTINFO:
++#endif
+         case WS_IPV6_UNICAST_HOPS:
+ #ifdef IPV6_UNICAST_IF
+         case WS_IPV6_UNICAST_IF:
+diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
+index 0126b9299ed..5fa1177e778 100644
+--- a/dlls/ws2_32/tests/sock.c
++++ b/dlls/ws2_32/tests/sock.c
+@@ -2044,24 +2044,18 @@ static void test_ipv6_cmsg(void)
+     memset(control, 0, sizeof(control));
+     msg.Control.len = sizeof(control);
+     rc = setsockopt(server, IPPROTO_IPV6, IPV6_PKTINFO, (const char *)&on, sizeof(on));
+-todo_wine
+     ok(!rc, "failed to set IPV6_PKTINFO, error %u\n", WSAGetLastError());
+     rc = send(client, payload, sizeof(payload), 0);
+     ok(rc == sizeof(payload), "send failed, error %u\n", WSAGetLastError());
+     rc = pWSARecvMsg(server, &msg, &count, NULL, NULL);
+     ok(!rc, "WSARecvMsg failed, error %u\n", WSAGetLastError());
+     ok(count == sizeof(payload), "expected length %i, got %i\n", (INT)sizeof(payload), count);
+-todo_wine
+     ok(header->cmsg_level == IPPROTO_IPV6, "expected IPPROTO_IPV6, got %i\n", header->cmsg_level);
+-todo_wine
+     ok(header->cmsg_type == IPV6_PKTINFO, "expected IPV6_PKTINFO, got %i\n", header->cmsg_type);
+-todo_wine
+     ok(header->cmsg_len == sizeof(*header) + sizeof(IN6_PKTINFO),
+        "expected length %i, got %i\n", (INT)(sizeof(*header) + sizeof(IN6_PKTINFO)), (INT)header->cmsg_len);
+-todo_wine
+     ok(!memcmp(&pkt_info->ipi6_addr, &localhost.sin6_addr, sizeof(IN6_ADDR)), "expected ::1\n");
+     rc = setsockopt(server, IPPROTO_IPV6, IPV6_PKTINFO, (const char *)&off, sizeof(off));
+-todo_wine
+     ok(!rc, "failed to clear IPV6_PKTINFO, error %u\n", WSAGetLastError());
+ 
+     closesocket(server);
+
+-- 
+2.31.1
+

@@ -1,4 +1,4 @@
-From b329c09a69387269b6706d299bd1942a5d1ebacc Mon Sep 17 00:00:00 2001
+From 7968dfcf6b497bf67d9e3f85d0a96db13f8a53bf Mon Sep 17 00:00:00 2001
 From: Zebediah Figura <z.figura12@gmail.com>
 Date: Mon, 8 Mar 2021 17:40:57 -0600
 Subject: [PATCH 16/29] server: Create fast synchronization objects for
@@ -7,14 +7,14 @@ Subject: [PATCH 16/29] server: Create fast synchronization objects for
 ---
  server/change.c     |  2 +-
  server/device.c     |  2 +-
- server/fd.c         | 23 +++++++++++++++++++++++
+ server/fd.c         | 36 +++++++++++++++++++++++++++++++-----
  server/file.c       |  2 +-
  server/file.h       |  1 +
  server/mailslot.c   |  4 ++--
  server/named_pipe.c |  6 +++---
  server/serial.c     |  2 +-
  server/sock.c       |  2 +-
- 9 files changed, 34 insertions(+), 10 deletions(-)
+ 9 files changed, 42 insertions(+), 15 deletions(-)
 
 diff --git a/server/change.c b/server/change.c
 index 93faba53648..ebd3dbac7cc 100644
@@ -43,7 +43,7 @@ index 051d684a32a..28484d92291 100644
      device_file_destroy               /* destroy */
  };
 diff --git a/server/fd.c b/server/fd.c
-index 799b7ea67b3..82406415185 100644
+index e72a77ac7fd..dd4f7fc3013 100644
 --- a/server/fd.c
 +++ b/server/fd.c
 @@ -209,6 +209,7 @@ struct fd
@@ -54,7 +54,7 @@ index 799b7ea67b3..82406415185 100644
  };
  
  static void fd_dump( struct object *obj, int verbose );
-@@ -1611,6 +1612,8 @@ static void fd_destroy( struct object *obj )
+@@ -1608,6 +1609,8 @@ static void fd_destroy( struct object *obj )
  
      if (do_esync())
          close( fd->esync_fd );
@@ -63,7 +63,7 @@ index 799b7ea67b3..82406415185 100644
  }
  
  /* check if the desired access is possible without violating */
-@@ -1730,6 +1733,7 @@ static struct fd *alloc_fd_object(void)
+@@ -1727,6 +1730,7 @@ static struct fd *alloc_fd_object(void)
      fd->comp_flags = 0;
      fd->esync_fd   = -1;
      fd->fsync_idx  = 0;
@@ -71,7 +71,7 @@ index 799b7ea67b3..82406415185 100644
      init_async_queue( &fd->read_q );
      init_async_queue( &fd->write_q );
      init_async_queue( &fd->wait_q );
-@@ -1778,6 +1782,7 @@ struct fd *alloc_pseudo_fd( const struct fd_ops *fd_user_ops, struct object *use
+@@ -1775,6 +1779,7 @@ struct fd *alloc_pseudo_fd( const struct fd_ops *fd_user_ops, struct object *use
      fd->no_fd_status = STATUS_BAD_DEVICE_TYPE;
      fd->esync_fd   = -1;
      fd->fsync_idx  = 0;
@@ -79,19 +79,34 @@ index 799b7ea67b3..82406415185 100644
      init_async_queue( &fd->read_q );
      init_async_queue( &fd->write_q );
      init_async_queue( &fd->wait_q );
-@@ -2328,6 +2333,11 @@ void set_fd_signaled( struct fd *fd, int signaled )
- 
-     if (do_esync() && !signaled)
-         esync_clear( fd->esync_fd );
-+
+@@ -2325,13 +2330,21 @@ void set_fd_signaled( struct fd *fd, int signaled )
+ {
+     if (fd->comp_flags & FILE_SKIP_SET_EVENT_ON_HANDLE) return;
+     fd->signaled = signaled;
+-    if (signaled) wake_up( fd->user, 0 );
 +    if (signaled)
++    {
++        wake_up( fd->user, 0 );
 +        fast_set_event( fd->fast_sync );
++    }
 +    else
++    {
++        if (do_fsync())
++            fsync_clear( fd->user );
+ 
+-    if (do_fsync() && !signaled)
+-        fsync_clear( fd->user );
++        if (do_esync())
++            esync_clear( fd->esync_fd );
+ 
+-    if (do_esync() && !signaled)
+-        esync_clear( fd->esync_fd );
 +        fast_reset_event( fd->fast_sync );
++    }
  }
  
  /* check if events are pending and if yes return which one(s) */
-@@ -2371,6 +2381,19 @@ unsigned int default_fd_get_fsync_idx( struct object *obj, enum fsync_type *type
+@@ -2375,6 +2388,19 @@ unsigned int default_fd_get_fsync_idx( struct object *obj, enum fsync_type *type
      return ret;
  }
  
@@ -112,7 +127,7 @@ index 799b7ea67b3..82406415185 100644
  {
      int events = 0;
 diff --git a/server/file.c b/server/file.c
-index 85f39cde91a..1d2eba76b88 100644
+index 9c96247f4b3..feef6841eea 100644
 --- a/server/file.c
 +++ b/server/file.c
 @@ -140,7 +140,7 @@ static const struct object_ops file_ops =
@@ -125,10 +140,10 @@ index 85f39cde91a..1d2eba76b88 100644
      file_destroy                  /* destroy */
  };
 diff --git a/server/file.h b/server/file.h
-index f6357363ee6..cff515c5457 100644
+index 8d2a0e330d3..4b27f71bf9a 100644
 --- a/server/file.h
 +++ b/server/file.h
-@@ -105,6 +105,7 @@ extern void get_nt_name( struct fd *fd, struct unicode_str *name );
+@@ -106,6 +106,7 @@ extern void get_nt_name( struct fd *fd, struct unicode_str *name );
  extern int default_fd_signaled( struct object *obj, struct wait_queue_entry *entry );
  extern int default_fd_get_esync_fd( struct object *obj, enum esync_type *type );
  extern unsigned int default_fd_get_fsync_idx( struct object *obj, enum fsync_type *type );
@@ -203,10 +218,10 @@ index 9c282b26a03..be5d5548c4e 100644
      serial_destroy                /* destroy */
  };
 diff --git a/server/sock.c b/server/sock.c
-index 3efd2bc908c..7bce00ab065 100644
+index 6fd02b85f4a..ab080d51bc0 100644
 --- a/server/sock.c
 +++ b/server/sock.c
-@@ -203,7 +203,7 @@ static const struct object_ops sock_ops =
+@@ -228,7 +228,7 @@ static const struct object_ops sock_ops =
      NULL,                         /* unlink_name */
      no_open_file,                 /* open_file */
      no_kernel_obj_list,           /* get_kernel_obj_list */
@@ -216,5 +231,5 @@ index 3efd2bc908c..7bce00ab065 100644
      sock_destroy                  /* destroy */
  };
 -- 
-2.31.1
+2.32.0
 

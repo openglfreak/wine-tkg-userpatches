@@ -19,7 +19,7 @@ index 883e5ff5657..ec42f41d588 100644
  
 +    case WS_SIO_IDEAL_SEND_BACKLOG_QUERY:
 +    {
-+        int ret, proto;
++        int ret, proto, fd;
 +        unsigned protolen = sizeof(protolen);
 +
 +        if (!out_buff)
@@ -40,7 +40,7 @@ index 883e5ff5657..ec42f41d588 100644
 +            return SOCKET_ERROR;
 +        }
 +
-+        total = sizeof(DWORD);
++        *ret_size = sizeof(DWORD);
 +        *(DWORD*)out_buff = 0x10000; /* 64k */
 +
 +        release_sock_fd( s, fd );
@@ -55,21 +55,21 @@ index 3f71c3158e9..90c63b76fc6 100644
 --- a/dlls/ws2_32/tests/sock.c
 +++ b/dlls/ws2_32/tests/sock.c
 @@ -5804,8 +5804,10 @@ static void test_WSASendTo(void)
-     struct sockaddr_in addr;
+     struct sockaddr_in addr, ret_addr;
      char buf[12] = "hello world";
      WSABUF data_buf;
 -    DWORD bytesSent;
 +    DWORD bytesSent, size;
-     int ret;
+     int ret, len;
 +    ULONG backlog = 0;
 +    int iret;
  
      addr.sin_family = AF_INET;
      addr.sin_port = htons(139);
 @@ -5830,6 +5832,11 @@ static void test_WSASendTo(void)
-     ret = WSASendTo(s, &data_buf, 1, &bytesSent, 0, (struct sockaddr *)&addr, sizeof(addr), NULL, NULL);
-     ok(!ret, "expected success\n");
-     ok(!WSAGetLastError(), "got error %u\n", WSAGetLastError());
+     ok(!ret, "got error %u\n", WSAGetLastError());
+     ok(ret_addr.sin_family == AF_INET, "got family %u\n", ret_addr.sin_family);
+     ok(ret_addr.sin_port, "expected nonzero port\n");
 +
 +    iret = WSAIoctl(s, SIO_IDEAL_SEND_BACKLOG_QUERY, NULL, 0, &backlog, sizeof(backlog), &size, NULL, NULL);
 +    ok(iret == SOCKET_ERROR && WSAGetLastError() == WSAEOPNOTSUPP,

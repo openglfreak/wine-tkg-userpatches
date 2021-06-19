@@ -1,15 +1,15 @@
-From 4635efd8788cb997a9fad96ecd68b3c216729b98 Mon Sep 17 00:00:00 2001
+From c4b30333df98f4ec61a0801eb404342b25d250c2 Mon Sep 17 00:00:00 2001
 From: Zebediah Figura <z.figura12@gmail.com>
 Date: Mon, 8 Mar 2021 17:24:15 -0600
 Subject: [PATCH 13/29] server: Create fast synchronization objects for message
  queues.
 
 ---
- server/queue.c | 52 +++++++++++++++++++++++++++++++++++++++++++++-----
- 1 file changed, 47 insertions(+), 5 deletions(-)
+ server/queue.c | 50 ++++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 46 insertions(+), 4 deletions(-)
 
 diff --git a/server/queue.c b/server/queue.c
-index 30c7d296e90..5f7e5044163 100644
+index 708b003c474..173dd1cd76a 100644
 --- a/server/queue.c
 +++ b/server/queue.c
 @@ -150,6 +150,7 @@ struct msg_queue
@@ -45,16 +45,7 @@ index 30c7d296e90..5f7e5044163 100644
          list_init( &queue->send_result );
          list_init( &queue->callback_result );
          list_init( &queue->pending_timers );
-@@ -339,7 +342,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
- 
-         if (do_fsync())
-             queue->fsync_idx = fsync_alloc_shm( 0, 0 );
-- 
-+
-         if (do_esync())
-             queue->esync_fd = esync_create_fd( 0, 0 );
- 
-@@ -543,7 +546,11 @@ static inline void set_queue_bits( struct msg_queue *queue, unsigned int bits )
+@@ -544,7 +547,11 @@ static inline void set_queue_bits( struct msg_queue *queue, unsigned int bits )
      }
      queue->wake_bits |= bits;
      queue->changed_bits |= bits;
@@ -67,7 +58,7 @@ index 30c7d296e90..5f7e5044163 100644
  }
  
  /* clear some queue bits */
-@@ -562,6 +569,9 @@ static inline void clear_queue_bits( struct msg_queue *queue, unsigned int bits
+@@ -563,6 +570,9 @@ static inline void clear_queue_bits( struct msg_queue *queue, unsigned int bits
  
      if (do_esync() && !is_signaled( queue ))
          esync_clear( queue->esync_fd );
@@ -77,7 +68,7 @@ index 30c7d296e90..5f7e5044163 100644
  }
  
  /* check whether msg is a keyboard message */
-@@ -1101,6 +1111,17 @@ static void msg_queue_satisfied( struct object *obj, struct wait_queue_entry *en
+@@ -1102,6 +1112,17 @@ static void msg_queue_satisfied( struct object *obj, struct wait_queue_entry *en
      struct msg_queue *queue = (struct msg_queue *)obj;
      queue->wake_mask = 0;
      queue->changed_mask = 0;
@@ -95,7 +86,7 @@ index 30c7d296e90..5f7e5044163 100644
  }
  
  static void msg_queue_destroy( struct object *obj )
-@@ -1140,6 +1161,7 @@ static void msg_queue_destroy( struct object *obj )
+@@ -1141,6 +1162,7 @@ static void msg_queue_destroy( struct object *obj )
      release_object( queue->input );
      if (queue->hooks) release_object( queue->hooks );
      if (queue->fd) release_object( queue->fd );
@@ -103,7 +94,7 @@ index 30c7d296e90..5f7e5044163 100644
  }
  
  static void msg_queue_poll_event( struct fd *fd, int event )
-@@ -1150,6 +1172,7 @@ static void msg_queue_poll_event( struct fd *fd, int event )
+@@ -1151,6 +1173,7 @@ static void msg_queue_poll_event( struct fd *fd, int event )
      if (event & (POLLERR | POLLHUP)) set_fd_events( fd, -1 );
      else set_fd_events( queue->fd, 0 );
      wake_up( &queue->obj, 0 );
@@ -111,7 +102,7 @@ index 30c7d296e90..5f7e5044163 100644
  }
  
  static void thread_input_dump( struct object *obj, int verbose )
-@@ -2581,8 +2604,20 @@ DECL_HANDLER(set_queue_mask)
+@@ -2531,8 +2554,20 @@ DECL_HANDLER(set_queue_mask)
          if (is_signaled( queue ))
          {
              /* if skip wait is set, do what would have been done in the subsequent wait */
@@ -134,7 +125,7 @@ index 30c7d296e90..5f7e5044163 100644
          }
      }
  }
-@@ -2603,6 +2638,9 @@ DECL_HANDLER(get_queue_status)
+@@ -2553,6 +2588,9 @@ DECL_HANDLER(get_queue_status)
  
          if (do_esync() && !is_signaled( queue ))
              esync_clear( queue->esync_fd );
@@ -144,7 +135,7 @@ index 30c7d296e90..5f7e5044163 100644
      }
      else reply->wake_bits = reply->changed_bits = 0;
  }
-@@ -2795,6 +2833,9 @@ DECL_HANDLER(get_message)
+@@ -2737,6 +2775,9 @@ DECL_HANDLER(get_message)
      if (filter & QS_INPUT) queue->changed_bits &= ~QS_INPUT;
      if (filter & QS_PAINT) queue->changed_bits &= ~QS_PAINT;
  
@@ -154,7 +145,7 @@ index 30c7d296e90..5f7e5044163 100644
      /* then check for posted messages */
      if ((filter & QS_POSTMESSAGE) &&
          get_posted_message( queue, queue->ignore_post_msg, get_win, req->get_first, req->get_last, req->flags, reply ))
-@@ -2858,6 +2899,7 @@ DECL_HANDLER(get_message)
+@@ -2800,6 +2841,7 @@ DECL_HANDLER(get_message)
      if (get_win == -1 && current->process->idle_event) set_event( current->process->idle_event );
      queue->wake_mask = req->wake_mask;
      queue->changed_mask = req->changed_mask;
@@ -163,5 +154,5 @@ index 30c7d296e90..5f7e5044163 100644
      return;
  
 -- 
-2.31.1
+2.32.0
 

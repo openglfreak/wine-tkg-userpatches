@@ -1,0 +1,131 @@
+From 76e5337aa1c5f6d0f863eca1d504f37359155f17 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 24 Dec 2020 15:54:48 +0100
+Subject: [PATCH 3/7] ntdll/tests: Add tests for RtlWaitOnAddress and
+ KeyedEvent interop.
+
+---
+ dlls/ntdll/tests/om.c | 94 ++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 93 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/tests/om.c b/dlls/ntdll/tests/om.c
+index a7f8eaa84e1..d42d801bde8 100644
+--- a/dlls/ntdll/tests/om.c
++++ b/dlls/ntdll/tests/om.c
+@@ -2264,13 +2264,62 @@ static void test_semaphore(void)
+     NtClose( semaphore );
+ }
+ 
++static DWORD WINAPI test_wait_on_address_thread( void *arg )
++{
++    LARGE_INTEGER timeout;
++    NTSTATUS status;
++    LONG64 *address = arg, compare = 0;
++    DWORD i;
++
++    for (i = 0; i < 10; ++i)
++    {
++        Sleep(10);
++        pRtlWakeAddressSingle(address);
++        status = pRtlWaitOnAddress(address, &compare, 8, NULL);
++        ok(!status, "got 0x%08x\n", status);
++
++        Sleep(10);
++        pRtlWakeAddressSingle((char *)address + 1);
++        status = pRtlWaitOnAddress(address, &compare, 8, NULL);
++        ok(!status, "got 0x%08x\n", status);
++
++        Sleep(10);
++        pRtlWakeAddressSingle((char *)address + 2);
++        status = pRtlWaitOnAddress(address, &compare, 8, NULL);
++        ok(!status, "got 0x%08x\n", status);
++
++        Sleep(10);
++        pRtlWakeAddressSingle((char *)address + 3);
++        status = pRtlWaitOnAddress(address, &compare, 8, NULL);
++        ok(!status, "got 0x%08x\n", status);
++
++        Sleep(10);
++        pRtlWakeAddressSingle((char *)address + 4);
++        status = pRtlWaitOnAddress(address, &compare, 8, NULL);
++        ok(!status, "got 0x%08x\n", status);
++    }
++
++    timeout.QuadPart = -100 * 10000;
++    for (i = 0; i < 10; ++i)
++    {
++        Sleep(10);
++        status = pNtReleaseKeyedEvent(0, address, FALSE, &timeout);
++        ok(status == STATUS_TIMEOUT, "got 0x%08x\n", status);
++        status = pNtWaitForKeyedEvent(0, address, FALSE, &timeout);
++        ok(status == STATUS_TIMEOUT, "got 0x%08x\n", status);
++    }
++
++    return 0;
++}
++
+ static void test_wait_on_address(void)
+ {
+-    DWORD ticks;
++    DWORD ticks, i;
+     SIZE_T size;
+     NTSTATUS status;
+     LARGE_INTEGER timeout;
+     LONG64 address, compare;
++    HANDLE thread;
+ 
+     if (!pRtlWaitOnAddress)
+     {
+@@ -2335,6 +2384,49 @@ static void test_wait_on_address(void)
+     ok(address == 0, "got %s\n", wine_dbgstr_longlong(address));
+     pRtlWakeAddressAll(&address);
+     ok(address == 0, "got %s\n", wine_dbgstr_longlong(address));
++
++    address = 0;
++    compare = 0;
++    thread = CreateThread( NULL, 0, test_wait_on_address_thread, &address, 0, NULL );
++    timeout.QuadPart = -100 * 10000;
++
++    for (i = 0; i < 10; ++i)
++    {
++        status = pRtlWaitOnAddress(&address, &compare, 8, NULL);
++        ok(!status, "got 0x%08x\n", status);
++        Sleep(10);
++        pRtlWakeAddressSingle(&address);
++
++        status = pRtlWaitOnAddress(&address, &compare, 8, &timeout);
++        ok(status == STATUS_TIMEOUT, "got 0x%08x\n", status);
++        Sleep(10);
++        pRtlWakeAddressSingle(&address);
++
++        status = pRtlWaitOnAddress(&address, &compare, 8, &timeout);
++        ok(status == STATUS_TIMEOUT, "got 0x%08x\n", status);
++        Sleep(10);
++        pRtlWakeAddressSingle(&address);
++
++        status = pRtlWaitOnAddress(&address, &compare, 8, &timeout);
++        ok(status == STATUS_TIMEOUT, "got 0x%08x\n", status);
++        Sleep(10);
++        pRtlWakeAddressSingle(&address);
++
++        status = pRtlWaitOnAddress(&address, &compare, 8, &timeout);
++        ok(status == STATUS_TIMEOUT, "got 0x%08x\n", status);
++        Sleep(10);
++        pRtlWakeAddressSingle(&address);
++    }
++
++    for (i = 0; i < 10; ++i)
++    {
++        status = pRtlWaitOnAddress(&address, &compare, 8, &timeout);
++        ok(status == STATUS_TIMEOUT, "got 0x%08x\n", status);
++        Sleep(10);
++        pRtlWakeAddressSingle(&address);
++    }
++
++    ok( WaitForSingleObject( thread, 30000 ) == 0, "wait failed\n" );
+ }
+ 
+ static void test_process(void)
+-- 
+2.32.0
+

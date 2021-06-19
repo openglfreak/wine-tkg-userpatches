@@ -1,0 +1,228 @@
+From 51b8dd4ac62129318344655f03bd28b2323a7114 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 24 Dec 2020 13:47:44 +0100
+Subject: [PATCH 2/7] msvcrt: Use 0 keyed event handle instead of opening one.
+
+---
+ dlls/msvcrt/lock.c | 65 ++++++++++++++--------------------------------
+ 1 file changed, 20 insertions(+), 45 deletions(-)
+
+diff --git a/dlls/msvcrt/lock.c b/dlls/msvcrt/lock.c
+index 74156aa7db3..26970af72ca 100644
+--- a/dlls/msvcrt/lock.c
++++ b/dlls/msvcrt/lock.c
+@@ -278,8 +278,6 @@ bool __thiscall SpinWait__SpinOnce(SpinWait *this)
+     }
+ }
+ 
+-static HANDLE keyed_event;
+-
+ /* keep in sync with msvcp90/msvcp90.h */
+ typedef struct cs_queue
+ {
+@@ -309,15 +307,6 @@ DEFINE_THISCALL_WRAPPER(critical_section_ctor, 4)
+ critical_section* __thiscall critical_section_ctor(critical_section *this)
+ {
+     TRACE("(%p)\n", this);
+-
+-    if(!keyed_event) {
+-        HANDLE event;
+-
+-        NtCreateKeyedEvent(&event, GENERIC_READ|GENERIC_WRITE, NULL, 0);
+-        if(InterlockedCompareExchangePointer(&keyed_event, event, NULL) != NULL)
+-            NtClose(event);
+-    }
+-
+     this->unk_thread_id = 0;
+     this->head = this->tail = NULL;
+     return this;
+@@ -367,7 +356,7 @@ static inline void cs_lock(critical_section *cs, cs_queue *q)
+     last = InterlockedExchangePointer(&cs->tail, q);
+     if(last) {
+         last->next = q;
+-        NtWaitForKeyedEvent(keyed_event, q, 0, NULL);
++        NtWaitForKeyedEvent(0, q, 0, NULL);
+     }
+ 
+     cs_set_head(cs, q);
+@@ -444,7 +433,7 @@ void __thiscall critical_section_unlock(critical_section *this)
+     }
+ #endif
+ 
+-    NtReleaseKeyedEvent(keyed_event, this->unk_active.next, 0, NULL);
++    NtReleaseKeyedEvent(0, this->unk_active.next, 0, NULL);
+ }
+ 
+ /* ?native_handle@critical_section@Concurrency@@QAEAAV12@XZ */
+@@ -483,13 +472,13 @@ bool __thiscall critical_section_try_lock_for(
+         GetSystemTimeAsFileTime(&ft);
+         to.QuadPart = ((LONGLONG)ft.dwHighDateTime<<32) +
+             ft.dwLowDateTime + (LONGLONG)timeout*10000;
+-        status = NtWaitForKeyedEvent(keyed_event, q, 0, &to);
++        status = NtWaitForKeyedEvent(0, q, 0, &to);
+         if(status == STATUS_TIMEOUT) {
+             if(!InterlockedExchange(&q->free, TRUE))
+                 return FALSE;
+             /* A thread has signaled the event and is block waiting. */
+             /* We need to catch the event to wake the thread.        */
+-            NtWaitForKeyedEvent(keyed_event, q, 0, NULL);
++            NtWaitForKeyedEvent(0, q, 0, NULL);
+         }
+     }
+ 
+@@ -808,10 +797,10 @@ static size_t evt_wait(thread_wait *wait, event **events, int count, bool wait_a
+     if(!evt_transition(&wait->signaled, EVT_RUNNING, EVT_WAITING))
+         return evt_end_wait(wait, events, count);
+ 
+-    status = NtWaitForKeyedEvent(keyed_event, wait, 0, evt_timeout(&ntto, timeout));
++    status = NtWaitForKeyedEvent(0, wait, 0, evt_timeout(&ntto, timeout));
+ 
+     if(status && !evt_transition(&wait->signaled, EVT_WAITING, EVT_RUNNING))
+-        NtWaitForKeyedEvent(keyed_event, wait, 0, NULL);
++        NtWaitForKeyedEvent(0, wait, 0, NULL);
+ 
+     return evt_end_wait(wait, events, count);
+ }
+@@ -887,7 +876,7 @@ void __thiscall event_set(event *this)
+     for(entry=wakeup; entry; entry=next) {
+         next = entry->next;
+         entry->next = entry->prev = NULL;
+-        NtReleaseKeyedEvent(keyed_event, entry->wait, 0, NULL);
++        NtReleaseKeyedEvent(0, entry->wait, 0, NULL);
+     }
+ }
+ 
+@@ -988,7 +977,7 @@ void __thiscall _Condition_variable_wait(_Condition_variable *this, critical_sec
+     critical_section_unlock(&this->lock);
+ 
+     critical_section_unlock(cs);
+-    NtWaitForKeyedEvent(keyed_event, &q, 0, NULL);
++    NtWaitForKeyedEvent(0, &q, 0, NULL);
+     critical_section_lock(cs);
+ }
+ 
+@@ -1020,14 +1009,14 @@ bool __thiscall _Condition_variable_wait_for(_Condition_variable *this,
+     GetSystemTimeAsFileTime(&ft);
+     to.QuadPart = ((LONGLONG)ft.dwHighDateTime << 32) +
+         ft.dwLowDateTime + (LONGLONG)timeout * 10000;
+-    status = NtWaitForKeyedEvent(keyed_event, q, 0, &to);
++    status = NtWaitForKeyedEvent(0, q, 0, &to);
+     if(status == STATUS_TIMEOUT) {
+         if(!InterlockedExchange(&q->expired, TRUE)) {
+             critical_section_lock(cs);
+             return FALSE;
+         }
+         else
+-            NtWaitForKeyedEvent(keyed_event, q, 0, 0);
++            NtWaitForKeyedEvent(0, q, 0, 0);
+     }
+ 
+     HeapFree(GetProcessHeap(), 0, q);
+@@ -1058,7 +1047,7 @@ void __thiscall _Condition_variable_notify_one(_Condition_variable *this)
+         critical_section_unlock(&this->lock);
+ 
+         if(!InterlockedExchange(&node->expired, TRUE)) {
+-            NtReleaseKeyedEvent(keyed_event, node, 0, NULL);
++            NtReleaseKeyedEvent(0, node, 0, NULL);
+             return;
+         } else {
+             HeapFree(GetProcessHeap(), 0, node);
+@@ -1087,7 +1076,7 @@ void __thiscall _Condition_variable_notify_all(_Condition_variable *this)
+         cv_queue *next = ptr->next;
+ 
+         if(!InterlockedExchange(&ptr->expired, TRUE))
+-            NtReleaseKeyedEvent(keyed_event, ptr, 0, NULL);
++            NtReleaseKeyedEvent(0, ptr, 0, NULL);
+         else
+             HeapFree(GetProcessHeap(), 0, ptr);
+         ptr = next;
+@@ -1120,15 +1109,6 @@ DEFINE_THISCALL_WRAPPER(reader_writer_lock_ctor, 4)
+ reader_writer_lock* __thiscall reader_writer_lock_ctor(reader_writer_lock *this)
+ {
+     TRACE("(%p)\n", this);
+-
+-    if (!keyed_event) {
+-        HANDLE event;
+-
+-        NtCreateKeyedEvent(&event, GENERIC_READ|GENERIC_WRITE, NULL, 0);
+-        if (InterlockedCompareExchangePointer(&keyed_event, event, NULL) != NULL)
+-            NtClose(event);
+-    }
+-
+     memset(this, 0, sizeof(*this));
+     return this;
+ }
+@@ -1172,11 +1152,11 @@ void __thiscall reader_writer_lock_lock(reader_writer_lock *this)
+     last = InterlockedExchangePointer((void**)&this->writer_tail, &q);
+     if (last) {
+         last->next = &q;
+-        NtWaitForKeyedEvent(keyed_event, &q, 0, NULL);
++        NtWaitForKeyedEvent(0, &q, 0, NULL);
+     } else {
+         this->writer_head = &q;
+         if (InterlockedOr(&this->count, WRITER_WAITING))
+-            NtWaitForKeyedEvent(keyed_event, &q, 0, NULL);
++            NtWaitForKeyedEvent(0, &q, 0, NULL);
+     }
+ 
+     this->thread_id = GetCurrentThreadId();
+@@ -1212,17 +1192,17 @@ void __thiscall reader_writer_lock_lock_read(reader_writer_lock *this)
+             if (InterlockedCompareExchange(&this->count, count+1, count) == count) break;
+ 
+         if (count & WRITER_WAITING)
+-            NtWaitForKeyedEvent(keyed_event, &q, 0, NULL);
++            NtWaitForKeyedEvent(0, &q, 0, NULL);
+ 
+         head = InterlockedExchangePointer((void**)&this->reader_head, NULL);
+         while(head && head != &q) {
+             rwl_queue *next = head->next;
+             InterlockedIncrement(&this->count);
+-            NtReleaseKeyedEvent(keyed_event, head, 0, NULL);
++            NtReleaseKeyedEvent(0, head, 0, NULL);
+             head = next;
+         }
+     } else {
+-        NtWaitForKeyedEvent(keyed_event, &q, 0, NULL);
++        NtWaitForKeyedEvent(0, &q, 0, NULL);
+     }
+ }
+ 
+@@ -1293,14 +1273,14 @@ void __thiscall reader_writer_lock_unlock(reader_writer_lock *this)
+         count = InterlockedDecrement(&this->count);
+         if (count != WRITER_WAITING)
+             return;
+-        NtReleaseKeyedEvent(keyed_event, this->writer_head, 0, NULL);
++        NtReleaseKeyedEvent(0, this->writer_head, 0, NULL);
+         return;
+     }
+ 
+     this->thread_id = 0;
+     next = this->writer_head->next;
+     if (next) {
+-        NtReleaseKeyedEvent(keyed_event, next, 0, NULL);
++        NtReleaseKeyedEvent(0, next, 0, NULL);
+         return;
+     }
+     InterlockedAnd(&this->count, ~WRITER_WAITING);
+@@ -1308,7 +1288,7 @@ void __thiscall reader_writer_lock_unlock(reader_writer_lock *this)
+     while (head) {
+         next = head->next;
+         InterlockedIncrement(&this->count);
+-        NtReleaseKeyedEvent(keyed_event, head, 0, NULL);
++        NtReleaseKeyedEvent(0, head, 0, NULL);
+         head = next;
+     }
+ 
+@@ -1472,9 +1452,4 @@ void msvcrt_free_locks(void)
+       msvcrt_uninitialize_mlock( i );
+     }
+   }
+-
+-#if _MSVCR_VER >= 100
+-  if(keyed_event)
+-      NtClose(keyed_event);
+-#endif
+ }
+-- 
+2.32.0
+

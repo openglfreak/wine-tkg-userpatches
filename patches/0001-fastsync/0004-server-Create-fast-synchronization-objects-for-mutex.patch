@@ -1,4 +1,4 @@
-From b09fbd8fb2bf8a9d5b7516bcdb843c402d664333 Mon Sep 17 00:00:00 2001
+From f9b43b06343e80b1f4014e70bbf6722afdb16277 Mon Sep 17 00:00:00 2001
 From: Zebediah Figura <z.figura12@gmail.com>
 Date: Thu, 11 Mar 2021 16:52:55 -0600
 Subject: [PATCH 04/29] server: Create fast synchronization objects for
@@ -12,10 +12,10 @@ Subject: [PATCH 04/29] server: Create fast synchronization objects for
  4 files changed, 74 insertions(+), 4 deletions(-)
 
 diff --git a/server/fast_sync.c b/server/fast_sync.c
-index 0430c4f26e1..89aadfff0cb 100644
+index d52e01fbedf..d0e331129bc 100644
 --- a/server/fast_sync.c
 +++ b/server/fast_sync.c
-@@ -267,6 +267,33 @@ struct fast_sync *fast_create_semaphore( unsigned int count, unsigned int max )
+@@ -266,6 +266,33 @@ struct fast_sync *fast_create_semaphore( unsigned int count, unsigned int max )
      return fast_sync;
  }
  
@@ -27,20 +27,20 @@ index 0430c4f26e1..89aadfff0cb 100644
 +
 +    if (!(device = get_fast_sync_device())) return NULL;
 +
-+    if (!(fast_sync = alloc_object( &fast_sync_ops ))) return NULL;
-+
-+    fast_sync->device = device;
-+    fast_sync->type = FAST_SYNC_MUTEX;
-+    fast_sync->linux_obj = -1;
-+
 +    args.owner = owner;
 +    args.count = count;
 +    if (ioctl( get_unix_fd( device->fd ), WINESYNC_IOC_CREATE_MUTEX, &args ) < 0)
 +    {
 +        file_set_error();
-+        release_object( fast_sync );
++        release_object( device );
 +        return NULL;
 +    }
++
++    if (!(fast_sync = alloc_object( &fast_sync_ops ))) return NULL;
++
++    /* transfer our device reference to the fast sync object */
++    fast_sync->device = device;
++    fast_sync->type = FAST_SYNC_MUTEX;
 +    fast_sync->linux_obj = args.mutex;
 +
 +    return fast_sync;
@@ -49,7 +49,7 @@ index 0430c4f26e1..89aadfff0cb 100644
  void fast_set_event( struct fast_sync *fast_sync )
  {
      struct winesync_sem_args args = {0};
-@@ -289,6 +316,20 @@ void fast_reset_event( struct fast_sync *fast_sync )
+@@ -288,6 +315,20 @@ void fast_reset_event( struct fast_sync *fast_sync )
      ioctl( get_unix_fd( fast_sync->device->fd ), WINESYNC_IOC_GET_SEM, &fast_sync->linux_obj );
  }
  
@@ -70,7 +70,7 @@ index 0430c4f26e1..89aadfff0cb 100644
  #else
  
  struct fast_sync *fast_create_event( enum fast_sync_type type, int manual_reset, int signaled )
-@@ -303,6 +344,12 @@ struct fast_sync *fast_create_semaphore( unsigned int count, unsigned int max )
+@@ -302,6 +343,12 @@ struct fast_sync *fast_create_semaphore( unsigned int count, unsigned int max )
      return NULL;
  }
  
@@ -83,7 +83,7 @@ index 0430c4f26e1..89aadfff0cb 100644
  void fast_set_event( struct fast_sync *fast_sync )
  {
  }
-@@ -311,4 +358,8 @@ void fast_reset_event( struct fast_sync *obj )
+@@ -310,4 +357,8 @@ void fast_reset_event( struct fast_sync *obj )
  {
  }
  
@@ -161,7 +161,7 @@ index 0134255e527..af36550930f 100644
  
  /* create a mutex */
 diff --git a/server/object.h b/server/object.h
-index 4c0134cb1b9..9a97cd12899 100644
+index b8d5edd0807..6111c366201 100644
 --- a/server/object.h
 +++ b/server/object.h
 @@ -236,8 +236,10 @@ extern void abandon_mutexes( struct thread *thread );
@@ -176,10 +176,10 @@ index 4c0134cb1b9..9a97cd12899 100644
  extern struct fast_sync *no_get_fast_sync( struct object *obj );
  
 diff --git a/server/thread.c b/server/thread.c
-index 0f296790cfb..c80a14c5bf8 100644
+index 232167aa498..e956c8df01c 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -1381,6 +1381,7 @@ void kill_thread( struct thread *thread, int violent_death )
+@@ -1386,6 +1386,7 @@ void kill_thread( struct thread *thread, int violent_death )
          fsync_abandon_mutexes( thread );
      if (do_esync())
          esync_abandon_mutexes( thread );
@@ -188,5 +188,5 @@ index 0f296790cfb..c80a14c5bf8 100644
      {
          send_thread_signal( thread, SIGQUIT );
 -- 
-2.31.1
+2.32.0
 

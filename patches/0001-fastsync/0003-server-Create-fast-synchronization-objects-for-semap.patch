@@ -1,4 +1,4 @@
-From f0f4988514539f755017aa5f089e51bae002bbb8 Mon Sep 17 00:00:00 2001
+From e1d794101d4f2732db08e2e65560edc839f4bb5d Mon Sep 17 00:00:00 2001
 From: Zebediah Figura <z.figura12@gmail.com>
 Date: Thu, 11 Mar 2021 16:45:30 -0600
 Subject: [PATCH 03/29] server: Create fast synchronization objects for
@@ -11,10 +11,10 @@ Subject: [PATCH 03/29] server: Create fast synchronization objects for
  3 files changed, 58 insertions(+), 2 deletions(-)
 
 diff --git a/server/fast_sync.c b/server/fast_sync.c
-index 57fda29dec1..0430c4f26e1 100644
+index 1dd3a4dcfa9..d52e01fbedf 100644
 --- a/server/fast_sync.c
 +++ b/server/fast_sync.c
-@@ -239,6 +239,34 @@ struct fast_sync *fast_create_event( enum fast_sync_type type, int manual_reset,
+@@ -238,6 +238,34 @@ struct fast_sync *fast_create_event( enum fast_sync_type type, int manual_reset,
      return fast_sync;
  }
  
@@ -26,21 +26,21 @@ index 57fda29dec1..0430c4f26e1 100644
 +
 +    if (!(device = get_fast_sync_device())) return NULL;
 +
-+    if (!(fast_sync = alloc_object( &fast_sync_ops ))) return NULL;
-+
-+    fast_sync->device = device;
-+    fast_sync->type = FAST_SYNC_SEMAPHORE;
-+    fast_sync->linux_obj = -1;
-+
 +    args.count = count;
 +    args.max = max;
 +    args.flags = WINESYNC_SEM_GETONWAIT;
 +    if (ioctl( get_unix_fd( device->fd ), WINESYNC_IOC_CREATE_SEM, &args ) < 0)
 +    {
 +        file_set_error();
-+        release_object( fast_sync );
++        release_object( device );
 +        return NULL;
 +    }
++
++    if (!(fast_sync = alloc_object( &fast_sync_ops ))) return NULL;
++
++    /* transfer our device reference to the fast sync object */
++    fast_sync->device = device;
++    fast_sync->type = FAST_SYNC_SEMAPHORE;
 +    fast_sync->linux_obj = args.sem;
 +
 +    return fast_sync;
@@ -49,7 +49,7 @@ index 57fda29dec1..0430c4f26e1 100644
  void fast_set_event( struct fast_sync *fast_sync )
  {
      struct winesync_sem_args args = {0};
-@@ -269,6 +297,12 @@ struct fast_sync *fast_create_event( enum fast_sync_type type, int manual_reset,
+@@ -268,6 +296,12 @@ struct fast_sync *fast_create_event( enum fast_sync_type type, int manual_reset,
      return NULL;
  }
  
@@ -63,7 +63,7 @@ index 57fda29dec1..0430c4f26e1 100644
  {
  }
 diff --git a/server/object.h b/server/object.h
-index 01888542fa6..4c0134cb1b9 100644
+index bfe8e2c24c0..b8d5edd0807 100644
 --- a/server/object.h
 +++ b/server/object.h
 @@ -235,6 +235,7 @@ extern void abandon_mutexes( struct thread *thread );
@@ -139,5 +139,5 @@ index 949b9a3ceaf..e512dc74377 100644
  DECL_HANDLER(create_semaphore)
  {
 -- 
-2.31.1
+2.32.0
 

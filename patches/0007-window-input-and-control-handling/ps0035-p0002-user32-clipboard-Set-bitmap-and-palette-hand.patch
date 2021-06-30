@@ -1,0 +1,76 @@
+From: Jactry Zeng <jzeng@codeweavers.com>
+Subject: [PATCH v2 resend 2/2] user32/clipboard: Set bitmap and palette handles as system object.
+Message-Id: <20210621145449.780194-2-jzeng@codeweavers.com>
+Date: Mon, 21 Jun 2021 22:54:49 +0800
+In-Reply-To: <20210621145449.780194-1-jzeng@codeweavers.com>
+References: <20210621145449.780194-1-jzeng@codeweavers.com>
+
+Signed-off-by: Jactry Zeng <jzeng@codeweavers.com>
+---
+ dlls/user32/clipboard.c       | 9 ++++++++-
+ dlls/user32/tests/clipboard.c | 6 +++---
+ 2 files changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/user32/clipboard.c b/dlls/user32/clipboard.c
+index e8de7d9bdf6..3d301df6a90 100644
+--- a/dlls/user32/clipboard.c
++++ b/dlls/user32/clipboard.c
+@@ -41,6 +41,7 @@
+ #include "user_private.h"
+ #include "win.h"
+ 
++#include "wine/gdi_driver.h"
+ #include "wine/list.h"
+ #include "wine/server.h"
+ #include "wine/debug.h"
+@@ -305,8 +306,9 @@ static void free_cached_data( struct cached_format *cache )
+     switch (cache->format)
+     {
+     case CF_BITMAP:
+-    case CF_DSPBITMAP:
+     case CF_PALETTE:
++        __wine_make_gdi_object_system( cache->handle, FALSE );
++    case CF_DSPBITMAP:
+         DeleteObject( cache->handle );
+         break;
+     case CF_ENHMETAFILE:
+@@ -889,6 +891,11 @@ HANDLE WINAPI SetClipboardData( UINT format, HANDLE data )
+         if (!(cache = HeapAlloc( GetProcessHeap(), 0, sizeof(*cache) ))) goto done;
+         cache->format = format;
+         cache->handle = data;
++
++        if (format == CF_BITMAP || format == CF_PALETTE)
++        {
++            __wine_make_gdi_object_system( cache->handle, TRUE );
++        }
+     }
+ 
+     EnterCriticalSection( &clipboard_cs );
+diff --git a/dlls/user32/tests/clipboard.c b/dlls/user32/tests/clipboard.c
+index ea6081a4bb4..1f586429f0f 100644
+--- a/dlls/user32/tests/clipboard.c
++++ b/dlls/user32/tests/clipboard.c
+@@ -1985,7 +1985,7 @@ static void test_data_handles(void)
+     memset( &bmi, 0, sizeof(bmi) );
+     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+     result = GetDIBits( GetDC(0), h, 0, 0, NULL, &bmi, 0 );
+-    todo_wine ok( !!result && result != ERROR_INVALID_PARAMETER, "GetDIBits failed: %#x.\n", GetLastError() );
++    ok( !!result && result != ERROR_INVALID_PARAMETER, "GetDIBits failed: %#x.\n", GetLastError() );
+ 
+     bitmap = CreateBitmap( 10, 10, 1, 1, NULL );
+     h = SetClipboardData( CF_DSPBITMAP, bitmap );
+@@ -2003,8 +2003,8 @@ static void test_data_handles(void)
+     ok( !!DeleteObject( palette ), "DeleteObject failed.\n" );
+     h = GetClipboardData( CF_PALETTE );
+     ok( h == palette, "Expected palette %p, got %p.\n", palette, h );
+-    todo_wine ok( !!GetPaletteEntries( h, 0, 1, &entry ), "GetPaletteEntries %p failed.\n", h );
+-    todo_wine ok( entry.peRed == 0x12 && entry.peGreen == 0x34 && entry.peBlue == 0x56,
++    ok( !!GetPaletteEntries( h, 0, 1, &entry ), "GetPaletteEntries %p failed.\n", h );
++    ok( entry.peRed == 0x12 && entry.peGreen == 0x34 && entry.peBlue == 0x56,
+         "Got wrong color (%02x, %02x, %02x).\n", entry.peRed, entry.peGreen, entry.peBlue );
+ 
+     emf = create_emf();
+
+-- 
+2.30.2
+

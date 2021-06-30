@@ -1,21 +1,20 @@
+From 7c2660edd9e92f43cdc70fdf4e17df6668428860 Mon Sep 17 00:00:00 2001
 From: Paul Gofman <pgofman@codeweavers.com>
-Subject: [PATCH v3 3/3] ntdll: Use cached debug registers in NtGetContextThread() if hw debug breakpoints are disabled.
-Message-Id: <20210527101600.348718-3-pgofman@codeweavers.com>
-Date: Thu, 27 May 2021 13:16:00 +0300
-In-Reply-To: <20210527101600.348718-1-pgofman@codeweavers.com>
-References: <20210527101600.348718-1-pgofman@codeweavers.com>
+Date: Sat, 22 May 2021 03:08:55 +0300
+Subject: [PATCH 3/3] ntdll: Use cached debug registers in NtGetContextThread() if
+ hw debug breakpoints are disabled.
 
-Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+CW-Bug-Id: 18957
 ---
  dlls/ntdll/unix/signal_i386.c   | 35 +++++++++++++++++++++--------
  dlls/ntdll/unix/signal_x86_64.c | 39 +++++++++++++++++++++++----------
  2 files changed, 54 insertions(+), 20 deletions(-)
 
 diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
-index 28e95c084db..69bef162d64 100644
+index 601f24e2eb3..bfa714fb16a 100644
 --- a/dlls/ntdll/unix/signal_i386.c
 +++ b/dlls/ntdll/unix/signal_i386.c
-@@ -1110,10 +1110,15 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
+@@ -1277,10 +1277,15 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
      struct syscall_frame *frame = x86_thread_data()->syscall_frame;
      DWORD needed_flags = context->ContextFlags & ~CONTEXT_i386;
      BOOL self = (handle == GetCurrentThread());
@@ -33,12 +32,12 @@ index 28e95c084db..69bef162d64 100644
  
      if (!self)
      {
-@@ -1204,15 +1209,27 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
- 
-             context->ContextFlags |= CONTEXT_EXTENDED_REGISTERS;
+@@ -1375,15 +1380,27 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
+                 xstate->YmmContext = frame->xstate.YmmContext;
+             }
          }
 -        /* update the cached version of the debug registers */
-         if (context->ContextFlags & (CONTEXT_DEBUG_REGISTERS & ~CONTEXT_i386))
+         if (needed_flags & CONTEXT_DEBUG_REGISTERS)
          {
 -            x86_thread_data()->dr0 = context->Dr0;
 -            x86_thread_data()->dr1 = context->Dr1;
@@ -66,30 +65,20 @@ index 28e95c084db..69bef162d64 100644
 +                x86_thread_data()->dr7 = context->Dr7;
 +            }
          }
-         if ((cpu_info.ProcessorFeatureBits & CPU_FEATURE_AVX) && (xstate = xstate_from_context( context )))
-         {
+     }
+ 
 diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
-index 2332befdf40..448f45474b1 100644
+index 66ac12b13f4..3487f761324 100644
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
-@@ -1718,17 +1718,22 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
-  */
- NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
- {
--    NTSTATUS ret;
--    DWORD needed_flags;
+@@ -1885,9 +1885,14 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
      struct syscall_frame *frame = amd64_thread_data()->syscall_frame;
+     DWORD needed_flags = context->ContextFlags & ~CONTEXT_AMD64;
      BOOL self = (handle == GetCurrentThread());
 +    BOOL use_cached_debug_regs = FALSE;
-+    DWORD needed_flags;
-+    NTSTATUS ret;
- 
-     if (!context) return STATUS_INVALID_PARAMETER;
- 
-     needed_flags = context->ContextFlags & ~CONTEXT_AMD64;
  
 -    /* debug registers require a server call */
--    if (context->ContextFlags & (CONTEXT_DEBUG_REGISTERS & ~CONTEXT_AMD64)) self = FALSE;
+-    if (needed_flags & CONTEXT_DEBUG_REGISTERS) self = FALSE;
 +    if (self && needed_flags & CONTEXT_DEBUG_REGISTERS)
 +    {
 +        /* debug registers require a server call if hw breakpoints are enabled */
@@ -99,42 +88,38 @@ index 2332befdf40..448f45474b1 100644
  
      if (!self)
      {
-@@ -1812,15 +1817,27 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
-             context->MxCsr = context->u.FltSave.MxCsr;
-             context->ContextFlags |= CONTEXT_FLOATING_POINT;
+@@ -1983,15 +1988,27 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
+             memcpy( &xstate->YmmContext, &frame->xstate.YmmContext, sizeof(xstate->YmmContext) );
          }
--        /* update the cached version of the debug registers */
-         if (context->ContextFlags & (CONTEXT_DEBUG_REGISTERS & ~CONTEXT_AMD64))
-         {
--            amd64_thread_data()->dr0 = context->Dr0;
--            amd64_thread_data()->dr1 = context->Dr1;
--            amd64_thread_data()->dr2 = context->Dr2;
--            amd64_thread_data()->dr3 = context->Dr3;
--            amd64_thread_data()->dr6 = context->Dr6;
--            amd64_thread_data()->dr7 = context->Dr7;
-+            if (use_cached_debug_regs)
-+            {
-+                context->Dr0 = amd64_thread_data()->dr0;
-+                context->Dr1 = amd64_thread_data()->dr1;
-+                context->Dr2 = amd64_thread_data()->dr2;
-+                context->Dr3 = amd64_thread_data()->dr3;
-+                context->Dr6 = amd64_thread_data()->dr6;
-+                context->Dr7 = amd64_thread_data()->dr7;
-+            }
-+            else
-+            {
-+                /* update the cached version of the debug registers */
-+                amd64_thread_data()->dr0 = context->Dr0;
-+                amd64_thread_data()->dr1 = context->Dr1;
-+                amd64_thread_data()->dr2 = context->Dr2;
-+                amd64_thread_data()->dr3 = context->Dr3;
-+                amd64_thread_data()->dr6 = context->Dr6;
-+                amd64_thread_data()->dr7 = context->Dr7;
-+            }
-         }
-         if ((cpu_info.ProcessorFeatureBits & CPU_FEATURE_AVX) && (xstate = xstate_from_context( context )))
-         {
-
--- 
-2.31.1
-
+     }
+-    /* update the cached version of the debug registers */
+     if (needed_flags & CONTEXT_DEBUG_REGISTERS)
+     {
+-        amd64_thread_data()->dr0 = context->Dr0;
+-        amd64_thread_data()->dr1 = context->Dr1;
+-        amd64_thread_data()->dr2 = context->Dr2;
+-        amd64_thread_data()->dr3 = context->Dr3;
+-        amd64_thread_data()->dr6 = context->Dr6;
+-        amd64_thread_data()->dr7 = context->Dr7;
++        if (use_cached_debug_regs)
++        {
++            context->Dr0 = amd64_thread_data()->dr0;
++            context->Dr1 = amd64_thread_data()->dr1;
++            context->Dr2 = amd64_thread_data()->dr2;
++            context->Dr3 = amd64_thread_data()->dr3;
++            context->Dr6 = amd64_thread_data()->dr6;
++            context->Dr7 = amd64_thread_data()->dr7;
++        }
++        else
++        {
++            /* update the cached version of the debug registers */
++            amd64_thread_data()->dr0 = context->Dr0;
++            amd64_thread_data()->dr1 = context->Dr1;
++            amd64_thread_data()->dr2 = context->Dr2;
++            amd64_thread_data()->dr3 = context->Dr3;
++            amd64_thread_data()->dr6 = context->Dr6;
++            amd64_thread_data()->dr7 = context->Dr7;
++        }
+     }
+     return STATUS_SUCCESS;
+ }

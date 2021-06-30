@@ -1,0 +1,61 @@
+From: Zebediah Figura <zfigura@codeweavers.com>
+Subject: [PATCH 6/6] ntdll: Fill the I/O status block with the results of the recv_socket call in sock_recv().
+Message-Id: <20210724235432.25471-6-zfigura@codeweavers.com>
+Date: Sat, 24 Jul 2021 18:54:32 -0500
+In-Reply-To: <20210724235432.25471-1-zfigura@codeweavers.com>
+References: <20210724235432.25471-1-zfigura@codeweavers.com>
+
+Signed-off-by: Zebediah Figura <zfigura@codeweavers.com>
+---
+ dlls/ntdll/unix/socket.c | 11 +++++------
+ dlls/ws2_32/tests/afd.c  |  4 ++--
+ 2 files changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index e29dc7f66d1..3ea722a48ec 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -615,12 +615,6 @@ static NTSTATUS sock_recv( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
+     if (status == STATUS_DEVICE_NOT_READY && force_async)
+         status = STATUS_PENDING;
+ 
+-    if (!NT_ERROR(status))
+-    {
+-        io->Status = status;
+-        io->Information = information;
+-    }
+-
+     SERVER_START_REQ( recv_socket )
+     {
+         req->status = status;
+@@ -630,6 +624,11 @@ static NTSTATUS sock_recv( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
+         status = wine_server_call( req );
+         wait_handle = wine_server_ptr_handle( reply->wait );
+         options     = reply->options;
++        if ((!NT_ERROR(status) || wait_handle) && status != STATUS_PENDING)
++        {
++            io->Status = status;
++            io->Information = information;
++        }
+     }
+     SERVER_END_REQ;
+ 
+diff --git a/dlls/ws2_32/tests/afd.c b/dlls/ws2_32/tests/afd.c
+index 50922500859..eb7c8ee50de 100644
+--- a/dlls/ws2_32/tests/afd.c
++++ b/dlls/ws2_32/tests/afd.c
+@@ -978,8 +978,8 @@ static void test_recv(void)
+     ret = NtDeviceIoControlFile((HANDLE)client, event, NULL, NULL, &io,
+             IOCTL_AFD_RECV, &params, sizeof(params), NULL, 0);
+     ok(ret == STATUS_PENDING, "got %#x\n", ret);
+-    todo_wine ok(!io.Status, "got status %#x\n", io.Status);
+-    todo_wine ok(!io.Information, "got information %#Ix\n", io.Information);
++    ok(!io.Status, "got status %#x\n", io.Status);
++    ok(!io.Information, "got information %#Ix\n", io.Information);
+ 
+     ret = send(server, "data", 5, 0);
+     ok(ret == 5, "got %d\n", ret);
+
+-- 
+2.30.2
+

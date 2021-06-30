@@ -1,0 +1,357 @@
+From: Patrick Hibbs <hibbsncc1701@gmail.com>
+Subject: [PATCH 2/2] ntdll/tests: Add test for RtlDefaultNpAcl
+Message-Id: <20210624200645.273877-2-hibbsncc1701@gmail.com>
+Date: Thu, 24 Jun 2021 16:06:45 -0400
+In-Reply-To: <20210624200645.273877-1-hibbsncc1701@gmail.com>
+References: <20210624200645.273877-1-hibbsncc1701@gmail.com>
+
+Signed-off-by: Patrick Hibbs <hibbsncc1701@gmail.com>
+---
+ dlls/ntdll/tests/Makefile.in |   1 +
+ dlls/ntdll/tests/sec.c       | 321 +++++++++++++++++++++++++++++++++++
+ 2 files changed, 322 insertions(+)
+ create mode 100644 dlls/ntdll/tests/sec.c
+
+diff --git a/dlls/ntdll/tests/Makefile.in b/dlls/ntdll/tests/Makefile.in
+index ed15c51339f..1668441e41e 100644
+--- a/dlls/ntdll/tests/Makefile.in
++++ b/dlls/ntdll/tests/Makefile.in
+@@ -20,6 +20,7 @@ C_SRCS = \
+ 	rtl.c \
+ 	rtlbitmap.c \
+ 	rtlstr.c \
++	sec.c \
+ 	string.c \
+ 	threadpool.c \
+ 	time.c \
+diff --git a/dlls/ntdll/tests/sec.c b/dlls/ntdll/tests/sec.c
+new file mode 100644
+index 00000000000..c804c78365f
+--- /dev/null
++++ b/dlls/ntdll/tests/sec.c
+@@ -0,0 +1,321 @@
++/*
++ * Unit test suite for ntdll sec functions
++ *
++ * Copyright 2021 Patrick Hibbs
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "ntdll_test.h"
++
++static NTSTATUS (WINAPI *pRtlDefaultNpAcl)( PACL *pAcl );
++static BOOL (WINAPI *pIsValidAcl)( PACL pAcl );
++static BOOL (WINAPI *pGetAce)( PACL pAcl, DWORD index, LPVOID * pAce);
++static BOOL (WINAPI *pEqualSid)( PSID pSid1, PSID pSid2 );
++static BOOL (WINAPI *pCopySid)( DWORD destLength, PSID destSid, PSID srcSid );
++static BOOL (WINAPI *pIsValidSid)( PSID sid );
++static BOOL (WINAPI *pConvertSidToStringSid)( PSID sid, LPSTR * out);
++
++/* Copied from dlls/kernelbase/security.c */
++typedef struct _MAX_SID
++{
++    /* same fields as struct _SID */
++    BYTE Revision;
++    BYTE SubAuthorityCount;
++    SID_IDENTIFIER_AUTHORITY IdentifierAuthority;
++    DWORD SubAuthority[SID_MAX_SUB_AUTHORITIES];
++} MAX_SID;
++
++typedef struct sid_access_t {
++    MAX_SID sid;
++    ACCESS_MASK access;
++} sid_access;
++
++/*
++    ACEs_RtlDefaultNpAcl
++
++    Defines the sids and rights we expect to be returned from RtlDefaultNpAcl.
++
++    Note: That there should be one more sid corrosponding to the process / thread
++    token's owner with Full Access rights in addition to the rights below.
++ */
++static sid_access ACEs_RtlDefaultNpAcl[] = {
++    // Local System: Full Access
++    { { SID_REVISION, 1, { SECURITY_NT_AUTHORITY }, { SECURITY_LOCAL_SYSTEM_RID } }, GENERIC_ALL },
++    // Administrators: Full Access
++    { { SID_REVISION, 2, { SECURITY_NT_AUTHORITY }, { SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS } }, GENERIC_ALL},
++    // World: Read Only
++    { { SID_REVISION, 1, { SECURITY_WORLD_SID_AUTHORITY }, { SECURITY_WORLD_RID } } , GENERIC_READ},
++    // Anonymous: Read Only
++    { { SID_REVISION, 1, { SECURITY_NT_AUTHORITY }, { SECURITY_ANONYMOUS_LOGON_RID } }, GENERIC_READ }
++};
++
++static NTSTATUS get_expected_owner_token_sid(PSID * sid)
++{
++    NTSTATUS ret;
++    PSID new_sid = NULL;
++    ULONG owner_sid_length = 0;
++    PTOKEN_OWNER owner = NULL;
++    HANDLE token = NULL;
++
++    if (sid)
++    {
++        *sid = NULL;
++
++        ret = NtOpenThreadToken(GetCurrentThread(),
++                                TOKEN_QUERY,
++                                TRUE,
++                                &token);
++        if (ret == STATUS_NO_TOKEN)
++        {
++            ret = NtOpenProcessToken(GetCurrentProcess(),
++                                     TOKEN_QUERY,
++                                     &token);
++            if (!NT_SUCCESS(ret))
++                return ret;
++        }
++
++        /* Get the length of the owner's SID. */
++        ret = NtQueryInformationToken(token,
++                                      TokenOwner,
++                                      NULL,
++                                      0,
++                                      &owner_sid_length);
++        if (ret == STATUS_BUFFER_TOO_SMALL)
++        {
++            owner = RtlAllocateHeap(GetProcessHeap(), 0, owner_sid_length);
++            if (owner)
++            {
++                /* Actually get the owner's SID. */
++                ret = NtQueryInformationToken(token,
++                                              TokenOwner,
++                                              owner,
++                                              owner_sid_length,
++                                              &owner_sid_length);
++                if (NT_SUCCESS(ret))
++                {
++                    ok(pIsValidSid(owner->Owner), "Invalid SID from NtQueryInformationToken.\n");
++                    new_sid = RtlAllocateHeap(GetProcessHeap(), 0, owner_sid_length);
++                    if (new_sid)
++                    {
++                        pCopySid(owner_sid_length, new_sid, owner->Owner);
++                        ok((ret = pIsValidSid(new_sid)), "CopySid failed to copy the SID from NtQueryInformationToken.\n");
++                        if (ret)
++                        {
++                            *sid = new_sid;
++                            ret = STATUS_SUCCESS;
++                        }
++                        else
++                        {
++                            ret = STATUS_NO_MEMORY;
++                        }
++                        if (ret != STATUS_SUCCESS)
++                            RtlFreeHeap(GetProcessHeap(), 0, new_sid);
++                    }
++                    else
++                    {
++                        ret = STATUS_NO_MEMORY;
++                    }
++                }
++
++                RtlFreeHeap(GetProcessHeap(), 0, owner);
++            }
++        }
++    }
++    else
++        ret = STATUS_INVALID_PARAMETER;
++
++    return ret;
++}
++
++static void test_RtlDefaultNpAcl(void)
++{
++    NTSTATUS ret;
++    PACL test = NULL;
++    BOOL valid_result = FALSE;
++    WORD x = 0;
++    size_t y = 0;
++    PACE_HEADER ace_head = NULL;
++    PSID check_sid = NULL;
++    ACCESS_MASK check_access;
++    PSTR sid_human = NULL;
++    PSID owner_sid = NULL;
++
++    /* Check NULL argument. */
++    /* ret = pRtlDefaultNpAcl(NULL); This generates a EXCEPTION_ACCESS_VIOLATION on Win7. */
++
++    /* Get the expected owner SID. */
++    get_expected_owner_token_sid(&owner_sid);
++
++    ok( (valid_result = (owner_sid != NULL)),
++        "Could not get owner SID for the thread / process. A portion of the tests will be skipped.\n");
++    if (valid_result)
++    {
++        pConvertSidToStringSid(owner_sid, &sid_human);
++        trace("owner sid: %s\n", sid_human);
++        LocalFree(sid_human);
++    }
++
++    /* Actually get the default Acl. */
++    ret = pRtlDefaultNpAcl(&test);
++    ok(((ret == STATUS_SUCCESS) && (test)), "RtlDefaultNpAcl failed. Invalid result for valid pointer argument. Got 0x%x.\n", ret);
++    ok((valid_result = pIsValidAcl(test)), "RtlDefaultNpAcl failed. IsValidAcl says the returned ACL is invalid.\n");
++    if (valid_result)
++    {
++        /* Total number of ACEs should be the length of the sid_access array + 1.
++           (Due to the owner acl check.) */
++        ok( (test->AceCount == ((sizeof(ACEs_RtlDefaultNpAcl) / sizeof(sid_access)) + 1)),
++            "RtlDefaultNpAcl changed. Was expecting %u ACEs, got %i.\n",
++            ((sizeof(ACEs_RtlDefaultNpAcl) / sizeof(sid_access)) + 1),
++            test->AceCount);
++
++        for (x = 0; x < test->AceCount; x++)
++        {
++            ace_head = NULL;
++            ok(((pGetAce(test, x, (LPVOID *)&ace_head)) && (ace_head)), "Could not get ACE at index %i.\n", x);
++            if (ace_head)
++            {
++                ok((ace_head->AceType == ACCESS_ALLOWED_ACE_TYPE),
++                    "ACE at index %i: Was expecting an ACCESS_ALLOWED_ACE_TYPE, got %c instead.\n",
++                    x,
++                     ace_head->AceType);
++                if (ace_head->AceType == ACCESS_ALLOWED_ACE_TYPE)
++                {
++                    check_sid = ((PSID *)&(((ACCESS_ALLOWED_ACE*)ace_head)->SidStart));
++                    check_access = (((ACCESS_ALLOWED_ACE*)ace_head)->Mask);
++
++                    valid_result = pIsValidSid(check_sid);
++                    ok(valid_result, "ACE at index %i has an invalid SID.\n", x);
++                    if (valid_result)
++                    {
++                        if (!pConvertSidToStringSid(check_sid, &sid_human))
++                            sid_human = NULL;
++
++                        valid_result = FALSE;
++                        for (y = 0; (!valid_result) && (y < (sizeof(ACEs_RtlDefaultNpAcl) / sizeof(sid_access))); y++)
++                        {
++                            if (pEqualSid(&(ACEs_RtlDefaultNpAcl[y].sid), check_sid))
++                            {
++                                ok (    (valid_result = (check_access & ACEs_RtlDefaultNpAcl[y].access)), 
++                                        "ACE at index %i for SID %s was wrong. Expected access mask 0x%x, got 0x%x.\n",
++                                        x,
++                                        ((sid_human != NULL) ? (sid_human) : ("[UNABLE TO CONVERT SID]")),
++                                        ACEs_RtlDefaultNpAcl[y].access,
++                                        check_access
++                                );
++                            }
++                            else
++                            {
++                                if ((y + 1) >= ((sizeof(ACEs_RtlDefaultNpAcl) / sizeof(sid_access))))
++                                {
++                                    /* Check owner SID. */
++                                    if (owner_sid != NULL)
++                                    {
++                                        valid_result = pEqualSid( owner_sid, check_sid );
++
++                                        ok( valid_result,
++                                            "ACE at index %i for an UNKNOWN SID %s with access mask 0x%x.\n",
++                                            x,
++                                            ((sid_human != NULL) ? (sid_human) : ("[UNABLE TO CONVERT SID]")),
++                                            check_access);
++
++                                        if (valid_result)
++                                        {
++                                            ok( ( valid_result = (check_access & GENERIC_ALL)),
++                                                "ACE at index %i for SID %s was wrong. Expected access mask 0x%x, got 0x%x.\n",
++                                                x,
++                                                ((sid_human != NULL) ? (sid_human) : ("[UNABLE TO CONVERT SID]")),
++                                                GENERIC_ALL,
++                                                check_access);
++                                        }
++                                    }
++                                    else
++                                        skip( "Test for ACE at index %i for SID %s with access mask 0x%x is being skipped due to unknown owner SID.\n",
++                                              x,
++                                              ((sid_human != NULL) ? (sid_human) : ("[UNABLE TO CONVERT SID]")),
++                                              check_access);
++                                }
++                            }
++                        }
++
++                        if (sid_human)
++                            LocalFree(sid_human);
++                    }
++                }
++            }
++        }
++    }
++
++    if (test)
++        RtlFreeHeap(GetProcessHeap(), 0, test);
++
++    if (owner_sid)
++        RtlFreeHeap(GetProcessHeap(), 0, owner_sid);
++}
++
++START_TEST(sec)
++{
++    HMODULE adv = GetModuleHandleA("advapi32.dll");
++    HMODULE mod = GetModuleHandleA("ntdll.dll");
++
++    pRtlDefaultNpAcl = (void *)GetProcAddress(mod, "RtlDefaultNpAcl");
++    pIsValidAcl = (void *)GetProcAddress(adv, "IsValidAcl");
++    pGetAce = (void *)GetProcAddress(adv, "GetAce");
++    pEqualSid = (void *)GetProcAddress(adv, "EqualSid");
++    pCopySid = (void *)GetProcAddress(mod, "RtlCopySid");
++    pIsValidSid = (void *)GetProcAddress(adv, "IsValidSid");
++    pConvertSidToStringSid = (void *)GetProcAddress(adv, "ConvertSidToStringSid");
++    if (!pConvertSidToStringSid)
++    {
++        /* Win7 seems to not define the generic name. */
++        #ifdef UNICODE
++            pConvertSidToStringSid = (void *)GetProcAddress(adv, "ConvertSidToStringSidW");
++        #else
++            pConvertSidToStringSid = (void *)GetProcAddress(adv, "ConvertSidToStringSidA");
++        #endif
++    }
++    if (pRtlDefaultNpAcl)
++    {
++        if (pIsValidAcl)
++        {
++            if (pGetAce)
++            {
++                if (pEqualSid)
++                {
++                    if (pCopySid)
++                    {
++                        if (pConvertSidToStringSid)
++                            if (pIsValidSid)
++                                test_RtlDefaultNpAcl();
++                            else
++                                win_skip("IsValidSid function is not available.\n");
++                        else
++                            win_skip("ConvertSidToStringSid function is not available.\n");
++                    }
++                    else
++                        win_skip("CopySid function is not available.\n");
++                }
++                else
++                    win_skip("EqualSid function is not available.\n");
++            }
++            else
++                win_skip("GetAce function is not available.\n");
++        }
++        else
++            win_skip("IsValidAcl function is not available.\n");
++    }
++    else
++        win_skip("RtlDefaultNpAcl function is not available.\n");
++}
+
+-- 
+2.32.0
+

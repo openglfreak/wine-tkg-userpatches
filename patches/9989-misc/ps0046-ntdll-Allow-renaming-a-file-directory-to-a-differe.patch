@@ -1,7 +1,7 @@
 From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
-Subject: [PATCH v12] ntdll: Allow renaming a file/directory to a different case of itself.
-Message-Id: <eb8de961308b3242c8526d87c02a52f5c202c592.1621603617.git.gabrielopcode@gmail.com>
-Date: Fri, 21 May 2021 16:29:10 +0300
+Subject: [PATCH resend] ntdll: Allow renaming a file/directory to a different case of itself.
+Message-Id: <274579217837674d45f6f25caa7092dc46f65113.1626802784.git.gabrielopcode@gmail.com>
+Date: Tue, 20 Jul 2021 20:40:01 +0300
 
 Renaming a file or directory from e.g. foobar to FooBar (or any other case
 change) should work, like on Windows, instead of being a no-op. Clobbering
@@ -23,10 +23,6 @@ components at all, so obviously there's no case to replace with. Handling
 the rare error above with the same code is just an implicit side effect
 without adding any extra code, so I see it as a bonus.
 
-If you find any other corner cases please let me know, but at this point
-I'd rather keep it with less code to avoid extra complications with trailing
-slashes and such.
-
  dlls/kernel32/tests/file.c |   4 +-
  dlls/ntdll/tests/file.c    |   4 +-
  dlls/ntdll/unix/file.c     |  72 ++++++++++++++++++++++++--
@@ -35,7 +31,7 @@ slashes and such.
  5 files changed, 142 insertions(+), 40 deletions(-)
 
 diff --git a/dlls/kernel32/tests/file.c b/dlls/kernel32/tests/file.c
-index 8560524..9ca56e1 100644
+index ea0a32f..15bfc13 100644
 --- a/dlls/kernel32/tests/file.c
 +++ b/dlls/kernel32/tests/file.c
 @@ -2040,7 +2040,7 @@ static void test_MoveFileA(void)
@@ -57,7 +53,7 @@ index 8560524..9ca56e1 100644
      }
      CloseHandle(hfile);
 diff --git a/dlls/ntdll/tests/file.c b/dlls/ntdll/tests/file.c
-index b7b4636..591f425 100644
+index 19ae5f2..c6178d3 100644
 --- a/dlls/ntdll/tests/file.c
 +++ b/dlls/ntdll/tests/file.c
 @@ -2315,7 +2315,7 @@ static void test_file_link_information(void)
@@ -79,10 +75,10 @@ index b7b4636..591f425 100644
      }
  
 diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
-index c033bb0..5b84dbd 100644
+index 977b0df..c033ffd 100644
 --- a/dlls/ntdll/unix/file.c
 +++ b/dlls/ntdll/unix/file.c
-@@ -3405,6 +3405,64 @@ NTSTATUS nt_to_unix_file_name( const OBJECT_ATTRIBUTES *attr, char **name_ret, U
+@@ -3426,6 +3426,64 @@ NTSTATUS nt_to_unix_file_name( const OBJECT_ATTRIBUTES *attr, char **name_ret, U
  }
  
  
@@ -147,7 +143,7 @@ index c033bb0..5b84dbd 100644
  /******************************************************************************
   *           wine_nt_to_unix_file_name
   *
-@@ -4527,8 +4585,8 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4532,8 +4590,8 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
          {
              FILE_RENAME_INFORMATION *info = ptr;
              UNICODE_STRING name_str, redir;
@@ -157,7 +153,7 @@ index c033bb0..5b84dbd 100644
  
              name_str.Buffer = info->FileName;
              name_str.Length = info->FileNameLength;
-@@ -4536,7 +4594,7 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4541,7 +4599,7 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
              InitializeObjectAttributes( &attr, &name_str, OBJ_CASE_INSENSITIVE, info->RootDirectory, NULL );
              get_redirect( &attr, &redir );
  
@@ -166,7 +162,7 @@ index c033bb0..5b84dbd 100644
              if (io->u.Status == STATUS_SUCCESS || io->u.Status == STATUS_NO_SUCH_FILE)
              {
                  SERVER_START_REQ( set_fd_name_info )
-@@ -4544,15 +4602,18 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4549,15 +4607,18 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
                      req->handle   = wine_server_obj_handle( handle );
                      req->rootdir  = wine_server_obj_handle( attr.RootDirectory );
                      req->namelen  = attr.ObjectName->Length;
@@ -185,7 +181,7 @@ index c033bb0..5b84dbd 100644
              }
              free( redir.Buffer );
          }
-@@ -4564,8 +4625,8 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4569,8 +4630,8 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
          {
              FILE_LINK_INFORMATION *info = ptr;
              UNICODE_STRING name_str, redir;
@@ -195,7 +191,7 @@ index c033bb0..5b84dbd 100644
  
              name_str.Buffer = info->FileName;
              name_str.Length = info->FileNameLength;
-@@ -4573,7 +4634,7 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4578,7 +4639,7 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
              InitializeObjectAttributes( &attr, &name_str, OBJ_CASE_INSENSITIVE, info->RootDirectory, NULL );
              get_redirect( &attr, &redir );
  
@@ -204,7 +200,7 @@ index c033bb0..5b84dbd 100644
              if (io->u.Status == STATUS_SUCCESS || io->u.Status == STATUS_NO_SUCH_FILE)
              {
                  SERVER_START_REQ( set_fd_name_info )
-@@ -4581,15 +4642,18 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4586,15 +4647,18 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
                      req->handle   = wine_server_obj_handle( handle );
                      req->rootdir  = wine_server_obj_handle( attr.RootDirectory );
                      req->namelen  = attr.ObjectName->Length;
@@ -224,10 +220,10 @@ index c033bb0..5b84dbd 100644
              free( redir.Buffer );
          }
 diff --git a/server/fd.c b/server/fd.c
-index e7253ec..dcb7361 100644
+index b953da2..0cb7729 100644
 --- a/server/fd.c
 +++ b/server/fd.c
-@@ -2485,11 +2485,14 @@ static void set_fd_disposition( struct fd *fd, int unlink )
+@@ -2502,11 +2502,14 @@ static void set_fd_disposition( struct fd *fd, int unlink )
  
  /* set new name for the fd */
  static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr, data_size_t len,
@@ -244,7 +240,7 @@ index e7253ec..dcb7361 100644
  
      if (!fd->inode || !fd->unix_name)
      {
-@@ -2523,6 +2526,22 @@ static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr, da
+@@ -2540,6 +2543,22 @@ static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr, da
          name = combined_name;
      }
  
@@ -267,7 +263,7 @@ index e7253ec..dcb7361 100644
      /* when creating a hard link, source cannot be a dir */
      if (create_link && !fstat( fd->unix_fd, &st ) && S_ISDIR( st.st_mode ))
      {
-@@ -2535,47 +2554,61 @@ static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr, da
+@@ -2552,47 +2571,61 @@ static void set_fd_name( struct fd *fd, struct fd *root, const char *nameptr, da
          if (!fstat( fd->unix_fd, &st2 ) && st.st_ino == st2.st_ino && st.st_dev == st2.st_dev)
          {
              if (create_link && !replace) set_error( STATUS_OBJECT_NAME_COLLISION );
@@ -356,7 +352,7 @@ index e7253ec..dcb7361 100644
      if (create_link)
      {
          if (link( fd->unix_name, name ))
-@@ -2876,16 +2909,19 @@ DECL_HANDLER(set_fd_disp_info)
+@@ -2929,16 +2962,19 @@ DECL_HANDLER(set_fd_disp_info)
  /* set fd name information */
  DECL_HANDLER(set_fd_name_info)
  {
@@ -377,7 +373,7 @@ index e7253ec..dcb7361 100644
  
      if (req->rootdir)
      {
-@@ -2899,8 +2935,8 @@ DECL_HANDLER(set_fd_name_info)
+@@ -2952,8 +2988,8 @@ DECL_HANDLER(set_fd_name_info)
  
      if ((fd = get_handle_fd_obj( current->process, req->handle, 0 )))
      {
@@ -389,10 +385,10 @@ index e7253ec..dcb7361 100644
      }
      if (root_fd) release_object( root_fd );
 diff --git a/server/protocol.def b/server/protocol.def
-index 4239be8..bc7b154 100644
+index b4049eb..d546226 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -3533,9 +3533,11 @@ struct handle_info
+@@ -3537,9 +3537,11 @@ struct handle_info
      obj_handle_t handle;          /* handle to a file or directory */
      obj_handle_t rootdir;         /* root directory */
      data_size_t  namelen;         /* length of NT name in bytes */
@@ -406,5 +402,5 @@ index 4239be8..bc7b154 100644
  
 
 -- 
-2.30.0
+2.31.1
 

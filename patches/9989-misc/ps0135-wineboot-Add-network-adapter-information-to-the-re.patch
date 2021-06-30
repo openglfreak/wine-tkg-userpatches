@@ -1,0 +1,218 @@
+From: Haoyang Chen <chenhaoyang@uniontech.com>
+Subject: [PATCH] wineboot: Add network adapter information to the registry.
+Message-Id: <20210715070941.16629-1-chenhaoyang@uniontech.com>
+Date: Thu, 15 Jul 2021 15:09:41 +0800
+
+Signed-off-by: Haoyang Chen <chenhaoyang@uniontech.com>
+---
+ loader/wine.inf.in            |   7 ++
+ programs/wineboot/Makefile.in |   2 +-
+ programs/wineboot/wineboot.c  | 119 ++++++++++++++++++++++++++++++++++
+ 3 files changed, 127 insertions(+), 1 deletion(-)
+
+diff --git a/loader/wine.inf.in b/loader/wine.inf.in
+index 49e4f45da27..1f9e964d060 100644
+--- a/loader/wine.inf.in
++++ b/loader/wine.inf.in
+@@ -41,6 +41,7 @@ AddReg=\
+     Fonts,\
+     MCI,\
+     Misc,\
++    Network,\
+     Nls,\
+     OLE,\
+     Printing,\
+@@ -65,6 +66,7 @@ AddReg=\
+     Fonts,\
+     MCI,\
+     Misc,\
++    Network,\
+     Nls,\
+     OLE,\
+     Printing,\
+@@ -92,6 +94,7 @@ AddReg=\
+     Fonts,\
+     MCI,\
+     Misc,\
++    Network,\
+     Nls,\
+     OLE,\
+     Printing,\
+@@ -119,6 +122,7 @@ AddReg=\
+     Fonts,\
+     MCI,\
+     Misc,\
++    Network,\
+     Nls,\
+     OLE,\
+     Printing,\
+@@ -764,6 +768,9 @@ HKCU,Software\Microsoft\Windows\Shell\Associations\UrlAssociations\ftp\UserChoic
+ HKCU,Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice,"ProgId",,"http"
+ HKCU,Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice,"ProgId",,"https"
+ 
++[Network]
++HKLM,System\CurrentControlSet\Control\Network\{4D36E972-E325-11CE-BFC1-08002BE10318}
++
+ [Nls]
+ HKLM,System\CurrentControlSet\Control\Nls\Language,"0401",,"l_intl.nls"
+ HKLM,System\CurrentControlSet\Control\Nls\Language,"0402",,"l_intl.nls"
+diff --git a/programs/wineboot/Makefile.in b/programs/wineboot/Makefile.in
+index 0a1f5e4152f..5cb778f65cc 100644
+--- a/programs/wineboot/Makefile.in
++++ b/programs/wineboot/Makefile.in
+@@ -1,6 +1,6 @@
+ MODULE    = wineboot.exe
+ APPMODE   = -mconsole
+-IMPORTS   = uuid advapi32 ws2_32 kernelbase setupapi
++IMPORTS   = uuid advapi32 ws2_32 kernelbase setupapi oleaut32 ole32
+ DELAYIMPORTS = shell32 shlwapi version user32 newdev wininet bcrypt
+ 
+ EXTRADLLFLAGS = -mno-cygwin
+diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
+index 92276fcbe76..1d3a43fedff 100644
+--- a/programs/wineboot/wineboot.c
++++ b/programs/wineboot/wineboot.c
+@@ -79,6 +79,8 @@
+ #include <setupapi.h>
+ #include <newdev.h>
+ #include "resource.h"
++#include "initguid.h"
++#include <wbemcli.h>
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(wineboot);
+ 
+@@ -1586,6 +1588,122 @@ done:
+     return ret;
+ }
+ 
++static HRESULT query_property(IWbemClassObject *obj, const WCHAR *prop, WCHAR *buf, DWORD bufLen )
++{
++    CIMTYPE type = 0xdeadbeef;
++    VARIANT val;
++    HRESULT hr = S_OK;
++
++    if (!buf || !bufLen) return WBEM_E_INVALID_QUERY;
++
++    VariantInit( &val );
++    hr = IWbemClassObject_Get( obj, prop, 0, &val, &type, NULL );
++    if (hr != S_OK) return hr;
++
++    if (V_VT(&val) == VT_BSTR)
++        wcscpy(buf,V_BSTR(&val));
++    else
++        hr = WBEM_E_INVALID_QUERY_TYPE;
++    VariantClear( &val );
++    return hr;
++}
++
++static void insert_adapter(HKEY hkey, IWbemClassObject *obj)
++{
++    WCHAR value[MAX_PATH];
++    WCHAR connection[MAX_PATH];
++    HKEY subhkey;
++    LSTATUS status;
++    static int index = 0;
++
++    if (S_OK != query_property( obj, L"GUID", value, ARRAYSIZE(value)))
++        return;
++
++    swprintf( connection, ARRAYSIZE(connection), L"%s\\Connection", value);
++
++    if ((status = RegCreateKeyExW( hkey, connection, 0, NULL, REG_OPTION_VOLATILE, KEY_ALL_ACCESS, NULL, &subhkey, NULL )))
++        return;
++    set_reg_value_dword(subhkey, L"DefaultNameIndex", index++);
++    set_reg_value_dword(subhkey, L"DefaultNameResourceId", 0x709); /* FIXME */
++
++    if (S_OK == query_property( obj, L"Name", value, ARRAYSIZE(value)))
++        set_reg_value(subhkey, L"Name", value);
++    if (S_OK == query_property( obj, L"PNPDeviceID", value, ARRAYSIZE(value)))
++        set_reg_value(subhkey, L"PnpInstanceID", value);
++    RegCloseKey( subhkey );
++}
++
++static void update_networkAdapter(void)
++{
++    BSTR wql = SysAllocString( L"wql" ), query = SysAllocString( L"SELECT * FROM Win32_NetworkAdapter" );
++    IEnumWbemClassObject *result = NULL;
++    IWbemClassObject *obj = NULL;
++    HRESULT hr = S_OK;
++    DWORD count = 0;
++    BSTR path = SysAllocString( L"ROOT\\CIMV2" );
++    IWbemLocator *locator = NULL;
++    IWbemServices *services = NULL;
++    HKEY key;
++
++    CoInitialize( NULL );
++
++    if (RegOpenKeyW( HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}", &key ))
++    {
++        WINE_WARN("can't open network adapter registry.\n");
++        goto done;
++    }
++
++    CoInitializeSecurity( NULL, -1, NULL, NULL, RPC_C_AUTHN_LEVEL_DEFAULT,
++                      RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE, NULL );
++    hr = CoCreateInstance( &CLSID_WbemLocator, NULL, CLSCTX_INPROC_SERVER, &IID_IWbemLocator,
++                       (void **)&locator );
++    if (hr != S_OK)
++    {
++        WINE_TRACE("can't create instance of WbemLocator\n");
++        goto done;
++    }
++    hr = IWbemLocator_ConnectServer( locator, path, NULL, NULL, NULL, 0, NULL, NULL, &services );
++    if (hr != S_OK)
++    {
++        WINE_TRACE( "failed to get IWbemServices interface %08x\n", hr );
++        goto done;
++    }
++
++    hr = CoSetProxyBlanket( (IUnknown *)services, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL,
++                        RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE );
++    if (hr != S_OK)
++    {
++        WINE_TRACE( "failed to set proxyBlanket %08x\n", hr );
++        goto done;
++    }
++    hr = IWbemServices_ExecQuery( services, wql, query, 0, NULL, &result );
++    if (hr != S_OK)
++    {
++        WINE_TRACE( "failed to exec query %08x\n", hr );
++        goto done;
++    }
++
++    for (;;)
++    {
++        hr = IEnumWbemClassObject_Next( result, 10000, 1, &obj, &count );
++        if (hr != S_OK) break;
++
++        insert_adapter(key, obj);
++
++        IWbemClassObject_Release( obj );
++    }
++
++done:
++    if (result) IEnumWbemClassObject_Release( result );
++    if (query) SysFreeString( query );
++    if (wql) SysFreeString( wql );
++    if (path) SysFreeString( path );
++    if (services) IWbemServices_Release( services );
++    if (locator) IWbemLocator_Release( locator );
++    RegCloseKey( key );
++    CoUninitialize();
++}
++
+ static void usage( int status )
+ {
+     WINE_MESSAGE( "Usage: wineboot [options]\n" );
+@@ -1713,6 +1831,7 @@ int __cdecl main( int argc, char *argv[] )
+     if (init || update) update_wineprefix( update );
+ 
+     create_volatile_environment_registry_key();
++    update_networkAdapter();
+     create_proxy_settings();
+ 
+     ProcessRunKeys( HKEY_LOCAL_MACHINE, L"RunOnce", TRUE, TRUE );
+
+-- 
+2.20.1
+

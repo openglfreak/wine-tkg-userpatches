@@ -1,0 +1,101 @@
+From d9dca3b0f08954779936cd20915c7fb7d6e43bd8 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Fri, 23 Jul 2021 19:34:16 +0200
+Subject: [PATCH 2/2] [HACK] ntdll: Round wait time in NtDelayExecution to 0.25 ms.
+
+---
+ dlls/ntdll/unix/sync.c | 40 +++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 37 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index 2cd73d4d2ed..500ee41081b 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -2765,7 +2765,36 @@ NTSTATUS WINAPI NtYieldExecution(void)
+ }
+ 
+ 
+-static NTSTATUS delay_execution( const LARGE_INTEGER *timeout )
++static inline void round_timeout( LARGE_INTEGER *timeout, const LARGE_INTEGER *now, DWORD round_to )
++{
++    BOOLEAN relative;
++    LARGE_INTEGER now2;
++
++    if (!round_to || !timeout || !timeout->QuadPart || timeout->QuadPart == TIMEOUT_INFINITE) return;
++
++    if (!(relative = (timeout->QuadPart < 0)))
++    {
++        if (now) now2 = *now;
++        else NtQuerySystemTime( &now2 );
++        timeout->QuadPart -= now2.QuadPart;
++    }
++
++    if (timeout->QuadPart < 0)
++    {
++        timeout->QuadPart -= (round_to - 1);
++        timeout->QuadPart += (-timeout->QuadPart) % round_to;
++    }
++    else if (timeout->QuadPart > 0)
++    {
++        timeout->QuadPart += (round_to - 1);
++        timeout->QuadPart -= timeout->QuadPart % round_to;
++    }
++
++    if (!relative) timeout->QuadPart += now2.QuadPart;
++}
++
++
++static NTSTATUS delay_execution( const LARGE_INTEGER *timeout, DWORD round_to )
+ {
+     if (!timeout || timeout->QuadPart == TIMEOUT_INFINITE)  /* sleep forever */
+     {
+@@ -2774,11 +2803,13 @@ static NTSTATUS delay_execution( const LARGE_INTEGER *timeout )
+     else
+     {
+         LARGE_INTEGER now;
++        LARGE_INTEGER rounded_timeout = *timeout;
+         timeout_t when, diff;
+ 
+-        if ((when = timeout->QuadPart) < 0)
++        NtQuerySystemTime( &now );
++        round_timeout( &rounded_timeout, &now, round_to );
++        if ((when = rounded_timeout.QuadPart) < 0)
+         {
+-            NtQuerySystemTime( &now );
+             when = now.QuadPart - when;
+         }
+ 
+@@ -2809,23 +2840,26 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
+     /* if alertable, we need to query the server */
+     if (alertable)
+     {
++        LARGE_INTEGER rounded_timeout = *timeout;
++        round_timeout( &rounded_timeout, NULL, 2500 );
++
+         if (do_fsync())
+         {
+-            NTSTATUS ret = fsync_wait_objects( 0, NULL, TRUE, TRUE, timeout );
++            NTSTATUS ret = fsync_wait_objects( 0, NULL, TRUE, TRUE, &rounded_timeout );
+             if (ret != STATUS_NOT_IMPLEMENTED)
+                 return ret;
+         }
+ 
+         if (do_esync())
+         {
+-            NTSTATUS ret = esync_wait_objects( 0, NULL, TRUE, TRUE, timeout );
++            NTSTATUS ret = esync_wait_objects( 0, NULL, TRUE, TRUE, &rounded_timeout );
+             if (ret != STATUS_NOT_IMPLEMENTED)
+                 return ret;
+         }
+ 
+-        return server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &timeout );
++        return server_wait( NULL, 0, SELECT_INTERRUPTIBLE | SELECT_ALERTABLE, &rounded_timeout );
+     }
+-    return delay_execution( timeout );
++    return delay_execution( timeout, 2500 );
+ }
+ 
+ 
+-- 
+2.32.0
+

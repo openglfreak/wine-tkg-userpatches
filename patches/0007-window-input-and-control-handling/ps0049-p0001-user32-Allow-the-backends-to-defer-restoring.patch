@@ -1,0 +1,46 @@
+From 161125b0512b8fa2dd0dd2b9e9b842402d7fd516 Mon Sep 17 00:00:00 2001
+From: Arkadiusz Hiler <ahiler@codeweavers.com>
+Date: Fri, 2 Jul 2021 16:01:28 +0300
+Subject: [PATCH 1/2] user32: Allow the backends to defer restoring minimized
+ windows.
+
+When restoring a minimized window the WM_SYSCOMMAND SC_RESTORE message
+should arrive after WM_NCACTIVATE but before WM_ACTIVATE and WM_SETFOCUS.
+
+Some games depend on that ordering and the related window state.
+
+For example Project CARS 3 expects window to be both active and in the
+foreground (wrt GetActiveWindow() and GetForegroundWindow()) when
+receiving those messages.
+
+Without being active the window doesn't restore properly, see
+82c6ec3a32f4 ("winex11.drv: Activate window when restoring from iconic state.")
+
+But if the activate messages arrive before the window is in the
+foreground, the game tries to re-acquire DirectInput DISCL_FOREGROUND
+devices too early and fails, which results in non-working keyboards and
+controllers.
+
+CW-Bug-Id: #19011
+---
+ dlls/user32/focus.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/dlls/user32/focus.c b/dlls/user32/focus.c
+index 5125dcfd6ba..2eaf6238b98 100644
+--- a/dlls/user32/focus.c
++++ b/dlls/user32/focus.c
+@@ -148,6 +148,13 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+     if (IsWindow(hwnd))
+     {
+         SendMessageW( hwnd, WM_NCACTIVATE, (hwnd == GetForegroundWindow()), (LPARAM)previous );
++
++        if (GetPropW( hwnd, L"__WINE_RESTORE_WINDOW" ))
++        {
++            SetPropW( hwnd, L"__WINE_RESTORE_WINDOW", NULL );
++            SendMessageW( hwnd, WM_SYSCOMMAND, SC_RESTORE, 0 );
++        }
++
+         SendMessageW( hwnd, WM_ACTIVATE,
+                       MAKEWPARAM( mouse ? WA_CLICKACTIVE : WA_ACTIVE, IsIconic(hwnd) ),
+                       (LPARAM)previous );

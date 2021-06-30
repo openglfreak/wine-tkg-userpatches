@@ -1,0 +1,75 @@
+From: Dmitry Timoshkov <dmitry@baikal.ru>
+Subject: [PATCH] shell32: Implement SHBindToObject.
+Message-Id: <20210715113859.abe2384e4f53c878f696ff7e@baikal.ru>
+Date: Thu, 15 Jul 2021 11:38:59 +0300
+
+Based on SHBindToParent implementation.
+
+Signed-off-by: Dmitry Timoshkov <dmitry@baikal.ru>
+---
+ dlls/shell32/pidl.c       | 35 +++++++++++++++++++++++++++++++++++
+ dlls/shell32/shell32.spec |  1 +
+ 2 files changed, 36 insertions(+)
+
+diff --git a/dlls/shell32/pidl.c b/dlls/shell32/pidl.c
+index e2746deb483..c831b6da6f7 100644
+--- a/dlls/shell32/pidl.c
++++ b/dlls/shell32/pidl.c
+@@ -1333,6 +1333,41 @@ HRESULT WINAPI SHBindToParent(LPCITEMIDLIST pidl, REFIID riid, LPVOID *ppv, LPCI
+     return hr;
+ }
+ 
++HRESULT WINAPI SHBindToObject(IShellFolder *psf, LPCITEMIDLIST pidl, IBindCtx *pbc, REFIID riid, void **ppv)
++{
++    IShellFolder *psfDesktop = NULL;
++    HRESULT hr;
++
++    TRACE_(shell)("%p,%p,%p,%s,%p\n", psf, pidl, pbc, debugstr_guid(riid), ppv);
++    pdump(pidl);
++
++    if (!ppv)
++        return E_INVALIDARG;
++
++    *ppv = NULL;
++
++    if (!psf)
++    {
++        hr = SHGetDesktopFolder(&psfDesktop);
++        if (FAILED(hr))
++            return hr;
++        psf = psfDesktop;
++    }
++
++    if (_ILIsPidlSimple(pidl))
++        /* we are on desktop level */
++        hr = IShellFolder_QueryInterface(psf, riid, ppv);
++    else
++        hr = IShellFolder_BindToObject(psf, pidl, pbc, riid, ppv);
++
++    if (psfDesktop)
++        IShellFolder_Release(psfDesktop);
++
++    TRACE_(shell)("-- ppv=%p ret=0x%08x\n", *ppv, hr);
++    return hr;
++}
++
++
+ /*************************************************************************
+  * SHParseDisplayName             [SHELL32.@]
+  */
+diff --git a/dlls/shell32/shell32.spec b/dlls/shell32/shell32.spec
+index d4571212cee..f8bf8f246e8 100644
+--- a/dlls/shell32/shell32.spec
++++ b/dlls/shell32/shell32.spec
+@@ -332,6 +332,7 @@
+ @ stdcall SHAddToRecentDocs (long ptr)
+ @ stdcall SHAppBarMessage(long ptr)
+ @ stdcall SHAssocEnumHandlers(wstr long ptr)
++@ stdcall SHBindToObject(ptr ptr ptr ptr ptr)
+ @ stdcall SHBindToParent(ptr ptr ptr ptr)
+ @ stdcall SHBrowseForFolder(ptr) SHBrowseForFolderA
+ @ stdcall SHBrowseForFolderA(ptr)
+
+-- 
+2.31.1
+

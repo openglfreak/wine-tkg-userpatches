@@ -1,0 +1,199 @@
+From: Patrick Hibbs <hibbsncc1701@gmail.com>
+Subject: [PATCH 1/2] ntdll: Implement RtlDefaultNpAcl
+Message-Id: <20210624200645.273877-1-hibbsncc1701@gmail.com>
+Date: Thu, 24 Jun 2021 16:06:44 -0400
+
+Signed-off-by: Patrick Hibbs <hibbsncc1701@gmail.com>
+---
+ dlls/ntdll/sec.c | 171 ++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 169 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/sec.c b/dlls/ntdll/sec.c
+index eccfc82ce8c..448b0b7def6 100644
+--- a/dlls/ntdll/sec.c
++++ b/dlls/ntdll/sec.c
+@@ -1721,11 +1721,178 @@ NTSTATUS WINAPI RtlConvertToAutoInheritSecurityObject(
+ 
+ /******************************************************************************
+  * RtlDefaultNpAcl (NTDLL.@)
++ *
++ *  Constructs a default ACL with the following entries:
++ *      Local System: Full Control
++ *      Administrators: Full Control
++ *      World: Read Only
++ *      Anonymous: Read Only
++ *      Owner: Full Control
++ *
++ *      'Owner' is determined by the current effective
++ *      thread token's default owner. (Or process token if
++ *      the thread token cannot be retrieved.)
++ *
++ *      Returns STATUS_SUCCESS if successful.
++ *      Generates EXCEPTION_ACCESS_VIOLATION if pAcl is NULL.
+  */
+ NTSTATUS WINAPI RtlDefaultNpAcl(PACL *pAcl)
+ {
+-    FIXME("%p - stub\n", pAcl);
++    PACL new_acl = NULL;
++    PSID new_sid = NULL;
++    DWORD acl_length = 0;
++    ULONG owner_sid_length = 0;
++    PTOKEN_OWNER owner = NULL;
++    HANDLE token = NULL;
++    SID_IDENTIFIER_AUTHORITY local_auth = {SECURITY_NT_AUTHORITY};
++    SID_IDENTIFIER_AUTHORITY world_auth = {SECURITY_WORLD_SID_AUTHORITY};
++    NTSTATUS ret;
++
++    TRACE("pAcl=%p\n", pAcl);
+ 
+     *pAcl = NULL;
+-    return STATUS_SUCCESS;
++
++    new_sid = RtlAllocateHeap(GetProcessHeap(), 0, SECURITY_MAX_SID_SIZE);
++    if (new_sid)
++    {
++        ret = NtOpenThreadToken(GetCurrentThread(),
++                                TOKEN_QUERY,
++                                TRUE,
++                                &token);
++        if (ret == STATUS_NO_TOKEN)
++        {
++            ret = NtOpenProcessToken(GetCurrentProcess(),
++                                     TOKEN_QUERY,
++                                     &token);
++            if (!NT_SUCCESS(ret))
++            {
++                RtlFreeHeap(GetProcessHeap(), 0, new_sid);
++                return ret;
++            }
++        }
++
++        /* Get the length of the owner's SID. */
++        ret = NtQueryInformationToken(token,
++                                      TokenOwner,
++                                      NULL,
++                                      0,
++                                      &owner_sid_length);
++        if (ret == STATUS_BUFFER_TOO_SMALL)
++        {
++            owner = RtlAllocateHeap(GetProcessHeap(), 0, owner_sid_length);
++            if (owner)
++            {
++                /* Actually get the owner's SID. */
++                ret = NtQueryInformationToken(token,
++                                              TokenOwner,
++                                              owner,
++                                              owner_sid_length,
++                                              &owner_sid_length);
++                if (NT_SUCCESS(ret))
++                {
++                    acl_length = sizeof(ACL) +
++                        (5 * sizeof(ACCESS_ALLOWED_ACE)) +
++                        RtlLengthRequiredSid(1) +   /* Local System */
++                        RtlLengthRequiredSid(2) +   /* Administrators */
++                        RtlLengthRequiredSid(1) +   /* World */
++                        RtlLengthRequiredSid(1) +   /* Anonymous */
++                        RtlLengthSid(owner->Owner); /* Owner */
++
++                    new_acl = RtlAllocateHeap(GetProcessHeap(), 0, acl_length);
++                    if (new_acl)
++                    {
++                        ret = RtlCreateAcl(new_acl, acl_length, MIN_ACL_REVISION);
++                        if (NT_SUCCESS(ret))
++                        {
++                            ret = RtlInitializeSid(new_sid,
++                                                   &local_auth,
++                                                   1);
++                            if (NT_SUCCESS(ret))
++                            {
++                                *RtlSubAuthoritySid(new_sid, 0) = SECURITY_LOCAL_SYSTEM_RID;
++                                ret = RtlAddAccessAllowedAce(new_acl,
++                                                             MIN_ACL_REVISION,
++                                                             GENERIC_ALL,
++                                                             new_sid);
++                                if (NT_SUCCESS(ret))
++                                {
++                                    ret = RtlInitializeSid(new_sid,
++                                                           &local_auth,
++                                                           2);
++                                    if (NT_SUCCESS(ret))
++                                    {
++                                        *RtlSubAuthoritySid(new_sid, 0) = SECURITY_BUILTIN_DOMAIN_RID;
++                                        *RtlSubAuthoritySid(new_sid, 1) = DOMAIN_ALIAS_RID_ADMINS;
++                                        ret = RtlAddAccessAllowedAce(new_acl,
++                                                                     MIN_ACL_REVISION,
++                                                                     GENERIC_ALL,
++                                                                     new_sid);
++                                        if (NT_SUCCESS(ret))
++                                        {
++                                            ret = RtlInitializeSid(new_sid,
++                                                                   &world_auth,
++                                                                   1);
++                                            if (NT_SUCCESS(ret))
++                                            {
++                                                *RtlSubAuthoritySid(new_sid, 0) = SECURITY_WORLD_RID;
++                                                ret = RtlAddAccessAllowedAce(new_acl,
++                                                                             MIN_ACL_REVISION,
++                                                                             GENERIC_READ,
++                                                                             new_sid);
++                                                if (NT_SUCCESS(ret))
++                                                {
++                                                    ret = RtlInitializeSid(new_sid,
++                                                                           &local_auth,
++                                                                           1);
++                                                    if (NT_SUCCESS(ret))
++                                                    {
++                                                        *RtlSubAuthoritySid(new_sid, 0) = SECURITY_ANONYMOUS_LOGON_RID;
++                                                        ret = RtlAddAccessAllowedAce(new_acl,
++                                                                                     MIN_ACL_REVISION,
++                                                                                     GENERIC_READ,
++                                                                                     new_sid);
++                                                        if (NT_SUCCESS(ret))
++                                                        {
++                                                            ret = RtlAddAccessAllowedAce(new_acl,
++                                                                                         MIN_ACL_REVISION,
++                                                                                         GENERIC_ALL,
++                                                                                         owner->Owner);
++                                                            if (NT_SUCCESS(ret))
++                                                            {
++                                                                *pAcl = new_acl;
++                                                            }
++                                                        }
++                                                    }
++                                                }
++                                            }
++                                        }
++                                    }
++                                }
++                            }
++                        }
++                    }
++                    else
++                        ret = STATUS_NO_MEMORY;
++                }
++            }
++            else
++                ret = STATUS_NO_MEMORY;
++        }
++    }
++    else
++        ret = STATUS_NO_MEMORY;
++
++    if (new_sid)
++        RtlFreeHeap(GetProcessHeap(), 0, new_sid);
++
++    if (owner)
++        RtlFreeHeap(GetProcessHeap(), 0, owner);
++
++    if ((!NT_SUCCESS(ret)) && (new_acl))
++        RtlFreeHeap(GetProcessHeap(), 0, new_acl);
++
++    if (token)
++        NtClose(token);
++
++    return ret;
+ }
+
+-- 
+2.32.0
+

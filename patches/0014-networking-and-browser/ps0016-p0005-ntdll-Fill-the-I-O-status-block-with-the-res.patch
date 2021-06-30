@@ -1,0 +1,65 @@
+From: Zebediah Figura <zfigura@codeweavers.com>
+Subject: [PATCH 5/6] ntdll: Fill the I/O status block with the results of the send_socket call in sock_send().
+Message-Id: <20210724235432.25471-5-zfigura@codeweavers.com>
+Date: Sat, 24 Jul 2021 18:54:31 -0500
+In-Reply-To: <20210724235432.25471-1-zfigura@codeweavers.com>
+References: <20210724235432.25471-1-zfigura@codeweavers.com>
+
+The server might change the status. In particular, if we got a short but nonzero
+write on a nonblocking socket, try_send() would return STATUS_DEVICE_NOT_READY
+and hence leave the I/O status block unfilled. The server subsequently massages
+this into STATUS_SUCCESS, causing a garbage size to be eventually returned from
+ws2_32 send().
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=51439
+Signed-off-by: Zebediah Figura <zfigura@codeweavers.com>
+---
+Despite the comment, I'd open to filling the IOSB in sock_transmit() anyway.
+
+ dlls/ntdll/unix/socket.c | 15 +++++++++------
+ 1 file changed, 9 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index 6b863fd61f0..e29dc7f66d1 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -922,12 +922,6 @@ static NTSTATUS sock_send( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
+     if (status == STATUS_DEVICE_NOT_READY && force_async)
+         status = STATUS_PENDING;
+ 
+-    if (!NT_ERROR(status))
+-    {
+-        io->Status = status;
+-        io->Information = async->sent_len;
+-    }
+-
+     SERVER_START_REQ( send_socket )
+     {
+         req->status = status;
+@@ -936,6 +930,11 @@ static NTSTATUS sock_send( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
+         status = wine_server_call( req );
+         wait_handle = wine_server_ptr_handle( reply->wait );
+         options     = reply->options;
++        if ((!NT_ERROR(status) || wait_handle) && status != STATUS_PENDING)
++        {
++            io->Status = status;
++            io->Information = async->sent_len;
++        }
+     }
+     SERVER_END_REQ;
+ 
+@@ -1111,6 +1110,10 @@ static NTSTATUS sock_transmit( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc,
+         status = wine_server_call( req );
+         wait_handle = wine_server_ptr_handle( reply->wait );
+         options     = reply->options;
++        /* In theory we'd fill the iosb here, as above in sock_send(), but it's
++         * actually currently impossible to get STATUS_SUCCESS. The server will
++         * either return STATUS_PENDING or an error code, and in neither case
++         * should the iosb be filled. */
+     }
+     SERVER_END_REQ;
+ 
+
+-- 
+2.30.2
+

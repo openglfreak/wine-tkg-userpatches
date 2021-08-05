@@ -1,7 +1,7 @@
 From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
-Subject: [PATCH resend] ntdll: Allow renaming a file/directory to a different case of itself.
-Message-Id: <274579217837674d45f6f25caa7092dc46f65113.1626802784.git.gabrielopcode@gmail.com>
-Date: Tue, 20 Jul 2021 20:40:01 +0300
+Subject: [PATCH v13] ntdll: Allow renaming a file/directory to a different case of itself.
+Message-Id: <3132dfe908926170089074250eb1c60eef414e84.1627482031.git.gabrielopcode@gmail.com>
+Date: Wed, 28 Jul 2021 17:26:37 +0300
 
 Renaming a file or directory from e.g. foobar to FooBar (or any other case
 change) should work, like on Windows, instead of being a no-op. Clobbering
@@ -10,25 +10,12 @@ an existing file must also respect the new case.
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=46203
 Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
 ---
-
-To simplify the code and avoid another trailing slash quirk, the case is
-not sent if the conversion fails (which keeps current behavior), because
-it should be very rare in practice so it's not worth the extra complication
-that doesn't really bring any benefit to begin with.
-
-Note that the server has to check for caselen == 0; it's not due to errors,
-it's due to the path mapping to a device or unix root directory. In this
-case, there is no such thing as "last component" because there are no
-components at all, so obviously there's no case to replace with. Handling
-the rare error above with the same code is just an implicit side effect
-without adding any extra code, so I see it as a bonus.
-
  dlls/kernel32/tests/file.c |   4 +-
  dlls/ntdll/tests/file.c    |   4 +-
- dlls/ntdll/unix/file.c     |  72 ++++++++++++++++++++++++--
+ dlls/ntdll/unix/file.c     |  58 ++++++++++++++++++++-
  server/fd.c                | 100 +++++++++++++++++++++++++------------
  server/protocol.def        |   2 +
- 5 files changed, 142 insertions(+), 40 deletions(-)
+ 5 files changed, 130 insertions(+), 38 deletions(-)
 
 diff --git a/dlls/kernel32/tests/file.c b/dlls/kernel32/tests/file.c
 index ea0a32f..15bfc13 100644
@@ -75,30 +62,23 @@ index 19ae5f2..c6178d3 100644
      }
  
 diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
-index 977b0df..c033ffd 100644
+index 10cbd64..cf61e06 100644
 --- a/dlls/ntdll/unix/file.c
 +++ b/dlls/ntdll/unix/file.c
-@@ -3426,6 +3426,64 @@ NTSTATUS nt_to_unix_file_name( const OBJECT_ATTRIBUTES *attr, char **name_ret, U
+@@ -3595,6 +3595,52 @@ NTSTATUS CDECL wine_unix_to_nt_file_name( const char *name, WCHAR *buffer, SIZE_
  }
  
  
 +/***********************************************************************
-+ *           nt_to_unix_file_name_with_case
++ *           get_filename_case
 + *
-+ * Same as nt_to_unix_file_name, but additionally return unix file name
-+ * without path, with the actual case from the NT name's last component.
++ * Get the unix filename, with the case from NT name's last component.
 + */
-+static NTSTATUS nt_to_unix_file_name_with_case( const OBJECT_ATTRIBUTES *attr, char **name_ret,
-+                                                char **case_ret, UINT disposition )
++static char *get_filename_case( const OBJECT_ATTRIBUTES *attr )
 +{
 +    const WCHAR *p, *nt_filename = attr->ObjectName->Buffer;
 +    int len = attr->ObjectName->Length / sizeof(WCHAR);
-+    NTSTATUS status;
 +    char *file_case;
-+
-+    status = nt_to_unix_file_name( attr, name_ret, disposition );
-+    if (status != STATUS_SUCCESS && status != STATUS_NO_SUCH_FILE)
-+        return status;
 +
 +    /* skip the device and prefix (allow slashes for unix namespace) */
 +    if (!attr->RootDirectory)
@@ -125,25 +105,20 @@ index 977b0df..c033ffd 100644
 +    len -= p - nt_filename;
 +    nt_filename = p;
 +
-+    if (!(file_case = malloc( len * 3 + 1 )))
++    if ((file_case = malloc( len * 3 + 1 )))
 +    {
-+        free( *name_ret );
-+        return STATUS_NO_MEMORY;
++        len = ntdll_wcstoumbs( nt_filename, len, file_case, len * 3, TRUE );
++        if (len < 0 || len > MAX_DIR_ENTRY_LEN) len = 0;
++        file_case[len] = 0;
 +    }
-+
-+    len = ntdll_wcstoumbs( nt_filename, len, file_case, len * 3, TRUE );
-+    if (len < 0 || len > MAX_DIR_ENTRY_LEN) len = 0;
-+    file_case[len] = 0;
-+
-+    *case_ret = file_case;
-+    return status;
++    return file_case;
 +}
 +
 +
- /******************************************************************************
-  *           wine_nt_to_unix_file_name
+ /***********************************************************************
+  *           get_full_path
   *
-@@ -4532,8 +4590,8 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4533,8 +4579,8 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
          {
              FILE_RENAME_INFORMATION *info = ptr;
              UNICODE_STRING name_str, redir;
@@ -153,20 +128,17 @@ index 977b0df..c033ffd 100644
  
              name_str.Buffer = info->FileName;
              name_str.Length = info->FileNameLength;
-@@ -4541,7 +4599,7 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
-             InitializeObjectAttributes( &attr, &name_str, OBJ_CASE_INSENSITIVE, info->RootDirectory, NULL );
-             get_redirect( &attr, &redir );
- 
--            io->u.Status = nt_to_unix_file_name( &attr, &unix_name, FILE_OPEN_IF );
-+            io->u.Status = nt_to_unix_file_name_with_case( &attr, &unix_name, &file_case, FILE_OPEN_IF );
+@@ -4545,20 +4591,24 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+             io->u.Status = nt_to_unix_file_name( &attr, &unix_name, FILE_OPEN_IF );
              if (io->u.Status == STATUS_SUCCESS || io->u.Status == STATUS_NO_SUCH_FILE)
              {
++                file_case = get_filename_case( &attr );
                  SERVER_START_REQ( set_fd_name_info )
-@@ -4549,15 +4607,18 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+                 {
                      req->handle   = wine_server_obj_handle( handle );
                      req->rootdir  = wine_server_obj_handle( attr.RootDirectory );
                      req->namelen  = attr.ObjectName->Length;
-+                    req->caselen  = strlen( file_case );
++                    req->caselen  = file_case ? strlen( file_case ) : 0;
                      req->link     = FALSE;
                      req->replace  = info->ReplaceIfExists;
                      wine_server_add_data( req, attr.ObjectName->Buffer, attr.ObjectName->Length );
@@ -181,7 +153,7 @@ index 977b0df..c033ffd 100644
              }
              free( redir.Buffer );
          }
-@@ -4569,8 +4630,8 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4570,8 +4620,8 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
          {
              FILE_LINK_INFORMATION *info = ptr;
              UNICODE_STRING name_str, redir;
@@ -191,20 +163,17 @@ index 977b0df..c033ffd 100644
  
              name_str.Buffer = info->FileName;
              name_str.Length = info->FileNameLength;
-@@ -4578,7 +4639,7 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
-             InitializeObjectAttributes( &attr, &name_str, OBJ_CASE_INSENSITIVE, info->RootDirectory, NULL );
-             get_redirect( &attr, &redir );
- 
--            io->u.Status = nt_to_unix_file_name( &attr, &unix_name, FILE_OPEN_IF );
-+            io->u.Status = nt_to_unix_file_name_with_case( &attr, &unix_name, &file_case, FILE_OPEN_IF );
+@@ -4582,20 +4632,24 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+             io->u.Status = nt_to_unix_file_name( &attr, &unix_name, FILE_OPEN_IF );
              if (io->u.Status == STATUS_SUCCESS || io->u.Status == STATUS_NO_SUCH_FILE)
              {
++                file_case = get_filename_case( &attr );
                  SERVER_START_REQ( set_fd_name_info )
-@@ -4586,15 +4647,18 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+                 {
                      req->handle   = wine_server_obj_handle( handle );
                      req->rootdir  = wine_server_obj_handle( attr.RootDirectory );
                      req->namelen  = attr.ObjectName->Length;
-+                    req->caselen  = strlen( file_case );
++                    req->caselen  = file_case ? strlen( file_case ) : 0;
                      req->link     = TRUE;
                      req->replace  = info->ReplaceIfExists;
                      wine_server_add_data( req, attr.ObjectName->Buffer, attr.ObjectName->Length );

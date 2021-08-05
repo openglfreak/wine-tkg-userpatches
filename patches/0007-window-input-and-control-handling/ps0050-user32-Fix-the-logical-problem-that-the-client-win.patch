@@ -1,0 +1,45 @@
+From: "Haidong Yu" <yhd986@163.com>
+#Subject: [PATCH v2] user32: Fix the logical problem that the client window is  a Unicode window and still goes A->W.
+Message-Id: <52d016e.2aa4.17af6b5a23b.Coremail.yhd986@163.com>
+Date: Fri, 30 Jul 2021 17:18:56 +0800 (CST)
+
+From 15542455bd073662c738bee7c0fe75e243995a45 Mon Sep 17 00:00:00 2001
+From: Pengpeng Dong <dongpengpeng@uniontech.com>
+Date: Fri, 30 Jul 2021 16:53:11 +0800
+Subject: [PATCH v2] user32: Fix the logical problem that the client window is
+ a Unicode window and still goes A->W.
+
+When the server is a Unicode server, the judgment of the client window type encoding is omitted.
+
+Signed-off-by: Pengpeng Dong <dongpengpeng@uniontech.com>
+Change-Id: Ia0d6e800713eaefd2cfc9509bc0948ac345b538c
+---
+ dlls/user32/dde_server.c | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/user32/dde_server.c b/dlls/user32/dde_server.c
+index e11c0c20d3b..6fe87d1ad17 100644
+--- a/dlls/user32/dde_server.c
++++ b/dlls/user32/dde_server.c
+@@ -819,10 +819,13 @@ static	WDML_QUEUE_STATE WDML_ServerHandleExecute(WDML_CONV* pConv, WDML_XACT* pX
+ 
+ 	if (ptr)
+ 	{
+-            if (pConv->instance->unicode)  /* Unicode server, try to map A->W */
+-                hDdeData = map_A_to_W( pConv->instance->instanceID, ptr, size );
+-            else if (!IsWindowUnicode( pConv->hwndClient )) /* ASCII server and client, try to map W->A */
+-                hDdeData = map_W_to_A( pConv->instance->instanceID, ptr, size );
++            if (pConv->instance->unicode != IsWindowUnicode( pConv->hwndClient ))
++            {
++                if (IsWindowUnicode( pConv->hwndClient ))
++                    hDdeData = map_A_to_W( pConv->instance->instanceID, ptr, size ); /* Unicode server, try to map A->W */
++                else
++                    hDdeData = map_W_to_A( pConv->instance->instanceID, ptr, size ); /* ASCII server and client, try to map W->A */
++            }
+             else
+                 hDdeData = DdeCreateDataHandle(pConv->instance->instanceID, ptr, size, 0, 0, CF_TEXT, 0);
+ 	    GlobalUnlock(pXAct->hMem);
+
+-- 
+2.20.1
+

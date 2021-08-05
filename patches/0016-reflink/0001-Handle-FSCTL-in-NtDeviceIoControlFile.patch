@@ -1,0 +1,99 @@
+From: "Alex Xu (Hello71)" <alex_y_xu@yahoo.ca>
+Subject: [PATCH 1/4] Handle FSCTL in NtDeviceIoControlFile.
+Message-Id: <20210725154941.166765-2-alex_y_xu@yahoo.ca>
+Date: Sun, 25 Jul 2021 11:49:38 -0400
+In-Reply-To: <20210725154941.166765-1-alex_y_xu@yahoo.ca>
+References: <20210725154941.166765-1-alex_y_xu@yahoo.ca>
+
+DeviceIoControl check was added in [0]. At that time,
+NtDeviceIoControlFile only supported CDROM. Now, NtDeviceIoControlFile
+handles almost all IOCTLs except files, so it doesn't make sense to
+split this handling.
+
+[0] e5131213f63e6d9bcdeaffe9651ad6cdccec0196
+---
+ dlls/kernel32/file.c   | 25 +++++++------------------
+ dlls/kernelbase/file.c |  8 ++------
+ dlls/ntdll/unix/file.c |  4 ++++
+ 3 files changed, 13 insertions(+), 24 deletions(-)
+
+diff --git a/dlls/kernel32/file.c b/dlls/kernel32/file.c
+index 92022063ecc..4ea6bf4c986 100644
+--- a/dlls/kernel32/file.c
++++ b/dlls/kernel32/file.c
+@@ -423,30 +423,19 @@ BOOL WINAPI DeviceIoControl(HANDLE hDevice, DWORD dwIoControlCode,
+         LPVOID cvalue = ((ULONG_PTR)lpOverlapped->hEvent & 1) ? NULL : lpOverlapped;
+         lpOverlapped->Internal = STATUS_PENDING;
+         lpOverlapped->InternalHigh = 0;
+-        if (HIWORD(dwIoControlCode) == FILE_DEVICE_FILE_SYSTEM)
+-            status = NtFsControlFile(hDevice, lpOverlapped->hEvent,
+-                                     NULL, cvalue, (PIO_STATUS_BLOCK)lpOverlapped,
+-                                     dwIoControlCode, lpvInBuffer, cbInBuffer,
+-                                     lpvOutBuffer, cbOutBuffer);
+-        else
+-            status = NtDeviceIoControlFile(hDevice, lpOverlapped->hEvent,
+-                                           NULL, cvalue, (PIO_STATUS_BLOCK)lpOverlapped,
+-                                           dwIoControlCode, lpvInBuffer, cbInBuffer,
+-                                           lpvOutBuffer, cbOutBuffer);
++        status = NtDeviceIoControlFile(hDevice, lpOverlapped->hEvent,
++                                       NULL, cvalue, (PIO_STATUS_BLOCK)lpOverlapped,
++                                       dwIoControlCode, lpvInBuffer, cbInBuffer,
++                                       lpvOutBuffer, cbOutBuffer);
+         if (lpcbBytesReturned) *lpcbBytesReturned = lpOverlapped->InternalHigh;
+     }
+     else
+     {
+         IO_STATUS_BLOCK iosb;
+ 
+-        if (HIWORD(dwIoControlCode) == FILE_DEVICE_FILE_SYSTEM)
+-            status = NtFsControlFile(hDevice, NULL, NULL, NULL, &iosb,
+-                                     dwIoControlCode, lpvInBuffer, cbInBuffer,
+-                                     lpvOutBuffer, cbOutBuffer);
+-        else
+-            status = NtDeviceIoControlFile(hDevice, NULL, NULL, NULL, &iosb,
+-                                           dwIoControlCode, lpvInBuffer, cbInBuffer,
+-                                           lpvOutBuffer, cbOutBuffer);
++        status = NtDeviceIoControlFile(hDevice, NULL, NULL, NULL, &iosb,
++                                       dwIoControlCode, lpvInBuffer, cbInBuffer,
++                                       lpvOutBuffer, cbOutBuffer);
+         if (lpcbBytesReturned) *lpcbBytesReturned = iosb.Information;
+     }
+     return set_ntstatus( status );
+diff --git a/dlls/kernelbase/file.c b/dlls/kernelbase/file.c
+index e0a75c2ad08..e770bf030ad 100644
+--- a/dlls/kernelbase/file.c
++++ b/dlls/kernelbase/file.c
+@@ -4105,12 +4105,8 @@ BOOL WINAPI DECLSPEC_HOTPATCH DeviceIoControl( HANDLE handle, DWORD code, void *
+         overlapped->InternalHigh = 0;
+     }
+ 
+-    if (HIWORD(code) == FILE_DEVICE_FILE_SYSTEM)
+-        status = NtFsControlFile( handle, event, NULL, cvalue, piosb, code,
+-                                  in_buff, in_count, out_buff, out_count );
+-    else
+-        status = NtDeviceIoControlFile( handle, event, NULL, cvalue, piosb, code,
+-                                        in_buff, in_count, out_buff, out_count );
++    status = NtDeviceIoControlFile( handle, event, NULL, cvalue, piosb, code,
++                                    in_buff, in_count, out_buff, out_count );
+ 
+     if (returned) *returned = piosb->Information;
+     return set_ntstatus( status );
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 10cbd64be70..250fe10180b 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -5727,6 +5727,10 @@ NTSTATUS WINAPI NtDeviceIoControlFile( HANDLE handle, HANDLE event, PIO_APC_ROUT
+ 
+     switch (device)
+     {
++    case FILE_DEVICE_FILE_SYSTEM:
++        status = NtFsControlFile( handle, event, apc, apc_context, io, code,
++                                  in_buffer, in_size, out_buffer, out_size );
++        break;
+     case FILE_DEVICE_BEEP:
+     case FILE_DEVICE_NETWORK:
+         status = sock_ioctl( handle, event, apc, apc_context, io, code, in_buffer, in_size, out_buffer, out_size );
+
+-- 
+2.32.0
+

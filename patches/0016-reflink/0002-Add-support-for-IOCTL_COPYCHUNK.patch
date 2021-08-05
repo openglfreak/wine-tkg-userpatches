@@ -1,0 +1,244 @@
+From: "Alex Xu (Hello71)" <alex_y_xu@yahoo.ca>
+Subject: [PATCH 2/4] Add support for IOCTL_COPYCHUNK.
+Message-Id: <20210725154941.166765-3-alex_y_xu@yahoo.ca>
+Date: Sun, 25 Jul 2021 11:49:39 -0400
+In-Reply-To: <20210725154941.166765-1-alex_y_xu@yahoo.ca>
+References: <20210725154941.166765-1-alex_y_xu@yahoo.ca>
+
+This API really sucks; it's literally just a copy-paste of the SMB
+request. However, there are some benefits over FSCTL_DUPLICATE_EXTENTS_TO_FILE:
+
+1. it's easier to use from setupapi than FSCTL_DUPLICATE_EXTENTS_TO_FILE
+   which can't plausibly be emulated.
+2. on Windows, IOCTL_COPYCHUNK is already called (indirectly) from
+   CopyFile on Windows. see e.g.
+   https://www.ghisler.ch/board/viewtopic.php?t=43945.
+3. copy_file_range allows kernel acceleration.
+4. copy_file_range is supported on FreeBSD.
+---
+# configure              |  1 +
+ configure.ac           |  1 +
+ dlls/ntdll/unix/file.c | 93 ++++++++++++++++++++++++++++++++++++++++++
+ include/config.h.in    |  3 ++
+ include/winioctl.h     | 34 +++++++++++++++
+ 5 files changed, 132 insertions(+)
+
+#diff --git a/configure b/configure
+#index 5e5a1e47318..cff01256d2d 100755
+#--- a/configure
+#+++ b/configure
+#@@ -18039,6 +18039,7 @@ for ac_func in \
+#         __res_get_state \
+#         __res_getservers \
+# 	_spawnvp \
+#+	copy_file_range \
+# 	epoll_create \
+# 	fnmatch \
+# 	fork \
+diff --git a/configure.ac b/configure.ac
+index b5d3217f2a0..e2b9a39249a 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -2177,6 +2177,7 @@ AC_CHECK_FUNCS(\
+         __res_get_state \
+         __res_getservers \
+ 	_spawnvp \
++	copy_file_range \
+ 	epoll_create \
+ 	fnmatch \
+ 	fork \
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 250fe10180b..8d12a542432 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -333,6 +333,7 @@ NTSTATUS errno_to_status( int err )
+     TRACE( "errno = %d\n", err );
+     switch (err)
+     {
++    case 0:         return STATUS_SUCCESS;
+     case EAGAIN:    return STATUS_SHARING_VIOLATION;
+     case EBADF:     return STATUS_INVALID_HANDLE;
+     case EBUSY:     return STATUS_DEVICE_BUSY;
+@@ -364,6 +365,7 @@ NTSTATUS errno_to_status( int err )
+ #endif
+     case ENOEXEC:   /* ?? */
+     case EEXIST:    /* ?? */
++    case ENOMEM:    return STATUS_NO_MEMORY;
+     default:
+         FIXME( "Converting errno %d to STATUS_UNSUCCESSFUL\n", err );
+         return STATUS_UNSUCCESSFUL;
+@@ -5728,6 +5730,7 @@ NTSTATUS WINAPI NtDeviceIoControlFile( HANDLE handle, HANDLE event, PIO_APC_ROUT
+     switch (device)
+     {
+     case FILE_DEVICE_FILE_SYSTEM:
++    case FILE_DEVICE_NETWORK_FILE_SYSTEM:
+         status = NtFsControlFile( handle, event, apc, apc_context, io, code,
+                                   in_buffer, in_size, out_buffer, out_size );
+         break;
+@@ -5868,6 +5871,96 @@ NTSTATUS WINAPI NtFsControlFile( HANDLE handle, HANDLE event, PIO_APC_ROUTINE ap
+         break;
+     }
+ 
++    case FSCTL_SRV_REQUEST_RESUME_KEY:
++    {
++        SRV_RESUME_KEY *rk = out_buffer;
++        if (out_size < sizeof(*rk))
++        {
++            status = STATUS_INVALID_PARAMETER;
++            break;
++        }
++        rk->ResumeKey = (ULONG_PTR)handle;
++        rk->Timestamp = 0;
++        rk->Pid = 0;
++        status = STATUS_SUCCESS;
++        break;
++    }
++
++    case IOCTL_COPYCHUNK:
++    {
++        static const SIZE_T buffer_size = 65536;
++        SRV_COPYCHUNK_COPY *cc = in_buffer;
++        SRV_COPYCHUNK_RESPONSE *ccr = out_buffer;
++        int src_fd, dst_fd, src_needs_close, dst_needs_close;
++        void *buffer = NULL;
++        BOOL fallback = FALSE;
++        if (in_size < sizeof(*cc) || out_size < sizeof(*ccr))
++        {
++            status = STATUS_INVALID_PARAMETER;
++            break;
++        }
++        status = server_get_unix_fd( handle, FILE_WRITE_DATA, &dst_fd, &dst_needs_close, NULL, NULL );
++        if (status) break;
++        status = server_get_unix_fd( (HANDLE)(ULONG_PTR)cc->SourceFile.ResumeKey, FILE_READ_DATA, &src_fd, &src_needs_close, NULL, NULL );
++        if (status)
++        {
++            if (dst_needs_close) close( dst_fd );
++            break;
++        }
++        ccr->TotalBytesWritten = 0;
++        for (ccr->ChunksWritten = 0; ccr->ChunksWritten < cc->ChunkCount; ccr->ChunksWritten++)
++        {
++            off_t off_in = cc->Chunk[ccr->ChunksWritten].SourceOffset.QuadPart;
++            off_t off_out = cc->Chunk[ccr->ChunksWritten].DestinationOffset.QuadPart;
++            size_t len = cc->Chunk[ccr->ChunksWritten].Length;
++#ifdef HAVE_COPY_FILE_RANGE
++            if (!fallback)
++            {
++                ssize_t res = copy_file_range( src_fd, &off_in, dst_fd, &off_out, len, 0 );
++                if (res == -1)
++                {
++                    if (errno == EXDEV || errno == EINVAL || errno == ENOSYS) fallback = TRUE;
++                    else goto copychunk_out;
++                }
++                else
++                {
++                    ccr->ChunkBytesWritten = ccr->TotalBytesWritten = res;
++                }
++            }
++            if (fallback)
++#endif
++            {
++                if (!buffer) buffer = malloc( buffer_size );
++                if (!buffer) goto copychunk_out;
++                ccr->ChunkBytesWritten = 0;
++                char *p = buffer;
++                ssize_t count = pread( src_fd, buffer, min( buffer_size, len ), off_in );
++                if (count == -1) goto copychunk_out;
++                off_in += count;
++                while (count)
++                {
++                    ssize_t res = pwrite( dst_fd, p, count, off_out );
++                    if (res == -1) goto copychunk_out;
++                    p += res;
++                    count -= res;
++                    off_out += res;
++                    ccr->ChunkBytesWritten += res;
++                    ccr->TotalBytesWritten += res;
++                }
++            }
++            if (ccr->ChunkBytesWritten != cc->Chunk[ccr->ChunksWritten].Length) break;
++            ccr->ChunkBytesWritten = 0;
++        }
++        errno = 0;
++
++copychunk_out:
++        status = errno_to_status( errno );
++        if (buffer) free( buffer );
++        if (src_needs_close) close( src_fd );
++        if (dst_needs_close) close( dst_fd );
++        break;
++    }
++
+     case FSCTL_SET_SPARSE:
+         TRACE("FSCTL_SET_SPARSE: Ignoring request\n");
+         io->Information = 0;
+diff --git a/include/config.h.in b/include/config.h.in
+index c1a68104fb8..abd17b94fe7 100644
+--- a/include/config.h.in
++++ b/include/config.h.in
+@@ -46,6 +46,9 @@
+ /* Define to 1 if you have the <CommonCrypto/CommonCryptor.h> header file. */
+ #undef HAVE_COMMONCRYPTO_COMMONCRYPTOR_H
+ 
++/* Define to 1 if you have the `copy_file_range' function. */
++#undef HAVE_COPY_FILE_RANGE
++
+ /* Define to 1 if you have the <CoreAudio/CoreAudio.h> header file. */
+ #undef HAVE_COREAUDIO_COREAUDIO_H
+ 
+diff --git a/include/winioctl.h b/include/winioctl.h
+index ae04c37a462..68698657c43 100644
+--- a/include/winioctl.h
++++ b/include/winioctl.h
+@@ -331,6 +331,9 @@
+ #define FSCTL_PIPE_INTERNAL_TRANSCEIVE  CTL_CODE(FILE_DEVICE_NAMED_PIPE, 2047, METHOD_NEITHER, FILE_READ_DATA | FILE_WRITE_DATA)
+ #define FSCTL_PIPE_INTERNAL_READ_OVFLOW CTL_CODE(FILE_DEVICE_NAMED_PIPE, 2048, METHOD_BUFFERED, FILE_READ_DATA)
+ 
++#define FSCTL_SRV_REQUEST_RESUME_KEY CTL_CODE(FILE_DEVICE_NETWORK_FILE_SYSTEM, 30, METHOD_BUFFERED, FILE_ANY_ACCESS)
++#define IOCTL_COPYCHUNK              CTL_CODE(FILE_DEVICE_NETWORK_FILE_SYSTEM, 262, METHOD_BUFFERED, FILE_READ_ACCESS)
++
+ #define IOCTL_STORAGE_BASE FILE_DEVICE_MASS_STORAGE
+ #define IOCTL_STORAGE_CHECK_VERIFY       CTL_CODE(IOCTL_STORAGE_BASE, 0x0200, METHOD_BUFFERED, FILE_READ_ACCESS)
+ #define IOCTL_STORAGE_CHECK_VERIFY2      CTL_CODE(IOCTL_STORAGE_BASE, 0x0200, METHOD_BUFFERED, FILE_ANY_ACCESS)
+@@ -591,6 +594,37 @@ typedef struct RETRIEVAL_POINTERS_BUFFER {
+     } Extents[1];
+ } RETRIEVAL_POINTERS_BUFFER, *PRETRIEVAL_POINTERS_BUFFER;
+ 
++typedef struct _SRV_RESUME_KEY {
++    UINT64 ResumeKey;
++    UINT64 Timestamp;
++    UINT64 Pid;
++} SRV_RESUME_KEY, *PSRV_RESUME_KEY;
++
++typedef struct _SRV_REQUEST_RESUME_KEY {
++    SRV_RESUME_KEY Key;
++    ULONG  ContextLength;
++    BYTE   Context[1];
++} SRV_REQUEST_RESUME_KEY, *PSRV_REQUEST_RESUME_KEY;
++
++typedef struct _SRV_COPYCHUNK {
++    LARGE_INTEGER SourceOffset;
++    LARGE_INTEGER DestinationOffset;
++    ULONG  Length;
++} SRV_COPYCHUNK, *PSRV_COPYCHUNK;
++
++typedef struct _SRV_COPYCHUNK_COPY {
++    SRV_RESUME_KEY SourceFile;
++    ULONG          ChunkCount;
++    ULONG          Reserved;
++    SRV_COPYCHUNK  Chunk[1];    // Array
++} SRV_COPYCHUNK_COPY, *PSRV_COPYCHUNK_COPY;
++
++typedef struct _SRV_COPYCHUNK_RESPONSE {
++    ULONG          ChunksWritten;
++    ULONG          ChunkBytesWritten;
++    ULONG          TotalBytesWritten;
++} SRV_COPYCHUNK_RESPONSE, *PSRV_COPYCHUNK_RESPONSE;
++
+ /* End: _WIN32_WINNT >= 0x0400 */
+ 
+ /*
+
+-- 
+2.32.0
+

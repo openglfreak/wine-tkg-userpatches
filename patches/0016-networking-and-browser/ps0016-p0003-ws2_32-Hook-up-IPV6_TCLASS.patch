@@ -1,0 +1,84 @@
+From: Alex Henrie <alexhenrie24@gmail.com>
+Subject: [PATCH 3/4] ws2_32: Hook up IPV6_TCLASS
+Message-Id: <20210806052648.422314-3-alexhenrie24@gmail.com>
+Date: Thu,  5 Aug 2021 23:26:27 -0600
+In-Reply-To: <20210806052648.422314-1-alexhenrie24@gmail.com>
+References: <20210806052648.422314-1-alexhenrie24@gmail.com>
+
+Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
+---
+The Warface downloader from bug 47047 sets this option.
+---
+ dlls/ntdll/unix/socket.c | 8 ++++++++
+ dlls/ws2_32/socket.c     | 7 +++++++
+ include/wine/afd.h       | 2 ++
+ 3 files changed, 17 insertions(+)
+
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index 35c846eb7ae..ead6c44a233 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -1916,6 +1916,14 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+             return do_setsockopt( handle, io, IPPROTO_IPV6, IPV6_RECVPKTINFO, in_buffer, in_size );
+ #endif
+ 
++#ifdef IPV6_TCLASS
++        case IOCTL_AFD_WINE_GET_IPV6_TCLASS:
++            return do_getsockopt( handle, io, IPPROTO_IPV6, IPV6_TCLASS, out_buffer, out_size );
++
++        case IOCTL_AFD_WINE_SET_IPV6_TCLASS:
++            return do_setsockopt( handle, io, IPPROTO_IPV6, IPV6_TCLASS, in_buffer, in_size );
++#endif
++
+         case IOCTL_AFD_WINE_GET_IPV6_UNICAST_HOPS:
+             return do_getsockopt( handle, io, IPPROTO_IPV6, IPV6_UNICAST_HOPS, out_buffer, out_size );
+ 
+diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
+index ca95a1e0321..12617935773 100644
+--- a/dlls/ws2_32/socket.c
++++ b/dlls/ws2_32/socket.c
+@@ -314,6 +314,7 @@ static inline const char *debugstr_sockopt(int level, int optname)
+             DEBUG_SOCKOPT(WS_IPV6_MULTICAST_HOPS);
+             DEBUG_SOCKOPT(WS_IPV6_MULTICAST_LOOP);
+             DEBUG_SOCKOPT(WS_IPV6_PKTINFO);
++            DEBUG_SOCKOPT(WS_IPV6_TCLASS);
+             DEBUG_SOCKOPT(WS_IPV6_UNICAST_HOPS);
+             DEBUG_SOCKOPT(WS_IPV6_V6ONLY);
+             DEBUG_SOCKOPT(WS_IPV6_UNICAST_IF);
+@@ -1737,6 +1738,9 @@ INT WINAPI WS_getsockopt(SOCKET s, INT level,
+         case WS_IPV6_PKTINFO:
+             return server_getsockopt( s, IOCTL_AFD_WINE_GET_IPV6_RECVPKTINFO, optval, optlen );
+ 
++        case WS_IPV6_TCLASS:
++            return server_getsockopt( s, IOCTL_AFD_WINE_GET_IPV6_TCLASS, optval, optlen );
++
+         case WS_IPV6_UNICAST_HOPS:
+             return server_getsockopt( s, IOCTL_AFD_WINE_GET_IPV6_UNICAST_HOPS, optval, optlen );
+ 
+@@ -2953,6 +2957,9 @@ int WINAPI WS_setsockopt(SOCKET s, int level, int optname,
+             FIXME("IPV6_PROTECTION_LEVEL is ignored!\n");
+             return 0;
+ 
++        case WS_IPV6_TCLASS:
++            return server_setsockopt( s, IOCTL_AFD_WINE_SET_IPV6_TCLASS, optval, optlen );
++
+         case WS_IPV6_UNICAST_HOPS:
+             return server_setsockopt( s, IOCTL_AFD_WINE_SET_IPV6_UNICAST_HOPS, optval, optlen );
+ 
+diff --git a/include/wine/afd.h b/include/wine/afd.h
+index caa86eabf83..84dd09bf50b 100644
+--- a/include/wine/afd.h
++++ b/include/wine/afd.h
+@@ -232,6 +232,8 @@ struct afd_get_events_params
+ #define IOCTL_AFD_WINE_SET_IPV6_RECVHOPLIMIT            WINE_AFD_IOC(287)
+ #define IOCTL_AFD_WINE_GET_IPV6_RECVPKTINFO             WINE_AFD_IOC(288)
+ #define IOCTL_AFD_WINE_SET_IPV6_RECVPKTINFO             WINE_AFD_IOC(289)
++#define IOCTL_AFD_WINE_GET_IPV6_TCLASS                  WINE_AFD_IOC(290)
++#define IOCTL_AFD_WINE_SET_IPV6_TCLASS                  WINE_AFD_IOC(291)
+ 
+ struct afd_create_params
+ {
+
+-- 
+2.32.0
+

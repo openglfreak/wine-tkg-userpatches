@@ -1,0 +1,584 @@
+From 34475927cd80a131e28b97dcbfbea77ada990e12 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 11 Mar 2021 23:38:35 +0100
+Subject: [PATCH] winex11.drv: Use XPresentPixmap instead of XCopyArea when
+ available.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=45277
+CW-Bug-Id: 16608
+---
+ configure                      | 92 +++++++++++++++++++++++++++++++++++++++++++++
+ configure.ac                   | 13 ++++++++
+ dlls/winex11.drv/init.c        | 34 +++++++++++++++++---
+ dlls/winex11.drv/vulkan.c      |  9 ++++--
+ dlls/winex11.drv/x11drv.h      |  1 +
+ dlls/winex11.drv/x11drv_main.c | 58 ++++++++++++++++++++++++++++++++++
+ dlls/winex11.drv/xfixes.h      |  3 ++
+ dlls/winex11.drv/xpresent.h    | 36 +++++++++++++++++++++
+ include/config.h.in            |  6 +++
+ 8 files changed, 245 insertions(+), 7 deletions(-)
+ create mode 100644 dlls/winex11.drv/xpresent.h
+
+diff --git a/configure b/configure
+index cea014ef96b..491d100073f 100755
+--- a/configure
++++ b/configure
+@@ -900,6 +900,7 @@ with_xinerama
+ with_xinput
+ with_xinput2
+ with_xml
++with_xpresent
+ with_xrandr
+ with_xrender
+ with_xshape
+@@ -2646,6 +2647,7 @@ Optional Packages:
+   --without-xinput        do not use the Xinput extension
+   --without-xinput2       do not use the Xinput 2 extension
+   --without-xml           do not use XML
++  --without-xpresent      do not use the Xpresent extension
+   --without-xrandr        do not use Xrandr (multi-monitor support)
+   --without-xrender       do not use the Xrender extension
+   --without-xshape        do not use the Xshape extension
+@@ -4250,6 +4252,12 @@ if test "${with_xml+set}" = set; then :
+ fi
+ 
+ 
++# Check whether --with-xpresent was given.
++if test "${with_xpresent+set}" = set; then :
++  withval=$with_xpresent; if test "x$withval" = "xno"; then ac_cv_header_X11_extensions_Xpresent_h=no; fi
++fi
++
++
+ # Check whether --with-xrandr was given.
+ if test "${with_xrandr+set}" = set; then :
+   withval=$with_xrandr; if test "x$withval" = "xno"; then ac_cv_header_X11_extensions_Xrandr_h=no; fi
+@@ -12432,6 +12441,89 @@ rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+ This is an error since --with-xinerama was requested." "$LINENO" 5 ;;
+ esac
+ 
++fi
++
++                if test "$ac_cv_header_X11_extensions_Xpresent_h" = "yes"
++        then
++                cat confdefs.h - <<_ACEOF >conftest.$ac_ext
++/* end confdefs.h.  */
++#include <X11/Xlib.h>
++#include <X11/extensions/Xpresent.h>
++int
++main ()
++{
++static typeof(XPresentQueryVersion) * func; if (func) return 0;
++  ;
++  return 0;
++}
++_ACEOF
++if ac_fn_c_try_compile "$LINENO"; then :
++  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for -lXpresent" >&5
++$as_echo_n "checking for -lXpresent... " >&6; }
++if ${ac_cv_lib_soname_Xpresent+:} false; then :
++  $as_echo_n "(cached) " >&6
++else
++  ac_check_soname_save_LIBS=$LIBS
++LIBS="-lXpresent $X_LIBS $X_EXTRA_LIBS $LIBS"
++  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
++/* end confdefs.h.  */
++
++/* Override any GCC internal prototype to avoid an error.
++   Use char because int might match the return type of a GCC
++   builtin and then its argument prototype would still apply.  */
++#ifdef __cplusplus
++extern "C"
++#endif
++char XPresentQueryVersion ();
++int
++main ()
++{
++return XPresentQueryVersion ();
++  ;
++  return 0;
++}
++_ACEOF
++if ac_fn_c_try_link "$LINENO"; then :
++  case "$LIBEXT" in
++    dll) ac_cv_lib_soname_Xpresent=`$ac_cv_path_LDD conftest.exe | grep "Xpresent" | sed -e "s/dll.*/dll/"';2,$d'` ;;
++    dylib) ac_cv_lib_soname_Xpresent=`$OTOOL -L conftest$ac_exeext | grep "libXpresent\\.[0-9A-Za-z.]*dylib" | sed -e "s/^.*\/\(libXpresent\.[0-9A-Za-z.]*dylib\).*$/\1/"';2,$d'` ;;
++    *) ac_cv_lib_soname_Xpresent=`$READELF -d conftest$ac_exeext | grep "NEEDED.*libXpresent\\.$LIBEXT" | sed -e "s/^.*\\[\\(libXpresent\\.$LIBEXT[^	 ]*\\)\\].*$/\1/"';2,$d'`
++       if ${ac_cv_lib_soname_Xpresent:+false} :; then :
++  ac_cv_lib_soname_Xpresent=`$LDD conftest$ac_exeext | grep "libXpresent\\.$LIBEXT" | sed -e "s/^.*\(libXpresent\.$LIBEXT[^	 ]*\).*$/\1/"';2,$d'`
++fi ;;
++  esac
++else
++  ac_cv_lib_soname_Xpresent=
++fi
++rm -f core conftest.err conftest.$ac_objext \
++    conftest$ac_exeext conftest.$ac_ext
++  LIBS=$ac_check_soname_save_LIBS
++fi
++if ${ac_cv_lib_soname_Xpresent:+false} :; then :
++  { $as_echo "$as_me:${as_lineno-$LINENO}: result: not found" >&5
++$as_echo "not found" >&6; }
++
++else
++  { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_soname_Xpresent" >&5
++$as_echo "$ac_cv_lib_soname_Xpresent" >&6; }
++
++cat >>confdefs.h <<_ACEOF
++#define SONAME_LIBXPRESENT "$ac_cv_lib_soname_Xpresent"
++_ACEOF
++
++
++fi
++fi
++rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
++        fi
++        if test "x$ac_cv_lib_soname_Xpresent" = "x"; then :
++  case "x$with_Xpresent" in
++  x)   as_fn_append wine_notices "|libXpresent ${notice_platform}development files not found, Xpresent won't be supported." ;;
++  xno) ;;
++  *)   as_fn_error $? "libXpresent ${notice_platform}development files not found, Xpresent won't be supported.
++This is an error since --with-Xpresent was requested." "$LINENO" 5 ;;
++esac
++
+ fi
+ 
+                 if test "$ac_cv_header_X11_extensions_Xcomposite_h" = "yes"
+diff --git a/configure.ac b/configure.ac
+index cfb916a8fe4..6fdca81b049 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -102,6 +102,8 @@ AC_ARG_WITH(xinput,    AS_HELP_STRING([--without-xinput],[do not use the Xinput
+ AC_ARG_WITH(xinput2,   AS_HELP_STRING([--without-xinput2],[do not use the Xinput 2 extension]),
+             [if test "x$withval" = "xno"; then ac_cv_header_X11_extensions_XInput2_h=no; fi])
+ AC_ARG_WITH(xml,       AS_HELP_STRING([--without-xml],[do not use XML]))
++AC_ARG_WITH(xpresent,  AS_HELP_STRING([--without-xpresent],[do not use the Xpresent extension]),
++            [if test "x$withval" = "xno"; then ac_cv_header_X11_extensions_Xpresent_h=no; fi])
+ AC_ARG_WITH(xrandr,    AS_HELP_STRING([--without-xrandr],[do not use Xrandr (multi-monitor support)]),
+             [if test "x$withval" = "xno"; then ac_cv_header_X11_extensions_Xrandr_h=no; fi])
+ AC_ARG_WITH(xrender,   AS_HELP_STRING([--without-xrender],[do not use the Xrender extension]),
+@@ -1139,6 +1141,7 @@ then
+                       X11/extensions/Xcomposite.h \
+                       X11/extensions/Xfixes.h \
+                       X11/extensions/Xinerama.h \
++                      X11/extensions/Xpresent.h \
+                       X11/extensions/Xrandr.h \
+                       X11/extensions/Xrender.h \
+                       X11/extensions/xf86vmode.h \
+@@ -1256,6 +1259,16 @@ then
+         WINE_NOTICE_WITH(xinerama,[test "x$ac_cv_lib_soname_Xinerama" = "x"],
+                          [libxinerama ${notice_platform}development files not found, multi-monitor setups won't be supported.])
+ 
++        dnl *** Check for Xpresent extension
++        if test "$ac_cv_header_X11_extensions_Xpresent_h" = "yes"
++        then
++                AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <X11/Xlib.h>
++#include <X11/extensions/Xpresent.h>]], [[static typeof(XPresentQueryVersion) * func; if (func) return 0;]])],
++                  [WINE_CHECK_SONAME(Xpresent,XPresentQueryVersion,,,[$X_LIBS $X_EXTRA_LIBS])])
++        fi
++        WINE_NOTICE_WITH(Xpresent,[test "x$ac_cv_lib_soname_Xpresent" = "x"],
++                         [libXpresent ${notice_platform}development files not found, Xpresent won't be supported.])
++
+         dnl *** Check for X Composite extension
+         if test "$ac_cv_header_X11_extensions_Xcomposite_h" = "yes"
+         then
+diff --git a/dlls/winex11.drv/clipboard.c b/dlls/winex11.drv/clipboard.c
+index b511af3f691..1f6508df034 100644
+--- a/dlls/winex11.drv/clipboard.c
++++ b/dlls/winex11.drv/clipboard.c
+@@ -79,6 +79,7 @@
+ #include <assert.h>
+ 
+ #include "x11drv.h"
++#include "xfixes.h"
+ 
+ #ifdef HAVE_X11_EXTENSIONS_XFIXES_H
+ #include <X11/extensions/Xfixes.h>
+@@ -198,7 +199,6 @@ static UINT rendered_formats;
+ static ULONG64 last_clipboard_update;
+ static struct clipboard_format **current_x11_formats;
+ static unsigned int nb_current_x11_formats;
+-static BOOL use_xfixes;
+ 
+ Display *clipboard_display = NULL;
+ 
+@@ -1977,28 +1977,6 @@ static BOOL selection_notify_event( HWND hwnd, XEvent *event )
+ static void xfixes_init(void)
+ {
+ #ifdef SONAME_LIBXFIXES
+-    typeof(XFixesSelectSelectionInput) *pXFixesSelectSelectionInput;
+-    typeof(XFixesQueryExtension) *pXFixesQueryExtension;
+-    typeof(XFixesQueryVersion) *pXFixesQueryVersion;
+-
+-    int event_base, error_base;
+-    int major = 3, minor = 0;
+-    void *handle;
+-
+-    handle = dlopen(SONAME_LIBXFIXES, RTLD_NOW);
+-    if (!handle) return;
+-
+-    pXFixesQueryExtension = dlsym(handle, "XFixesQueryExtension");
+-    if (!pXFixesQueryExtension) return;
+-    pXFixesQueryVersion = dlsym(handle, "XFixesQueryVersion");
+-    if (!pXFixesQueryVersion) return;
+-    pXFixesSelectSelectionInput = dlsym(handle, "XFixesSelectSelectionInput");
+-    if (!pXFixesSelectSelectionInput) return;
+-
+-    if (!pXFixesQueryExtension(clipboard_display, &event_base, &error_base))
+-        return;
+-    pXFixesQueryVersion(clipboard_display, &major, &minor);
+-    use_xfixes = (major >= 1);
+     if (!use_xfixes) return;
+ 
+     pXFixesSelectSelectionInput(clipboard_display, import_window, x11drv_atom(CLIPBOARD),
+@@ -2012,7 +1990,7 @@ static void xfixes_init(void)
+                 XFixesSelectionWindowDestroyNotifyMask |
+                 XFixesSelectionClientCloseNotifyMask);
+     }
+-    X11DRV_register_event_handler(event_base + XFixesSelectionNotify,
++    X11DRV_register_event_handler(xfixes_event_base + XFixesSelectionNotify,
+             selection_notify_event, "XFixesSelectionNotify");
+     TRACE("xfixes succesully initialized\n");
+ #else
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index cdb3dd931e9..372ab1f6232 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -27,6 +27,9 @@
+ #include "winbase.h"
+ #include "winreg.h"
+ #include "x11drv.h"
++#include "xfixes.h"
++#include "xpresent.h"
++#include "xcomposite.h"
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(x11drv);
+@@ -232,10 +235,33 @@ static INT CDECL X11DRV_ExtEscape( PHYSDEV dev, INT escape, INT in_count, LPCVOI
+ 
+                     OffsetRect( &rect, -physDev->dc_rect.left, -physDev->dc_rect.top );
+                     if (data->flush) XFlush( gdi_display );
+-                    XSetFunction( gdi_display, physDev->gc, GXcopy );
+-                    XCopyArea( gdi_display, data->gl_drawable, physDev->drawable, physDev->gc,
+-                               0, 0, rect.right, rect.bottom,
+-                               physDev->dc_rect.left, physDev->dc_rect.top );
++
++#if defined(SONAME_LIBXPRESENT) && defined(SONAME_LIBXFIXES)
++                    if (use_xpresent && use_xfixes && usexcomposite)
++                    {
++                        XserverRegion update, valid;
++                        XRectangle xrect = {0, 0, rect.right - rect.left, rect.bottom - rect.top};
++                        Drawable drawable = data->gl_drawable;
++                        update = pXFixesCreateRegionFromGC( gdi_display, physDev->gc );
++                        valid = pXFixesCreateRegion( gdi_display, &xrect, 1 );
++#ifdef SONAME_LIBXCOMPOSITE
++                        if (usexcomposite) drawable = pXCompositeNameWindowPixmap( gdi_display, drawable );
++#endif
++                        pXPresentPixmap( gdi_display, physDev->drawable, drawable, XNextRequest( gdi_display ),
++                                         valid, update, physDev->dc_rect.left, physDev->dc_rect.top, None, None,
++                                         None, 0, 0, 0, 0, NULL, 0 );
++                        pXFixesDestroyRegion( gdi_display, update );
++                        pXFixesDestroyRegion( gdi_display, valid );
++                    }
++                    else
++#endif
++                    {
++                        XSetFunction( gdi_display, physDev->gc, GXcopy );
++                        XCopyArea( gdi_display, data->gl_drawable, physDev->drawable, physDev->gc,
++                                   0, 0, rect.right, rect.bottom,
++                                   physDev->dc_rect.left, physDev->dc_rect.top );
++                    }
++
+                     add_device_bounds( physDev, &rect );
+                     return TRUE;
+                 }
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 34d1675d2de..80f0ebee689 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -392,6 +392,8 @@ extern BOOL grab_pointer DECLSPEC_HIDDEN;
+ extern BOOL grab_pointer DECLSPEC_HIDDEN;
+ extern BOOL grab_fullscreen DECLSPEC_HIDDEN;
+ extern BOOL usexcomposite DECLSPEC_HIDDEN;
++extern BOOL use_xfixes DECLSPEC_HIDDEN;
++extern BOOL use_xpresent DECLSPEC_HIDDEN;
+ extern BOOL managed_mode DECLSPEC_HIDDEN;
+ extern BOOL decorated_mode DECLSPEC_HIDDEN;
+ extern BOOL private_color_map DECLSPEC_HIDDEN;
+@@ -396,6 +397,7 @@ extern int primary_monitor DECLSPEC_HIDDEN;
+ extern int copy_default_colors DECLSPEC_HIDDEN;
+ extern int alloc_system_colors DECLSPEC_HIDDEN;
+ extern int xrender_error_base DECLSPEC_HIDDEN;
++extern int xfixes_event_base DECLSPEC_HIDDEN;
+ extern HMODULE x11drv_module DECLSPEC_HIDDEN;
+ extern char *process_name DECLSPEC_HIDDEN;
+ extern Display *clipboard_display DECLSPEC_HIDDEN;
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index 7ffd3593a51..3068241f5cb 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -51,6 +51,8 @@
+ 
+ #include "x11drv.h"
+ #include "xcomposite.h"
++#include "xfixes.h"
++#include "xpresent.h"
+ #include "wine/server.h"
+ #include "wine/unicode.h"
+ #include "wine/debug.h"
+@@ -71,6 +72,8 @@ BOOL usexvidmode = FALSE;
+ BOOL usexvidmode = TRUE;
+ BOOL usexrandr = TRUE;
+ BOOL usexcomposite = TRUE;
++BOOL use_xfixes = FALSE;
++BOOL use_xpresent = FALSE;
+ BOOL use_xkb = TRUE;
+ BOOL use_take_focus = FALSE;
+ BOOL use_primary_selection = FALSE;
+@@ -87,6 +89,7 @@ int copy_default_colors = 128;
+ int alloc_system_colors = 256;
+ DWORD thread_data_tls_index = TLS_OUT_OF_INDEXES;
+ int xrender_error_base = 0;
++int xfixes_event_base = 0;
+ HMODULE x11drv_module = 0;
+ char *process_name = NULL;
+ 
+@@ -501,6 +504,116 @@ sym_not_found:
+ }
+ #endif /* defined(SONAME_LIBXCOMPOSITE) */
+ 
++#ifdef SONAME_LIBXFIXES
++
++#define MAKE_FUNCPTR(f) typeof(f) * p##f;
++MAKE_FUNCPTR(XFixesQueryExtension)
++MAKE_FUNCPTR(XFixesQueryVersion)
++MAKE_FUNCPTR(XFixesCreateRegion)
++MAKE_FUNCPTR(XFixesCreateRegionFromGC)
++MAKE_FUNCPTR(XFixesDestroyRegion)
++MAKE_FUNCPTR(XFixesSelectSelectionInput)
++#undef MAKE_FUNCPTR
++
++static void x11drv_load_xfixes(void)
++{
++    int event, error, major = 3, minor = 0;
++    void *xfixes;
++
++    if (!(xfixes = dlopen(SONAME_LIBXFIXES, RTLD_NOW)))
++    {
++        WARN("Xfixes library %s not found, disabled.\n", SONAME_LIBXFIXES);
++        return;
++    }
++
++#define LOAD_FUNCPTR(f) \
++    if (!(p##f = dlsym(xfixes, #f)))                          \
++    {                                                         \
++        WARN("Xfixes function %s not found, disabled\n", #f); \
++        dlclose(xfixes);                                      \
++        return;                                               \
++    }
++    LOAD_FUNCPTR(XFixesQueryExtension)
++    LOAD_FUNCPTR(XFixesQueryVersion)
++    LOAD_FUNCPTR(XFixesCreateRegion)
++    LOAD_FUNCPTR(XFixesCreateRegionFromGC)
++    LOAD_FUNCPTR(XFixesDestroyRegion)
++    LOAD_FUNCPTR(XFixesSelectSelectionInput)
++#undef LOAD_FUNCPTR
++
++    if (!pXFixesQueryExtension(gdi_display, &event, &error))
++    {
++        WARN("Xfixes extension not found, disabled.\n");
++        dlclose(xfixes);
++        return;
++    }
++
++    if (!pXFixesQueryVersion(gdi_display, &major, &minor) ||
++        major < 2)
++    {
++        WARN("Xfixes version 2.0 not found, disabled.\n");
++        dlclose(xfixes);
++        return;
++    }
++
++    TRACE("Xfixes, error %d, event %d, version %d.%d found\n",
++          error, event, major, minor);
++    use_xfixes = TRUE;
++    xfixes_event_base = event;
++}
++#endif /* SONAME_LIBXFIXES */
++
++#ifdef SONAME_LIBXPRESENT
++
++#define MAKE_FUNCPTR(f) typeof(f) * p##f;
++MAKE_FUNCPTR(XPresentQueryExtension)
++MAKE_FUNCPTR(XPresentQueryVersion)
++MAKE_FUNCPTR(XPresentPixmap)
++#undef MAKE_FUNCPTR
++
++static void x11drv_load_xpresent(void)
++{
++    int opcode, event, error, major = 1, minor = 0;
++    void *xpresent;
++
++    if (!(xpresent = dlopen( SONAME_LIBXPRESENT, RTLD_NOW )))
++    {
++        WARN( "Xpresent library %s not found, disabled.\n", SONAME_LIBXPRESENT );
++        return;
++    }
++
++#define LOAD_FUNCPTR(f) \
++    if (!(p##f = dlsym( xpresent, #f )))                          \
++    {                                                             \
++        WARN( "Xpresent function %s not found, disabled\n", #f ); \
++        dlclose( xpresent );                                      \
++        return;                                                   \
++    }
++    LOAD_FUNCPTR(XPresentQueryExtension)
++    LOAD_FUNCPTR(XPresentQueryVersion)
++    LOAD_FUNCPTR(XPresentPixmap)
++#undef LOAD_FUNCPTR
++
++    if (!pXPresentQueryExtension( gdi_display, &opcode, &event, &error ))
++    {
++        WARN("Xpresent extension not found, disabled.\n");
++        dlclose(xpresent);
++        return;
++    }
++
++    if (!pXPresentQueryVersion( gdi_display, &major, &minor ))
++    {
++        WARN("Xpresent version not found, disabled.\n");
++        dlclose(xpresent);
++        return;
++    }
++
++    TRACE( "Xpresent, opcode %d, error %d, event %d, version %d.%d found\n",
++           opcode, error, event, major, minor );
++    use_xpresent = TRUE;
++}
++#endif /* SONAME_LIBXPRESENT */
++
+ static void init_visuals( Display *display, int screen )
+ {
+     int count;
+@@ -691,6 +746,12 @@ static BOOL process_attach(void)
+     X11DRV_XF86VM_Init();
+     /* initialize XRandR */
+     X11DRV_XRandR_Init();
++#ifdef SONAME_LIBXFIXES
++    x11drv_load_xfixes();
++#endif
++#ifdef SONAME_LIBXPRESENT
++    x11drv_load_xpresent();
++#endif
+ #ifdef SONAME_LIBXCOMPOSITE
+     X11DRV_XComposite_Init();
+ #endif
+diff --git a/dlls/winex11.drv/xfixes.h b/dlls/winex11.drv/xfixes.h
+new file mode 100644
+index 00000000000..3ab31201d3d
+--- /dev/null
++++ b/dlls/winex11.drv/xfixes.h
+@@ -0,0 +1,39 @@
++/*
++ * Wine X11DRV Xfixes interface
++ *
++ * Copyright 2021 Rémi Bernon for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++#ifndef __WINE_XFIXES_H
++#define __WINE_XFIXES_H
++
++#ifndef __WINE_CONFIG_H
++# error You must include config.h to use this header
++#endif
++
++#ifdef SONAME_LIBXFIXES
++#include <X11/extensions/Xfixes.h>
++#define MAKE_FUNCPTR(f) extern typeof(f) * p##f DECLSPEC_HIDDEN;
++MAKE_FUNCPTR(XFixesQueryExtension)
++MAKE_FUNCPTR(XFixesQueryVersion)
++MAKE_FUNCPTR(XFixesCreateRegion)
++MAKE_FUNCPTR(XFixesCreateRegionFromGC)
++MAKE_FUNCPTR(XFixesDestroyRegion)
++MAKE_FUNCPTR(XFixesSelectSelectionInput)
++#undef MAKE_FUNCPTR
++#endif /* defined(SONAME_LIBXFIXES) */
++
++#endif /* __WINE_XFIXES_H */
+diff --git a/dlls/winex11.drv/xpresent.h b/dlls/winex11.drv/xpresent.h
+new file mode 100644
+index 00000000000..6fd813a930e
+--- /dev/null
++++ b/dlls/winex11.drv/xpresent.h
+@@ -0,0 +1,36 @@
++/*
++ * Wine X11DRV Xpresent interface
++ *
++ * Copyright 2021 Rémi Bernon for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++#ifndef __WINE_XPRESENT_H
++#define __WINE_XPRESENT_H
++
++#ifndef __WINE_CONFIG_H
++# error You must include config.h to use this header
++#endif
++
++#ifdef SONAME_LIBXPRESENT
++#include <X11/extensions/Xpresent.h>
++#define MAKE_FUNCPTR(f) extern typeof(f) * p##f DECLSPEC_HIDDEN;
++MAKE_FUNCPTR(XPresentQueryExtension)
++MAKE_FUNCPTR(XPresentQueryVersion)
++MAKE_FUNCPTR(XPresentPixmap)
++#undef MAKE_FUNCPTR
++#endif /* defined(SONAME_LIBXPRESENT) */
++
++#endif /* __WINE_XPRESENT_H */
+diff --git a/include/config.h.in b/include/config.h.in
+index a35eb5e5575..c8038c8c7d3 100644
+--- a/include/config.h.in
++++ b/include/config.h.in
+@@ -1145,6 +1145,9 @@
+ /* Define to 1 if you have the <X11/extensions/XInput.h> header file. */
+ #undef HAVE_X11_EXTENSIONS_XINPUT_H
+ 
++/* Define to 1 if you have the <X11/extensions/Xpresent.h> header file. */
++#undef HAVE_X11_EXTENSIONS_XPRESENT_H
++
+ /* Define to 1 if you have the <X11/extensions/Xrandr.h> header file. */
+ #undef HAVE_X11_EXTENSIONS_XRANDR_H
+ 
+@@ -1364,6 +1367,9 @@
+ /* Define to the soname of the libXinerama library. */
+ #undef SONAME_LIBXINERAMA
+ 
++/* Define to the soname of the libXpresent library. */
++#undef SONAME_LIBXPRESENT
++
+ /* Define to the soname of the libXrandr library. */
+ #undef SONAME_LIBXRANDR
+ 

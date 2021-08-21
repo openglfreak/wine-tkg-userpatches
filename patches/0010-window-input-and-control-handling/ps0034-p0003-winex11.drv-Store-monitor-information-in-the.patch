@@ -85,10 +85,10 @@ index 1c943767927..40c26cba1c0 100644
  
      EnterCriticalSection( &monitors_section );
      if (index < monitor_count)
-@@ -4111,11 +4141,63 @@ static BOOL CALLBACK enum_mon_callback( HMONITOR monitor, HDC hdc, LPRECT rect,
- 
- BOOL CDECL nulldrv_EnumDisplayMonitors( HDC hdc, RECT *rect, MONITORENUMPROC proc, LPARAM lp )
- {
+@@ -4111,16 +4141,68 @@ static BOOL CALLBACK enum_mon_callback( HMONITOR monitor, HDC hdc, LPRECT rect,
+     BOOL is_winstation_visible = FALSE;
+     USEROBJECTFLAGS flags;
+     HWINSTA winstation;
 +    struct enum_monitor_entry entries[4], *entry_ptr;
 +    unsigned int status, count, entry_count;
      RECT monitor_rect;
@@ -97,9 +97,14 @@ index 1c943767927..40c26cba1c0 100644
  
      TRACE("(%p, %p, %p, 0x%lx)\n", hdc, rect, proc, lp);
  
+     /* Report physical monitor information only if window station has visible display surfaces */
+     winstation = GetProcessWindowStation();
+     if (GetUserObjectInformationW( winstation, UOI_FLAGS, &flags, sizeof(flags), NULL ))
+         is_winstation_visible = flags.dwFlags & WSF_VISIBLE;
+ 
 +    entry_count = ARRAY_SIZE(entries);
 +    entry_ptr = entries;
-+    while (TRUE)
++    while (is_winstation_visible)
 +    {
 +        SERVER_START_REQ(enum_monitors)
 +        {
@@ -146,7 +151,7 @@ index 1c943767927..40c26cba1c0 100644
 +            break;
 +    }
 +
-     if (update_monitor_cache())
+     if (is_winstation_visible && update_monitor_cache())
      {
          while (TRUE)
 diff --git a/dlls/user32/tests/monitor.c b/dlls/user32/tests/monitor.c

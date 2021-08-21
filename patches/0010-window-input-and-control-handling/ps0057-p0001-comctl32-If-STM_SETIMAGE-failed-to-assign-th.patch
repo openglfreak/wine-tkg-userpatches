@@ -1,0 +1,71 @@
+From: Dmitry Timoshkov <dmitry@baikal.ru>
+Subject: [PATCH 1/2] comctl32: If STM_SETIMAGE failed to assign the image don't repaint the control.
+Message-Id: <20210816172424.0f70b27583b41d32ccd150b5@baikal.ru>
+Date: Mon, 16 Aug 2021 17:24:24 +0300
+
+Signed-off-by: Dmitry Timoshkov <dmitry@baikal.ru>
+---
+ dlls/comctl32/static.c       |  6 ++++--
+ dlls/comctl32/tests/static.c | 17 +++++++++++++++++
+ 2 files changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/comctl32/static.c b/dlls/comctl32/static.c
+index 2bd2b22bc20..554e75aa194 100644
+--- a/dlls/comctl32/static.c
++++ b/dlls/comctl32/static.c
+@@ -607,12 +607,14 @@ static LRESULT CALLBACK STATIC_WindowProc( HWND hwnd, UINT uMsg, WPARAM wParam,
+             FIXME("STM_SETIMAGE: Unhandled type %lx\n", wParam);
+             break;
+         }
+-        STATIC_TryPaintFcn( hwnd, full_style );
++        if (lResult)
++            STATIC_TryPaintFcn( hwnd, full_style );
+         break;
+ 
+     case STM_SETICON:
+         lResult = (LRESULT)STATIC_SetIcon( hwnd, (HICON)wParam, full_style );
+-        STATIC_TryPaintFcn( hwnd, full_style );
++        if (lResult)
++            STATIC_TryPaintFcn( hwnd, full_style );
+         break;
+ 
+     default:
+diff --git a/dlls/comctl32/tests/static.c b/dlls/comctl32/tests/static.c
+index 4efb7685790..9932538f9ce 100644
+--- a/dlls/comctl32/tests/static.c
++++ b/dlls/comctl32/tests/static.c
+@@ -263,6 +263,22 @@ static void test_set_image(void)
+     DeleteObject(image);
+ }
+ 
++static void test_set_image_on_text_control(void)
++{
++    HWND hwnd = create_static(SS_LEFT);
++    HICON image, old_image;
++
++    image = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
++
++    g_nReceivedColorStatic = 0;
++    old_image = (HICON)SendMessageW(hwnd, STM_SETIMAGE, IMAGE_ICON, (LPARAM)image);
++    ok(!old_image, "got %p\n", old_image);
++    ok(!g_nReceivedColorStatic, "Unexpected WM_CTLCOLORSTATIC value %d\n", g_nReceivedColorStatic);
++
++    DestroyIcon(image);
++    DestroyWindow(hwnd);
++}
++
+ START_TEST(static)
+ {
+     static const char classname[] = "testclass";
+@@ -302,6 +318,7 @@ START_TEST(static)
+     test_updates(SS_ETCHEDVERT, TODO_COUNT);
+     test_set_text();
+     test_set_image();
++    test_set_image_on_text_control();
+ 
+     DestroyWindow(hMainWnd);
+ 
+
+-- 
+2.31.1
+

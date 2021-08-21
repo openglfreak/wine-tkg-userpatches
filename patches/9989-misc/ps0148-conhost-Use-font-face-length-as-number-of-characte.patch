@@ -1,0 +1,137 @@
+From: Hugh McMaster <hugh.mcmaster@outlook.com>
+Subject: [PATCH v3] conhost: Use font face length as number of characters, not size
+Message-Id: <20210816105912.4670-1-hugh.mcmaster@outlook.com>
+Date: Mon, 16 Aug 2021 20:59:12 +1000
+
+Signed-off-by: Hugh McMaster <hugh.mcmaster@outlook.com>
+---
+Changes in v3:
+  * Avoid null-terminating unless copying font face to LOGFONT FaceName.
+
+ programs/conhost/conhost.c | 12 ++++++++----
+ programs/conhost/window.c  | 29 ++++++++++++-----------------
+ 2 files changed, 20 insertions(+), 21 deletions(-)
+
+diff --git a/programs/conhost/conhost.c b/programs/conhost/conhost.c
+index ecfdd082a81..a7c17e4e2d8 100644
+--- a/programs/conhost/conhost.c
++++ b/programs/conhost/conhost.c
+@@ -97,9 +97,13 @@ static struct screen_buffer *create_screen_buffer( struct console *console, int
+         screen_buffer->popup_attr = console->active->attr;
+         screen_buffer->font       = console->active->font;
+ 
+-        if (!(screen_buffer->font.face_name = malloc( screen_buffer->font.face_len ))) return NULL;
+-        memcpy( screen_buffer->font.face_name, console->active->font.face_name,
+-                screen_buffer->font.face_len );
++        if (screen_buffer->font.face_len)
++        {
++            size_t size = screen_buffer->font.face_len * sizeof(WCHAR);
++
++            if (!(screen_buffer->font.face_name = malloc(size))) return NULL;
++            memcpy(screen_buffer->font.face_name, console->active->font.face_name, size);
++        }
+     }
+     else
+     {
+@@ -1728,7 +1732,7 @@ static NTSTATUS get_output_info( struct screen_buffer *screen_buffer, size_t *ou
+ {
+     struct condrv_output_info *info;
+ 
+-    *out_size = min( *out_size, sizeof(*info) + screen_buffer->font.face_len );
++    *out_size = min(*out_size, sizeof(*info) + (screen_buffer->font.face_len * sizeof(WCHAR)));
+     if (!(info = alloc_ioctl_buffer( *out_size ))) return STATUS_NO_MEMORY;
+ 
+     info->cursor_size    = screen_buffer->cursor_size;
+diff --git a/programs/conhost/window.c b/programs/conhost/window.c
+index 5881ad9c3ad..87aeb093079 100644
+--- a/programs/conhost/window.c
++++ b/programs/conhost/window.c
+@@ -242,7 +242,6 @@ static void load_config( const WCHAR *key_name, struct console_config *config )
+     TRACE("loading %s registry settings.\n", wine_dbgstr_w( key_name ));
+ 
+     memcpy( config->color_map, color_map, sizeof(color_map) );
+-    memset( config->face_name, 0, sizeof(config->face_name) );
+     config->cursor_size       = 25;
+     config->cursor_visible    = 1;
+     config->font_pitch_family = FIXED_PITCH | FF_DONTCARE;
+@@ -675,6 +674,7 @@ static BOOL set_console_font( struct console *console, const LOGFONTW *logfont )
+     struct font_info *font_info = &console->active->font;
+     HFONT font, old_font;
+     TEXTMETRICW tm;
++    size_t face_name_size;
+     CPINFO cpinfo;
+     HDC dc;
+ 
+@@ -683,9 +683,7 @@ static BOOL set_console_font( struct console *console, const LOGFONTW *logfont )
+     if (console->window->font && logfont->lfHeight == console->active->font.height &&
+         logfont->lfWeight == console->active->font.weight &&
+         !logfont->lfItalic && !logfont->lfUnderline && !logfont->lfStrikeOut &&
+-        console->active->font.face_len == wcslen( logfont->lfFaceName ) * sizeof(WCHAR) &&
+-        !memcmp( logfont->lfFaceName, console->active->font.face_name,
+-                 console->active->font.face_len ))
++        !wcsncmp(logfont->lfFaceName, console->active->font.face_name, console->active->font.face_len))
+     {
+         TRACE( "equal to current\n" );
+         return TRUE;
+@@ -708,9 +706,10 @@ static BOOL set_console_font( struct console *console, const LOGFONTW *logfont )
+     font_info->weight = tm.tmWeight;
+ 
+     free( font_info->face_name );
+-    font_info->face_len = wcslen( logfont->lfFaceName ) * sizeof(WCHAR);
+-    font_info->face_name = malloc( font_info->face_len );
+-    memcpy( font_info->face_name, logfont->lfFaceName, font_info->face_len );
++    font_info->face_len = wcslen(logfont->lfFaceName);
++    face_name_size = font_info->face_len * sizeof(WCHAR);
++    font_info->face_name = malloc(face_name_size);
++    memcpy(font_info->face_name, logfont->lfFaceName, face_name_size);
+ 
+     /* FIXME: use maximum width for DBCS codepages since some chars take two cells */
+     if (GetCPInfo( console->output_cp, &cpinfo ) && cpinfo.MaxCharSize > 1)
+@@ -819,9 +818,10 @@ static int WINAPI get_first_font_sub_enum( const LOGFONTW *lf, const TEXTMETRICW
+             load_config( fc->console->window->config_key, &config );
+             config.cell_width  = fc->console->active->font.width;
+             config.cell_height = fc->console->active->font.height;
+-            fc->console->active->font.face_len = wcslen( config.face_name ) * sizeof(WCHAR);
+-            memcpy( fc->console->active->font.face_name, config.face_name,
+-                    fc->console->active->font.face_len );
++            fc->console->active->font.face_len = wcslen(fc->console->active->font.face_name);
++            lstrcpynW(config.face_name, fc->console->active->font.face_name,
++                      fc->console->active->font.face_len + 1);
++
+             /* Force also its writing back to the registry so that we can get it
+              * the next time.
+              */
+@@ -1895,8 +1895,7 @@ static void apply_config( struct console *console, const struct console_config *
+         console->active->font.height != config->cell_height ||
+         console->active->font.weight != config->font_weight ||
+         console->active->font.pitch_family != config->font_pitch_family ||
+-        console->active->font.face_len != wcslen( config->face_name ) * sizeof(WCHAR) ||
+-        memcmp( console->active->font.face_name, config->face_name, console->active->font.face_len ))
++        wcsncmp(console->active->font.face_name, config->face_name, console->active->font.face_len))
+     {
+         update_console_font( console, config->face_name, config->cell_height, config->font_weight );
+     }
+@@ -1908,8 +1907,6 @@ static void apply_config( struct console *console, const struct console_config *
+ 
+ static void current_config( struct console *console, struct console_config *config )
+ {
+-    size_t len;
+-
+     config->menu_mask  = console->window->menu_mask;
+     config->quick_edit = console->window->quick_edit;
+ 
+@@ -1930,9 +1927,7 @@ static void current_config( struct console *console, struct console_config *conf
+     config->cell_height = console->active->font.height;
+     config->font_weight = console->active->font.weight;
+     config->font_pitch_family = console->active->font.pitch_family;
+-    len = min( ARRAY_SIZE(config->face_name) - 1, console->active->font.face_len / sizeof(WCHAR) );
+-    if (len) memcpy( config->face_name, console->active->font.face_name, len * sizeof(WCHAR) );
+-    config->face_name[len] = 0;
++    lstrcpynW(config->face_name, console->active->font.face_name, console->active->font.face_len + 1);
+ 
+     config->sb_width  = console->active->width;
+     config->sb_height = console->active->height;
+
+-- 
+2.32.0
+

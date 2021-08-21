@@ -1,0 +1,140 @@
+From: Alex Henrie <alexhenrie24@gmail.com>
+Subject: [PATCH v3 3/4] ntdll: Error out when trying to use a UDP-only option on a TCP socket
+Message-Id: <20210817045851.34401-3-alexhenrie24@gmail.com>
+Date: Mon, 16 Aug 2021 22:58:30 -0600
+In-Reply-To: <20210817045851.34401-1-alexhenrie24@gmail.com>
+References: <20210817045851.34401-1-alexhenrie24@gmail.com>
+
+Windows supports none of these options on TCP. Linux supports all of
+them on TCP. Mac OS supports some of them on TCP, but sets EOPNOTSUPP
+instead of EINVAL for the ones that it doesn't support. So, Wine needs
+to do its own check for whether the option may be used with the socket.
+
+Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
+---
+v3: No changes
+---
+ dlls/ntdll/unix/socket.c | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index 1ac4365c012..4523ded1be7 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -1200,6 +1200,14 @@ static NTSTATUS do_setsockopt( HANDLE handle, IO_STATUS_BLOCK *io, int level,
+ }
+ 
+ 
++static BOOL is_datagram_socket( HANDLE handle, IO_STATUS_BLOCK *io )
++{
++    int sock_type = -1;
++    do_getsockopt( handle, io, SOL_SOCKET, SO_TYPE, &sock_type, sizeof(sock_type) );
++    return sock_type == SOCK_DGRAM;
++}
++
++
+ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc_user, IO_STATUS_BLOCK *io,
+                      ULONG code, void *in_buffer, ULONG in_size, void *out_buffer, ULONG out_size )
+ {
+@@ -1767,18 +1775,23 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+ #endif
+ 
+         case IOCTL_AFD_WINE_GET_IP_MULTICAST_IF:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_getsockopt( handle, io, IPPROTO_IP, IP_MULTICAST_IF, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_IP_MULTICAST_IF:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_setsockopt( handle, io, IPPROTO_IP, IP_MULTICAST_IF, in_buffer, in_size );
+ 
+         case IOCTL_AFD_WINE_GET_IP_MULTICAST_LOOP:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_getsockopt( handle, io, IPPROTO_IP, IP_MULTICAST_LOOP, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_IP_MULTICAST_LOOP:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_setsockopt( handle, io, IPPROTO_IP, IP_MULTICAST_LOOP, in_buffer, in_size );
+ 
+         case IOCTL_AFD_WINE_GET_IP_MULTICAST_TTL:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_getsockopt( handle, io, IPPROTO_IP, IP_MULTICAST_TTL, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_IP_MULTICAST_TTL:
+@@ -1792,15 +1805,19 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+ 
+ #ifdef IP_PKTINFO
+         case IOCTL_AFD_WINE_GET_IP_PKTINFO:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_getsockopt( handle, io, IPPROTO_IP, IP_PKTINFO, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_IP_PKTINFO:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_setsockopt( handle, io, IPPROTO_IP, IP_PKTINFO, in_buffer, in_size );
+ #elif defined(IP_RECVDSTADDR)
+         case IOCTL_AFD_WINE_GET_IP_PKTINFO:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_getsockopt( handle, io, IPPROTO_IP, IP_RECVDSTADDR, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_IP_PKTINFO:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_setsockopt( handle, io, IPPROTO_IP, IP_RECVDSTADDR, in_buffer, in_size );
+ #endif
+ 
+@@ -1890,18 +1907,21 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+ #endif
+ 
+         case IOCTL_AFD_WINE_GET_IPV6_MULTICAST_HOPS:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_getsockopt( handle, io, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_IPV6_MULTICAST_HOPS:
+             return do_setsockopt( handle, io, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, in_buffer, in_size );
+ 
+         case IOCTL_AFD_WINE_GET_IPV6_MULTICAST_IF:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_getsockopt( handle, io, IPPROTO_IPV6, IPV6_MULTICAST_IF, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_IPV6_MULTICAST_IF:
+             return do_setsockopt( handle, io, IPPROTO_IPV6, IPV6_MULTICAST_IF, in_buffer, in_size );
+ 
+         case IOCTL_AFD_WINE_GET_IPV6_MULTICAST_LOOP:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_getsockopt( handle, io, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_IPV6_MULTICAST_LOOP:
+@@ -1909,25 +1929,31 @@ NTSTATUS sock_ioctl( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, void *apc
+ 
+ #ifdef IPV6_RECVHOPLIMIT
+         case IOCTL_AFD_WINE_GET_IPV6_RECVHOPLIMIT:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_getsockopt( handle, io, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_IPV6_RECVHOPLIMIT:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_setsockopt( handle, io, IPPROTO_IPV6, IPV6_RECVHOPLIMIT, in_buffer, in_size );
+ #endif
+ 
+ #ifdef IPV6_RECVPKTINFO
+         case IOCTL_AFD_WINE_GET_IPV6_RECVPKTINFO:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_getsockopt( handle, io, IPPROTO_IPV6, IPV6_RECVPKTINFO, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_IPV6_RECVPKTINFO:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_setsockopt( handle, io, IPPROTO_IPV6, IPV6_RECVPKTINFO, in_buffer, in_size );
+ #endif
+ 
+ #ifdef IPV6_RECVTCLASS
+         case IOCTL_AFD_WINE_GET_IPV6_RECVTCLASS:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_getsockopt( handle, io, IPPROTO_IPV6, IPV6_RECVTCLASS, out_buffer, out_size );
+ 
+         case IOCTL_AFD_WINE_SET_IPV6_RECVTCLASS:
++            if (!is_datagram_socket( handle, io )) return STATUS_INVALID_PARAMETER;
+             return do_setsockopt( handle, io, IPPROTO_IPV6, IPV6_RECVTCLASS, in_buffer, in_size );
+ #endif
+ 
+
+-- 
+2.32.0
+

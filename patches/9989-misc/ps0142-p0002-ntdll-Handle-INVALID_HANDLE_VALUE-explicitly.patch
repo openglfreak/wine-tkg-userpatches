@@ -1,0 +1,61 @@
+From: Nikolay Sivov <nsivov@codeweavers.com>
+Subject: [PATCH 2/2] ntdll: Handle INVALID_HANDLE_VALUE explicitly in NtClose().
+Message-Id: <20210810165120.171726-2-nsivov@codeweavers.com>
+Date: Tue, 10 Aug 2021 19:51:20 +0300
+In-Reply-To: <20210810165120.171726-1-nsivov@codeweavers.com>
+References: <20210810165120.171726-1-nsivov@codeweavers.com>
+
+Signed-off-by: Nikolay Sivov <nsivov@codeweavers.com>
+---
+
+Reported by Sergey Bychkow as https://bugs.winehq.org/show_bug.cgi?id=51529.
+
+ dlls/kernel32/tests/process.c | 2 --
+ dlls/ntdll/tests/om.c         | 1 -
+ dlls/ntdll/unix/server.c      | 2 ++
+ 3 files changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/kernel32/tests/process.c b/dlls/kernel32/tests/process.c
+index ce7de563d9d..31d758f076d 100644
+--- a/dlls/kernel32/tests/process.c
++++ b/dlls/kernel32/tests/process.c
+@@ -4978,10 +4978,8 @@ static void test_CloseHandle(void)
+ 
+     SetLastError(0xdeadbeef);
+     ret = CloseHandle(INVALID_HANDLE_VALUE);
+-todo_wine {
+     ok(ret, "Unexpected return value %d.\n", ret);
+     ok(GetLastError() == 0xdeadbeef, "Unexpected error.\n");
+-}
+ 
+     SetLastError(0);
+     ret = CloseHandle(UlongToHandle(0xdeadbee1));
+diff --git a/dlls/ntdll/tests/om.c b/dlls/ntdll/tests/om.c
+index 3d518af5f3a..3e4993171c3 100644
+--- a/dlls/ntdll/tests/om.c
++++ b/dlls/ntdll/tests/om.c
+@@ -2949,7 +2949,6 @@ static void test_close_handle(void)
+     NTSTATUS status;
+ 
+     status = NtClose(INVALID_HANDLE_VALUE);
+-todo_wine
+     ok(!status, "Unexpected status %#x.\n", status);
+ 
+     status = NtClose(0);
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 986eb6c3250..84a51d42aa3 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1728,6 +1728,8 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
+     NTSTATUS ret;
+     int fd;
+ 
++    if (handle == INVALID_HANDLE_VALUE) return STATUS_SUCCESS;
++
+     server_enter_uninterrupted_section( &fd_cache_mutex, &sigset );
+ 
+     /* always remove the cached fd; if the server request fails we'll just
+
+-- 
+2.30.2
+

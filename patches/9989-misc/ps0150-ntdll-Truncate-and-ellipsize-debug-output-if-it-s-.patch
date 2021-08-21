@@ -1,0 +1,68 @@
+From: Esme Povirk <esme@codeweavers.com>
+Subject: [PATCH] ntdll: Truncate and ellipsize debug output if it's too long.
+Message-Id: <20210815164029.236691-1-esme@codeweavers.com>
+Date: Sun, 15 Aug 2021 11:40:29 -0500
+
+Signed-off-by: Esme Povirk <esme@codeweavers.com>
+---
+It turns out that, in addition to Mono's debug output being too long
+sometimes, one can trigger an overrun by passing too many arguments
+to a managed exe while the +mscoree debug channel is enabled. To
+guarantee that this won't happen in mscoree, we would either have to
+limit the number of arguments traced to 2 (since debug output for the
+filename and each argument could be up to 300 characters, and it
+needs to fit in a 1020 character buffer) or keep track of the lengths
+from each call to debugstr_w.
+
+I don't think there's any reasonable way for callers to ensure that
+in general we won't overrun this buffer, and losing some debug
+output on occasion is much better than crashing.
+
+ dlls/ntdll/thread.c     | 10 +++++-----
+ dlls/ntdll/unix/debug.c |  8 +++++---
+ 2 files changed, 10 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+index 37dc7c8ab37..17e9cc0bf98 100644
+--- a/dlls/ntdll/thread.c
++++ b/dlls/ntdll/thread.c
+@@ -74,11 +74,11 @@ static int append_output( struct debug_info *info, const char *str, size_t len )
+ {
+     if (len >= sizeof(info->output) - info->out_pos)
+     {
+-        __wine_dbg_write( info->output, info->out_pos );
+-        info->out_pos = 0;
+-        ERR_(thread)( "debug buffer overflow:\n" );
+-        __wine_dbg_write( str, len );
+-        RtlRaiseStatus( STATUS_BUFFER_OVERFLOW );
++        len = sizeof(info->output) - info->out_pos;
++        memcpy( info->output + info->out_pos, str, len );
++        memcpy( info->output + sizeof(info->output) - 4, "...\n", 4 );
++        info->out_pos = sizeof(info->output);
++        return len;
+     }
+     memcpy( info->output + info->out_pos, str, len );
+     info->out_pos += len;
+diff --git a/dlls/ntdll/unix/debug.c b/dlls/ntdll/unix/debug.c
+index d43cdaeb917..e435a58aa12 100644
+--- a/dlls/ntdll/unix/debug.c
++++ b/dlls/ntdll/unix/debug.c
+@@ -78,9 +78,11 @@ static int append_output( struct debug_info *info, const char *str, size_t len )
+ {
+     if (len >= sizeof(info->output) - info->out_pos)
+     {
+-       fprintf( stderr, "wine_dbg_output: debugstr buffer overflow (contents: '%s')\n", info->output );
+-       info->out_pos = 0;
+-       abort();
++        len = sizeof(info->output) - info->out_pos;
++        memcpy( info->output + info->out_pos, str, len );
++        memcpy( info->output + sizeof(info->output) - 4, "...\n", 4 );
++        info->out_pos = sizeof(info->output);
++        return len;
+     }
+     memcpy( info->output + info->out_pos, str, len );
+     info->out_pos += len;
+
+-- 
+2.25.1
+

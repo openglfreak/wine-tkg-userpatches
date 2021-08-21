@@ -1,0 +1,88 @@
+From: Nikolay Sivov <nsivov@codeweavers.com>
+Subject: [PATCH 1/2] ntdll: Add a test for closing INVALID_HANDLE_VALUE handle.
+Message-Id: <20210810165120.171726-1-nsivov@codeweavers.com>
+Date: Tue, 10 Aug 2021 19:51:19 +0300
+
+Signed-off-by: Nikolay Sivov <nsivov@codeweavers.com>
+---
+ dlls/kernel32/tests/process.c | 23 +++++++++++++++++++++++
+ dlls/ntdll/tests/om.c         | 16 ++++++++++++++++
+ 2 files changed, 39 insertions(+)
+
+diff --git a/dlls/kernel32/tests/process.c b/dlls/kernel32/tests/process.c
+index e729bca87ef..ce7de563d9d 100644
+--- a/dlls/kernel32/tests/process.c
++++ b/dlls/kernel32/tests/process.c
+@@ -4972,6 +4972,28 @@ static void test_job_list_attribute(HANDLE parent_job)
+     ok(ret, "SetInformationJobObject error %u\n", GetLastError());
+ }
+ 
++static void test_CloseHandle(void)
++{
++    BOOL ret;
++
++    SetLastError(0xdeadbeef);
++    ret = CloseHandle(INVALID_HANDLE_VALUE);
++todo_wine {
++    ok(ret, "Unexpected return value %d.\n", ret);
++    ok(GetLastError() == 0xdeadbeef, "Unexpected error.\n");
++}
++
++    SetLastError(0);
++    ret = CloseHandle(UlongToHandle(0xdeadbee1));
++    ok(!ret, "Unexpected return value %d.\n", ret);
++    ok(GetLastError() == ERROR_INVALID_HANDLE, "Unexpected error.\n");
++
++    SetLastError(0);
++    ret = CloseHandle(0);
++    ok(!ret, "Unexpected return value %d.\n", ret);
++    ok(GetLastError() == ERROR_INVALID_HANDLE, "Unexpected error.\n");
++}
++
+ START_TEST(process)
+ {
+     HANDLE job, hproc, h, h2;
+@@ -5101,6 +5123,7 @@ START_TEST(process)
+     test_parent_process_attribute(0, NULL);
+     test_handle_list_attribute(FALSE, NULL, NULL);
+     test_dead_process();
++    test_CloseHandle();
+ 
+     /* things that can be tested:
+      *  lookup:         check the way program to be executed is searched
+diff --git a/dlls/ntdll/tests/om.c b/dlls/ntdll/tests/om.c
+index af5e014f069..3d518af5f3a 100644
+--- a/dlls/ntdll/tests/om.c
++++ b/dlls/ntdll/tests/om.c
+@@ -2944,6 +2944,21 @@ static void test_get_next_thread(void)
+     CloseHandle(thread);
+ }
+ 
++static void test_close_handle(void)
++{
++    NTSTATUS status;
++
++    status = NtClose(INVALID_HANDLE_VALUE);
++todo_wine
++    ok(!status, "Unexpected status %#x.\n", status);
++
++    status = NtClose(0);
++    ok(status == STATUS_INVALID_HANDLE, "Unexpected status %#x.\n", status);
++
++    status = NtClose(UlongToHandle(0xdeadbee1));
++    ok(status == STATUS_INVALID_HANDLE, "Unexpected status %#x.\n", status);
++}
++
+ START_TEST(om)
+ {
+     HMODULE hntdll = GetModuleHandleA("ntdll.dll");
+@@ -3020,4 +3035,5 @@ START_TEST(om)
+     test_duplicate_object();
+     test_object_types();
+     test_get_next_thread();
++    test_close_handle();
+ }
+
+-- 
+2.30.2
+

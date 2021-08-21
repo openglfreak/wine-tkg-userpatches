@@ -1,0 +1,35 @@
+From: Dmitry Timoshkov <dmitry@baikal.ru>
+Subject: [PATCH] winex11.drv: When mapping a layered window make sure that surface has a valid bounding rectangle.
+Message-Id: <20210812172521.972bc72a259b06bc4e90a430@baikal.ru>
+Date: Thu, 12 Aug 2021 17:25:21 +0300
+
+Otherwise surface->flush() would be a no-op.
+This may happen
+1. when UpdateLayeredWindow() was initially called on an invisible window
+2. when a window is unmapped during being converted to managed
+3. layered windows are mapped only once their attributes are set
+
+Signed-off-by: Dmitry Timoshkov <dmitry@baikal.ru>
+---
+ dlls/winex11.drv/window.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 4e856a41865..dfe7d1ce716 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1128,7 +1128,10 @@ static void map_window( HWND hwnd, DWORD new_style )
+             XMapWindow( data->display, data->whole_window );
+             XFlush( data->display );
+             if (data->surface && data->vis.visualid != default_visual.visualid)
++            {
++                add_bounds_rect( data->surface->funcs->get_bounds( data->surface ), &data->window_rect );
+                 data->surface->funcs->flush( data->surface );
++            }
+         }
+         else set_xembed_flags( data, XEMBED_MAPPED );
+ 
+
+-- 
+2.31.1
+

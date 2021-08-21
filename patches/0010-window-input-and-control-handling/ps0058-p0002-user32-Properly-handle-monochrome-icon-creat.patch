@@ -1,0 +1,112 @@
+From: Fabian Maurer <dark.shadow4@web.de>
+Subject: [PATCH v2 2/2] user32: Properly handle monochrome icon creation
+Message-Id: <20210821131819.14141-2-dark.shadow4@web.de>
+Date: Sat, 21 Aug 2021 15:18:19 +0200
+In-Reply-To: <20210821131819.14141-1-dark.shadow4@web.de>
+References: <20210821131819.14141-1-dark.shadow4@web.de>
+
+This fixes a regression from db2b266c57b73e1a16785213ce923b749c84400e.
+Multiple things here:
+1) We must use a color table to avoid undefined behavior
+2) We must set the bitmap line by line, in reverse
+
+The same function is already used and tested in the previous patch.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=51296
+Signed-off-by: Fabian Maurer <dark.shadow4@web.de>
+---
+ dlls/user32/cursoricon.c       | 31 ++++++++++++++++++++-----------
+ dlls/user32/tests/cursoricon.c |  9 ++++-----
+ 2 files changed, 24 insertions(+), 16 deletions(-)
+
+diff --git a/dlls/user32/cursoricon.c b/dlls/user32/cursoricon.c
+index 7ad0a04a551..605cd6a3f61 100644
+--- a/dlls/user32/cursoricon.c
++++ b/dlls/user32/cursoricon.c
+@@ -1574,19 +1574,28 @@ static HBITMAP create_masked_bitmap( int width, int height, const void *and, con
+ {
+     HDC dc = CreateCompatibleDC( 0 );
+     HBITMAP bitmap;
+-
+-    const BITMAPINFO bitmap_info =
+-    {
+-        .bmiHeader.biSize = sizeof(BITMAPINFOHEADER),
+-        .bmiHeader.biWidth = width,
+-        .bmiHeader.biHeight = height * 2,
+-        .bmiHeader.biPlanes = 1,
+-        .bmiHeader.biBitCount = 1,
+-    };
++    int line_size = width/8;
++    const char* and2 = (const char*)and;
++    const char* xor2 = (const char*)xor;
++    char buffer[sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD) * 2] = {0};
++
++    BITMAPINFO *bitmap_info = (BITMAPINFO*)buffer;
++    bitmap_info->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
++    bitmap_info->bmiHeader.biWidth = width;
++    bitmap_info->bmiHeader.biHeight = height * 2;
++    bitmap_info->bmiHeader.biPlanes = 1;
++    bitmap_info->bmiHeader.biBitCount = 1;
++    bitmap_info->bmiColors[1].rgbRed = 255;
++    bitmap_info->bmiColors[1].rgbGreen = 255;
++    bitmap_info->bmiColors[1].rgbBlue = 255;
+
+     bitmap = CreateBitmap( width, height * 2, 1, 1, NULL );
+-    SetDIBits( dc, bitmap, 0, height, and, &bitmap_info, FALSE );
+-    SetDIBits( dc, bitmap, height, height, xor, &bitmap_info, FALSE );
++
++    for (int i = 0; i < height; i++)
++    {
++        SetDIBits( dc, bitmap, height - i - 1, 1, &xor2[i*line_size], bitmap_info, FALSE );
++        SetDIBits( dc, bitmap, 2*height - i - 1, 1, &and2[i*line_size], bitmap_info, FALSE );
++    }
+     DeleteDC( dc );
+     return bitmap;
+ }
+diff --git a/dlls/user32/tests/cursoricon.c b/dlls/user32/tests/cursoricon.c
+index dbe2b3a57f0..ef3d4b2870f 100644
+--- a/dlls/user32/tests/cursoricon.c
++++ b/dlls/user32/tests/cursoricon.c
+@@ -3125,7 +3125,7 @@ static HBITMAP create_masked_bitmap( int width, int height, const void *and, con
+     return bitmap;
+ }
+
+-static void check_monochrome_icon(HICON icon, int draw_flag, int line, BOOL todo)
++static void check_monochrome_icon(HICON icon, int draw_flag, int line)
+ {
+     HDC dc = CreateCompatibleDC(0);
+     HBITMAP canvas = CreateCompatibleBitmap(dc, 32, 32);
+@@ -3138,7 +3138,6 @@ static void check_monochrome_icon(HICON icon, int draw_flag, int line, BOOL todo
+     {
+         COLORREF color = GetPixel(dc, i, 8);
+         int expect = i % 2 == 0 ? 0 : 0xFFFFFF;
+-        todo_wine_if(todo && (i%2 != 0))
+         ok_(__FILE__,line)(color == expect, "At index %d got %x\n", i, color);
+     }
+     DeleteObject(canvas);
+@@ -3163,17 +3162,17 @@ static void test_monochrome_icon_creation(void)
+
+     cursor = CreateCursor(0, 8, 8, 16, 16, monochrome_bits, &monochrome_bits[32]);
+     ok(cursor != NULL, "CreateCursor failed\n");
+-    check_monochrome_icon(cursor, DI_NORMAL, __LINE__, TRUE);
++    check_monochrome_icon(cursor, DI_NORMAL, __LINE__);
+     DestroyCursor(cursor);
+
+     icon = CreateIcon(0, 16, 16, 1, 1, monochrome_bits, &monochrome_bits[32]);
+     ok(icon != NULL, "CreateIcon failed\n");
+-    check_monochrome_icon(icon, DI_NORMAL, __LINE__, TRUE);
++    check_monochrome_icon(icon, DI_NORMAL, __LINE__);
+     DestroyIcon(icon);
+
+     icon = CreateIconIndirect(&iconinfo);
+     ok(icon != NULL, "CreateIconIndirect failed\n");
+-    check_monochrome_icon(icon, DI_NORMAL, __LINE__, FALSE);
++    check_monochrome_icon(icon, DI_NORMAL, __LINE__);
+     DestroyIcon(icon);
+ }
+
+--
+2.33.0
+
+
+

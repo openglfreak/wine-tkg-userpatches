@@ -1,0 +1,64 @@
+From: Dmitry Timoshkov <dmitry@baikal.ru>
+Subject: [PATCH 2/2] user32: If STM_SETIMAGE failed to assign the image don't repaint the control.
+Message-Id: <20210816172427.0174670e74f06273ca2f25bb@baikal.ru>
+Date: Mon, 16 Aug 2021 17:24:27 +0300
+
+Signed-off-by: Dmitry Timoshkov <dmitry@baikal.ru>
+---
+ dlls/user32/static.c       |  3 ++-
+ dlls/user32/tests/static.c | 17 +++++++++++++++++
+ 2 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/static.c b/dlls/user32/static.c
+index 72e49e15e8f..8e0aa176dd2 100644
+--- a/dlls/user32/static.c
++++ b/dlls/user32/static.c
+@@ -514,7 +514,8 @@ LRESULT StaticWndProc_common( HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
+ 	    FIXME("STM_SETIMAGE: Unhandled type %lx\n", wParam);
+ 	    break;
+ 	}
+-        STATIC_TryPaintFcn( hwnd, full_style );
++	if (lResult)
++            STATIC_TryPaintFcn( hwnd, full_style );
+ 	break;
+ 
+     case STM_SETICON:
+diff --git a/dlls/user32/tests/static.c b/dlls/user32/tests/static.c
+index 0c453d08a67..657e521d035 100644
+--- a/dlls/user32/tests/static.c
++++ b/dlls/user32/tests/static.c
+@@ -189,6 +189,22 @@ static void test_set_image(void)
+     DeleteObject(image);
+ }
+ 
++static void test_set_image_on_text_control(void)
++{
++    HWND hwnd = build_static(SS_LEFT);
++    HICON image, old_image;
++
++    image = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
++
++    g_nReceivedColorStatic = 0;
++    old_image = (HICON)SendMessageW(hwnd, STM_SETIMAGE, IMAGE_ICON, (LPARAM)image);
++    ok(!old_image, "got %p\n", old_image);
++    ok(!g_nReceivedColorStatic, "Unexpected WM_CTLCOLORSTATIC value %d\n", g_nReceivedColorStatic);
++
++    DestroyIcon(image);
++    DestroyWindow(hwnd);
++}
++
+ START_TEST(static)
+ {
+     static const char szClassName[] = "testclass";
+@@ -222,6 +238,7 @@ START_TEST(static)
+     test_set_text();
+     test_set_image();
+     test_STM_SETIMAGE();
++    test_set_image_on_text_control();
+ 
+     DestroyWindow(hMainWnd);
+ }
+
+-- 
+2.31.1
+

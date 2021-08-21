@@ -1,0 +1,127 @@
+From: Eric Pouech <eric.pouech@gmail.com>
+Subject: [PATCH] dbghelp: introducing symt_exe to hold symbolic information about .exe, .dll
+Message-Id: <162944884887.34949.11660793620435567441.stgit@euterpe>
+Date: Fri, 20 Aug 2021 10:40:50 +0200
+
+This is the internal object for SymTagExe symbols
+
+---
+ dlls/dbghelp/dbghelp_private.h |   11 ++++++++++-
+ dlls/dbghelp/module.c          |    3 +++
+ dlls/dbghelp/symbol.c          |   15 ++++++++++++++-
+ dlls/dbghelp/type.c            |    8 +++++++-
+ 4 files changed, 34 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/dbghelp/dbghelp_private.h b/dlls/dbghelp/dbghelp_private.h
+index d87b1b5ecde..7be0af0c9a1 100644
+--- a/dlls/dbghelp/dbghelp_private.h
++++ b/dlls/dbghelp/dbghelp_private.h
+@@ -161,10 +161,16 @@ struct symt_block
+     struct vector               vchildren;      /* sub-blocks & local variables */
+ };
+ 
+-struct symt_compiland
++struct symt_exe /* in fact .exe, .dll */
+ {
+     struct symt                 symt;
+     struct module*              module;
++};
++
++struct symt_compiland
++{
++    struct symt                 symt;
++    struct symt_exe*            exe;
+     ULONG_PTR                   address;
+     unsigned                    source;
+     struct vector               vchildren;      /* global variables & functions */
+@@ -375,6 +381,7 @@ struct module
+     unsigned                    sorttab_size;
+     struct symt_ht**            addr_sorttab;
+     struct hash_table           ht_symbols;
++    struct symt_exe*            top;
+ 
+     /* types */
+     struct hash_table           ht_types;
+@@ -707,6 +714,8 @@ extern int __cdecl  symt_cmp_addr(const void* p1, const void* p2) DECLSPEC_HIDDE
+ extern void         copy_symbolW(SYMBOL_INFOW* siw, const SYMBOL_INFO* si) DECLSPEC_HIDDEN;
+ extern struct symt_ht*
+                     symt_find_nearest(struct module* module, DWORD_PTR addr) DECLSPEC_HIDDEN;
++extern struct symt_exe*
++                    symt_new_exe(struct module* module) DECLSPEC_HIDDEN;
+ extern struct symt_compiland*
+                     symt_new_compiland(struct module* module, ULONG_PTR address,
+                                        unsigned src_idx) DECLSPEC_HIDDEN;
+diff --git a/dlls/dbghelp/module.c b/dlls/dbghelp/module.c
+index 247aadcef0e..d8843b100a1 100644
+--- a/dlls/dbghelp/module.c
++++ b/dlls/dbghelp/module.c
+@@ -233,6 +233,9 @@ struct module* module_new(struct process* pcs, const WCHAR* name,
+     module->sources           = 0;
+     wine_rb_init(&module->sources_offsets_tree, source_rb_compare);
+ 
++    /* add top level symbol */
++    module->top = symt_new_exe(module);
++
+     return module;
+ }
+ 
+diff --git a/dlls/dbghelp/symbol.c b/dlls/dbghelp/symbol.c
+index df952fc3984..ce586f7bcff 100644
+--- a/dlls/dbghelp/symbol.c
++++ b/dlls/dbghelp/symbol.c
+@@ -180,6 +180,19 @@ static WCHAR* file_regex(const char* srcfile)
+     return mask;
+ }
+ 
++struct symt_exe* symt_new_exe(struct module* module)
++{
++    struct symt_exe*    sym;
++
++    TRACE_(dbghelp_symt)("Adding toplevel exe symbol %s\n", debugstr_w(module->module.ModuleName));
++    if ((sym = pool_alloc(&module->pool, sizeof(*sym))))
++    {
++        sym->symt.tag = SymTagExe;
++        sym->module   = module;
++    }
++    return sym;
++}
++
+ struct symt_compiland* symt_new_compiland(struct module* module, 
+                                           ULONG_PTR address, unsigned src_idx)
+ {
+@@ -190,7 +203,7 @@ struct symt_compiland* symt_new_compiland(struct module* module,
+     if ((sym = pool_alloc(&module->pool, sizeof(*sym))))
+     {
+         sym->symt.tag = SymTagCompiland;
+-        sym->module   = module;
++        sym->exe      = module->top;
+         sym->address  = address;
+         sym->source   = src_idx;
+         vector_init(&sym->vchildren, sizeof(struct symt*), 32);
+diff --git a/dlls/dbghelp/type.c b/dlls/dbghelp/type.c
+index 1a7cef9b7c0..76077372764 100644
+--- a/dlls/dbghelp/type.c
++++ b/dlls/dbghelp/type.c
+@@ -87,7 +87,7 @@ const char* symt_get_name(const struct symt* sym)
+     case SymTagBaseType:        return ((const struct symt_basic*)sym)->hash_elt.name;
+     case SymTagLabel:           return ((const struct symt_hierarchy_point*)sym)->hash_elt.name;
+     case SymTagThunk:           return ((const struct symt_thunk*)sym)->hash_elt.name;
+-    case SymTagCompiland:       return source_get(((const struct symt_compiland*)sym)->module,
++    case SymTagCompiland:       return source_get(((const struct symt_compiland*)sym)->exe->module,
+                                                   ((const struct symt_compiland*)sym)->source);
+     /* hierarchy tree */
+     case SymTagEnum:            return ((const struct symt_enum*)sym)->name;
+@@ -716,6 +716,12 @@ BOOL symt_get_info(struct module* module, const struct symt* type,
+         case SymTagFunctionArgType:
+             X(DWORD) = symt_ptr2index(module, ((const struct symt_function_arg_type*)type)->container);
+             break;
++        case SymTagUDT:
++            X(DWORD) = symt_ptr2index(module, &module->top->symt);
++            break;
++        case SymTagCompiland:
++            X(DWORD) = symt_ptr2index(module, &((const struct symt_compiland*)type)->exe->symt);
++            break;
+         default:
+             FIXME("Unsupported sym-tag %s for get-lexical-parent\n", 
+                   symt_get_tag_str(type->tag));
+

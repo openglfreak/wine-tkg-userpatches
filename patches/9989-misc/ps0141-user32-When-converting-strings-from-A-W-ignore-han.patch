@@ -1,0 +1,44 @@
+From: Fabian Maurer <dark.shadow4@web.de>
+Subject: [PATCH] user32: When converting strings from A->W, ignore handles/resources
+Message-Id: <20210809215524.448712-1-dark.shadow4@web.de>
+Date: Mon,  9 Aug 2021 23:55:24 +0200
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=51583
+Signed-off-by: Fabian Maurer <dark.shadow4@web.de>
+---
+ dlls/user32/tests/msg.c | 3 +++
+ dlls/user32/winproc.c   | 2 ++
+ 2 files changed, 5 insertions(+)
+
+diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
+index 9867e319d58..5ea05b156d6 100644
+--- a/dlls/user32/tests/msg.c
++++ b/dlls/user32/tests/msg.c
+@@ -5991,6 +5991,9 @@ static void test_setwindowpos(void)
+     expect(winY, rc.bottom);
+
+     DestroyWindow(hwnd);
++
++    /* Test invalid text with WM_SETTEXT. This must not crash. */
++    SendMessageA(GetDesktopWindow(), WM_SETTEXT, 0, (LPARAM)55);
+ }
+
+ static void invisible_parent_tests(void)
+diff --git a/dlls/user32/winproc.c b/dlls/user32/winproc.c
+index f83d8b61a63..f4cf9f6e748 100644
+--- a/dlls/user32/winproc.c
++++ b/dlls/user32/winproc.c
+@@ -494,6 +494,8 @@ LRESULT WINPROC_CallProcAtoW( winproc_callback_t callback, HWND hwnd, UINT msg,
+     case LB_ADDFILE:
+     case EM_REPLACESEL:
+         if (!lParam) ret = callback( hwnd, msg, wParam, lParam, result, arg );
++        else if (IS_INTRESOURCE(lParam)) /* Check for handles/IDs similar to DEFWND_SetTextA */
++            return 0;
+         else
+         {
+             WCHAR *ptr, buffer[512];
+--
+2.32.0
+
+
+

@@ -1,0 +1,39 @@
+From: Hiroki Awata <castaneai@by.black>
+Subject: [PATCH] quartz: Increment reference count for the advise thread to avoid crashes caused by DLL unloading.
+Message-Id: <20210810223825.570872-1-castaneai@by.black>
+Date: Wed, 11 Aug 2021 07:38:25 +0900
+
+Some games crash when the DLL is unloaded during SleepConditionVariableCS on SystemClockAdviseThread.
+This is due to the fact that DllCanUnloadNow returns S_OK even though the advise thread is running.
+Incrementing the reference count when creating the advise thread resolves it.
+
+Signed-off-by: Hiroki Awata <castaneai@by.black>
+---
+ dlls/quartz/systemclock.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/dlls/quartz/systemclock.c b/dlls/quartz/systemclock.c
+index 73a923a7b99..7302de0e58f 100644
+--- a/dlls/quartz/systemclock.c
++++ b/dlls/quartz/systemclock.c
+@@ -104,6 +104,7 @@ static ULONG WINAPI system_clock_inner_Release(IUnknown *iface)
+             WakeConditionVariable(&clock->cv);
+             WaitForSingleObject(clock->thread, INFINITE);
+             CloseHandle(clock->thread);
++            InterlockedDecrement(&object_locks);
+         }
+ 
+         LIST_FOR_EACH_ENTRY_SAFE(sink, cursor, &clock->sinks, struct advise_sink, entry)
+@@ -207,6 +208,8 @@ static HRESULT add_sink(struct system_clock *clock, DWORD_PTR handle,
+     if (!InterlockedCompareExchange(&clock->thread_created, TRUE, FALSE))
+     {
+         clock->thread = CreateThread(NULL, 0, SystemClockAdviseThread, clock, 0, NULL);
++        if (clock->thread)
++            InterlockedIncrement(&object_locks);
+     }
+     WakeConditionVariable(&clock->cv);
+ 
+
+-- 
+2.27.0
+

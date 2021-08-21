@@ -1,0 +1,93 @@
+From: Luke Deller <luke@deller.id.au>
+Subject: [PATCH v7] server: Implement file access hints using posix_fadvise
+Message-Id: <20210820111253.421665-1-luke@deller.id.au>
+Date: Fri, 20 Aug 2021 21:12:53 +1000
+
+Implement file access pattern hints for sequential or random file access
+using posix_fadvise if available.  On Linux this will influence the
+kernel's readahead behaviour.
+
+Signed-off-by: Luke Deller <luke@deller.id.au>
+---
+v7:
+ - missed a file: include/config.h.in
+ - avoid warning about unused variable if HAVE_POSIX_FADVISE not defined
+---
+# configure           |  1 +
+ configure.ac        |  1 +
+ include/config.h.in |  3 +++
+ server/fd.c         | 12 ++++++++++++
+ 4 files changed, 17 insertions(+)
+
+#diff --git a/configure b/configure
+#index cc4f64347f1..3197f07f02b 100755
+#--- a/configure
+#+++ b/configure
+#@@ -18010,6 +18010,7 @@ for ac_func in \
+# 	pipe2 \
+# 	poll \
+# 	port_create \
+#+	posix_fadvise \
+# 	prctl \
+# 	pread \
+# 	proc_pidinfo \
+diff --git a/configure.ac b/configure.ac
+index cb8fa573c37..361da0428cf 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -2186,6 +2186,7 @@ AC_CHECK_FUNCS(\
+ 	pipe2 \
+ 	poll \
+ 	port_create \
++	posix_fadvise \
+ 	ppoll \
+ 	prctl \
+ 	pread \
+diff --git a/include/config.h.in b/include/config.h.in
+index b1918d46ed1..2b488894a49 100644
+--- a/include/config.h.in
++++ b/include/config.h.in
+@@ -513,6 +513,9 @@
+ /* Define to 1 if you have the <port.h> header file. */
+ #undef HAVE_PORT_H
+ 
++/* Define to 1 if you have the `posix_fadvise' function. */
++#undef HAVE_POSIX_FADVISE
++
+ /* Define to 1 if you have the `prctl' function. */
+ #undef HAVE_PRCTL
+ 
+diff --git a/server/fd.c b/server/fd.c
+index de7c5d7e36d..56a63c5c798 100644
+--- a/server/fd.c
++++ b/server/fd.c
+@@ -1882,6 +1882,9 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
+     char *path;
+     int do_chmod = 0;
+     int created = (flags & O_CREAT);
++#ifdef HAVE_POSIX_FADVISE
++    unsigned int cache_hint;
++#endif
+ 
+     if (((options & FILE_DELETE_ON_CLOSE) && !(access & DELETE)) ||
+         ((options & FILE_DIRECTORY_FILE) && (flags & O_TRUNC)))
+@@ -2026,6 +2029,15 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
+         free( closed_fd );
+         fd->cacheable = 1;
+     }
++
++#ifdef HAVE_POSIX_FADVISE
++    cache_hint = options & (FILE_SEQUENTIAL_ONLY | FILE_RANDOM_ACCESS);
++    if (cache_hint == FILE_SEQUENTIAL_ONLY)
++        posix_fadvise( fd->unix_fd, 0, 0, POSIX_FADV_SEQUENTIAL );
++    else if (cache_hint == FILE_RANDOM_ACCESS)
++        posix_fadvise( fd->unix_fd, 0, 0, POSIX_FADV_RANDOM );
++#endif
++
+     if (root_fd != -1) fchdir( server_dir_fd ); /* go back to the server dir */
+     return fd;
+ 
+
+-- 
+2.25.1
+

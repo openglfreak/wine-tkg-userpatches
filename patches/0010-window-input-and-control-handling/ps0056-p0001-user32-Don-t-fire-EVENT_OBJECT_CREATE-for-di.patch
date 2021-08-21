@@ -1,0 +1,36 @@
+From: Connor McAdams <cmcadams@codeweavers.com>
+Subject: [PATCH 1/2] user32: Don't fire EVENT_OBJECT_CREATE for dialog and popup windows upon creation.
+Message-Id: <20210812152714.645422-1-cmcadams@codeweavers.com>
+Date: Thu, 12 Aug 2021 11:27:13 -0400
+
+Popup menu and dialog window classes don't have EVENT_OBJECT_CREATE
+winevents associated with their creation.
+
+Signed-off-by: Connor McAdams <cmcadams@codeweavers.com>
+---
+ dlls/user32/win.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/win.c b/dlls/user32/win.c
+index 7c2471d2746..2148c3969d8 100644
+--- a/dlls/user32/win.c
++++ b/dlls/user32/win.c
+@@ -1794,7 +1794,13 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
+ 
+     if (!USER_Driver->pCreateWindow( hwnd )) goto failed;
+ 
+-    NotifyWinEvent(EVENT_OBJECT_CREATE, hwnd, OBJID_WINDOW, 0);
++    /*
++     * Popup menus and dialog windows don't get an EVENT_OBJECT_CREATE
++     * WinEvent on their creation.
++     */
++    if (GetClassLongW(hwnd, GCW_ATOM) != POPUPMENU_CLASS_ATOM &&
++            GetClassLongW(hwnd, GCW_ATOM) != DIALOG_CLASS_ATOM)
++        NotifyWinEvent(EVENT_OBJECT_CREATE, hwnd, OBJID_WINDOW, 0);
+ 
+     /* send the size messages */
+ 
+
+-- 
+2.25.1
+

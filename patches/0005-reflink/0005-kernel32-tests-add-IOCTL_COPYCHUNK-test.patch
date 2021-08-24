@@ -1,0 +1,192 @@
+From: "Alex Xu (Hello71)" <alex_y_xu@yahoo.ca>
+Subject: [PATCH v3 5/5] kernel32/tests: add IOCTL_COPYCHUNK test
+Message-Id: <20210823155653.228592-6-alex_y_xu@yahoo.ca>
+Date: Mon, 23 Aug 2021 11:56:53 -0400
+In-Reply-To: <20210823155653.228592-1-alex_y_xu@yahoo.ca>
+References: <20210823155653.228592-1-alex_y_xu@yahoo.ca>
+
+---
+ dlls/kernel32/tests/file.c | 137 +++++++++++++++++++++++++++++++++++++
+ 1 file changed, 137 insertions(+)
+
+diff --git a/dlls/kernel32/tests/file.c b/dlls/kernel32/tests/file.c
+index ea0a32f258d..76a762a62e6 100644
+--- a/dlls/kernel32/tests/file.c
++++ b/dlls/kernel32/tests/file.c
+@@ -31,9 +31,13 @@
+ #include "windef.h"
+ #include "winbase.h"
+ #include "winerror.h"
++#include "winioctl.h"
+ #include "winternl.h"
+ #include "winnls.h"
+ #include "fileapi.h"
++#include "lmaccess.h"
++#include "lmshare.h"
++#include "lmerr.h"
+ 
+ #undef DeleteFile  /* needed for FILE_DISPOSITION_INFO */
+ 
+@@ -59,6 +63,7 @@ static void (WINAPI *pRtlInitAnsiString)(PANSI_STRING,PCSZ);
+ static void (WINAPI *pRtlFreeUnicodeString)(PUNICODE_STRING);
+ static BOOL (WINAPI *pSetFileCompletionNotificationModes)(HANDLE, UCHAR);
+ static HANDLE (WINAPI *pFindFirstStreamW)(LPCWSTR filename, STREAM_INFO_LEVELS infolevel, void *data, DWORD flags);
++static const char * (CDECL *pwine_get_version)(void);
+ 
+ static char filename[MAX_PATH];
+ static const char sillytext[] =
+@@ -108,6 +113,7 @@ static void InitFunctionPointers(void)
+     pReOpenFile = (void *) GetProcAddress(hkernel32, "ReOpenFile");
+     pSetFileCompletionNotificationModes = (void *)GetProcAddress(hkernel32, "SetFileCompletionNotificationModes");
+     pFindFirstStreamW = (void *)GetProcAddress(hkernel32, "FindFirstStreamW");
++    pwine_get_version = (void *)GetProcAddress(hntdll, "wine_get_version");
+ }
+ 
+ static void create_file( const char *path )
+@@ -6109,6 +6115,136 @@ static void test_eof(void)
+     ok(ret, "failed to delete %s, error %u\n", debugstr_a(filename), GetLastError());
+ }
+ 
++static void test_copychunk(void)
++{
++    static const char testString[] = "hello world";
++    char testBuf[sizeof(testString)-1];
++    WCHAR temp_path[MAX_PATH];
++    WCHAR temp_file[MAX_PATH];
++    WCHAR share_name[MAX_PATH];
++    WCHAR share_path[MAX_PATH];
++    HANDLE src, dest;
++    int ret;
++    DWORD written, count;
++    FILE_END_OF_FILE_INFO info;
++    SRV_COPYCHUNK_COPY copychunk;
++    SRV_COPYCHUNK_RESPONSE copychunk_resp;
++    SRV_REQUEST_RESUME_KEY key;
++    NET_API_STATUS (NET_API_FUNCTION *pNetShareAdd)(LMSTR, DWORD, LPBYTE, LPDWORD);
++    NET_API_STATUS (NET_API_FUNCTION *pNetShareDel)(LMSTR, LMSTR, DWORD);
++    GetTempPathW(MAX_PATH, temp_path);
++
++    if (pwine_get_version == NULL)
++    {
++        HMODULE hnetapi32;
++        SHARE_INFO_2 shi2 = {
++            .shi2_type = STYPE_DISKTREE | STYPE_TEMPORARY | STYPE_SPECIAL,
++            .shi2_permissions = ACCESS_ALL,
++            .shi2_max_uses = -1,
++        };
++        hnetapi32 = LoadLibraryA("netapi32");
++        if (hnetapi32 == NULL)
++        {
++            win_skip("could not find hnetapi32\n");
++            return;
++        }
++        pNetShareAdd = (void *)GetProcAddress(hnetapi32, "NetShareAdd");
++        if (pNetShareAdd == NULL)
++        {
++            win_skip("could not find NetShareAdd\n");
++            return;
++        }
++        pNetShareDel = (void *)GetProcAddress(hnetapi32, "NetShareDel");
++        if (pNetShareDel == NULL)
++        {
++            win_skip("could not find NetShareDel\n");
++            return;
++        }
++        srand((unsigned)time(NULL));
++        do {
++            int r = rand();
++            swprintf(share_path, MAX_PATH, L"%lswinetest%d", temp_path, r);
++            swprintf(share_name, MAX_PATH, L"winetest%d$", r);
++            ret = CreateDirectoryW(share_path, NULL);
++            if (ret == 0 && GetLastError() != ERROR_ALREADY_EXISTS)
++            {
++                ok(ret != 0, "CreateDirectoryW error %d\n", GetLastError());
++                return;
++            }
++        } while (ret == 0);
++        shi2.shi2_netname = share_name;
++        shi2.shi2_path = share_path;
++        ret = pNetShareAdd(NULL, 2, (BYTE *)&shi2, NULL);
++        if (ret == ERROR_ACCESS_DENIED)
++        {
++            win_skip("windows IOCTL_COPYCHUNK needs admin for NetShareAdd\n");
++            RemoveDirectoryW(share_path);
++            return;
++        }
++        ok(ret == NERR_Success || ret == ERROR_ACCESS_DENIED, "NetShareAdd error %d\n", ret);
++        swprintf(temp_file, MAX_PATH, L"\\\\localhost\\%ls\\file", share_name);
++    }
++    else
++    {
++        ret = GetTempFileNameW(temp_path, L"tmp", 0, temp_file);
++        ok(ret != 0, "GetTempFileNameA error %d\n", GetLastError());
++    }
++
++    src = CreateFileW(temp_file, GENERIC_READ | GENERIC_WRITE, 0, NULL,
++                      OPEN_ALWAYS, FILE_FLAG_DELETE_ON_CLOSE, NULL);
++    ok(src != INVALID_HANDLE_VALUE, "CreateFileW error %d\n", GetLastError());
++
++    ret = WriteFile(src, testString, sizeof(testString) - 1, &written, NULL);
++    ok(ret != 0, "WriteFile error %d\n", GetLastError());
++    ok(written == sizeof(testString) - 1, "short write to regular file\n");
++
++    ret = FlushFileBuffers(src);
++    ok(ret != 0, "FlushFileBuffers error %d\n", GetLastError());
++
++    wcscat(temp_file, L"2");
++    dest = CreateFileW(temp_file, GENERIC_READ | GENERIC_WRITE, 0, NULL,
++                       CREATE_NEW, FILE_FLAG_DELETE_ON_CLOSE, NULL);
++    ok(dest != INVALID_HANDLE_VALUE, "CreateFileW error %d\n", GetLastError());
++
++    info.EndOfFile.QuadPart = written;
++    ret = SetFileInformationByHandle(dest, FileEndOfFileInfo, &info, sizeof(info));
++    ok(ret != 0, "set EOF failed: %d\n", GetLastError());
++
++    ret = DeviceIoControl( src, IOCTL_PREPARE_COPYCHUNK, NULL, 0, &key,
++                           sizeof(key), &count, NULL );
++    ok(ret != 0, "IOCTL_PREPARE_COPYCHUNK error %d\n", GetLastError());
++    ok(count != 0, "IOCTL_PREPARE_COPYCHUNK wrong return size: %d\n", count);
++
++    copychunk.SourceFile = key.Key;
++    copychunk.ChunkCount = 1;
++    copychunk.Chunk[0].Length = written;
++    copychunk.Chunk[0].SourceOffset.QuadPart = 0;
++    copychunk.Chunk[0].DestinationOffset.QuadPart = 0;
++    ret = DeviceIoControl( dest, IOCTL_COPYCHUNK, &copychunk, sizeof(copychunk),
++                           &copychunk_resp, sizeof(copychunk_resp), &count, NULL );
++    ok(ret != 0, "IOCTL_COPYCHUNK error %d\n", GetLastError());
++    ok(count == sizeof(copychunk_resp), "IOCTL_COPYCHUNK wrong return size: %d\n", count);
++    ok(copychunk_resp.ChunksWritten == 1,
++       "wrong chunks count: %d, should be 1\n", copychunk_resp.ChunksWritten);
++    ok(copychunk_resp.ChunkBytesWritten == 0,
++       "wrong chunk bytes written: %d, should be 0\n", copychunk_resp.ChunkBytesWritten);
++    ok(copychunk_resp.TotalBytesWritten == written,
++       "wrong total bytes written: %d, should be %d\n", copychunk_resp.TotalBytesWritten, written);
++
++    ret = ReadFile(dest, testBuf, sizeof(testBuf), &count, NULL);
++    ok(ret != 0, "ReadFile error %d\n", GetLastError());
++    ok(count == sizeof(testBuf), "short read from regular file\n");
++    ok(!memcmp(testString, testBuf, sizeof(testBuf)), "copied contents not identical to original\n");
++
++    CloseHandle(dest);
++    CloseHandle(src);
++    if (pwine_get_version == NULL)
++    {
++        pNetShareDel(NULL, share_name, 0);
++        RemoveDirectoryW(share_path);
++    }
++}
++
+ START_TEST(file)
+ {
+     char temp_path[MAX_PATH];
+@@ -6187,4 +6323,5 @@ START_TEST(file)
+     test_hard_link();
+     test_move_file();
+     test_eof();
++    test_copychunk();
+ }
+
+-- 
+2.33.0
+

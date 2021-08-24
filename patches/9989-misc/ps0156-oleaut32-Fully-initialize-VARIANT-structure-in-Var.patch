@@ -1,0 +1,80 @@
+From: Nikolay Sivov <nsivov@codeweavers.com>
+Subject: [PATCH] oleaut32: Fully initialize VARIANT structure in VariantInit().
+Message-Id: <20210824131305.105067-1-nsivov@codeweavers.com>
+Date: Tue, 24 Aug 2021 16:13:05 +0300
+
+Signed-off-by: Nikolay Sivov <nsivov@codeweavers.com>
+---
+
+This follows newer behavior, and fixes application I'm testing that's
+using stack variable:
+
+- initializing it;
+- setting type to VT_I4;
+- setting only lower data word to 0, leading to occasional garbage in top word.
+
+ dlls/oleaut32/tests/vartest.c | 13 +++++++++----
+ dlls/oleaut32/variant.c       | 17 +++--------------
+ 2 files changed, 12 insertions(+), 18 deletions(-)
+
+diff --git a/dlls/oleaut32/tests/vartest.c b/dlls/oleaut32/tests/vartest.c
+index 05efb5a888b..f25a448645c 100644
+--- a/dlls/oleaut32/tests/vartest.c
++++ b/dlls/oleaut32/tests/vartest.c
+@@ -673,11 +673,16 @@ static void _test_bstr_var(unsigned line, const VARIANT *v, const WCHAR *str)
+ 
+ static void test_VariantInit(void)
+ {
+-  VARIANT v;
++    VARIANT v, v2, v3;
+ 
+-  memset(&v, -1, sizeof(v));
+-  VariantInit(&v);
+-  ok(V_VT(&v) == VT_EMPTY, "VariantInit() returned vt %d\n", V_VT(&v));
++    memset(&v, -1, sizeof(v));
++    memset(&v2, 0, sizeof(v2));
++    memset(&v3, -1, sizeof(v3));
++    V_VT(&v3) = VT_EMPTY;
++
++    VariantInit(&v);
++    ok(!memcmp(&v, &v2, sizeof(v)) ||
++            broken(!memcmp(&v, &v3, sizeof(v3)) /* pre Win8 */), "Unexpected contents.\n");
+ }
+ 
+ /* All possible combinations of extra V_VT() flags */
+diff --git a/dlls/oleaut32/variant.c b/dlls/oleaut32/variant.c
+index 40a1170e247..2c60f920f5e 100644
+--- a/dlls/oleaut32/variant.c
++++ b/dlls/oleaut32/variant.c
+@@ -545,24 +545,13 @@ static inline HRESULT VARIANT_ValidateType(VARTYPE vt)
+ /******************************************************************************
+  *		VariantInit	[OLEAUT32.8]
+  *
+- * Initialise a variant.
+- *
+- * PARAMS
+- *  pVarg [O] Variant to initialise
+- *
+- * RETURNS
+- *  Nothing.
+- *
+- * NOTES
+- *  This function simply sets the type of the variant to VT_EMPTY. It does not
+- *  free any existing value, use VariantClear() for that.
++ * Since Windows 8.1 whole structure is initialized, before that only type field was reset to VT_EMPTY.
+  */
+ void WINAPI VariantInit(VARIANTARG* pVarg)
+ {
+-  TRACE("(%p)\n", pVarg);
++    TRACE("(%p)\n", pVarg);
+ 
+-  /* Win8.1 zeroes whole struct. Previous implementations don't set any other fields. */
+-  V_VT(pVarg) = VT_EMPTY;
++    memset(pVarg, 0, sizeof(*pVarg));
+ }
+ 
+ HRESULT VARIANT_ClearInd(VARIANTARG *pVarg)
+
+-- 
+2.32.0
+

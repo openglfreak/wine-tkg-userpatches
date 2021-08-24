@@ -1,0 +1,64 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH 3/3] winhttp: Execute WinHttpReadData() synchronously if the data is available.
+Message-Id: <20210824191606.636408-3-pgofman@codeweavers.com>
+Date: Tue, 24 Aug 2021 22:16:06 +0300
+In-Reply-To: <20210824191606.636408-1-pgofman@codeweavers.com>
+References: <20210824191606.636408-1-pgofman@codeweavers.com>
+
+Fixes eFootball PES 2021 in game contents download.
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/winhttp/request.c            | 6 ++++--
+ dlls/winhttp/tests/notification.c | 3 +++
+ 2 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winhttp/request.c b/dlls/winhttp/request.c
+index b1223d89060..93b39fa0d72 100644
+--- a/dlls/winhttp/request.c
++++ b/dlls/winhttp/request.c
+@@ -2930,6 +2930,7 @@ BOOL WINAPI WinHttpReadData( HINTERNET hrequest, LPVOID buffer, DWORD to_read, L
+ {
+     DWORD ret;
+     struct request *request;
++    BOOL async;
+ 
+     TRACE("%p, %p, %d, %p\n", hrequest, buffer, to_read, read);
+ 
+@@ -2945,7 +2946,8 @@ BOOL WINAPI WinHttpReadData( HINTERNET hrequest, LPVOID buffer, DWORD to_read, L
+         return FALSE;
+     }
+ 
+-    if (request->connect->hdr.flags & WINHTTP_FLAG_ASYNC)
++    if ((async = request->connect->hdr.flags & WINHTTP_FLAG_ASYNC) && !end_of_read_data( request )
++                                                                   && !query_data_ready( request ))
+     {
+         struct read_data *r;
+ 
+@@ -2962,7 +2964,7 @@ BOOL WINAPI WinHttpReadData( HINTERNET hrequest, LPVOID buffer, DWORD to_read, L
+             free( r );
+         }
+     }
+-    else ret = read_data( request, buffer, to_read, read, FALSE );
++    else ret = read_data( request, buffer, to_read, read, async );
+ 
+     release_object( &request->hdr );
+     SetLastError( ret );
+diff --git a/dlls/winhttp/tests/notification.c b/dlls/winhttp/tests/notification.c
+index e4d3912d2f6..9b6713e862f 100644
+--- a/dlls/winhttp/tests/notification.c
++++ b/dlls/winhttp/tests/notification.c
+@@ -613,6 +613,9 @@ static void test_async( void )
+ 
+     WaitForSingleObject( info.wait, INFINITE );
+ 
++    ok(info.last_status == WINHTTP_CALLBACK_STATUS_READ_COMPLETE, "got status %#x.\n", status);
++    ok(info.last_thread_id == GetCurrentThreadId(), "expected synchronous callback.\n");
++
+     setup_test( &info, winhttp_close_handle, __LINE__ );
+     WinHttpCloseHandle( req );
+     WinHttpCloseHandle( con );
+
+-- 
+2.31.1
+

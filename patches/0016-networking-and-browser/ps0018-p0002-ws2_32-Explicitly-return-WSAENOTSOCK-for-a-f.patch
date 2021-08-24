@@ -1,0 +1,47 @@
+From: Akihiro Sagawa <sagawa.aki@gmail.com>
+Subject: [PATCH 2/3] ws2_32: Explicitly return WSAENOTSOCK for a file handle in getsockopt() except SO_OPENTYPE.
+Message-Id: <20210824214959.6AEE.375B48EC@gmail.com>
+Date: Tue, 24 Aug 2021 21:50:37 +0900
+
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=51671
+Signed-off-by: Akihiro Sagawa <sagawa.aki@gmail.com>
+---
+ dlls/ws2_32/socket.c     | 7 +++++++
+ dlls/ws2_32/tests/sock.c | 4 ++--
+ 2 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
+index 30f233fa78f..f58f7cea5cc 100644
+--- a/dlls/ws2_32/socket.c
++++ b/dlls/ws2_32/socket.c
+@@ -1363,6 +1363,13 @@ int WINAPI getsockopt( SOCKET s, int level, int optname, char *optval, int *optl
+           debugstr_sockopt(level, optname), debugstr_optval(optval, 0),
+           optlen, optlen ? *optlen : 0);
+ 
++    if ((level != SOL_SOCKET || optname != SO_OPENTYPE) &&
++        !socket_list_find( s ))
++    {
++        SetLastError( WSAENOTSOCK );
++        return SOCKET_ERROR;
++    }
++
+     switch(level)
+     {
+     case SOL_SOCKET:
+diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
+index d3f2459aa3a..ec010acebc6 100644
+--- a/dlls/ws2_32/tests/sock.c
++++ b/dlls/ws2_32/tests/sock.c
+@@ -11693,8 +11693,8 @@ static void test_sockopt_validity(void)
+     };
+     static const struct sockopt_validity_test file_handle_tests[] =
+     {
+-        { -1,                         WSAENOTSOCK,     0,          TRUE },
+-        { SO_TYPE,                    WSAENOTSOCK,     0,          TRUE },
++        { -1,                         WSAENOTSOCK                       },
++        { SO_TYPE,                    WSAENOTSOCK                       },
+         { SO_OPENTYPE                                                   },
+         {}
+     };
+

@@ -1,0 +1,328 @@
+From: Alistair Leslie-Hughes <leslie_alistair@hotmail.com>
+Subject: [PATCH v5 resend] dpnet: Implement IDirectPlay8Address GetURLW/A.
+Message-Id: <PU4P216MB116524F057E98C594260AB6893C59@PU4P216MB1165.KORP216.PROD.OUTLOOK.COM>
+Date: Tue, 24 Aug 2021 16:43:55 +1000
+In-Reply-To: <20210824064355.843060-1-leslie_alistair@hotmail.com>
+References: <20210824064355.843060-1-leslie_alistair@hotmail.com>
+
+Signed-off-by: Alistair Leslie-Hughes <leslie_alistair@hotmail.com>
+---
+ dlls/dpnet/Makefile.in     |   2 +-
+ dlls/dpnet/address.c       | 115 ++++++++++++++++++++++++++---
+ dlls/dpnet/tests/address.c | 143 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 249 insertions(+), 11 deletions(-)
+
+diff --git a/dlls/dpnet/Makefile.in b/dlls/dpnet/Makefile.in
+index bcf07772e39..9d979a34f22 100644
+--- a/dlls/dpnet/Makefile.in
++++ b/dlls/dpnet/Makefile.in
+@@ -1,6 +1,6 @@
+ MODULE    = dpnet.dll
+ IMPORTLIB = dpnet
+-IMPORTS   = dxguid uuid ole32 advapi32 ws2_32
++IMPORTS   = dxguid uuid ole32 advapi32 ws2_32 user32
+ 
+ EXTRADLLFLAGS = -mno-cygwin
+ 
+diff --git a/dlls/dpnet/address.c b/dlls/dpnet/address.c
+index 6aa62a97785..6819638a2b8 100644
+--- a/dlls/dpnet/address.c
++++ b/dlls/dpnet/address.c
+@@ -45,6 +45,22 @@ static char *heap_strdupA( const char *str )
+     return ret;
+ }
+ 
++static inline WCHAR *heap_strdupAtoW(const char *str)
++{
++    LPWSTR ret = NULL;
++
++    if(str) {
++        DWORD len;
++
++        len = MultiByteToWideChar(CP_ACP, 0, str, -1, NULL, 0);
++        ret = heap_alloc(len*sizeof(WCHAR));
++        if(ret)
++            MultiByteToWideChar(CP_ACP, 0, str, -1, ret, len);
++    }
++
++    return ret;
++}
++
+ static BOOL add_component(IDirectPlay8AddressImpl *This, struct component *item)
+ {
+     if(This->comp_count == This->comp_array_size)
+@@ -256,20 +272,99 @@ static HRESULT WINAPI IDirectPlay8AddressImpl_Clear(IDirectPlay8Address *iface)
+   return DPN_OK; 
+ }
+ 
+-static HRESULT WINAPI IDirectPlay8AddressImpl_GetURLW(IDirectPlay8Address *iface, WCHAR *pwszURL,
+-        DWORD *pdwNumChars)
++static HRESULT WINAPI IDirectPlay8AddressImpl_GetURLW(IDirectPlay8Address *iface, WCHAR *url, DWORD *length)
+ {
+-  IDirectPlay8AddressImpl *This = impl_from_IDirectPlay8Address(iface);
+-  TRACE("(%p): stub\n", This);
+-  return DPN_OK; 
++    IDirectPlay8AddressImpl *This = impl_from_IDirectPlay8Address(iface);
++    HRESULT hr = DPNERR_BUFFERTOOSMALL;
++    int i;
++    WCHAR buffer[1024] = {0};
++    int position = 0;
++
++    TRACE("(%p, %p, %p)\n", This, url, length);
++
++    if(!length || (!url && *length != 0))
++        return DPNERR_INVALIDPOINTER;
++
++    for(i=0; i < This->comp_count; i++)
++    {
++        struct component *entry = This->components[i];
++
++        if(position)
++            lstrcatW(&buffer[position++], L";");
++
++        switch(entry->type)
++        {
++            case DPNA_DATATYPE_GUID:
++                position += wsprintfW( &buffer[position], L"%s=%%7B%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X%%7D",
++                      entry->name, entry->data.guid.Data1, entry->data.guid.Data2, entry->data.guid.Data3,
++                      entry->data.guid.Data4[0], entry->data.guid.Data4[1], entry->data.guid.Data4[2],
++                      entry->data.guid.Data4[3], entry->data.guid.Data4[4], entry->data.guid.Data4[5],
++                      entry->data.guid.Data4[6], entry->data.guid.Data4[7] );
++
++                break;
++            case DPNA_DATATYPE_STRING:
++                position += wsprintfW(&buffer[position], L"%s=%s", entry->name, entry->data.string);
++                break;
++            case DPNA_DATATYPE_DWORD:
++                position += wsprintfW(&buffer[position], L"%s=%d", entry->name, entry->data.value);
++                break;
++            case DPNA_DATATYPE_STRING_ANSI:
++            {
++                WCHAR *str = heap_strdupAtoW(entry->data.ansi);
++                position += wsprintfW(&buffer[position], L"%s=%s", entry->name, str);
++                heap_free(str);
++                break;
++            }
++            case DPNA_DATATYPE_BINARY:
++            default:
++                FIXME("Unsupported type %d\n", entry->type);
++        }
++    }
++
++    if(url && *length >= lstrlenW(buffer) + lstrlenW(DPNA_HEADER) + 1)
++    {
++        lstrcpyW(url, DPNA_HEADER);
++        lstrcatW(url, buffer);
++        hr = DPN_OK;
++    }
++
++    *length = lstrlenW(buffer) + lstrlenW(DPNA_HEADER) + 1;
++
++    return hr;
+ }
+ 
+-static HRESULT WINAPI IDirectPlay8AddressImpl_GetURLA(IDirectPlay8Address *iface, CHAR *pszURL,
+-        DWORD *pdwNumChars)
++static HRESULT WINAPI IDirectPlay8AddressImpl_GetURLA(IDirectPlay8Address *iface, char *url, DWORD *length)
+ {
+-  IDirectPlay8AddressImpl *This = impl_from_IDirectPlay8Address(iface);
+-  TRACE("(%p): stub\n", This);
+-  return DPN_OK; 
++    IDirectPlay8AddressImpl *This = impl_from_IDirectPlay8Address(iface);
++    HRESULT hr;
++    WCHAR *buffer = NULL;
++
++    TRACE("(%p, %p %p)\n", This, url, length);
++
++    if(!length || (!url && *length != 0))
++        return DPNERR_INVALIDPOINTER;
++
++    if(url && *length)
++    {
++        url[0] = '\0';
++        buffer = heap_alloc(*length * sizeof(WCHAR));
++    }
++
++    hr = IDirectPlay8Address_GetURLW(iface, buffer, length);
++    if(hr == DPN_OK)
++    {
++        DWORD size;
++        size = WideCharToMultiByte(CP_ACP, 0, buffer, -1, NULL, 0, NULL, NULL);
++        if(size <= *length)
++            WideCharToMultiByte(CP_ACP, 0, buffer, -1, url, *length, NULL, NULL);
++        else
++        {
++            *length = size;
++            hr = DPNERR_BUFFERTOOSMALL;
++        }
++    }
++    heap_free(buffer);
++    return hr;
+ }
+ 
+ static HRESULT WINAPI IDirectPlay8AddressImpl_GetSP(IDirectPlay8Address *iface, GUID *pguidSP)
+diff --git a/dlls/dpnet/tests/address.c b/dlls/dpnet/tests/address.c
+index a8d31c9854a..0e8b8da3b09 100644
+--- a/dlls/dpnet/tests/address.c
++++ b/dlls/dpnet/tests/address.c
+@@ -304,6 +304,147 @@ static void address_setsp(void)
+     }
+ }
+ 
++static void address_urlW(void)
++{
++    HRESULT hr;
++    IDirectPlay8Address *localaddr = NULL;
++
++    hr = CoCreateInstance( &CLSID_DirectPlay8Address, NULL, CLSCTX_ALL, &IID_IDirectPlay8Address, (LPVOID*)&localaddr);
++    ok(hr == S_OK, "Failed to create IDirectPlay8Address object\n");
++    if(SUCCEEDED(hr))
++    {
++        WCHAR *buffer = NULL;
++        DWORD bufflen = 0, bufflen2;
++        DWORD port = 4321;
++
++        hr = IDirectPlay8Address_SetSP(localaddr, &CLSID_DP8SP_TCPIP);
++        ok(hr == S_OK, "got 0x%08x\n", hr);
++
++        hr = IDirectPlay8Address_GetURLW(localaddr, buffer, NULL);
++        ok(hr == DPNERR_INVALIDPOINTER, "got 0x%08x\n", hr);
++
++        bufflen = 10;
++        hr = IDirectPlay8Address_GetURLW(localaddr, NULL, &bufflen);
++        ok(hr == DPNERR_INVALIDPOINTER, "got 0x%08x\n", hr);
++
++        bufflen = 0;
++        hr = IDirectPlay8Address_GetURLW(localaddr, NULL, &bufflen);
++        ok(bufflen == 66, "got %d\n", bufflen);
++        ok(hr == DPNERR_BUFFERTOOSMALL, "got 0x%08x\n", hr);
++        buffer =  HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bufflen * sizeof(WCHAR));
++
++        hr = IDirectPlay8Address_GetURLW(localaddr, buffer, &bufflen);
++        ok(hr == S_OK, "got 0x%08x\n", hr);
++        ok(!lstrcmpW(L"x-directplay:/provider=%7BEBFE7BA0-628D-11D2-AE0F-006097B01411%7D", buffer), "got %s\n", wine_dbgstr_w(buffer));
++        HeapFree(GetProcessHeap(), 0, buffer);
++
++        hr = IDirectPlay8Address_AddComponent(localaddr, DPNA_KEY_PORT, &port, sizeof(DWORD), DPNA_DATATYPE_DWORD);
++        ok(hr == S_OK, "got 0x%08x\n", hr);
++
++        bufflen = 0;
++        hr = IDirectPlay8Address_GetURLW(localaddr, NULL, &bufflen);
++        ok(hr == DPNERR_BUFFERTOOSMALL, "got 0x%08x\n", hr);
++        buffer =  HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bufflen * sizeof(WCHAR));
++
++        bufflen2 = bufflen/2;
++        hr = IDirectPlay8Address_GetURLW(localaddr, buffer, &bufflen2);
++        ok(hr == DPNERR_BUFFERTOOSMALL, "got 0x%08x\n", hr);
++        ok(!lstrlenW(buffer), "wrong length\n");
++
++        hr = IDirectPlay8Address_GetURLW(localaddr, buffer, &bufflen);
++        ok(hr == S_OK, "got 0x%08x\n", hr);
++        ok(!lstrcmpW(L"x-directplay:/provider=%7BEBFE7BA0-628D-11D2-AE0F-006097B01411%7D;port=4321", buffer), "got %s\n", wine_dbgstr_w(buffer));
++        HeapFree(GetProcessHeap(), 0, buffer);
++
++        hr = IDirectPlay8Address_AddComponent(localaddr, DPNA_KEY_HOSTNAME, &localhost, sizeof(localhost), DPNA_DATATYPE_STRING);
++        ok(hr == S_OK, "got 0x%08x\n", hr);
++
++        bufflen = 0;
++        hr = IDirectPlay8Address_GetURLW(localaddr, NULL, &bufflen);
++        ok(hr == DPNERR_BUFFERTOOSMALL, "got 0x%08x\n", hr);
++        buffer =  HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bufflen * sizeof(WCHAR));
++
++        hr = IDirectPlay8Address_GetURLW(localaddr, buffer, &bufflen);
++        ok(hr == S_OK, "got 0x%08x\n", hr);
++        ok(!lstrcmpW(L"x-directplay:/provider=%7BEBFE7BA0-628D-11D2-AE0F-006097B01411%7D;port=4321;hostname=localhost", buffer), "got %s\n", wine_dbgstr_w(buffer));
++        HeapFree(GetProcessHeap(), 0, buffer);
++
++        IDirectPlay8Address_Release(localaddr);
++    }
++}
++
++static void address_urlA(void)
++{
++    HRESULT hr;
++    IDirectPlay8Address *localaddr = NULL;
++    static const char urlA1[] = "x-directplay:/provider=%7BEBFE7BA0-628D-11D2-AE0F-006097B01411%7D";
++    static const char urlA2[] = "x-directplay:/provider=%7BEBFE7BA0-628D-11D2-AE0F-006097B01411%7D;port=4321";
++    static const char urlA3[] = "x-directplay:/provider=%7BEBFE7BA0-628D-11D2-AE0F-006097B01411%7D;port=4321;hostname=localhost";
++    static const char localhostA[] = "localhost";
++
++    hr = CoCreateInstance( &CLSID_DirectPlay8Address, NULL, CLSCTX_ALL, &IID_IDirectPlay8Address, (LPVOID*)&localaddr);
++    ok(hr == S_OK, "Failed to create IDirectPlay8Address object\n");
++    if(SUCCEEDED(hr))
++    {
++        char *buffer = NULL;
++        DWORD bufflen = 0, bufflen2;
++        DWORD port = 4321;
++
++        hr = IDirectPlay8Address_SetSP(localaddr, &CLSID_DP8SP_TCPIP);
++        ok(hr == S_OK, "got 0x%08x\n", hr);
++
++        hr = IDirectPlay8Address_GetURLA(localaddr, buffer, NULL);
++        ok(hr == DPNERR_INVALIDPOINTER, "got 0x%08x\n", hr);
++
++        bufflen = 10;
++        hr = IDirectPlay8Address_GetURLA(localaddr, NULL, &bufflen);
++        ok(hr == DPNERR_INVALIDPOINTER, "got 0x%08x\n", hr);
++
++        bufflen = 0;
++        hr = IDirectPlay8Address_GetURLA(localaddr, NULL, &bufflen);
++        ok(hr == DPNERR_BUFFERTOOSMALL, "got 0x%08x\n", hr);
++        buffer =  HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bufflen);
++
++        bufflen2 = bufflen/2;
++        hr = IDirectPlay8Address_GetURLA(localaddr, buffer, &bufflen2);
++        ok(hr == DPNERR_BUFFERTOOSMALL, "got 0x%08x\n", hr);
++        ok(!strlen(buffer), "wrong length\n");
++
++        hr = IDirectPlay8Address_GetURLA(localaddr, buffer, &bufflen);
++        ok(hr == S_OK, "got 0x%08x\n", hr);
++        ok(!lstrcmpA(urlA1, buffer), "got %s\n", buffer);
++        HeapFree(GetProcessHeap(), 0, buffer);
++
++        hr = IDirectPlay8Address_AddComponent(localaddr, DPNA_KEY_PORT, &port, sizeof(DWORD), DPNA_DATATYPE_DWORD);
++        ok(hr == S_OK, "got 0x%08x\n", hr);
++
++        bufflen = 0;
++        hr = IDirectPlay8Address_GetURLA(localaddr, NULL, &bufflen);
++        ok(hr == DPNERR_BUFFERTOOSMALL, "got 0x%08x\n", hr);
++        buffer =  HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bufflen);
++
++        hr = IDirectPlay8Address_GetURLA(localaddr, buffer, &bufflen);
++        ok(hr == S_OK, "got 0x%08x\n", hr);
++        ok(!lstrcmpA(urlA2, buffer), "got %s\n", buffer);
++        HeapFree(GetProcessHeap(), 0, buffer);
++
++        hr = IDirectPlay8Address_AddComponent(localaddr, DPNA_KEY_HOSTNAME, &localhostA, sizeof(localhostA), DPNA_DATATYPE_STRING_ANSI);
++        ok(hr == S_OK, "got 0x%08x\n", hr);
++
++        bufflen = 0;
++        hr = IDirectPlay8Address_GetURLA(localaddr, NULL, &bufflen);
++        ok(hr == DPNERR_BUFFERTOOSMALL, "got 0x%08x\n", hr);
++        buffer =  HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bufflen);
++
++        hr = IDirectPlay8Address_GetURLA(localaddr, buffer, &bufflen);
++        ok(hr == S_OK, "got 0x%08x\n", hr);
++        ok(!lstrcmpA(urlA3, buffer), "got %s\n", buffer);
++        HeapFree(GetProcessHeap(), 0, buffer);
++
++        IDirectPlay8Address_Release(localaddr);
++    }
++}
++
+ static void address_duplicate(void)
+ {
+     HRESULT hr;
+@@ -381,6 +522,8 @@ START_TEST(address)
+     address_addcomponents();
+     address_setsp();
+     address_duplicate();
++    address_urlW();
++    address_urlA();
+ 
+     CoUninitialize();
+ }
+
+-- 
+2.30.2
+

@@ -1,18 +1,14 @@
 From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
-Subject: [PATCH v2] user32: Don't set maximized position placement for toplevel windows covering the entire work area.
-Message-Id: <0b40e5d2ea86da5517d79d2477f374989855cf9f.1628778906.git.gabrielopcode@gmail.com>
-Date: Thu, 12 Aug 2021 17:36:11 +0300
+Subject: [PATCH v4] user32: Don't save maximized position placement for toplevel windows covering the entire work area.
+Message-Id: <ce45b8789154344e1a1aa0285c72a86e0a195836.1629825657.git.gabrielopcode@gmail.com>
+Date: Tue, 24 Aug 2021 20:23:12 +0300
 
-The game "Imperiums: Greek Wars" depends on this to display its window
-properly. It also fixes the todo_wine in test_window_placement, along with
-a few new tests that show exactly the threshold at which the "transition"
-happens.
-
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=51672
 Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
 ---
- dlls/user32/tests/win.c | 54 ++++++++++++++++++++++++++++++++---------
- dlls/user32/winpos.c    | 39 ++++++++++++++++++++++++++++-
- 2 files changed, 80 insertions(+), 13 deletions(-)
+ dlls/user32/tests/win.c | 54 +++++++++++++++++++++++-------
+ dlls/user32/winpos.c    | 73 +++++++++++++++++++++++++++++++++--------
+ 2 files changed, 102 insertions(+), 25 deletions(-)
 
 diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
 index 228395e..e23ab81 100644
@@ -172,66 +168,115 @@ index 228395e..e23ab81 100644
          "got maximized pos (%d,%d)\n", wp.ptMaxPosition.x, wp.ptMaxPosition.y);
      ok(EqualRect(&wp.rcNormalPosition, &orig), "got normal pos %s\n",
 diff --git a/dlls/user32/winpos.c b/dlls/user32/winpos.c
-index 6e96a4b..f08d6df 100644
+index 6e96a4b..7edd63a 100644
 --- a/dlls/user32/winpos.c
 +++ b/dlls/user32/winpos.c
-@@ -916,6 +916,42 @@ static POINT get_minimized_pos( HWND hwnd, POINT pt )
+@@ -675,6 +675,27 @@ BOOL WINAPI MoveWindow( HWND hwnd, INT x, INT y, INT cx, INT cy,
+ }
+ 
+ 
++/*******************************************************************
++ *           get_maximized_area_rect
++ *
++ * Get the work area that a maximized window can cover, depending on style.
++ */
++static RECT get_work_rect_for_style( HMONITOR monitor, DWORD style )
++{
++    MONITORINFO mon_info;
++
++    mon_info.cbSize = sizeof(mon_info);
++    GetMonitorInfoW( monitor, &mon_info );
++
++    if (style & WS_MAXIMIZEBOX)
++    {
++        if ((style & WS_CAPTION) == WS_CAPTION || !(style & (WS_CHILD | WS_POPUP)))
++            return mon_info.rcWork;
++    }
++    return mon_info.rcMonitor;
++}
++
++
+ /*******************************************************************
+  *           WINPOS_GetMinMaxInfo
+  *
+@@ -741,19 +762,8 @@ MINMAXINFO WINPOS_GetMinMaxInfo( HWND hwnd )
+     if ((monitor = MonitorFromWindow( hwnd, MONITOR_DEFAULTTOPRIMARY )))
+     {
+         RECT rc_work, rc_primary;
+-        MONITORINFO mon_info;
+-
+-        mon_info.cbSize = sizeof(mon_info);
+-        GetMonitorInfoW( monitor, &mon_info );
+-
+-        rc_work = mon_info.rcMonitor;
+-
+-        if (style & WS_MAXIMIZEBOX)
+-        {
+-            if ((style & WS_CAPTION) == WS_CAPTION || !(style & (WS_CHILD | WS_POPUP)))
+-                rc_work = mon_info.rcWork;
+-        }
+ 
++        rc_work = get_work_rect_for_style( monitor, style );
+         rc_primary = get_primary_monitor_rect();
+         if (MinMax.ptMaxSize.x == (rc_primary.right - rc_primary.left) + 2 * xinc &&
+             MinMax.ptMaxSize.y == (rc_primary.bottom - rc_primary.top) + 2 * yinc)
+@@ -916,6 +926,38 @@ static POINT get_minimized_pos( HWND hwnd, POINT pt )
      return pt;
  }
  
-+static POINT get_maximized_pos( WND *wnd, POINT pos )
++static void update_maximized_pos( WND *wnd )
 +{
-+    MONITORINFO mon_info;
 +    HMONITOR monitor;
 +    RECT rc_work;
 +
-+    /* top level windows covering the working area are not set,
-+       to avoid situations where the border style changes and
-+       the window is in the wrong position outside the screen */
-+    if (!wnd->parent || wnd->parent == GetDesktopWindow())
++    /* For top level windows covering the work area, we might have
++       to "forget" the maximized position. Windows presumably does
++       this to avoid situations where the border style changes,
++       which would lead the window to be outside the screen, or the
++       window gets reloaded on a different screen, and the "saved"
++       position no longer applies to it (despite being maximized).
++
++       Some applications (e.g. Imperiums: Greek Wars) depend on this.
++    */
++    if (wnd->parent && wnd->parent != GetDesktopWindow())
++        return;
++
++    if (wnd->dwStyle & WS_MAXIMIZE)
 +    {
-+        if (wnd->dwStyle & WS_MAXIMIZE)
-+        {
-+            if ((monitor = MonitorFromWindow( wnd->obj.handle, MONITOR_DEFAULTTOPRIMARY )))
-+            {
-+                mon_info.cbSize = sizeof(mon_info);
-+                GetMonitorInfoW( monitor, &mon_info );
-+                rc_work = mon_info.rcMonitor;
-+
-+                if ((wnd->dwStyle & WS_CAPTION) == WS_CAPTION || !(wnd->dwStyle & (WS_CHILD | WS_POPUP)))
-+                    rc_work = mon_info.rcWork;
-+            }
-+            else
-+                SetRect( &rc_work, 0, 0, GetSystemMetrics( SM_CXSCREEN ), GetSystemMetrics( SM_CYSCREEN ) );
-+
-+            if (wnd->window_rect.left  <= rc_work.left  && wnd->window_rect.top    <= rc_work.top &&
-+                wnd->window_rect.right >= rc_work.right && wnd->window_rect.bottom >= rc_work.bottom)
-+                pos.x = pos.y = -1;
-+        }
++        if ((monitor = MonitorFromWindow( wnd->obj.handle, MONITOR_DEFAULTTOPRIMARY )))
++            rc_work = get_work_rect_for_style( monitor, wnd->dwStyle );
 +        else
-+            pos.x = pos.y = -1;
-+    }
++            SetRect( &rc_work, 0, 0, GetSystemMetrics( SM_CXSCREEN ), GetSystemMetrics( SM_CYSCREEN ) );
 +
-+    return pos;
++        if (wnd->window_rect.left  <= rc_work.left  && wnd->window_rect.top    <= rc_work.top &&
++            wnd->window_rect.right >= rc_work.right && wnd->window_rect.bottom >= rc_work.bottom)
++            wnd->max_pos.x = wnd->max_pos.y = -1;
++    }
++    else
++        wnd->max_pos.x = wnd->max_pos.y = -1;
 +}
 +
  
  /***********************************************************************
   *           WINPOS_MinMaximize
-@@ -1337,6 +1373,7 @@ BOOL WINAPI GetWindowPlacement( HWND hwnd, WINDOWPLACEMENT *wndpl )
+@@ -1337,6 +1379,7 @@ BOOL WINAPI GetWindowPlacement( HWND hwnd, WINDOWPLACEMENT *wndpl )
      {
          pWnd->normal_rect = pWnd->window_rect;
      }
-+    pWnd->max_pos = get_maximized_pos( pWnd, pWnd->max_pos );
++    update_maximized_pos( pWnd );
  
      wndpl->length  = sizeof(*wndpl);
      if( pWnd->dwStyle & WS_MINIMIZE )
-@@ -1425,7 +1462,7 @@ static BOOL WINPOS_SetPlacement( HWND hwnd, const WINDOWPLACEMENT *wndpl, UINT f
+@@ -1425,7 +1468,11 @@ static BOOL WINPOS_SetPlacement( HWND hwnd, const WINDOWPLACEMENT *wndpl, UINT f
      if (!pWnd || pWnd == WND_OTHER_PROCESS || pWnd == WND_DESKTOP) return FALSE;
  
      if (flags & PLACE_MIN) pWnd->min_pos = point_thread_to_win_dpi( hwnd, wp.ptMinPosition );
 -    if (flags & PLACE_MAX) pWnd->max_pos = point_thread_to_win_dpi( hwnd, wp.ptMaxPosition );
-+    if (flags & PLACE_MAX) pWnd->max_pos = get_maximized_pos( pWnd, point_thread_to_win_dpi( hwnd, wp.ptMaxPosition ) );
++    if (flags & PLACE_MAX)
++    {
++        pWnd->max_pos = point_thread_to_win_dpi( hwnd, wp.ptMaxPosition );
++        update_maximized_pos( pWnd );
++    }
      if (flags & PLACE_RECT) pWnd->normal_rect = rect_thread_to_win_dpi( hwnd, wp.rcNormalPosition );
  
      style = pWnd->dwStyle;

@@ -1,0 +1,46 @@
+From 88c5184b4d1ba4f230b0248f974974bb6a314371 Mon Sep 17 00:00:00 2001
+From: Alexandre Julliard <julliard@winehq.org>
+Date: Tue, 24 Aug 2021 17:39:58 +0200
+Subject: [PATCH 1/1] ntdll: Consistently fixup the machine type for IL-only
+ binaries.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=51668
+Signed-off-by: Alexandre Julliard <julliard@winehq.org>
+---
+# dlls/ntdll/unix/env.c    | 2 --
+ dlls/ntdll/unix/loader.c | 6 +++++-
+ 2 files changed, 5 insertions(+), 3 deletions(-)
+
+#diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+#index a30db6dda8b..ae1afb2797b 100644
+#--- a/dlls/ntdll/unix/env.c
+#+++ b/dlls/ntdll/unix/env.c
+#@@ -2148,8 +2148,6 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params( void **module )
+#     if (!status)
+#     {
+#         if (main_image_info.ImageCharacteristics & IMAGE_FILE_DLL) status = STATUS_INVALID_IMAGE_FORMAT;
+#-        if (main_image_info.ImageFlags & IMAGE_FLAGS_ComPlusNativeReady)
+#-            main_image_info.Machine = native_machine;
+#         if (main_image_info.Machine != current_machine) status = STATUS_INVALID_IMAGE_FORMAT;
+#     }
+# 
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 2dde2332a6a..8a5314a1117 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1569,7 +1569,11 @@ static NTSTATUS open_main_image( WCHAR *image, void **module, SECTION_IMAGE_INFO
+         *module = NULL;
+         status = NtMapViewOfSection( mapping, NtCurrentProcess(), module, 0, 0, NULL, &size,
+                                      ViewShare, 0, PAGE_EXECUTE_READ );
+-        if (!status) NtQuerySection( mapping, SectionImageInformation, info, sizeof(*info), NULL );
++        if (!status)
++        {
++            NtQuerySection( mapping, SectionImageInformation, info, sizeof(*info), NULL );
++            if (info->u.s.ComPlusNativeReady) info->Machine = native_machine;
++        }
+         NtClose( mapping );
+     }
+     else if (status == STATUS_INVALID_IMAGE_NOT_MZ && loadorder != LO_NATIVE)
+-- 
+2.20.1
+

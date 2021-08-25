@@ -1,0 +1,54 @@
+From: Zebediah Figura <zfigura@codeweavers.com>
+Subject: [PATCH 3/3] ntoskrnl: Clear the pending flags for the current stack location before calling the previous location's completion routine.
+Message-Id: <20210824211145.369394-3-zfigura@codeweavers.com>
+Date: Tue, 24 Aug 2021 16:11:45 -0500
+In-Reply-To: <20210824211145.369394-1-zfigura@codeweavers.com>
+References: <20210824211145.369394-1-zfigura@codeweavers.com>
+
+Signed-off-by: Zebediah Figura <zfigura@codeweavers.com>
+---
+ dlls/ntoskrnl.exe/ntoskrnl.c     | 1 +
+ dlls/ntoskrnl.exe/tests/driver.c | 6 +++---
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntoskrnl.exe/ntoskrnl.c b/dlls/ntoskrnl.exe/ntoskrnl.c
+index b2ffb7cfbb2..f1248300683 100644
+--- a/dlls/ntoskrnl.exe/ntoskrnl.c
++++ b/dlls/ntoskrnl.exe/ntoskrnl.c
+@@ -1990,6 +1990,7 @@ VOID WINAPI IoCompleteRequest( IRP *irp, UCHAR priority_boost )
+         else
+             device = NULL;
+         irp->PendingReturned = !!(irpsp->Control & SL_PENDING_RETURNED);
++        irpsp->Control = 0;
+         if (call_flag)
+         {
+             TRACE( "calling %p( %p, %p, %p )\n", routine, device, irp, irpsp->Context );
+diff --git a/dlls/ntoskrnl.exe/tests/driver.c b/dlls/ntoskrnl.exe/tests/driver.c
+index 8a4856ca3f0..ce74b9e9512 100644
+--- a/dlls/ntoskrnl.exe/tests/driver.c
++++ b/dlls/ntoskrnl.exe/tests/driver.c
+@@ -1753,7 +1753,7 @@ static NTSTATUS WINAPI completion_cb(DEVICE_OBJECT *device, IRP *irp, void *cont
+         ok(stack->Control == (SL_INVOKE_ON_CANCEL | SL_INVOKE_ON_ERROR | SL_INVOKE_ON_SUCCESS),
+                 "Got control flags %#x.\n", stack->Control);
+         stack = IoGetNextIrpStackLocation(irp);
+-        todo_wine ok(!stack->Control, "Got control flags %#x.\n", stack->Control);
++        ok(!stack->Control, "Got control flags %#x.\n", stack->Control);
+         stack = irp->Tail.Overlay.CurrentStackLocation + 1; /* previous location */
+         ok(!stack->Control, "Got control flags %#x.\n", stack->Control);
+ 
+@@ -1768,9 +1768,9 @@ static NTSTATUS WINAPI completion_cb(DEVICE_OBJECT *device, IRP *irp, void *cont
+         ok(irp->CurrentLocation == 3, "Got current location %u.\n", irp->CurrentLocation);
+         ok(!stack->Control, "Got control flags %#x.\n", stack->Control);
+         stack = IoGetNextIrpStackLocation(irp);
+-        todo_wine ok(!stack->Control, "Got control flags %#x.\n", stack->Control);
++        ok(!stack->Control, "Got control flags %#x.\n", stack->Control);
+         stack = irp->Tail.Overlay.CurrentStackLocation - 2; /* lowest location */
+-        todo_wine ok(!stack->Control, "Got control flags %#x.\n", stack->Control);
++        ok(!stack->Control, "Got control flags %#x.\n", stack->Control);
+     }
+ 
+     ++got_completion;
+
+-- 
+2.30.2
+

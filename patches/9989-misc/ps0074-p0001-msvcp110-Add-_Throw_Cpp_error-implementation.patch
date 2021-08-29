@@ -13,16 +13,9 @@ Signed-off-by: Piotr Caban <piotr@codeweavers.com>
   dlls/msvcp120/msvcp120.spec         |   2 +-
   dlls/msvcp120_app/msvcp120_app.spec |   2 +-
   dlls/msvcp140/msvcp140.spec         |   2 +-
-  dlls/msvcp60/ios.c                  |  18 ++--
-  dlls/msvcp60/string.c               |   4 +-
-  dlls/msvcp90/cxx.h                  |   5 +-
   dlls/msvcp90/exception.c            |  39 ++++++--
-  dlls/msvcp90/ios.c                  |  18 ++--
-  dlls/msvcp90/locale.c               | 140 ++++++++++++++--------------
-  dlls/msvcp90/memory.c               |   4 +-
   dlls/msvcp90/misc.c                 |  33 ++++++-
-  dlls/msvcp90/msvcp_main.c           |   2 +-
-  dlls/msvcp90/string.c               |   6 +-
+  dlls/msvcp90/msvcp90.h              |  1 +
   14 files changed, 162 insertions(+), 115 deletions(-)
 
 diff --git a/dlls/msvcp110/msvcp110.spec b/dlls/msvcp110/msvcp110.spec
@@ -77,80 +70,6 @@ index dcd062aa4fc..2b0bf5ffa5e 100644
  @ stub -arch=win32 ?_Throw_future_error@std@@YAXABVerror_code@1@@Z
  @ stub -arch=win64 ?_Throw_future_error@std@@YAXAEBVerror_code@1@@Z
  @ cdecl -arch=arm ?_Tidy@?$_Yarn@D@std@@AAAXXZ(ptr) _Yarn_char__Tidy
-diff --git a/dlls/msvcp60/ios.c b/dlls/msvcp60/ios.c
-index 12222dc6260..903f5bce18f 100644
---- a/dlls/msvcp60/ios.c
-+++ b/dlls/msvcp60/ios.c
-@@ -4863,13 +4863,13 @@ void __thiscall ios_base_clear_reraise(ios_base *this, IOSB_iostate state, bool
-     if(reraise)
-         _CxxThrowException(NULL, NULL);
-     else if(this->state & this->except & IOSTATE_eofbit)
--        throw_exception(EXCEPTION_FAILURE, "eofbit is set");
-+        throw_exception(EXCEPTION_FAILURE, 0, "eofbit is set");
-     else if(this->state & this->except & IOSTATE_failbit)
--        throw_exception(EXCEPTION_FAILURE, "failbit is set");
-+        throw_exception(EXCEPTION_FAILURE, 0, "failbit is set");
-     else if(this->state & this->except & IOSTATE_badbit)
--        throw_exception(EXCEPTION_FAILURE, "badbit is set");
-+        throw_exception(EXCEPTION_FAILURE, 0, "badbit is set");
-     else if(this->state & this->except & IOSTATE__Hardfail)
--        throw_exception(EXCEPTION_FAILURE, "_Hardfail is set");
-+        throw_exception(EXCEPTION_FAILURE, 0, "_Hardfail is set");
- }
- 
- /* ?clear@ios_base@std@@QAEXH@Z */
-diff --git a/dlls/msvcp60/string.c b/dlls/msvcp60/string.c
-index 8937dd35873..90f493811b5 100644
---- a/dlls/msvcp60/string.c
-+++ b/dlls/msvcp60/string.c
-@@ -49,7 +49,7 @@ void __cdecl _Xran(void)
-     static const char msg[] = "invalid string position";
- 
-     TRACE("\n");
--    throw_exception(EXCEPTION_OUT_OF_RANGE, msg);
-+    throw_exception(EXCEPTION_OUT_OF_RANGE, 0, msg);
- }
- 
- /* ?_Xlen@std@@YAXXZ */
-@@ -58,7 +58,7 @@ void __cdecl _Xlen(void)
-     static const char msg[] = "string too long";
- 
-     TRACE("\n");
--    throw_exception(EXCEPTION_LENGTH_ERROR, msg);
-+    throw_exception(EXCEPTION_LENGTH_ERROR, 0, msg);
- }
- 
- /* ?compare@?$char_traits@D@std@@SAHPBD0I@Z */
-diff --git a/dlls/msvcp90/cxx.h b/dlls/msvcp90/cxx.h
-index 02735a3c168..7af11de7fe6 100644
---- a/dlls/msvcp90/cxx.h
-+++ b/dlls/msvcp90/cxx.h
-@@ -313,8 +313,11 @@ typedef enum __exception_type {
-     EXCEPTION_RUNTIME_ERROR,
-     EXCEPTION_FAILURE,
-     EXCEPTION_RANGE_ERROR,
-+#if _MSVCP_VER > 90
-+    EXCEPTION_SYSTEM_ERROR
-+#endif
- } exception_type;
--void throw_exception(exception_type, const char *);
-+void throw_exception(exception_type, int, const char *);
- 
- /* rtti */
- typedef struct __type_info
-diff --git a/dlls/msvcp90/details.c b/dlls/msvcp90/details.c
-index f70de9e5600..7978b87777a 100644
---- a/dlls/msvcp90/details.c
-+++ b/dlls/msvcp90/details.c
-@@ -1928,7 +1941,7 @@ void __thiscall _vector_base_v4__Internal_throw_exception(void/*_vector_base_v4*
-     TRACE("(%p %Iu)\n", this, idx);
- 
-     if(idx < ARRAY_SIZE(exceptions))
--        throw_exception(exceptions[idx].type, exceptions[idx].msg);
-+        throw_exception(exceptions[idx].type, 0, exceptions[idx].msg);
- }
- 
- #ifdef _WIN64
 diff --git a/dlls/msvcp90/exception.c b/dlls/msvcp90/exception.c
 index 8ea4e132a0f..45e2ec93be4 100644
 --- a/dlls/msvcp90/exception.c
@@ -194,136 +113,25 @@ index 8ea4e132a0f..45e2ec93be4 100644
  DEFINE_CXX_DATA3(failure, &system_error_cxx_type_info, &runtime_error_cxx_type_info,
          &exception_cxx_type_info, MSVCP_runtime_error_dtor)
  #else
-@@ -912,7 +926,7 @@ void __cdecl _Xmem(void)
- void __cdecl _Xinvalid_argument(const char *str)
- {
-     TRACE("(%s)\n", debugstr_a(str));
--    throw_exception(EXCEPTION_INVALID_ARGUMENT, str);
-+    throw_exception(EXCEPTION_INVALID_ARGUMENT, 0, str);
+@@ -1108,6 +1108,18 @@ void DECLSPEC_NORETURN throw_failure(const char *str)
+     _CxxThrowException(&e, &failure_cxx_type);
  }
  
- /* ?_Xlength_error@std@@YAXPBD@Z */
-@@ -920,7 +934,7 @@ void __cdecl _Xinvalid_argument(const char *str)
- void __cdecl _Xlength_error(const char *str)
- {
-     TRACE("(%s)\n", debugstr_a(str));
--    throw_exception(EXCEPTION_LENGTH_ERROR, str);
-+    throw_exception(EXCEPTION_LENGTH_ERROR, 0, str);
- }
- 
- /* ?_Xout_of_range@std@@YAXPBD@Z */
-@@ -928,7 +942,7 @@ void __cdecl _Xlength_error(const char *str)
- void __cdecl _Xout_of_range(const char *str)
- {
-     TRACE("(%s)\n", debugstr_a(str));
--    throw_exception(EXCEPTION_OUT_OF_RANGE, str);
-+    throw_exception(EXCEPTION_OUT_OF_RANGE, 0, str);
- }
- 
- /* ?_Xruntime_error@std@@YAXPBD@Z */
-@@ -936,7 +950,7 @@ void __cdecl _Xout_of_range(const char *str)
- void __cdecl _Xruntime_error(const char *str)
- {
-     TRACE("(%s)\n", debugstr_a(str));
--    throw_exception(EXCEPTION_RUNTIME_ERROR, str);
-+    throw_exception(EXCEPTION_RUNTIME_ERROR, 0, str);
- }
- 
- /* ?uncaught_exception@std@@YA_NXZ */
-@@ -1067,7 +1081,7 @@ __ASM_BLOCK_BEGIN(exception_vtables)
- __ASM_BLOCK_END
- 
- /* Internal: throws selected exception */
--void throw_exception(exception_type et, const char *str)
-+void throw_exception(exception_type et, int err, const char *str)
- {
-     exception_name name = EXCEPTION_NAME(str);
- 
-@@ -1124,6 +1138,13 @@ void throw_exception(exception_type et, const char *str)
-         MSVCP_range_error_ctor(&e, name);
-         _CxxThrowException((exception*)&e, &range_error_cxx_type);
-     }
-+#if _MSVCR_VER > 90
-+    case EXCEPTION_SYSTEM_ERROR: {
-+        system_error e;
-+        MSVCP_system_error_ctor(&e, err, name);
-+        _CxxThrowException((exception*)&e, &system_error_cxx_type);
-+    }
++#if _MSVCP_VER > 90
++/* Internal: throws system_error exception */
++void DECLSPEC_NORETURN throw_system_error(const char *str, int err)
++{
++    exception_name name = EXCEPTION_NAME(str);
++    system_error e;
++
++    MSVCP_system_error_ctor(&e, err, name);
++    _CxxThrowException(&e, &system_error_cxx_type);
++}
 +#endif
-     }
- }
- 
-diff --git a/dlls/msvcp90/ios.c b/dlls/msvcp90/ios.c
-index 9aa72e4438e..369e5fc8ba7 100644
---- a/dlls/msvcp90/ios.c
-+++ b/dlls/msvcp90/ios.c
-@@ -5280,13 +5280,13 @@ void __thiscall ios_base_clear_reraise(ios_base *this, IOSB_iostate state, bool
-     if(reraise)
-         _CxxThrowException(NULL, NULL);
-     else if(this->state & this->except & IOSTATE_eofbit)
--        throw_exception(EXCEPTION_FAILURE, "eofbit is set");
-+        throw_exception(EXCEPTION_FAILURE, 0, "eofbit is set");
-     else if(this->state & this->except & IOSTATE_failbit)
--        throw_exception(EXCEPTION_FAILURE, "failbit is set");
-+        throw_exception(EXCEPTION_FAILURE, 0, "failbit is set");
-     else if(this->state & this->except & IOSTATE_badbit)
--        throw_exception(EXCEPTION_FAILURE, "badbit is set");
-+        throw_exception(EXCEPTION_FAILURE, 0, "badbit is set");
-     else if(this->state & this->except & IOSTATE__Hardfail)
--        throw_exception(EXCEPTION_FAILURE, "_Hardfail is set");
-+        throw_exception(EXCEPTION_FAILURE, 0, "_Hardfail is set");
- }
- 
- /* ?clear@ios_base@std@@QAEXH@Z */
-diff --git a/dlls/msvcp90/locale.c b/dlls/msvcp90/locale.c
-index 338ded0082d..3a7fc34f6b1 100644
---- a/dlls/msvcp90/locale.c
-+++ b/dlls/msvcp90/locale.c
-@@ -525,7 +525,7 @@ _Locinfo* __cdecl _Locinfo__Locinfo_ctor_cat_cstr(_Locinfo *locinfo, int categor
-     FIXME("(%p %d %s) semi-stub\n", locinfo, category, locstr);
- 
-     if(!locstr)
--        throw_exception(EXCEPTION_RUNTIME_ERROR, "bad locale name");
-+        throw_exception(EXCEPTION_RUNTIME_ERROR, 0, "bad locale name");
- 
-     _Lockit_ctor_locktype(&locinfo->lock, _LOCK_LOCALE);
-     locale_string_char_ctor(&locinfo->days);
-@@ -630,7 +630,7 @@ _Locinfo* __cdecl _Locinfo__Locinfo_Addcats(_Locinfo *locinfo, int category, con
-     /* This function is probably modifying more global objects */
-     FIXME("(%p %d %s) semi-stub\n", locinfo, category, locstr);
-     if(!locstr)
--        throw_exception(EXCEPTION_RUNTIME_ERROR, "bad locale name");
-+        throw_exception(EXCEPTION_RUNTIME_ERROR, 0, "bad locale name");
- 
-     locale_string_char_dtor(&locinfo->newlocname);
- 
-@@ -1611,7 +1611,7 @@ ctype_base* __thiscall ctype_base_vector_dtor(ctype_base *this, unsigned int fla
- /* ?_Xran@ctype_base@std@@KAXXZ */
- void __cdecl ctype_base__Xran(void)
++
+ void init_exception(void *base)
  {
--    throw_exception(EXCEPTION_OUT_OF_RANGE, "out of range in ctype<T>");
-+    throw_exception(EXCEPTION_OUT_OF_RANGE, 0, "out of range in ctype<T>");
- }
- 
- /* ?id@?$ctype@D@std@@2V0locale@2@A */
-@@ -12274,7 +12274,7 @@ locale* __thiscall locale_ctor_locale_cstr(locale *this, const locale *loc, cons
-     if(!memcmp(locale_string_char_c_str(&locinfo.newlocname), "*", 2)) {
-         _Locinfo_dtor(&locinfo);
-         operator_delete(this->ptr);
--        throw_exception(EXCEPTION_RUNTIME_ERROR, "bad locale name");
-+        throw_exception(EXCEPTION_RUNTIME_ERROR, 0, "bad locale name");
-     }
- 
-     this->ptr = operator_new(sizeof(locale__Locimp));
-@@ -12312,7 +12312,7 @@ locale* __thiscall locale_ctor_cstr(locale *this, const char *locname, category
-     if(!memcmp(locale_string_char_c_str(&locinfo.newlocname), "*", 2)) {
-         _Locinfo_dtor(&locinfo);
-         operator_delete(this->ptr);
--        throw_exception(EXCEPTION_RUNTIME_ERROR, "bad locale name");
-+        throw_exception(EXCEPTION_RUNTIME_ERROR, 0, "bad locale name");
-     }
- 
-     locale__Locimp__Makeloc(&locinfo, cat, this->ptr, NULL);
+ #ifdef __x86_64__
 diff --git a/dlls/msvcp90/misc.c b/dlls/msvcp90/misc.c
 index f70de9e5600..7978b87777a 100644
 --- a/dlls/msvcp90/misc.c
@@ -348,15 +156,6 @@ index f70de9e5600..7978b87777a 100644
  #endif
  
  #if _MSVCP_VER >= 140
-@@ -705,7 +718,7 @@ unsigned int __cdecl _Random_device(void)
- 
-     /* TODO: throw correct exception in case of failure */
-     if(rand_s(&ret))
--        throw_exception(EXCEPTION, "random number generator failed\n");
-+        throw_exception(EXCEPTION, 0, "random number generator failed\n");
-     return ret;
- }
- #endif
 @@ -2870,6 +2883,16 @@ const char* __cdecl _Syserror_map(int err)
      return NULL;
  #endif
@@ -369,40 +168,18 @@ index f70de9e5600..7978b87777a 100644
 +    TRACE("(%d)\n", code);
 +
 +    sprintf(msg, "%s: %s", _Syserror_map(cpp_error[code].err), cpp_error[code].msg);
-+    throw_exception(EXCEPTION_SYSTEM_ERROR, cpp_error[code].err, msg);
++    throw_system_error(cpp_error[code].err, msg);
 +}
  #endif
  
  #if _MSVCP_VER >= 140
-diff --git a/dlls/msvcp90/string.c b/dlls/msvcp90/string.c
-index 2be64a5ff35..2dde57a216c 100644
---- a/dlls/msvcp90/string.c
-+++ b/dlls/msvcp90/string.c
-@@ -457,7 +457,7 @@ void  CDECL MSVCP__String_base_Xlen(void)
-     static const char msg[] = "string too long";
- 
-     TRACE("\n");
--    throw_exception(EXCEPTION_LENGTH_ERROR, msg);
-+    throw_exception(EXCEPTION_LENGTH_ERROR, 0, msg);
- }
- 
- /* ?_Xlen@_String_base@std@@QBEXXZ */
-@@ -473,7 +473,7 @@ void CDECL MSVCP__String_base_Xran(void)
-     static const char msg[] = "invalid string position";
- 
-     TRACE("\n");
--    throw_exception(EXCEPTION_OUT_OF_RANGE, msg);
-+    throw_exception(EXCEPTION_OUT_OF_RANGE, 0, msg);
- }
- 
- /* ?_Xran@_String_base@std@@QBEXXZ */
-@@ -489,7 +489,7 @@ void CDECL MSVCP__String_base_Xinvarg(void)
-     static const char msg[] = "invalid string argument";
- 
-     TRACE("\n");
--    throw_exception(EXCEPTION_INVALID_ARGUMENT, msg);
-+    throw_exception(EXCEPTION_INVALID_ARGUMENT, 0, msg);
- }
- 
- 
+diff --git a/dlls/msvcp90/msvcp90.h b/dlls/msvcp90/msvcp90.h
+index 4aa88e028d6..b7ef9aea8aa 100644
+--- a/dlls/msvcp90/msvcp90.h
++++ b/dlls/msvcp90/msvcp90.h
+@@ -672,3 +672,4 @@ void __cdecl DECLSPEC_NORETURN _Xruntime_error(const char*);
+ void DECLSPEC_NORETURN throw_exception(const char*);
+ void DECLSPEC_NORETURN throw_failure(const char*);
+ void DECLSPEC_NORETURN throw_range_error(const char*);
++void DECLSPEC_NORETURN throw_system_error(const char*,int);
 

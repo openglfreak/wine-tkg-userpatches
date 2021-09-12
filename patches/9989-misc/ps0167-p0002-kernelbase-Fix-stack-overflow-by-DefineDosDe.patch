@@ -1,0 +1,75 @@
+From: Xu Wei <xuwei@uniontech.com>
+Subject: [PATCH v3 2/2] kernelbase: Fix stack overflow by DefineDosDeviceW().
+Message-Id: <20210909084537.2589-2-xuwei@uniontech.com>
+Date: Thu,  9 Sep 2021 16:45:37 +0800
+In-Reply-To: <20210909084537.2589-1-xuwei@uniontech.com>
+References: <20210909084537.2589-1-xuwei@uniontech.com>
+
+Signed-off-by: Xu Wei <xuwei@uniontech.com>
+---
+ dlls/kernelbase/volume.c | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/kernelbase/volume.c b/dlls/kernelbase/volume.c
+index d513dda1f9d..be68721020e 100644
+--- a/dlls/kernelbase/volume.c
++++ b/dlls/kernelbase/volume.c
+@@ -384,7 +384,7 @@ err_ret:
+  */
+ BOOL WINAPI DECLSPEC_HOTPATCH DefineDosDeviceW( DWORD flags, const WCHAR *device, const WCHAR *target )
+ {
+-    WCHAR link_name[15] = L"\\DosDevices\\";
++    WCHAR *link_name = NULL;
+     UNICODE_STRING nt_name, nt_target;
+     OBJECT_ATTRIBUTES attr;
+     NTSTATUS status;
+@@ -395,17 +395,28 @@ BOOL WINAPI DECLSPEC_HOTPATCH DefineDosDeviceW( DWORD flags, const WCHAR *device
+     if (flags & ~(DDD_RAW_TARGET_PATH | DDD_REMOVE_DEFINITION))
+         FIXME("Ignoring flags %#x.\n", flags & ~(DDD_RAW_TARGET_PATH | DDD_REMOVE_DEFINITION));
+ 
+-    lstrcatW( link_name, device );
++    if (!(link_name = HeapAlloc( GetProcessHeap(), 0, sizeof(L"\\DosDevices\\") + (device ? lstrlenW(device) * sizeof(WCHAR) : 0))))
++    {
++        SetLastError(ERROR_OUTOFMEMORY);
++        return FALSE;
++    }
++
++    lstrcpyW( link_name, L"\\DosDevices\\" );
++    if (device) lstrcatW( link_name, device );
+     RtlInitUnicodeString( &nt_name, link_name );
+     InitializeObjectAttributes( &attr, &nt_name, OBJ_CASE_INSENSITIVE | OBJ_PERMANENT, 0, NULL );
+     if (flags & DDD_REMOVE_DEFINITION)
+     {
+         if (!set_ntstatus( NtOpenSymbolicLinkObject( &handle, 0, &attr ) ))
++        {
++            HeapFree( GetProcessHeap(), 0, link_name );
+             return FALSE;
++        }
+ 
+         status = NtMakeTemporaryObject( handle );
+         NtClose( handle );
+ 
++        HeapFree( GetProcessHeap(), 0, link_name );
+         return set_ntstatus( status );
+     }
+ 
+@@ -414,6 +425,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH DefineDosDeviceW( DWORD flags, const WCHAR *device
+         if (!RtlDosPathNameToNtPathName_U( target, &nt_target, NULL, NULL))
+         {
+             SetLastError( ERROR_PATH_NOT_FOUND );
++            HeapFree( GetProcessHeap(), 0, link_name );
+             return FALSE;
+         }
+     }
+@@ -422,6 +434,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH DefineDosDeviceW( DWORD flags, const WCHAR *device
+ 
+     if (!(status = NtCreateSymbolicLinkObject( &handle, SYMBOLIC_LINK_ALL_ACCESS, &attr, &nt_target )))
+         NtClose( handle );
++    HeapFree( GetProcessHeap(), 0, link_name );
+     return set_ntstatus( status );
+ }
+ 
+
+-- 
+2.20.1
+

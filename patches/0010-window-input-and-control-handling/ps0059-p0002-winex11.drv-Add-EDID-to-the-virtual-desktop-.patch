@@ -1,0 +1,134 @@
+From: Eduard Permyakov <epermyakov@codeweavers.com>
+Subject: [PATCH v5 2/3] winex11.drv: Add EDID to the virtual desktop monitor device.
+Message-Id: <20210907174356.962389-2-epermyakov@codeweavers.com>
+Date: Tue,  7 Sep 2021 20:43:55 +0300
+In-Reply-To: <20210907174356.962389-1-epermyakov@codeweavers.com>
+References: <20210907174356.962389-1-epermyakov@codeweavers.com>
+
+Some applications use the EDID property of the monitor device
+to detect supported resolutions, and set the viewport size. Add
+a computed EDID to the virtual desktop monitor device to allow
+the virtual desktop driver to be better compatible with such
+applications.
+
+Most fields of the EDID contain details that are of no relevance
+to applications, so populate only the native resolution and physical
+monitor dimensions. This should cover the vast majority of use
+cases.
+
+Signed-off-by: Eduard Permyakov <epermyakov@codeweavers.com>
+---
+ dlls/winex11.drv/desktop.c | 75 +++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 73 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winex11.drv/desktop.c b/dlls/winex11.drv/desktop.c
+index 71b3a0a5a27..37e5624967e 100644
+--- a/dlls/winex11.drv/desktop.c
++++ b/dlls/winex11.drv/desktop.c
+@@ -20,6 +20,7 @@
+  */
+ 
+ #include "config.h"
++#include <stdint.h>
+ #include <X11/cursorfont.h>
+ #include <X11/Xlib.h>
+ 
+@@ -111,6 +112,74 @@ static void add_desktop_mode( DEVMODEW *mode, DWORD depth, DWORD width, DWORD he
+     mode->dmDisplayFrequency = 60;
+ }
+ 
++static void get_virtual_edid( unsigned char **edid, unsigned long *len )
++{
++    static const size_t desc_size = 128;
++    int i;
++    uint8_t accum = 0;
++    /*Sample EDID for an LCD Desktop IT Display, from VESA spec */
++    static const unsigned char default_edid[128] = {
++        /* Header */
++        0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00,
++        /* Manufacturer's code name */
++        0x04, 0x43,
++        /* Product code */
++        0x06, 0xf2,
++        /* Serial Number */
++        0x01, 0x00, 0x00, 0x00,
++        /* Date of manufacture */
++        0x01, 0x11,
++        /* EDID version */
++        0x01, 0x04,
++        /* Standard characteristics */
++        0x0f, 0x2b, 0x20, 0x78, 0x2b, 0x9c, 0x68, 0xa0,
++        0x57, 0x4a, 0x9b, 0x26, 0x12, 0x48, 0x4c, 0xff,
++        0xff, 0x80, 0xa9, 0x59, 0xa9, 0x4f, 0xa9, 0x4a,
++        0xa9, 0x45, 0x81, 0x99, 0x81, 0x80, 0x61, 0x59,
++        0x45, 0x59,
++        /* First 18-byte data block (Preferred Timing Mode) */
++        0x48, 0x3f, 0x40, 0x30, 0x62, 0xb0, 0x32, 0x40,
++        0x40, 0xc0, 0x13, 0x00, 0xab, 0x40, 0x11, 0x00,
++        0x00, 0x1e,
++        /* Second 18-byte data block */
++        0x00, 0x00, 0x00, 0xfd, 0x00, 0x32, 0x5a, 0x1e,
++        0x6e, 0x17, 0x04, 0x11, 0x00, 0xc8, 0x90, 0x00,
++        0x50, 0x3c,
++        /* Third 18-byte data block */
++        0x00, 0x00, 0x00, 0xf7, 0x00, 0x0a, 0xf7, 0x0f,
++        0x03, 0x87, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00,
++        /* Fourth 18-byte data block */
++        0x00, 0x00, 0x00, 0xfc, 0x00, 0x41, 0x42, 0x43,
++        0x20, 0x4c, 0x43, 0x44, 0x32, 0x31, 0x0a, 0x20,
++        0x20, 0x20,
++        /* Extension flag */
++        0x00,
++    };
++
++    *edid = heap_calloc( desc_size, 1 );
++    if (!*edid)
++    {
++        *len = 0;
++        return;
++    }
++
++    memcpy( *edid, default_edid, sizeof(default_edid) );
++    *len = desc_size;
++
++    /* Set the native resolution in the Preferred Timing Mode descriptor */
++    (*edid)[0x38] = max_width & 0xff;
++    (*edid)[0x3a] = ((max_width >> 8) & 0xf) << 4;
++
++    (*edid)[0x3b] = max_height & 0xff;
++    (*edid)[0x3d] = ((max_height >> 8) & 0xf) << 4;
++
++    /* Set checksum */
++    for (i = 0; i < desc_size-1; i++)
++        accum += (*edid)[i];
++    (*edid)[desc_size - 1] = 256 - accum;
++}
++
+ static BOOL X11DRV_desktop_get_modes( ULONG_PTR id, DWORD flags, DEVMODEW **new_modes, UINT *mode_count )
+ {
+     UINT depth_idx, size_idx, mode_idx = 0;
+@@ -265,8 +334,7 @@ static BOOL X11DRV_desktop_get_monitors( ULONG_PTR adapter_id, struct x11drv_mon
+     SetRect( &monitor->rc_work, 0, 0, desktop_width, desktop_height );
+     query_desktop_work_area( &monitor->rc_work );
+     monitor->state_flags = DISPLAY_DEVICE_ATTACHED;
+-    monitor->edid_len = 0;
+-    monitor->edid = NULL;
++    get_virtual_edid( &monitor->edid, &monitor->edid_len );
+     if (desktop_width && desktop_height)
+         monitor->state_flags |= DISPLAY_DEVICE_ACTIVE;
+ 
+@@ -277,6 +345,9 @@ static BOOL X11DRV_desktop_get_monitors( ULONG_PTR adapter_id, struct x11drv_mon
+ 
+ static void X11DRV_desktop_free_monitors( struct x11drv_monitor *monitors, int count )
+ {
++    int i;
++    for (i = 0; i < count; i++)
++        heap_free( monitors[i].edid );
+     heap_free( monitors );
+ }
+ 
+
+-- 
+2.25.1
+

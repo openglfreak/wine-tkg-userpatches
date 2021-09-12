@@ -1,0 +1,243 @@
+From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
+Subject: [PATCH 1/2] ntdll: Unify get_file_info and fd_get_file_info.
+Message-Id: <CAEU2+vqVPQ24nqHTERoS8PvnLJtf-aabgFJhQv1WgeDyLnhCpA@mail.gmail.com>
+Date: Wed, 25 Aug 2021 15:24:00 -0600
+
+get_file_info and fd_get_file_info duplicate the same logic except
+that they either work on paths or file descriptors (respectively).
+This patch consolidates these two routines and moves some of the
+path-specific behavior to an updated [fd_]is_mount_point.  Besides
+consolidation, this patch simplifies the reparse point patches (coming
+soon!) since there's now only one routine that handles both path-based
+and fd-based requests for file information.
+
+Best,
+Erich
+
+From 5714ed7f30f299b0879435cf60766aeed8389a15 Mon Sep 17 00:00:00 2001
+From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
+Date: Wed, 3 Mar 2021 11:57:39 -0700
+#Subject: ntdll: Unify get_file_info and fd_get_file_info.
+
+Signed-off-by: Erich E. Hoover <erich.e.hoover@gmail.com>
+---
+ dlls/ntdll/unix/file.c | 83 +++++++++++++++++++-----------------------
+ 1 file changed, 37 insertions(+), 46 deletions(-)
+
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 712f94ec43f..51925ae69da 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -1463,39 +1463,27 @@ static inline ULONG get_file_attributes( const struct stat *st )
+ }
+ 
+ 
+-static BOOL fd_is_mount_point( int fd, const struct stat *st )
++static BOOL is_mount_point( int fd, const char *path, const struct stat *st )
+ {
+     struct stat parent;
+-    return S_ISDIR( st->st_mode ) && !fstatat( fd, "..", &parent, 0 )
+-            && (parent.st_dev != st->st_dev || parent.st_ino == st->st_ino);
+-}
++    char *parent_path;
++    int ret;
+ 
++    if (!S_ISDIR( st->st_mode )) return FALSE;
+ 
+-/* get the stat info and file attributes for a file (by file descriptor) */
+-static int fd_get_file_info( int fd, unsigned int options, struct stat *st, ULONG *attr )
+-{
+-    int ret;
++    if (fd == AT_FDCWD)
++    {
++        if (!(parent_path = malloc( strlen(path) + 4 ))) return FALSE;
++        strcpy( parent_path, path );
++        strcat( parent_path, "/.." );
++        ret = stat( parent_path, &parent );
++        free( parent_path );
++    }
++    else
++        ret = fstatat( fd, "..", &parent, 0 );
+ 
+-    *attr = 0;
+-    ret = fstat( fd, st );
+-    if (ret == -1) return ret;
+-    /* consider mount points to be reparse points (IO_REPARSE_TAG_MOUNT_POINT) */
+-    if ((options & FILE_OPEN_REPARSE_POINT) && fd_is_mount_point( fd, st ))
+-        *attr |= FILE_ATTRIBUTE_REPARSE_POINT;
+-    if (S_ISLNK( st->st_mode ))
+-    {
+-        BOOL is_dir;
+-
+-        /* symbolic links (either junction points or NT symlinks) are "reparse points" */
+-        *attr |= FILE_ATTRIBUTE_REPARSE_POINT;
+-        /* symbolic links always report size 0 */
+-        st->st_size = 0;
+-        if (get_symlink_properties( fd, "", NULL, NULL, NULL, NULL, &is_dir ) == STATUS_SUCCESS)
+-            st->st_mode = (st->st_mode & ~S_IFMT) | (is_dir ? S_IFDIR : S_IFREG);
+-    }
+-    *attr |= get_file_attributes( st );
+-
+-    return ret;
++    if (ret) return FALSE;
++    return (parent.st_dev != st->st_dev || parent.st_ino == st->st_ino);
+ }
+ 
+ 
+@@ -1532,15 +1532,17 @@ static inline ULONG get_file_attributes( const struct stat *st )
+     return STATUS_SUCCESS;
+ }
+ 
+-/* get the stat info and file attributes for a file (by name) */
+-static int get_file_info( const char *path, struct stat *st, ULONG *attr )
++/* get the stat info and file attributes for a file (by name or file descriptor) */
++static int get_file_info( int fd, const char *path, unsigned int options, struct stat *st, ULONG *attr )
+ {
+-    char *parent_path;
+     char hexattr[11];
+     int len, ret;
+ 
+     *attr = 0;
+-    ret = lstat( path, st );
++    if (fd == AT_FDCWD)
++        ret = lstat( path, st );
++    else
++        ret = fstat( fd, st );
+     if (ret == -1) return ret;
+     if (S_ISLNK( st->st_mode ))
+     {
+@@ -1503,19 +1504,9 @@ static int get_file_info( const char *path, struct stat *st, ULONG *attr )
+         /* is a symbolic link and a directory, consider these "reparse points" */
+         if (S_ISDIR( st->st_mode )) *attr |= FILE_ATTRIBUTE_REPARSE_POINT;
+     }
+-    else if (S_ISDIR( st->st_mode ) && (parent_path = malloc( strlen(path) + 4 )))
+-    {
+-        struct stat parent_st;
+-
+-        /* consider mount points to be reparse points (IO_REPARSE_TAG_MOUNT_POINT) */
+-        strcpy( parent_path, path );
+-        strcat( parent_path, "/.." );
+-        if (!stat( parent_path, &parent_st )
+-                && (st->st_dev != parent_st.st_dev || st->st_ino == parent_st.st_ino))
+-            *attr |= FILE_ATTRIBUTE_REPARSE_POINT;
+-
+-        free( parent_path );
+-    }
++    /* consider mount points to be reparse points (IO_REPARSE_TAG_MOUNT_POINT) */
++    else if ((options & FILE_OPEN_REPARSE_POINT) && is_mount_point( fd, path, st ))
++        *attr |= FILE_ATTRIBUTE_REPARSE_POINT;
+     *attr |= get_file_attributes( st );
+     return ret;
+ }
+@@ -2015,7 +2006,7 @@ static NTSTATUS get_dir_data_entry( struct dir_data *dir_data, void *info_ptr, I
+     struct stat st;
+     ULONG name_len, start, dir_size, attributes;
+ 
+-    if (get_file_info( names->unix_name, &st, &attributes ) == -1)
++    if (get_file_info( AT_FDCWD, names->unix_name, FILE_OPEN_REPARSE_POINT, &st, &attributes ) == -1)
+     {
+         TRACE( "file no longer exists %s\n", names->unix_name );
+         return STATUS_SUCCESS;
+@@ -3952,7 +3943,7 @@ NTSTATUS WINAPI NtQueryFullAttributesFile( const OBJECT_ATTRIBUTES *attr,
+         ULONG attributes;
+         struct stat st;
+ 
+-        if (get_file_info( unix_name, &st, &attributes ) == -1)
++        if (get_file_info( AT_FDCWD, unix_name, FILE_OPEN_REPARSE_POINT, &st, &attributes ) == -1)
+             status = errno_to_status( errno );
+         else if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))
+             status = STATUS_INVALID_INFO_CLASS;
+@@ -3997,7 +3988,7 @@ NTSTATUS WINAPI NtQueryAttributesFile( const OBJECT_ATTRIBUTES *attr, FILE_BASIC
+         ULONG attributes;
+         struct stat st;
+ 
+-        if (get_file_info( unix_name, &st, &attributes ) == -1)
++        if (get_file_info( AT_FDCWD, unix_name, FILE_OPEN_REPARSE_POINT, &st, &attributes ) == -1)
+             status = errno_to_status( errno );
+         else if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))
+             status = STATUS_INVALID_INFO_CLASS;
+@@ -4114,7 +4105,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+     switch (class)
+     {
+     case FileBasicInformation:
+-        if (fd_get_file_info( fd, options, &st, &attr ) == -1)
++        if (get_file_info( fd, "", options, &st, &attr ) == -1)
+             status = errno_to_status( errno );
+         else if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))
+             status = STATUS_INVALID_INFO_CLASS;
+@@ -4125,7 +4116,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+         {
+             FILE_STANDARD_INFORMATION *info = ptr;
+ 
+-            if (fd_get_file_info( fd, options, &st, &attr ) == -1) status = errno_to_status( errno );
++            if (get_file_info( fd, "", options, &st, &attr ) == -1) status = errno_to_status( errno );
+             else
+             {
+                 fill_file_info( &st, attr, info, class );
+@@ -4142,7 +4133,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+         }
+         break;
+     case FileInternalInformation:
+-        if (fd_get_file_info( fd, options, &st, &attr ) == -1) status = errno_to_status( errno );
++        if (get_file_info( fd, "", options, &st, &attr ) == -1) status = errno_to_status( errno );
+         else fill_file_info( &st, attr, ptr, class );
+         break;
+     case FileEaInformation:
+@@ -4152,7 +4143,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+         }
+         break;
+     case FileEndOfFileInformation:
+-        if (fd_get_file_info( fd, options, &st, &attr ) == -1) status = errno_to_status( errno );
++        if (get_file_info( fd, "", options, &st, &attr ) == -1) status = errno_to_status( errno );
+         else fill_file_info( &st, attr, ptr, class );
+         break;
+     case FileAllInformation:
+@@ -4160,7 +4151,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+             FILE_ALL_INFORMATION *info = ptr;
+             char *unix_name;
+ 
+-            if (fd_get_file_info( fd, options, &st, &attr ) == -1) status = errno_to_status( errno );
++            if (get_file_info( fd, "", options, &st, &attr ) == -1) status = errno_to_status( errno );
+             else if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))
+                 status = STATUS_INVALID_INFO_CLASS;
+             else if (!(status = server_get_unix_name( handle, &unix_name )))
+@@ -4243,7 +4234,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+                 ULONG attributes;
+                 struct stat st;
+ 
+-                if (get_file_info( unix_name, &st, &attributes ) == -1)
++                if (get_file_info( AT_FDCWD, unix_name, FILE_OPEN_REPARSE_POINT, &st, &attributes ) == -1)
+                     status = errno_to_status( errno );
+                 else if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))
+                     status = STATUS_INVALID_INFO_CLASS;
+@@ -4268,7 +4259,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+         }
+         break;
+     case FileIdInformation:
+-        if (fd_get_file_info( fd, options, &st, &attr ) == -1) status = errno_to_status( errno );
++        if (get_file_info( fd, "", options, &st, &attr ) == -1) status = errno_to_status( errno );
+         else
+         {
+             struct mountmgr_unix_drive drive;
+@@ -4282,15 +4273,15 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+         }
+         break;
+     case FileAttributeTagInformation:
+-        if (fd_get_file_info( fd, options, &st, &attr ) == -1) status = errno_to_status( errno );
++        if (get_file_info( fd, "", options, &st, &attr ) == -1) status = errno_to_status( errno );
+         else
+         {
+             FILE_ATTRIBUTE_TAG_INFORMATION *info = ptr;
+             info->FileAttributes = attr;
+             info->ReparseTag = 0;
+             if (attr & FILE_ATTRIBUTE_REPARSE_POINT)
+                 get_symlink_properties( fd, "", NULL, NULL, &info->ReparseTag, NULL, NULL );
+-            if ((options & FILE_OPEN_REPARSE_POINT) && fd_is_mount_point( fd, &st ))
++            if ((options & FILE_OPEN_REPARSE_POINT) && is_mount_point( fd, "", &st ))
+                 info->ReparseTag = IO_REPARSE_TAG_MOUNT_POINT;
+         }
+         break;
+
+-- 
+2.17.1
+

@@ -1,59 +1,40 @@
 From: Fabian Maurer <dark.shadow4@web.de>
-Subject: [PATCH v2 2/2] user32: Properly handle monochrome icon creation
-Message-Id: <20210821131819.14141-2-dark.shadow4@web.de>
-Date: Sat, 21 Aug 2021 15:18:19 +0200
-In-Reply-To: <20210821131819.14141-1-dark.shadow4@web.de>
-References: <20210821131819.14141-1-dark.shadow4@web.de>
+Subject: [PATCH v3 3/3] user32: For monochrome icon, write bits line by line This fixes a regression from db2b266c57b73e1a16785213ce923b749c84400e.
+Message-Id: <20210911183947.66609-3-dark.shadow4@web.de>
+Date: Sat, 11 Sep 2021 20:39:47 +0200
+In-Reply-To: <20210911183947.66609-1-dark.shadow4@web.de>
+References: <20210911183947.66609-1-dark.shadow4@web.de>
 
-This fixes a regression from db2b266c57b73e1a16785213ce923b749c84400e.
-Multiple things here:
-1) We must use a color table to avoid undefined behavior
-2) We must set the bitmap line by line, in reverse
-
-The same function is already used and tested in the previous patch.
+This is needed because we need to write bottom to top,
+and to avoid issues with line padding.
 
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=51296
 Signed-off-by: Fabian Maurer <dark.shadow4@web.de>
 ---
- dlls/user32/cursoricon.c       | 31 ++++++++++++++++++++-----------
+ dlls/user32/cursoricon.c       | 11 +++++++++--
  dlls/user32/tests/cursoricon.c |  9 ++++-----
- 2 files changed, 24 insertions(+), 16 deletions(-)
+ 2 files changed, 13 insertions(+), 7 deletions(-)
 
 diff --git a/dlls/user32/cursoricon.c b/dlls/user32/cursoricon.c
-index 7ad0a04a551..605cd6a3f61 100644
+index cc7219f39d0..acd50724523 100644
 --- a/dlls/user32/cursoricon.c
 +++ b/dlls/user32/cursoricon.c
-@@ -1574,19 +1574,28 @@ static HBITMAP create_masked_bitmap( int width, int height, const void *and, con
+@@ -1559,6 +1559,9 @@ static HBITMAP create_masked_bitmap( int width, int height, const void *and, con
  {
      HDC dc = CreateCompatibleDC( 0 );
      HBITMAP bitmap;
--
--    const BITMAPINFO bitmap_info =
--    {
--        .bmiHeader.biSize = sizeof(BITMAPINFOHEADER),
--        .bmiHeader.biWidth = width,
--        .bmiHeader.biHeight = height * 2,
--        .bmiHeader.biPlanes = 1,
--        .bmiHeader.biBitCount = 1,
--    };
 +    int line_size = width/8;
 +    const char* and2 = (const char*)and;
 +    const char* xor2 = (const char*)xor;
-+    char buffer[sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD) * 2] = {0};
-+
-+    BITMAPINFO *bitmap_info = (BITMAPINFO*)buffer;
-+    bitmap_info->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-+    bitmap_info->bmiHeader.biWidth = width;
-+    bitmap_info->bmiHeader.biHeight = height * 2;
-+    bitmap_info->bmiHeader.biPlanes = 1;
-+    bitmap_info->bmiHeader.biBitCount = 1;
-+    bitmap_info->bmiColors[1].rgbRed = 255;
-+    bitmap_info->bmiColors[1].rgbGreen = 255;
-+    bitmap_info->bmiColors[1].rgbBlue = 255;
+     char buffer[sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD) * 2] = {0};
+
+     BITMAPINFO *bitmap_info = (BITMAPINFO*)buffer;
+@@ -1572,8 +1575,12 @@ static HBITMAP create_masked_bitmap( int width, int height, const void *and, con
+     bitmap_info->bmiColors[1].rgbBlue = 255;
 
      bitmap = CreateBitmap( width, height * 2, 1, 1, NULL );
--    SetDIBits( dc, bitmap, 0, height, and, &bitmap_info, FALSE );
--    SetDIBits( dc, bitmap, height, height, xor, &bitmap_info, FALSE );
+-    SetDIBits( dc, bitmap, 0, height, and, bitmap_info, FALSE );
+-    SetDIBits( dc, bitmap, height, height, xor, bitmap_info, FALSE );
 +
 +    for (int i = 0; i < height; i++)
 +    {
@@ -64,10 +45,10 @@ index 7ad0a04a551..605cd6a3f61 100644
      return bitmap;
  }
 diff --git a/dlls/user32/tests/cursoricon.c b/dlls/user32/tests/cursoricon.c
-index dbe2b3a57f0..ef3d4b2870f 100644
+index 68e4f5320ff..31411bab330 100644
 --- a/dlls/user32/tests/cursoricon.c
 +++ b/dlls/user32/tests/cursoricon.c
-@@ -3125,7 +3125,7 @@ static HBITMAP create_masked_bitmap( int width, int height, const void *and, con
+@@ -3127,7 +3127,7 @@ static HBITMAP create_masked_bitmap( int width, int height, const void *and, con
      return bitmap;
  }
 
@@ -76,15 +57,15 @@ index dbe2b3a57f0..ef3d4b2870f 100644
  {
      HDC dc = CreateCompatibleDC(0);
      HBITMAP canvas = CreateCompatibleBitmap(dc, 32, 32);
-@@ -3138,7 +3138,6 @@ static void check_monochrome_icon(HICON icon, int draw_flag, int line, BOOL todo
+@@ -3140,7 +3140,6 @@ static void check_monochrome_icon(HICON icon, int draw_flag, int line, BOOL todo
      {
          COLORREF color = GetPixel(dc, i, 8);
          int expect = i % 2 == 0 ? 0 : 0xFFFFFF;
--        todo_wine_if(todo && (i%2 != 0))
+-        todo_wine_if(todo && (i%2 != 1))
          ok_(__FILE__,line)(color == expect, "At index %d got %x\n", i, color);
      }
      DeleteObject(canvas);
-@@ -3163,17 +3162,17 @@ static void test_monochrome_icon_creation(void)
+@@ -3165,17 +3164,17 @@ static void test_monochrome_icon_creation(void)
 
      cursor = CreateCursor(0, 8, 8, 16, 16, monochrome_bits, &monochrome_bits[32]);
      ok(cursor != NULL, "CreateCursor failed\n");

@@ -1,0 +1,66 @@
+From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
+Subject: [PATCH 2/2] ntdll: Replace fstat and lstat with fstatat in get_file_info.
+Message-Id: <CAEU2+vp8ot1-xnjvDzuMk5bCTQ9fxrA3uxRa1SsvgVo-LcOgfA@mail.gmail.com>
+Date: Wed, 25 Aug 2021 15:24:02 -0600
+
+Further simplify get_file_info by using fstatat for both path-based
+(lstat) and fd-based (fstat) modes of operation.
+
+Best,
+Erich
+
+From 753669b5095902d22014651140ec4715e25407e1 Mon Sep 17 00:00:00 2001
+From: "Erich E. Hoover" <erich.e.hoover@gmail.com>
+Date: Wed, 3 Mar 2021 12:14:56 -0700
+#Subject: ntdll: Replace fstat and lstat with fstatat in get_file_info.
+
+Signed-off-by: Erich E. Hoover <erich.e.hoover@gmail.com>
+---
+ dlls/ntdll/unix/file.c | 13 ++++---------
+ 1 file changed, 4 insertions(+), 9 deletions(-)
+
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 51925ae69da..e95855f12fc 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -1465,8 +1465,8 @@ static inline ULONG get_file_attributes( const struct stat *st )
+ 
+ static BOOL is_mount_point( int fd, const char *path, const struct stat *st )
+ {
++    char *parent_path = NULL;
+     struct stat parent;
+-    char *parent_path;
+     int ret;
+ 
+     if (!S_ISDIR( st->st_mode )) return FALSE;
+@@ -1476,12 +1476,10 @@ static BOOL is_mount_point( int fd, const char *path, const struct stat *st )
+         if (!(parent_path = malloc( strlen(path) + 4 ))) return FALSE;
+         strcpy( parent_path, path );
+         strcat( parent_path, "/.." );
+-        ret = stat( parent_path, &parent );
+-        free( parent_path );
+     }
+-    else
+-        ret = fstatat( fd, "..", &parent, 0 );
+ 
++    ret = fstatat( fd, parent_path ? parent_path : "..", &parent, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW);
++    if (parent_path) free( parent_path );
+     if (ret) return FALSE;
+     return (parent.st_dev != st->st_dev || parent.st_ino == st->st_ino);
+ }
+@@ -1492,10 +1490,7 @@ static int get_file_info( int fd, const char *path, unsigned int options, struct
+     int ret;
+ 
+     *attr = 0;
+-    if (fd == AT_FDCWD)
+-        ret = lstat( path, st );
+-    else
+-        ret = fstat( fd, st );
++    ret = fstatat( fd, path, st, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW);
+     if (ret == -1) return ret;
+     if (S_ISLNK( st->st_mode ))
+     {
+
+-- 
+2.17.1
+

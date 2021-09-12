@@ -1,0 +1,209 @@
+From: Robert Wilhelm <robert.wilhelm@gmx.net>
+Subject: [PATCH] vbscript: Support date and time literals.
+Message-Id: <6ce28aaff9f3c5e45bc43a78ca948867a22f4ba8.camel@gmx.net>
+Date: Tue, 07 Sep 2021 21:27:12 +0200
+
+Date literals, which are enclosed in number signs in vbscript,
+will be lexed as string, pushed throught parser and compiler and
+finally converted to VT_Date Variant in interpreter using VariantChangeType.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=51503
+Signed-off-by: Robert Wilhelm <robert.wilhelm@gmx.net>
+---
+ dlls/vbscript/compile.c      |  2 ++
+ dlls/vbscript/interp.c       | 18 +++++++++++++++++
+ dlls/vbscript/lex.c          | 39 ++++++++++++++++++++++++++++++++++++
+ dlls/vbscript/parse.h        |  1 +
+ dlls/vbscript/parser.y       | 16 ++++++++++++++-
+ dlls/vbscript/tests/lang.vbs |  1 +
+ dlls/vbscript/vbscript.h     |  1 +
+ 7 files changed, 77 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/vbscript/compile.c b/dlls/vbscript/compile.c
+index 0d1960d8ca1..ae962ff73cf 100644
+--- a/dlls/vbscript/compile.c
++++ b/dlls/vbscript/compile.c
+@@ -530,6 +530,8 @@ static HRESULT compile_expression(compile_ctx_t *ctx, expression_t *expr)
+         return compile_call_expression(ctx, (call_expression_t*)expr, TRUE);
+     case EXPR_CONCAT:
+         return compile_binary_expression(ctx, (binary_expression_t*)expr, OP_concat);
++    case EXPR_DATE:
++        return push_instr_str(ctx, OP_date, ((string_expression_t*)expr)->value);
+     case EXPR_DIV:
+         return compile_binary_expression(ctx, (binary_expression_t*)expr, OP_div);
+     case EXPR_DOT:
+diff --git a/dlls/vbscript/interp.c b/dlls/vbscript/interp.c
+index 11d95e57758..db3e41aae2f 100644
+--- a/dlls/vbscript/interp.c
++++ b/dlls/vbscript/interp.c
+@@ -1637,6 +1637,24 @@ static HRESULT interp_string(exec_ctx_t *ctx)
+     return stack_push(ctx, &v);
+ }
+
++static HRESULT interp_date(exec_ctx_t *ctx)
++{
++    VARIANT v,date;
++    HRESULT hres;
++
++    TRACE("\n");
++
++    V_VT(&v) = VT_BSTR;
++    V_BSTR(&v) = SysAllocString(ctx->instr->arg1.str);
++    if(!V_BSTR(&v))
++        return E_OUTOFMEMORY;
++
++    hres = VariantChangeType(&date, &v, 0, VT_DATE);
++    if(FAILED(hres))
++        return hres;
++    return stack_push(ctx, &date);
++}
++
+ static HRESULT interp_int(exec_ctx_t *ctx)
+ {
+     const LONG arg = ctx->instr->arg1.lng;
+diff --git a/dlls/vbscript/lex.c b/dlls/vbscript/lex.c
+index 357cad7158c..28bbda331a9 100644
+--- a/dlls/vbscript/lex.c
++++ b/dlls/vbscript/lex.c
+@@ -204,6 +204,43 @@ static int parse_string_literal(parser_ctx_t *ctx, const WCHAR **ret)
+     return tString;
+ }
+
++static int parse_date_literal(parser_ctx_t *ctx, const WCHAR **ret)
++{
++    const WCHAR *ptr = ++ctx->ptr;
++    WCHAR *rptr;
++    int len = 0;
++
++    while(ctx->ptr < ctx->end) {
++        if(*ctx->ptr == '\n' || *ctx->ptr == '\r') {
++            FIXME("newline inside date literal\n");
++            return 0;
++        }
++
++       if(*ctx->ptr == '#')
++            break;
++       ctx->ptr++;
++    }
++
++    if(ctx->ptr == ctx->end) {
++        FIXME("unterminated date literal\n");
++        return 0;
++    }
++
++    len += ctx->ptr-ptr;
++
++    *ret = rptr = parser_alloc(ctx, (len+1)*sizeof(WCHAR));
++    if(!rptr)
++        return 0;
++
++    while(ptr < ctx->ptr) {
++        *rptr++ = *ptr++;
++    }
++
++    *rptr = 0;
++    ctx->ptr++;
++    return tDate;
++}
++
+ static int parse_numeric_literal(parser_ctx_t *ctx, void **ret)
+ {
+     BOOL use_int = TRUE;
+@@ -429,6 +466,8 @@ static int parse_next_token(void *lval, unsigned *loc, parser_ctx_t *ctx)
+         return tEXPRLBRACKET;
+     case '"':
+         return parse_string_literal(ctx, lval);
++    case '#':
++        return parse_date_literal(ctx, lval);
+     case '&':
+         if(*++ctx->ptr == 'h' || *ctx->ptr == 'H')
+             return parse_hex_literal(ctx, lval);
+diff --git a/dlls/vbscript/parse.h b/dlls/vbscript/parse.h
+index 2888ea3b546..df7d9c20386 100644
+--- a/dlls/vbscript/parse.h
++++ b/dlls/vbscript/parse.h
+@@ -23,6 +23,7 @@ typedef enum {
+     EXPR_BRACKETS,
+     EXPR_CALL,
+     EXPR_CONCAT,
++    EXPR_DATE,
+     EXPR_DIV,
+     EXPR_DOT,
+     EXPR_DOUBLE,
+diff --git a/dlls/vbscript/parser.y b/dlls/vbscript/parser.y
+index 37b14f05e14..8e20b289966 100644
+--- a/dlls/vbscript/parser.y
++++ b/dlls/vbscript/parser.y
+@@ -34,6 +34,7 @@ static void source_add_class(parser_ctx_t*,class_decl_t*);
+
+ static void *new_expression(parser_ctx_t*,expression_type_t,size_t);
+ static expression_t *new_bool_expression(parser_ctx_t*,VARIANT_BOOL);
++static expression_t *new_date_expression(parser_ctx_t*,const WCHAR*);
+ static expression_t *new_string_expression(parser_ctx_t*,const WCHAR*);
+ static expression_t *new_long_expression(parser_ctx_t*,expression_type_t,LONG);
+ static expression_t *new_double_expression(parser_ctx_t*,double);
+@@ -125,7 +126,7 @@ static statement_t *link_statements(statement_t*,statement_t*);
+ %token <string> tNOTHING tEMPTY tNULL
+ %token <string> tCLASS tSET tNEW tPUBLIC tPRIVATE
+ %token <string> tNEXT tON tRESUME tGOTO
+-%token <string> tIdentifier tString
++%token <string> tIdentifier tString tDate
+ %token <string> tDEFAULT tERROR tEXPLICIT tPROPERTY tSTEP
+ %token <integer> tInt
+ %token <dbl> tDouble
+@@ -416,6 +417,7 @@ LiteralExpression
+     : tTRUE                         { $$ = new_bool_expression(ctx, VARIANT_TRUE); CHECK_ERROR; }
+     | tFALSE                        { $$ = new_bool_expression(ctx, VARIANT_FALSE); CHECK_ERROR; }
+     | tString                       { $$ = new_string_expression(ctx, $1); CHECK_ERROR; }
++    | tDate                         { $$ = new_date_expression(ctx, $1); CHECK_ERROR; }
+     | NumericLiteralExpression      { $$ = $1; }
+     | tEMPTY                        { $$ = new_expression(ctx, EXPR_EMPTY, 0); CHECK_ERROR; }
+     | tNULL                         { $$ = new_expression(ctx, EXPR_NULL, 0); CHECK_ERROR; }
+@@ -594,6 +596,18 @@ static expression_t *new_string_expression(parser_ctx_t *ctx, const WCHAR *value
+     return &expr->expr;
+ }
+
++static expression_t *new_date_expression(parser_ctx_t *ctx, const WCHAR *value)
++{
++    string_expression_t *expr;
++
++    expr = new_expression(ctx, EXPR_DATE, sizeof(*expr));
++    if(!expr)
++        return NULL;
++
++    expr->value = value;
++    return &expr->expr;
++}
++
+ static expression_t *new_long_expression(parser_ctx_t *ctx, expression_type_t type, LONG value)
+ {
+     int_expression_t *expr;
+diff --git a/dlls/vbscript/tests/lang.vbs b/dlls/vbscript/tests/lang.vbs
+index a716cdbc65f..d7865301784 100644
+--- a/dlls/vbscript/tests/lang.vbs
++++ b/dlls/vbscript/tests/lang.vbs
+@@ -107,6 +107,7 @@ Call ok(getVT(&hffFFffFF&) = "VT_I2", "getVT(&hffFFffFF&) is not VT_I2")
+ Call ok(getVT(&hffFFffFE&) = "VT_I2", "getVT(&hffFFffFE &) is not VT_I2")
+ Call ok(getVT(&hffF&) = "VT_I2", "getVT(&hffFF&) is not VT_I2")
+ Call ok(getVT(&hffFF&) = "VT_I4", "getVT(&hffFF&) is not VT_I4")
++Call ok(getVT(# 1/1/2011 #) = "VT_DATE", "getVT(# 1/1/2011 #) is not VT_DATE")
+ Call ok(getVT(1e2) = "VT_R8", "getVT(1e2) is not VT_R8")
+ Call ok(getVT(1e0) = "VT_R8", "getVT(1e0) is not VT_R8")
+ Call ok(getVT(0.1e2) = "VT_R8", "getVT(0.1e2) is not VT_R8")
+diff --git a/dlls/vbscript/vbscript.h b/dlls/vbscript/vbscript.h
+index afcce5eb9b8..60ec0123f60 100644
+--- a/dlls/vbscript/vbscript.h
++++ b/dlls/vbscript/vbscript.h
+@@ -225,6 +225,7 @@ typedef enum {
+     X(case,           0, ARG_ADDR,    0)          \
+     X(concat,         1, 0,           0)          \
+     X(const,          1, ARG_BSTR,    0)          \
++    X(date,           1, ARG_STR,     0)          \
+     X(deref,          1, 0,           0)          \
+     X(dim,            1, ARG_BSTR,    ARG_UINT)   \
+     X(div,            1, 0,           0)          \
+--
+2.31.1
+
+
+

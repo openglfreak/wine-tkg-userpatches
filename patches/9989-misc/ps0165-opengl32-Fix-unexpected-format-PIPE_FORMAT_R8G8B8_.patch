@@ -1,0 +1,191 @@
+From: Shen Fusheng <shenfusheng@uniontech.com>
+Subject: [PATCH v1] opengl32: Fix unexpected format PIPE_FORMAT_R8G8B8_UNORM
+Message-Id: <20210903050940.17326-1-shenfusheng@uniontech.com>
+Date: Fri,  3 Sep 2021 13:09:40 +0800
+
+By reading the mesa source code, a value not in the enumeration is used in the mesa code to create a rendering memory.
+It is found that the value is derived from the result of matching using wglChoosePixel, so I modified this piece by
+referring to the wglChoosePixelFormat in mesa.
+
+Signed-off-by: Shen Fusheng <shenfusheng@uniontech.com>
+---
+ dlls/opengl32/wgl.c | 110 ++++++++++++++++++++++----------------------
+ 1 file changed, 55 insertions(+), 55 deletions(-)
+
+diff --git a/dlls/opengl32/wgl.c b/dlls/opengl32/wgl.c
+index cf46c6dfa8a..0b15c6fce89 100644
+--- a/dlls/opengl32/wgl.c
++++ b/dlls/opengl32/wgl.c
+@@ -453,6 +453,7 @@ INT WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR* ppfd)
+     PIXELFORMATDESCRIPTOR format, best;
+     int i, count, best_format;
+     int bestDBuffer = -1, bestStereo = -1;
++    uint bestdelta = ~0U;
+ 
+     TRACE_(wgl)( "%p %p: size %u version %u flags %u type %u color %u %u,%u,%u,%u "
+                  "accum %u depth %u stencil %u aux %u\n",
+@@ -473,6 +474,7 @@ INT WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR* ppfd)
+ 
+     for (i = 1; i <= count; i++)
+     {
++        uint delta = 0;
+         if (!wglDescribePixelFormat( hdc, i, sizeof(format), &format )) continue;
+ 
+         if ((ppfd->iPixelType == PFD_TYPE_COLORINDEX) != (format.iPixelType == PFD_TYPE_COLORINDEX))
+@@ -512,24 +514,34 @@ INT WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR* ppfd)
+         {
+             if (((ppfd->dwFlags & PFD_DOUBLEBUFFER) != bestDBuffer) &&
+                 ((format.dwFlags & PFD_DOUBLEBUFFER) == (ppfd->dwFlags & PFD_DOUBLEBUFFER)))
+-                goto found;
++            {
++                    delta = 0;
++                    goto found;
++            }
+ 
+             if (bestDBuffer != -1 && (format.dwFlags & PFD_DOUBLEBUFFER) != bestDBuffer) continue;
+         }
+         else if (!best_format)
++        {
+             goto found;
++        }
+ 
+         /* Stereo, see the comments above. */
+         if (!(ppfd->dwFlags & PFD_STEREO_DONTCARE))
+         {
+             if (((ppfd->dwFlags & PFD_STEREO) != bestStereo) &&
+                 ((format.dwFlags & PFD_STEREO) == (ppfd->dwFlags & PFD_STEREO)))
+-                goto found;
++                {
++                    delta = 0;
++                    goto found;
++                }
+ 
+             if (bestStereo != -1 && (format.dwFlags & PFD_STEREO) != bestStereo) continue;
+         }
+         else if (!best_format)
++        {
+             goto found;
++        }
+ 
+         /* Below we will do a number of checks to select the 'best' pixelformat.
+          * We assume the precedence cColorBits > cAlphaBits > cDepthBits > cStencilBits -> cAuxBuffers.
+@@ -541,74 +553,62 @@ INT WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR* ppfd)
+ 
+         if (ppfd->cColorBits)
+         {
+-            if (((ppfd->cColorBits > best.cColorBits) && (format.cColorBits > best.cColorBits)) ||
+-                ((format.cColorBits >= ppfd->cColorBits) && (format.cColorBits < best.cColorBits)))
+-                goto found;
+-
+-            if (best.cColorBits != format.cColorBits)  /* Do further checks if the format is compatible */
+-            {
+-                TRACE( "color mismatch for iPixelFormat=%d\n", i );
+-                continue;
+-            }
++            if (ppfd->cColorBits && format.cColorBits)
++                delta += 10000;
++            else if (ppfd->cColorBits > format.cColorBits)
++                delta += 100;
++            else if (ppfd->cColorBits < format.cColorBits)
++                delta++;
+         }
++        
+         if (ppfd->cAlphaBits)
+         {
+-            if (((ppfd->cAlphaBits > best.cAlphaBits) && (format.cAlphaBits > best.cAlphaBits)) ||
+-                ((format.cAlphaBits >= ppfd->cAlphaBits) && (format.cAlphaBits < best.cAlphaBits)))
+-                goto found;
+-
+-            if (best.cAlphaBits != format.cAlphaBits)
+-            {
+-                TRACE( "alpha mismatch for iPixelFormat=%d\n", i );
+-                continue;
+-            }
++            if (ppfd->cAlphaBits && !format.cAlphaBits)
++                delta += 10000;
++            else if (ppfd->cAlphaBits > format.cAlphaBits)
++                delta += 100;
++            else if (ppfd->cAlphaBits < format.cAlphaBits)
++                delta++;
+         }
++        
+         if (ppfd->cDepthBits && !(ppfd->dwFlags & PFD_DEPTH_DONTCARE))
+         {
+-            if (((ppfd->cDepthBits > best.cDepthBits) && (format.cDepthBits > best.cDepthBits)) ||
+-                ((format.cDepthBits >= ppfd->cDepthBits) && (format.cDepthBits < best.cDepthBits)))
+-                goto found;
+-
+-            if (best.cDepthBits != format.cDepthBits)
+-            {
+-                TRACE( "depth mismatch for iPixelFormat=%d\n", i );
+-                continue;
+-            }
++            if (ppfd->cDepthBits && !format.cDepthBits)
++                delta += 10000;
++            else if (ppfd->cDepthBits > format.cDepthBits)
++                delta += 200;
++            else if (ppfd->cDepthBits < format.cDepthBits)
++                delta += 2;
+         }
++        
+         if (ppfd->cStencilBits)
+         {
+-            if (((ppfd->cStencilBits > best.cStencilBits) && (format.cStencilBits > best.cStencilBits)) ||
+-                ((format.cStencilBits >= ppfd->cStencilBits) && (format.cStencilBits < best.cStencilBits)))
+-                goto found;
+-
+-            if (best.cStencilBits != format.cStencilBits)
+-            {
+-                TRACE( "stencil mismatch for iPixelFormat=%d\n", i );
+-                continue;
+-            }
++            if (ppfd->cStencilBits && !format.cStencilBits)
++                delta += 10000;
++            else if (ppfd->cStencilBits > format.cStencilBits)
++                delta += 400;
++            else if (ppfd->cStencilBits < format.cStencilBits)
++                delta++;
+         }
++        
+         if (ppfd->cAuxBuffers)
+         {
+-            if (((ppfd->cAuxBuffers > best.cAuxBuffers) && (format.cAuxBuffers > best.cAuxBuffers)) ||
+-                ((format.cAuxBuffers >= ppfd->cAuxBuffers) && (format.cAuxBuffers < best.cAuxBuffers)))
+-                goto found;
+-
+-            if (best.cAuxBuffers != format.cAuxBuffers)
+-            {
+-                TRACE( "aux mismatch for iPixelFormat=%d\n", i );
+-                continue;
+-            }
++            if (ppfd->cAuxBuffers && !format.cAuxBuffers)
++                delta += 10000;
++            else if (ppfd->cAuxBuffers > format.cAuxBuffers)
++                delta += 400;
++            else if (ppfd->cAuxBuffers < format.cAuxBuffers)
++                delta++;
+         }
+-        if (ppfd->dwFlags & PFD_DEPTH_DONTCARE && format.cDepthBits < best.cDepthBits)
+-            goto found;
+-
+-        continue;
+ 
+     found:
+-        best_format = i;
+-        best = format;
+-        bestDBuffer = format.dwFlags & PFD_DOUBLEBUFFER;
+-        bestStereo = format.dwFlags & PFD_STEREO;
++        if (delta < bestdelta) 
++        {
++            best_format = i;
++            bestdelta = delta;
++            if (bestdelta == 0)
++            break;
++        }
+     }
+ 
+     TRACE( "returning %u\n", best_format );
+
+-- 
+2.20.1
+

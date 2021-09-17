@@ -1,0 +1,53 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH v3 2/3] ntdll: Scan pages only once in get_basic_memory_info().
+Message-Id: <20210917095230.16386-2-pgofman@codeweavers.com>
+Date: Fri, 17 Sep 2021 12:52:29 +0300
+In-Reply-To: <20210917095230.16386-1-pgofman@codeweavers.com>
+References: <20210917095230.16386-1-pgofman@codeweavers.com>
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/ntdll/unix/virtual.c | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 3028910ce5c..14ea3b11143 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4194,7 +4194,7 @@ static NTSTATUS get_basic_memory_info( HANDLE process, LPCVOID addr,
+         {
+             /* not in a reserved area at all, pretend it's allocated */
+ #ifdef __i386__
+-            if (base >= (char *)address_space_start)
++            if (base >= (BYTE *)address_space_start)
+             {
+                 info->State             = MEM_RESERVE;
+                 info->Protect           = PAGE_NOACCESS;
+@@ -4215,7 +4215,13 @@ static NTSTATUS get_basic_memory_info( HANDLE process, LPCVOID addr,
+     else
+     {
+         BYTE vprot;
+-        SIZE_T range_size = get_committed_size( view, base, &vprot );
++        SIZE_T range_size;
++
++        if (view->protect & SEC_RESERVE)
++            range_size = get_committed_size( view, base, &vprot );
++        else
++            range_size = view->size - (base - (BYTE *)view->base);
++        info->RegionSize = get_vprot_range_size( base, range_size, ~VPROT_WRITEWATCH, &vprot );
+ 
+         info->State = (vprot & VPROT_COMMITTED) ? MEM_COMMIT : MEM_RESERVE;
+         info->Protect = (vprot & VPROT_COMMITTED) ? get_win32_prot( vprot, view->protect ) : 0;
+@@ -4223,8 +4229,6 @@ static NTSTATUS get_basic_memory_info( HANDLE process, LPCVOID addr,
+         if (view->protect & SEC_IMAGE) info->Type = MEM_IMAGE;
+         else if (view->protect & (SEC_FILE | SEC_RESERVE | SEC_COMMIT)) info->Type = MEM_MAPPED;
+         else info->Type = MEM_PRIVATE;
+-
+-        info->RegionSize = get_vprot_range_size( base, range_size, ~(VPROT_WRITEWATCH|VPROT_WRITTEN), &vprot );
+     }
+     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+ 
+
+-- 
+2.31.1
+

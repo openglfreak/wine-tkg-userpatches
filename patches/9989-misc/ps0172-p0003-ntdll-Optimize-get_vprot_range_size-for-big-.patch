@@ -1,0 +1,111 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH v3 3/3] ntdll: Optimize get_vprot_range_size() for big ranges.
+Message-Id: <20210917095230.16386-3-pgofman@codeweavers.com>
+Date: Fri, 17 Sep 2021 12:52:30 +0300
+In-Reply-To: <20210917095230.16386-1-pgofman@codeweavers.com>
+References: <20210917095230.16386-1-pgofman@codeweavers.com>
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+v3:
+    - get rid of the the last remainder loop;
+    - get rid of 'count' variable;
+    - define word related constants instead of hard coding them.
+
+    This patch reduces the overhead for scanning huge ranges for the changed vprot
+    greatly.
+    Improves DeathLoop performance which reserves a huge memory area and
+    then commits some pages from within it, often calling VirtualQuery() for the
+    addresses within the allocated area.
+
+ dlls/ntdll/unix/virtual.c | 67 ++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 62 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 14ea3b11143..9c754de0b6f 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -947,17 +947,74 @@ static BYTE get_page_vprot( const void *addr )
+  *           get_vprot_range_size
+  *
+  * Return the size of the region with equal masked protection byte.
++ * base and size should be page aligned.
+  * The function assumes that base and size are page aligned and
+  * base + size does not wrap around. */
+ static SIZE_T get_vprot_range_size( BYTE *base, SIZE_T size, BYTE mask, BYTE *vprot )
+ {
+-    BYTE *addr;
++#define BYTES_IN_WORD sizeof(UINT64)
++    static const UINT_PTR index_align_mask = BYTES_IN_WORD - 1;
++    static const UINT64 word_from_byte = 0x101010101010101ull;
++    SIZE_T i, start_idx, end_idx, aligned_start_idx;
++    UINT64 vprot_word, mask_word, changed_word;
++    const BYTE *vprot_ptr;
++#ifdef _WIN64
++    size_t idx_page;
++#endif
++    unsigned int j;
++    size_t idx;
++
++    TRACE("base %p, size %p, mask %#x.\n", base, (void *)size, mask);
++
++    start_idx = (size_t)base >> page_shift;
++    end_idx = start_idx + (size >> page_shift);
++    idx = start_idx;
++#ifdef _WIN64
++    end_idx = min( end_idx, pages_vprot_size << pages_vprot_shift );
++    if (end_idx <= start_idx)
++    {
++        *vprot = 0;
++        return size;
++    }
++    idx_page = idx >> pages_vprot_shift;
++    idx &= pages_vprot_mask;
++    vprot_ptr = pages_vprot[idx_page];
++#else
++    vprot_ptr = pages_vprot;
++#endif
++
++    aligned_start_idx = (start_idx + index_align_mask) & ~index_align_mask;
++    if (aligned_start_idx > end_idx) aligned_start_idx = end_idx;
+ 
+-    *vprot = get_page_vprot( base );
+-    for (addr = base + page_size; addr != base + size; addr += page_size)
+-        if ((*vprot ^ get_page_vprot( addr )) & mask) break;
++    /* Page count in zero level page table on x64 is at least the multiples of BYTES_IN_WORD
++     * so we don't have to worry about crossing the boundary on unaligned idx values. */
++    *vprot = vprot_ptr[idx];
++
++    for (i = start_idx; i < aligned_start_idx; ++i)
++        if ((*vprot ^ vprot_ptr[idx++]) & mask) return (i - start_idx) << page_shift;
++
++    vprot_word = word_from_byte * *vprot;
++    mask_word = word_from_byte * mask;
++    for (; i < end_idx; i += BYTES_IN_WORD)
++    {
++#ifdef _WIN64
++        if (idx >> pages_vprot_shift)
++        {
++            idx = 0;
++            vprot_ptr = pages_vprot[++idx_page];
++        }
++#endif
++        changed_word = (vprot_word ^ *(UINT64 *)(vprot_ptr + idx)) & mask_word;
++        if (changed_word)
++        {
++            for (j = 0; i < end_idx && !((BYTE *)&changed_word)[j]; ++j) ++i;
++            return (i - start_idx) << page_shift;
++        }
++        idx += BYTES_IN_WORD;
++    }
+ 
+-    return addr - base;
++    return *vprot & mask ? (end_idx - start_idx) << page_shift : size;
++#undef BYTES_IN_WORD
+ }
+ 
+ /***********************************************************************
+
+-- 
+2.31.1
+

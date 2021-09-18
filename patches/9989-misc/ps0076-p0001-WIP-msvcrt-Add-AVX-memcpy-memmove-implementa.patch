@@ -14,9 +14,9 @@ index 9e75f2977a7..830f57b7c56 100644
 --- a/dlls/msvcrt/math.c
 +++ b/dlls/msvcrt/math.c
 @@ -42,6 +42,7 @@
- #include <limits.h>
  #include <locale.h>
  #include <math.h>
+ #include <intrin.h>
 +#include <immintrin.h>
  
  #include "msvcrt.h"
@@ -30,9 +30,9 @@ index 9e75f2977a7..830f57b7c56 100644
  WINE_DEFAULT_DEBUG_CHANNEL(msvcrt);
  
  #undef div
-@@ -65,10 +68,25 @@ typedef int (CDECL *MSVCRT_matherr_func)(struct _exception *);
- static MSVCRT_matherr_func MSVCRT_default_matherr_func = NULL;
+@@ -65,19 +68,35 @@ typedef int (CDECL *MSVCRT_matherr_func)(struct _exception *);
  
+ BOOL erms_supported;
  BOOL sse2_supported;
 +BOOL avx_supported;
  static BOOL sse2_enabled;
@@ -48,14 +48,24 @@ index 9e75f2977a7..830f57b7c56 100644
 +#endif /* __AVX__ */
  void msvcrt_init_math( void *module )
  {
-+    int info[4];
+ #if defined(__i386__) || defined(__x86_64__)
+     int regs[4];
+ 
+     __cpuid(regs, 0);
+     if (regs[0] >= 7)
+     {
+         __cpuidex(regs, 7, 0);
+         erms_supported = ((regs[1] >> 9) & 1);
+     }
++
 +    avx_supported = FALSE;
-+    __cpuid(info, 1);
-+    if (IsProcessorFeaturePresent( PF_XSAVE_ENABLED ) && (info[2] & (1 << 28)))
++    __cpuid(regs, 1);
++    if (IsProcessorFeaturePresent( PF_XSAVE_ENABLED ) && (regs[2] & (1 << 28)))
 +        avx_supported = (_xgetbv(0) & 0x6) == 0x6;
++
+ #endif
+ 
      sse2_supported = IsProcessorFeaturePresent( PF_XMMI64_INSTRUCTIONS_AVAILABLE );
- #if _MSVCR_VER <=71
-     sse2_enabled = FALSE;
 @@ -79,6 +97,14 @@ void msvcrt_init_math( void *module )
  #endif
      __wine_init_unix_lib( module, DLL_PROCESS_ATTACH, NULL, &unix_funcs );
@@ -84,7 +94,7 @@ index d335fce4992..f6a89ba20ac 100644
  WINE_DEFAULT_DEBUG_CHANNEL(msvcrt);
  
  /*********************************************************************
-@@ -2471,380 +2473,379 @@ int __cdecl memcmp(const void *ptr1, const void *ptr2, size_t n)
+@@ -2471,386 +2473,385 @@ int __cdecl memcmp(const void *ptr1, const void *ptr2, size_t n)
      return 0;
  }
  
@@ -667,6 +677,13 @@ index d335fce4992..f6a89ba20ac 100644
 -        "ret" )
 +MEMMOVEV_UNALIGNED_DECLARE(avx, __m256i, 32, _mm256_loadu_si256, _mm256_storeu_si256)
 +MEMMOVEV_DECLARE(avx, __m256i, 32, _mm256_loadu_si256, _mm256_storeu_si256, _mm256_store_si256)
+
+ #undef MEMMOVE_INIT
+ #undef MEMMOVE_CLEANUP
+ #undef DEST_REG
+ #undef SRC_REG
+ #undef LEN_REG
+ #undef TMP_REG
  
 +#ifdef __DISABLE_AVX__
 +#undef __DISABLE_AVX__
@@ -813,9 +830,9 @@ index d335fce4992..f6a89ba20ac 100644
 +#undef likely
 +#undef unlikely
 +
- static inline void memset_aligned_32(unsigned char *d, uint64_t v, size_t n)
- {
-     while (n >= 32)
+ #if defined(__i386__) || defined(__x86_64__)
+ 
+ #ifdef __i386__
 diff --git a/tools/makedep.c b/tools/makedep.c
 index 0eef646479b..1f736b79b96 100644
 --- a/tools/makedep.c

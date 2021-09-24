@@ -14,22 +14,22 @@ index ce0b8f6d2be..1a1948b55a7 100644
 --- a/dlls/shell32/shlexec.c
 +++ b/dlls/shell32/shlexec.c
 @@ -448,12 +448,17 @@ static BOOL SHELL_TryAppPathW( LPCWSTR szName, LPWSTR lpResult, WCHAR **env)
- 	'\\','C','u','r','r','e','n','t','V','e','r','s','i','o','n','\\','A','p','p',' ','P','a','t','h','s','\\',0};
-     static const WCHAR wPath[] = {'P','a','t','h',0};
+ static BOOL SHELL_TryAppPathW( LPCWSTR szName, LPWSTR lpResult, WCHAR **env)
+ {
      HKEY hkApp = 0;
 -    WCHAR buffer[1024];
 +    WCHAR *buffer;
      LONG len;
      LONG res;
      BOOL found = FALSE;
-+    LONG bufferlen = lstrlenW(szName) + ARRAYSIZE(wszKeyAppPaths) + 1;
++    LONG bufferlen = lstrlenW(szName) + ARRAYSIZE(L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\") + 1;
  
      if (env) *env = NULL;
 +    if (!(buffer = heap_alloc(bufferlen * sizeof(WCHAR))))
 +    {
 +        return FALSE;
 +    }
-     lstrcpyW(buffer, wszKeyAppPaths);
+     lstrcpyW(buffer, L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\");
      lstrcatW(buffer, szName);
      res = RegOpenKeyExW(HKEY_LOCAL_MACHINE, buffer, 0, KEY_READ, &hkApp);
 @@ -466,13 +471,14 @@ static BOOL SHELL_TryAppPathW( LPCWSTR szName, LPWSTR lpResult, WCHAR **env)
@@ -38,7 +38,7 @@ index ce0b8f6d2be..1a1948b55a7 100644
      {
 -        DWORD count = sizeof(buffer);
 +        DWORD count = bufferlen * sizeof(WCHAR);
-         if (!RegQueryValueExW(hkApp, wPath, NULL, NULL, (LPBYTE)buffer, &count) && buffer[0])
+         if (!RegQueryValueExW(hkApp, L"Path", NULL, NULL, (LPBYTE)buffer, &count) && buffer[0])
              *env = SHELL_BuildEnvW( buffer );
      }
  
@@ -49,9 +49,9 @@ index ce0b8f6d2be..1a1948b55a7 100644
  }
  
 @@ -991,16 +997,23 @@ static UINT_PTR execute_from_key(LPCWSTR key, LPCWSTR lpFile, WCHAR *env, LPCWST
+ 			     SHELL_ExecuteW32 execfunc,
+                              LPSHELLEXECUTEINFOW psei, LPSHELLEXECUTEINFOW psei_out)
  {
-     static const WCHAR wCommand[] = {'c','o','m','m','a','n','d',0};
-     static const WCHAR wDdeexec[] = {'d','d','e','e','x','e','c',0};
 -    WCHAR cmd[256], param[1024], ddeexec[256];
 +    WCHAR cmd[256], ddeexec[256];
 +    WCHAR *param;

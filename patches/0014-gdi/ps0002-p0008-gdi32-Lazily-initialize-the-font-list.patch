@@ -15,8 +15,8 @@ index 9fa0f45ec4b..d74bf83fe44 100644
  };
  static CRITICAL_SECTION font_cs = { &critsect_debug, -1, 0, 0, 0, 0 };
  
-+static RTL_RUN_ONCE font_list_init_once = RTL_RUN_ONCE_INIT;
-+static DWORD WINAPI font_list_init( RTL_RUN_ONCE *once, void *param, void **context );
++RTL_RUN_ONCE font_list_init_once = RTL_RUN_ONCE_INIT;
++DWORD WINAPI font_list_init( RTL_RUN_ONCE *once, void *param, void **context );
 +
  #ifndef WINE_FONT_DIR
  #define WINE_FONT_DIR "fonts"
@@ -46,14 +46,6 @@ index 9fa0f45ec4b..d74bf83fe44 100644
      if (hfont)
      {
          LOGFONTW lf;
-@@ -6835,6 +6842,7 @@ BOOL WINAPI CreateScalableFontResourceW( DWORD hidden, LPCWSTR resource_file,
-     TRACE("(%d, %s, %s, %s)\n", hidden, debugstr_w(resource_file),
-           debugstr_w(font_file), debugstr_w(font_path) );
- 
-+    RtlRunOnceExecuteOnce( &font_list_init_once, font_list_init, NULL, NULL );
-     if (!font_funcs) return FALSE;
- 
-     if (!font_file) goto done;
 @@ -7952,11 +7960,6 @@ void font_init(void)
  
      init_font_options();
@@ -76,7 +68,7 @@ index 9fa0f45ec4b..d74bf83fe44 100644
 +    ReleaseMutex( mutex );
 +}
 +
-+static DWORD WINAPI font_list_init( RTL_RUN_ONCE *once, void *param, void **context )
++DWORD WINAPI font_list_init( RTL_RUN_ONCE *once, void *param, void **context )
 +{
 +    DWORD disposition = param ? *(DWORD *)param : 0;
 +    HANDLE mutex;
@@ -102,14 +94,6 @@ index 9fa0f45ec4b..d74bf83fe44 100644
  }
  
  /***********************************************************************
-@@ -7995,6 +8020,7 @@ INT WINAPI AddFontResourceExW( LPCWSTR str, DWORD flags, PVOID pdv )
-     WCHAR *filename;
-     BOOL hidden;
- 
-+    RtlRunOnceExecuteOnce( &font_list_init_once, font_list_init, NULL, NULL );
-     if (!font_funcs) return 1;
-     if (!(ret = add_font_resource( str, flags )))
-     {
 @@ -8046,6 +8072,7 @@ HANDLE WINAPI AddFontMemResourceEx( PVOID ptr, DWORD size, PVOID pdv, DWORD *pcF
      DWORD num_fonts;
      void *copy;
@@ -118,14 +102,6 @@ index 9fa0f45ec4b..d74bf83fe44 100644
      if (!ptr || !size || !count)
      {
          SetLastError(ERROR_INVALID_PARAMETER);
-@@ -8118,6 +8145,7 @@ BOOL WINAPI RemoveFontResourceExW( LPCWSTR str, DWORD flags, PVOID pdv )
-     WCHAR *filename;
-     BOOL hidden;
- 
-+    RtlRunOnceExecuteOnce( &font_list_init_once, font_list_init, NULL, NULL );
-     if (!font_funcs) return TRUE;
- 
-     if (!(ret = remove_font_resource( str, flags )))
 @@ -8331,6 +8359,7 @@ BOOL WINAPI GetFontFileData( DWORD instance_id, DWORD unknown, UINT64 offset, vo
      DWORD tag = 0, size;
      BOOL ret = FALSE;
@@ -142,6 +118,45 @@ index 9fa0f45ec4b..d74bf83fe44 100644
      EnterCriticalSection( &font_cs );
  
      if ((font = get_font_from_handle( instance_id )))
+diff --git a/dlls/gdi32/text.c b/dlls/gdi32/text.c
+index 41333903c0c..fa6ccd8d426 100644
+--- a/dlls/gdi32/text.c
++++ b/dlls/gdi32/text.c
+@@ -126,6 +126,9 @@ enum directions
+     NI = ON,  /* alias, where ON, WS and S are treated the same */
+ };
+ 
++extern RTL_RUN_ONCE font_list_init_once;
++extern DWORD WINAPI font_list_init( RTL_RUN_ONCE *once, void *param, void **context );
++
+ /* HELPER FUNCTIONS */
+ 
+ static inline unsigned short get_table_entry(const unsigned short *table, WCHAR ch)
+@@ -2414,6 +2414,7 @@ INT WINAPI AddFontResourceExW( const WCHAR *str, DWORD flags, void *dv )
+     BOOL hidden;
+     INT ret;
+ 
++    RtlRunOnceExecuteOnce( &font_list_init_once, font_list_init, NULL, NULL );
+     if ((ret = add_font_resource( str, flags, dv ))) return ret;
+ 
+     if (!(filename = get_scalable_filename( str, &hidden ))) return 0;
+@@ -2449,6 +2450,7 @@ BOOL WINAPI RemoveFontResourceExW( const WCHAR *str, DWORD flags, void *dv )
+     BOOL hidden;
+     INT ret;
+ 
++    RtlRunOnceExecuteOnce( &font_list_init_once, font_list_init, NULL, NULL );
+     if ((ret = remove_font_resource( str, flags, dv ))) return ret;
+ 
+     if (!(filename = get_scalable_filename( str, &hidden ))) return 0;
+@@ -2635,6 +2638,8 @@ BOOL WINAPI CreateScalableFontResourceW( DWORD hidden, const WCHAR *resource_fil
+     TRACE("(%d, %s, %s, %s)\n", hidden, debugstr_w(resource_file),
+           debugstr_w(font_file), debugstr_w(font_path) );
+ 
++    RtlRunOnceExecuteOnce( &font_list_init_once, font_list_init, NULL, NULL );
++
+     if (!font_file) goto done;
+     if (font_path && font_path[0])
+     {
 -- 
 2.29.2
 

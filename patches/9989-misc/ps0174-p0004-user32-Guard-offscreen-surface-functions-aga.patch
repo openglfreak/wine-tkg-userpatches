@@ -1,0 +1,46 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH 4/5] user32: Guard offscreen surface functions against non-offscreen surfaces (GCC 11).
+Message-Id: <20210927085833.544992-4-rbernon@codeweavers.com>
+Date: Mon, 27 Sep 2021 10:58:32 +0200
+In-Reply-To: <20210927085833.544992-1-rbernon@codeweavers.com>
+References: <20210927085833.544992-1-rbernon@codeweavers.com>
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/user32/win.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/user32/win.c b/dlls/user32/win.c
+index 7c2471d2746..ca758a535b1 100644
+--- a/dlls/user32/win.c
++++ b/dlls/user32/win.c
+@@ -614,10 +614,15 @@ static inline void reset_bounds( RECT *bounds )
+ 
+ static struct offscreen_window_surface *impl_from_window_surface( struct window_surface *base )
+ {
+-    if (!base || base->funcs != &offscreen_window_surface_funcs) return NULL;
+     return CONTAINING_RECORD( base, struct offscreen_window_surface, header );
+ }
+ 
++static struct offscreen_window_surface *impl_from_window_surface_or_null( struct window_surface *base )
++{
++    if (!base || base->funcs != &offscreen_window_surface_funcs) return NULL;
++    return impl_from_window_surface( base );
++}
++
+ static void CDECL offscreen_window_surface_lock( struct window_surface *base )
+ {
+     struct offscreen_window_surface *impl = impl_from_window_surface( base );
+@@ -687,7 +692,7 @@ void create_offscreen_window_surface( const RECT *visible_rect, struct window_su
+     surface_rect.bottom = (surface_rect.bottom + 0x1f) & ~0x1f;
+ 
+     /* check that old surface is an offscreen_window_surface, or release it */
+-    if ((impl = impl_from_window_surface( *surface )))
++    if ((impl = impl_from_window_surface_or_null( *surface )))
+     {
+         /* if the rect didn't change, keep the same surface */
+         if (EqualRect( &surface_rect, &impl->header.rect )) return;
+
+-- 
+2.33.0
+

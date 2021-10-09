@@ -1,0 +1,75 @@
+From: Ted Lyngmo <ted@lyncon.se>
+Subject: [PATCH] ucrtbase: Add support for x mode in fopen
+Message-Id: <20211007194107.2456349-1-ted@lyncon.se>
+Date: Thu,  7 Oct 2021 21:41:07 +0200
+
+This fixes bug 51846: Standard library call fopen(..., "wx") not
+recognized - causes destruction of data.
+
+Signed-off-by: Ted Lyngmo <ted@lyncon.se>
+---
+ dlls/msvcrt/file.c         |  5 +++++
+ dlls/ucrtbase/tests/misc.c | 25 +++++++++++++++++++++++++
+ 2 files changed, 30 insertions(+)
+
+diff --git a/dlls/msvcrt/file.c b/dlls/msvcrt/file.c
+index b0eeaf2a351..3b36d087822 100644
+--- a/dlls/msvcrt/file.c
++++ b/dlls/msvcrt/file.c
+@@ -1586,6 +1586,11 @@ static int msvcrt_get_flags(const wchar_t* mode, int *open_flags, int* stream_fl
+       *open_flags |=  _O_TEXT;
+       *open_flags &= ~_O_BINARY;
+       break;
++#if _MSVCR_VER>=140
++    case 'x':
++      *open_flags |= _O_EXCL;
++      break;
++#endif
+     case 'D':
+       *open_flags |= _O_TEMPORARY;
+       break;
+diff --git a/dlls/ucrtbase/tests/misc.c b/dlls/ucrtbase/tests/misc.c
+index c2b6dc18d28..c16307ecccb 100644
+--- a/dlls/ucrtbase/tests/misc.c
++++ b/dlls/ucrtbase/tests/misc.c
+@@ -1539,6 +1539,30 @@ static void test_fenv(void)
+     ok(!except, "expected 0, got %lx\n", except);
+ }
+ 
++static void test_fopen_exclusive( void )
++{
++    static const char * const testfile = "fileexcl.tst";
++    FILE *fp;
++
++    fp = fopen(testfile, "wx");
++    ok(fp != NULL, "creating file with mode wx failed\n");
++    fclose(fp);
++
++    fp = fopen(testfile, "wx");
++    ok(fp == NULL, "overwrote existing file with mode wx\n");
++
++    unlink(testfile);
++
++    fp = fopen(testfile, "w+x");
++    ok(fp != NULL, "creating file with mode w+x failed\n");
++    fclose(fp);
++
++    fp = fopen(testfile, "w+x");
++    ok(fp == NULL, "overwrote existing file with mode w+x\n");
++
++    unlink(testfile);
++}
++
+ START_TEST(misc)
+ {
+     int arg_c;
+@@ -1580,4 +1604,5 @@ START_TEST(misc)
+     test_clock();
+     test_thread_storage();
+     test_fenv();
++    test_fopen_exclusive();
+ }
+
+-- 
+2.31.1
+

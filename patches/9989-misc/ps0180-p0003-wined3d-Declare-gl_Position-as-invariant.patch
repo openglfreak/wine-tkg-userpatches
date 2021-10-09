@@ -1,0 +1,59 @@
+From: Matteo Bruni <mbruni@codeweavers.com>
+Subject: [PATCH 3/5] wined3d: Declare gl_Position as invariant.
+Message-Id: <20211006135358.1131764-3-mbruni@codeweavers.com>
+Date: Wed,  6 Oct 2021 15:53:56 +0200
+In-Reply-To: <20211006135358.1131764-1-mbruni@codeweavers.com>
+References: <20211006135358.1131764-1-mbruni@codeweavers.com>
+
+All D3D versions seem to basically guarantee invariance for the vertex
+position at the very least. In practice, desktop GL implementations
+also do the same.
+That's not necessarily the case for tile based renderers, where the
+cost of providing invariance might be non negligible. We want this
+behavior though, so let's ask for it explicitly.
+
+Based on a patch by Stefan Dösinger.
+
+Signed-off-by: Matteo Bruni <mbruni@codeweavers.com>
+---
+Fixes Half Life 2 and Payday 2 on the Apple M1.
+
+ dlls/wined3d/glsl_shader.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/dlls/wined3d/glsl_shader.c b/dlls/wined3d/glsl_shader.c
+index fb809052d83..ad316438249 100644
+--- a/dlls/wined3d/glsl_shader.c
++++ b/dlls/wined3d/glsl_shader.c
+@@ -2184,6 +2184,9 @@ static void shader_generate_glsl_declarations(const struct wined3d_context_gl *c
+         if (map & 1) shader_addline(buffer, "void subroutine%u();\n", i);
+     }
+ 
++    if (version->type != WINED3D_SHADER_TYPE_PIXEL && version->type != WINED3D_SHADER_TYPE_COMPUTE)
++        shader_addline(buffer, "invariant gl_Position;\n");
++
+     /* Declare the constants (aka uniforms) */
+     if (shader->limits->constant_float > 0)
+     {
+@@ -7125,6 +7128,8 @@ static GLuint shader_glsl_generate_vs3_rasterizer_input_setup(struct shader_glsl
+ 
+     shader_glsl_add_version_declaration(buffer, gl_info);
+ 
++    shader_addline(buffer, "invariant gl_Position;\n");
++
+     if (per_vertex_point_size)
+     {
+         shader_addline(buffer, "uniform struct\n{\n");
+@@ -8991,6 +8996,8 @@ static GLuint shader_glsl_generate_ffp_vertex_shader(struct shader_glsl_priv *pr
+ 
+     shader_glsl_add_version_declaration(buffer, gl_info);
+ 
++    shader_addline(buffer, "invariant gl_Position;\n");
++
+     if (shader_glsl_use_explicit_attrib_location(gl_info))
+         shader_addline(buffer, "#extension GL_ARB_explicit_attrib_location : enable\n");
+ 
+
+-- 
+2.26.3
+

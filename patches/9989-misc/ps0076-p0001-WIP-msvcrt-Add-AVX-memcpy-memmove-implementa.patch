@@ -1,27 +1,19 @@
-From 51f92cfde59379dd661f461c36f0f3971330f0cd Mon Sep 17 00:00:00 2001
+From 24f0da0c9fd23191362dc5251ef650687044739f Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Tue, 9 Feb 2021 23:51:22 +0100
-Subject: [PATCH 1/2] WIP: msvcrt: Add AVX memcpy/memmove implementation.
+Subject: [PATCH] WIP: msvcrt: Add AVX memcpy/memmove implementation.
 
 ---
- dlls/msvcrt/math.c   |  26 ++
- dlls/msvcrt/string.c | 707 ++++++++++++++++++++++---------------------
+ dlls/msvcrt/math.c   |  24 ++
+ dlls/msvcrt/string.c | 712 +++++++++++++++++++++----------------------
  tools/makedep.c      |   1 +
- 3 files changed, 381 insertions(+), 353 deletions(-)
+ 3 files changed, 378 insertions(+), 359 deletions(-)
 
 diff --git a/dlls/msvcrt/math.c b/dlls/msvcrt/math.c
-index 9e75f2977a7..830f57b7c56 100644
+index 9974e72d78f..be72a8b6886 100644
 --- a/dlls/msvcrt/math.c
 +++ b/dlls/msvcrt/math.c
-@@ -42,6 +42,7 @@
- #include <locale.h>
- #include <math.h>
- #include <intrin.h>
-+#include <immintrin.h>
- 
- #include "msvcrt.h"
- #include "winternl.h"
-@@ -50,6 +51,8 @@
+@@ -51,6 +51,8 @@
  #include "wine/asm.h"
  #include "wine/debug.h"
  
@@ -30,7 +22,7 @@ index 9e75f2977a7..830f57b7c56 100644
  WINE_DEFAULT_DEBUG_CHANNEL(msvcrt);
  
  #undef div
-@@ -65,19 +68,35 @@ typedef int (CDECL *MSVCRT_matherr_func)(struct _exception *);
+@@ -67,8 +69,18 @@ static MSVCRT_matherr_func MSVCRT_default_matherr_func = NULL;
  
  BOOL erms_supported;
  BOOL sse2_supported;
@@ -49,26 +41,20 @@ index 9e75f2977a7..830f57b7c56 100644
  void msvcrt_init_math( void *module )
  {
  #if defined(__i386__) || defined(__x86_64__)
-     int regs[4];
- 
-     __cpuid(regs, 0);
-     if (regs[0] >= 7)
-     {
+@@ -80,6 +92,10 @@ void msvcrt_init_math( void *module )
          __cpuidex(regs, 7, 0);
          erms_supported = ((regs[1] >> 9) & 1);
      }
 +
-+    avx_supported = FALSE;
 +    __cpuid(regs, 1);
 +    if (IsProcessorFeaturePresent( PF_XSAVE_ENABLED ) && (regs[2] & (1 << 28)))
 +        avx_supported = (_xgetbv(0) & 0x6) == 0x6;
-+
  #endif
  
      sse2_supported = IsProcessorFeaturePresent( PF_XMMI64_INSTRUCTIONS_AVAILABLE );
-@@ -79,6 +97,14 @@ void msvcrt_init_math( void *module )
+@@ -89,6 +105,14 @@ void msvcrt_init_math( void *module )
+     sse2_enabled = sse2_supported;
  #endif
-     __wine_init_unix_lib( module, DLL_PROCESS_ATTACH, NULL, &unix_funcs );
  }
 +#ifdef __DISABLE_AVX__
 +#undef __DISABLE_AVX__
@@ -82,7 +68,7 @@ index 9e75f2977a7..830f57b7c56 100644
  /* Copied from musl: src/internal/libm.h */
  static inline float fp_barrierf(float x)
 diff --git a/dlls/msvcrt/string.c b/dlls/msvcrt/string.c
-index d335fce4992..f6a89ba20ac 100644
+index 41a3b289c70..af4c5f7d243 100644
 --- a/dlls/msvcrt/string.c
 +++ b/dlls/msvcrt/string.c
 @@ -34,6 +34,8 @@
@@ -94,18 +80,11 @@ index d335fce4992..f6a89ba20ac 100644
  WINE_DEFAULT_DEBUG_CHANNEL(msvcrt);
  
  /*********************************************************************
-@@ -2471,386 +2473,385 @@ int __cdecl memcmp(const void *ptr1, const void *ptr2, size_t n)
+@@ -2481,385 +2483,372 @@ int __cdecl memcmp(const void *ptr1, const void *ptr2, size_t n)
      return 0;
  }
  
 -#if defined(__i386__) || defined(__x86_64__)
--
--#ifdef __i386__
--
--#define DEST_REG "%edi"
--#define SRC_REG "%esi"
--#define LEN_REG "%ecx"
--#define TMP_REG "%edx"
 +extern BOOL sse2_supported;
 +extern BOOL avx_supported;
 +
@@ -408,14 +387,7 @@ index d335fce4992..f6a89ba20ac 100644
 +    return d;
 +}
  
--#define MEMMOVE_INIT \
--    "pushl " SRC_REG "\n\t" \
--    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t") \
--    "pushl " DEST_REG "\n\t" \
--    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t") \
--    "movl 12(%esp), " DEST_REG "\n\t" \
--    "movl 16(%esp), " SRC_REG "\n\t" \
--    "movl 20(%esp), " LEN_REG "\n\t"
+-#ifdef __i386__
 +#ifndef __SSE2__
 +#ifdef __clang__
 +#pragma clang attribute push (__attribute__((target("sse2"))), apply_to=function)
@@ -426,6 +398,20 @@ index d335fce4992..f6a89ba20ac 100644
 +#define __DISABLE_SSE2__
 +#endif /* __SSE2__ */
  
+-#define DEST_REG "%edi"
+-#define SRC_REG "%esi"
+-#define LEN_REG "%ecx"
+-#define TMP_REG "%edx"
+-
+-#define MEMMOVE_INIT \
+-    "pushl " SRC_REG "\n\t" \
+-    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t") \
+-    "pushl " DEST_REG "\n\t" \
+-    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t") \
+-    "movl 12(%esp), " DEST_REG "\n\t" \
+-    "movl 16(%esp), " SRC_REG "\n\t" \
+-    "movl 20(%esp), " LEN_REG "\n\t"
+-
 -#define MEMMOVE_CLEANUP \
 -    "movl 12(%esp), %eax\n\t" \
 -    "popl " DEST_REG "\n\t" \
@@ -675,15 +661,15 @@ index d335fce4992..f6a89ba20ac 100644
 -        "1:\n\t"
 -        MEMMOVE_CLEANUP
 -        "ret" )
+-
+-#undef MEMMOVE_INIT
+-#undef MEMMOVE_CLEANUP
+-#undef DEST_REG
+-#undef SRC_REG
+-#undef LEN_REG
+-#undef TMP_REG
 +MEMMOVEV_UNALIGNED_DECLARE(avx, __m256i, 32, _mm256_loadu_si256, _mm256_storeu_si256)
 +MEMMOVEV_DECLARE(avx, __m256i, 32, _mm256_loadu_si256, _mm256_storeu_si256, _mm256_store_si256)
-
- #undef MEMMOVE_INIT
- #undef MEMMOVE_CLEANUP
- #undef DEST_REG
- #undef SRC_REG
- #undef LEN_REG
- #undef TMP_REG
  
 +#ifdef __DISABLE_AVX__
 +#undef __DISABLE_AVX__
@@ -825,19 +811,24 @@ index d335fce4992..f6a89ba20ac 100644
 +    return memmove_c(dst, src, n);
  }
  
+ #if defined(__i386__) || defined(__x86_64__)
+@@ -3020,6 +3009,11 @@ void *__cdecl memset(void *dst, int c, size_t n)
+     return dst;
+ }
+ 
 +#undef MEMMOVEV_DECLARE
 +#undef MEMMOVEV_UNALIGNED_DECLARE
 +#undef likely
 +#undef unlikely
 +
- #if defined(__i386__) || defined(__x86_64__)
- 
- #ifdef __i386__
+ /*********************************************************************
+  *		    strchr (MSVCRT.@)
+  */
 diff --git a/tools/makedep.c b/tools/makedep.c
-index 0eef646479b..1f736b79b96 100644
+index c7d08dc21e6..9f1650e162f 100644
 --- a/tools/makedep.c
 +++ b/tools/makedep.c
-@@ -1571,6 +1571,7 @@ static struct file *open_include_file( const struct makefile *make, struct incl_
+@@ -1405,6 +1405,7 @@ static struct file *open_include_file( const struct makefile *make, struct incl_
      {
          if (!strcmp( pFile->name, "stdarg.h" )) return NULL;
          if (!strcmp( pFile->name, "x86intrin.h" )) return NULL;
@@ -845,3 +836,6 @@ index 0eef646479b..1f736b79b96 100644
          fprintf( stderr, "%s:%d: error: system header %s cannot be used with msvcrt\n",
                   pFile->included_by->file->name, pFile->included_line, pFile->name );
          exit(1);
+-- 
+2.33.0
+

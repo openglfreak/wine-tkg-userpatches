@@ -1,0 +1,98 @@
+From: Chao Long <longchao@uniontech.com>
+Subject: [PATCH] win32u: fix freetype crash.
+Message-Id: <20211008052521.17067-1-longchao@uniontech.com>
+Date: Fri,  8 Oct 2021 13:25:21 +0800
+
+Signed-off-by: Chao Long <longchao@uniontech.com>
+---
+ dlls/win32u/freetype.c | 39 ++++++++++++++++++++++++++-------------
+ 1 file changed, 26 insertions(+), 13 deletions(-)
+
+diff --git a/dlls/win32u/freetype.c b/dlls/win32u/freetype.c
+index b2ca2f545fe..91f97c056e4 100644
+--- a/dlls/win32u/freetype.c
++++ b/dlls/win32u/freetype.c
+@@ -2463,6 +2463,7 @@ static BOOL CDECL freetype_load_font( struct gdi_font *font )
+ 
+     if (pFT_New_Memory_Face( library, data_ptr, data_size, font->face_index, &ft_face )) return FALSE;
+ 
++    TRACE("face: %p, charmaps count: %d\n", ft_face, ft_face->num_charmaps);
+     data->ft_face = ft_face;
+     font->scalable = FT_IS_SCALABLE( ft_face );
+     if (!font->fs.fsCsb[0]) get_fontsig( ft_face, &font->fs );
+@@ -2565,20 +2566,24 @@ static BOOL CDECL freetype_get_glyph_index( struct gdi_font *font, UINT *glyph,
+ {
+     FT_Face ft_face = get_ft_face( font );
+ 
+-    if (!use_encoding ^ (ft_face->charmap->encoding == FT_ENCODING_NONE)) return FALSE;
+-
+-    if (ft_face->charmap->encoding == FT_ENCODING_MS_SYMBOL)
++    TRACE("face: %p, charmaps count: %d\n", ft_face, ft_face->num_charmaps);
++    if (ft_face->num_charmaps > 0)
+     {
+-        if (!(*glyph = get_glyph_index_symbol( font, *glyph )))
++        if (!use_encoding ^ (ft_face->charmap->encoding == FT_ENCODING_NONE)) return FALSE;
++
++        if (ft_face->charmap->encoding == FT_ENCODING_MS_SYMBOL)
+         {
+-            WCHAR wc = *glyph;
+-            DWORD len;
+-            char ch;
++            if (!(*glyph = get_glyph_index_symbol( font, *glyph )))
++            {
++                WCHAR wc = *glyph;
++                DWORD len;
++                char ch;
+ 
+-            len = win32u_wctomb( NULL, &ch, 1, &wc, sizeof(wc) );
+-            if (len) *glyph = get_glyph_index_symbol( font, (unsigned char)ch );
++                len = win32u_wctomb( NULL, &ch, 1, &wc, sizeof(wc) );
++                if (len) *glyph = get_glyph_index_symbol( font, (unsigned char)ch );
++            }
++            return TRUE;
+         }
+-        return TRUE;
+     }
+     *glyph = pFT_Get_Char_Index( ft_face, *glyph );
+     return TRUE;
+@@ -4002,6 +4007,9 @@ static DWORD CDECL freetype_get_unicode_ranges( struct gdi_font *font, GLYPHSET
+     FT_Face ft_face = get_ft_face( font );
+     DWORD num_ranges = 0;
+ 
++    if (ft_face->num_charmaps <= 0)
++        return num_ranges;
++
+     if (ft_face->charmap->encoding == FT_ENCODING_UNICODE)
+     {
+         FT_UInt glyph_code;
+@@ -4187,7 +4195,7 @@ static DWORD CDECL freetype_get_kerning_pairs( struct gdi_font *font, KERNINGPAI
+         return 0;
+     }
+ 
+-    if (ft_face->charmap->encoding == FT_ENCODING_UNICODE)
++    if (ft_face->num_charmaps > 0 && ft_face->charmap->encoding == FT_ENCODING_UNICODE)
+     {
+         FT_UInt glyph_code;
+         FT_ULong char_code;
+@@ -4214,10 +4222,15 @@ static DWORD CDECL freetype_get_kerning_pairs( struct gdi_font *font, KERNINGPAI
+     }
+     else
+     {
+-        DWORD encoding = RtlUlongByteSwap(ft_face->charmap->encoding);
+         ULONG n;
+ 
+-        FIXME("encoding %s not supported\n", debugstr_an((char *)&encoding, 4));
++        if (ft_face->num_charmaps > 0)
++        {
++            DWORD encoding = RtlUlongByteSwap(ft_face->charmap->encoding);
++
++            FIXME("encoding %s not supported\n", debugstr_an((char *)&encoding, 4));
++        }
++
+         for (n = 0; n <= 65535; n++)
+             glyph_to_char[n] = (USHORT)n;
+     }
+
+-- 
+2.20.1
+

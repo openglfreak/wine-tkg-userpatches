@@ -1,0 +1,64 @@
+From: Connor McAdams <cmcadams@codeweavers.com>
+Subject: [PATCH 2/3] user32: Raise EVENT_OBJECT_FOCUS event.
+Message-Id: <20211006145748.1176205-2-cmcadams@codeweavers.com>
+Date: Wed,  6 Oct 2021 10:57:47 -0400
+In-Reply-To: <20211006145748.1176205-1-cmcadams@codeweavers.com>
+References: <20211006145748.1176205-1-cmcadams@codeweavers.com>
+
+Signed-off-by: Connor McAdams <cmcadams@codeweavers.com>
+---
+ dlls/user32/focus.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/user32/focus.c b/dlls/user32/focus.c
+index 4c18238a98b..c9dfce27e8b 100644
+--- a/dlls/user32/focus.c
++++ b/dlls/user32/focus.c
+@@ -39,7 +39,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(win);
+  *
+  * Change the focus window, sending the WM_SETFOCUS and WM_KILLFOCUS messages
+  */
+-static HWND set_focus_window( HWND hwnd, BOOL force )
++static HWND set_focus_window( HWND hwnd, BOOL force, BOOL from_active )
+ {
+     HWND previous = 0;
+     BOOL ret;
+@@ -56,12 +56,16 @@ static HWND set_focus_window( HWND hwnd )
+ 
+     if (previous)
+     {
++        if (!IsWindow(hwnd) && !from_active)
++            NotifyWinEvent( EVENT_OBJECT_FOCUS, previous, OBJID_CLIENT, CHILDID_SELF );
+         SendMessageW( previous, WM_KILLFOCUS, (WPARAM)hwnd, 0 );
+         if (hwnd != GetFocus()) return previous;  /* changed by the message */
+     }
+     if (IsWindow(hwnd))
+     {
+         USER_Driver->pSetFocus(hwnd);
++        if (!from_active)
++            NotifyWinEvent( EVENT_OBJECT_FOCUS, hwnd, OBJID_CLIENT, CHILDID_SELF );
+         SendMessageW( hwnd, WM_SETFOCUS, (WPARAM)previous, 0 );
+     }
+     return previous;
+@@ -166,7 +170,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+         if (hwnd == info.hwndActive)
+         {
+             if (!info.hwndFocus || !hwnd || GetAncestor( info.hwndFocus, GA_ROOT ) != hwnd)
+-                set_focus_window( hwnd, FALSE );
++                set_focus_window( hwnd, FALSE, TRUE );
+         }
+     }
+ 
+@@ -307,7 +311,7 @@ HWND WINAPI SetFocus( HWND hwnd )
+     }
+ 
+     /* change focus and send messages */
+-    return set_focus_window( hwnd, hwnd != previous );
++    return set_focus_window( hwnd, hwnd != previous, FALSE );
+ }
+ 
+ 
+
+-- 
+2.25.1
+

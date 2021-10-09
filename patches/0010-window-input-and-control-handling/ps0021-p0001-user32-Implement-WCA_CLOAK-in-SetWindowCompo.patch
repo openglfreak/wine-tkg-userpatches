@@ -175,11 +175,11 @@ index 680defc..9840a76 100644
  
  /* helper for Get/SetWindowLong */
 @@ -191,7 +194,7 @@ void *free_user_handle( HANDLE handle, enum user_obj_type type )
-  * Create a window handle with the server.
   */
  static WND *create_window_handle( HWND parent, HWND owner, LPCWSTR name,
--                                  HINSTANCE instance, BOOL unicode )
-+                                  HINSTANCE instance, BOOL unicode, BOOL *needs_cloak )
+                                   HINSTANCE instance, BOOL unicode,
+-                                  DWORD style, DWORD ex_style )
++                                  DWORD style, DWORD ex_style, BOOL *needs_cloak )
  {
      WORD index;
      WND *win;
@@ -227,19 +227,20 @@ index 680defc..9840a76 100644
  
      className = CLASS_GetVersionedName(className, NULL, NULL, TRUE);
  
-@@ -1476,13 +1491,13 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
- 
-     /* Create the window structure */
- 
--    if (!(wndPtr = create_window_handle( parent, owner, className, module, unicode )))
-+    if (!(wndPtr = create_window_handle( parent, owner, className, module, unicode, &needs_cloak )))
+@@ -1476,14 +1491,14 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
+     style = cs->style & ~WS_VISIBLE;
+     ex_style = cs->dwExStyle & ~WS_EX_LAYERED;
+     if (!(wndPtr = create_window_handle( parent, owner, className, module,
+-                    unicode, style, ex_style )))
++                    unicode, style, ex_style, &needs_cloak )))
      {
          WNDCLASSW wc;
          /* if it's a comctl32 class, GetClassInfo will load it, then we can retry */
          if (GetLastError() != ERROR_INVALID_HANDLE ||
              !GetClassInfoW( 0, className, &wc ) ||
--            !(wndPtr = create_window_handle( parent, owner, className, module, unicode )))
-+            !(wndPtr = create_window_handle( parent, owner, className, module, unicode, &needs_cloak )))
+             !(wndPtr = create_window_handle( parent, owner, className, module,
+-                    unicode, style, ex_style )))
++                    unicode, style, ex_style, &needs_cloak )))
              return 0;
      }
      hwnd = wndPtr->obj.handle;
@@ -445,9 +446,9 @@ index 3a88b7f..e6fc90c 100644
  /* return the thread owning a window */
  struct thread *get_window_thread( user_handle_t handle )
 @@ -1965,14 +1983,16 @@ DECL_HANDLER(create_window)
-         win->dpi_awareness = req->awareness;
-         win->dpi = req->dpi;
      }
+     win->style = req->style;
+     win->ex_style = req->ex_style;
 +    win->is_cloaked = owner ? owner->is_cloaked : 0;
  
 -    reply->handle    = win->handle;

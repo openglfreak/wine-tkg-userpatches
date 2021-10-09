@@ -1,0 +1,93 @@
+From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
+Subject: [PATCH v2 3/3] iphlpapi: Wait for all async requests to complete in IcmpCloseHandle.
+Message-Id: <07219771732a75c34da1bfd360e80f746e6f38fe.1633697223.git.gabrielopcode@gmail.com>
+Date: Fri,  8 Oct 2021 15:48:11 +0300
+In-Reply-To: <2e7bca2402a55d1a1a43b4e5a13b2f3e0725710b.1633697223.git.gabrielopcode@gmail.com>
+References: <2e7bca2402a55d1a1a43b4e5a13b2f3e0725710b.1633697223.git.gabrielopcode@gmail.com>
+
+Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
+---
+
+I sent this as a separate patch, since IMO it's better to have it for
+safety. Because this would be hell to debug if an app does depend on it
+and then we get corrupted memory (assuming it releases the buffers after
+it closes it, for example). At the same time, I'm using a basic loop to
+keep it extremely simple, and in the common case where it doesn't wait,
+there's no extra complexity or overhead involved at all.
+
+ dlls/iphlpapi/iphlpapi_main.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/dlls/iphlpapi/iphlpapi_main.c b/dlls/iphlpapi/iphlpapi_main.c
+index c4e7ea3..f55f083 100644
+--- a/dlls/iphlpapi/iphlpapi_main.c
++++ b/dlls/iphlpapi/iphlpapi_main.c
+@@ -4529,10 +4529,12 @@ DWORD WINAPI ParseNetworkString(const WCHAR *str, DWORD type,
+ struct icmp_handle_data
+ {
+     HANDLE nsi_device;
++    LONG async_count;
+ };
+ 
+ struct icmp_echo_async_ctx
+ {
++    struct icmp_handle_data *data;
+     HANDLE event;
+     HANDLE request_event;
+     HANDLE thread;
+@@ -4552,6 +4554,11 @@ BOOL WINAPI IcmpCloseHandle( HANDLE handle )
+     struct icmp_handle_data *data = (struct icmp_handle_data *)handle;
+ 
+     CloseHandle( data->nsi_device );
++
++    /* Windows waits until all outstanding async requests are complete or timed out */
++    while (data->async_count)
++        SleepEx( 1, TRUE );
++
+     heap_free( data );
+     return TRUE;
+ }
+@@ -4576,6 +4583,7 @@ HANDLE WINAPI IcmpCreateFile( void )
+         heap_free( data );
+         return INVALID_HANDLE_VALUE;
+     }
++    data->async_count = 0;
+ 
+     return (HANDLE)data;
+ }
+@@ -4685,6 +4693,7 @@ static DWORD WINAPI icmpv4_echo_async( VOID *parameter )
+     }
+     if (ctx->event) SetEvent( ctx->event );
+ 
++    InterlockedDecrement( &ctx->data->async_count );
+     heap_free( ctx->out );
+     heap_free( ctx->in );
+     heap_free( ctx );
+@@ -4793,6 +4802,7 @@ DWORD WINAPI IcmpSendEcho2Ex( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc_r
+     {
+         if (async_ctx)
+         {
++            async_ctx->data = data;
+             async_ctx->event = event;
+             async_ctx->request_event = request_event;
+             async_ctx->apc = NULL;
+@@ -4808,6 +4818,7 @@ DWORD WINAPI IcmpSendEcho2Ex( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc_r
+                     async_ctx->apc_ctx = apc_ctxt;
+                 }
+             }
++            InterlockedIncrement( &data->async_count );
+             status = RtlQueueWorkItem( icmpv4_echo_async, async_ctx, WT_EXECUTEDEFAULT | WT_EXECUTELONGFUNCTION );
+             if (!status)
+             {
+@@ -4815,6 +4826,7 @@ DWORD WINAPI IcmpSendEcho2Ex( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc_r
+                 return 0;
+             }
+             if (async_ctx->apc) CloseHandle( async_ctx->thread );
++            InterlockedDecrement( &data->async_count );
+ 
+             /* fall back to sync, we can't have the buffers released now */
+         }
+
+-- 
+2.31.1
+

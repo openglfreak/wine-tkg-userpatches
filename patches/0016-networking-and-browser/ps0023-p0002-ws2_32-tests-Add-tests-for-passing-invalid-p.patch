@@ -1,0 +1,67 @@
+From: Torge Matthies <openglfreak@googlemail.com>
+Subject: [PATCH v2 2/2] ws2_32/tests: Add tests for passing invalid pointers to select().
+Message-Id: <20211017202755.333793-2-openglfreak@googlemail.com>
+Date: Sun, 17 Oct 2021 22:27:55 +0200
+In-Reply-To: <20211017202755.333793-1-openglfreak@googlemail.com>
+References: <20211017202755.333793-1-openglfreak@googlemail.com>
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/ws2_32/tests/sock.c | 40 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 40 insertions(+)
+
+diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
+index 2bb219d7c0e..989b7c3db57 100644
+--- a/dlls/ws2_32/tests/sock.c
++++ b/dlls/ws2_32/tests/sock.c
+@@ -3030,6 +3030,46 @@ static void test_errors(void)
+ 
+         ret = select(1, NULL, &set, NULL, &timeval);
+         ok( (ret == 0), "expected 0 (timeout), got: %d\n", ret );
++
++        FD_ZERO( &set );
++        FD_SET( sock, &set );
++        ret = select(1, NULL, (fd_set *)0x1, NULL, &timeval);
++        ok( (ret == SOCKET_ERROR), "expected SOCKET_ERROR, got: %d\n", ret );
++        if (ret == SOCKET_ERROR)
++        {
++            err = WSAGetLastError();
++            ok( (err == WSAEFAULT), "expected WSAEFAULT, got: %d\n", err );
++        }
++
++        FD_ZERO( &set );
++        FD_SET( sock, &set );
++        ret = select(1, NULL, &set, NULL, (TIMEVAL *)0x1);
++        ok( (ret == SOCKET_ERROR), "expected SOCKET_ERROR, got: %d\n", ret );
++        if (ret == SOCKET_ERROR)
++        {
++            err = WSAGetLastError();
++            ok( (err == WSAEFAULT), "expected WSAEFAULT, got: %d\n", err );
++        }
++    }
++
++    {
++        fd_set set = {0};
++
++        ret = select(1, NULL, &set, NULL, (TIMEVAL *)0x1);
++        ok( (ret == SOCKET_ERROR), "expected SOCKET_ERROR, got: %d\n", ret );
++        if (ret == SOCKET_ERROR)
++        {
++            err = WSAGetLastError();
++            ok( (err == WSAEINVAL), "expected WSAEINVAL, got: %d\n", err );
++        }
++    }
++
++    ret = select(1, NULL, NULL, NULL, (TIMEVAL *)0x1);
++    ok( (ret == SOCKET_ERROR), "expected SOCKET_ERROR, got: %d\n", ret );
++    if (ret == SOCKET_ERROR)
++    {
++        err = WSAGetLastError();
++        ok( (err == WSAEINVAL), "expected WSAEINVAL, got: %d\n", err );
+     }
+ 
+     ret = closesocket(sock);
+
+-- 
+2.33.1
+

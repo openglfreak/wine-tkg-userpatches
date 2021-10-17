@@ -1,0 +1,200 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH v2] winex11.drv: Destroy windows associated with X11 display when the display is closed.
+Message-Id: <20211014135626.487590-1-pgofman@codeweavers.com>
+Date: Thu, 14 Oct 2021 16:56:26 +0300
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+    Supersedes 217174.
+
+    X11DRV_ThreadDetach() destroys thread data part of which
+    (e. g., display) is still present in window data in winex11.drv
+    and accessible through hwnd. That causes all sort of hangs
+    and crashes when, for instance, the window is still used for Vulkan
+    rendering (even if only to tear down the device and swapchain).
+
+ dlls/winex11.drv/window.c      | 66 ++++++++++++++++++++++++++++++++++
+ dlls/winex11.drv/x11drv.h      |  6 ++++
+ dlls/winex11.drv/x11drv_main.c |  3 ++
+ 3 files changed, 75 insertions(+)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 0057a341525..3423f79f6f0 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -48,6 +48,7 @@
+ #include "x11drv.h"
+ #include "wine/debug.h"
+ #include "wine/server.h"
++#include "wine/heap.h"
+ #include "mwm.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(x11drv);
+@@ -88,6 +89,9 @@ XContext winContext = 0;
+ /* X context to associate a struct x11drv_win_data to an hwnd */
+ XContext win_data_context = 0;
+ 
++/* X context to associate windows list with a display */
++XContext display_windows_context;
++
+ /* time of last user event and window where it's stored */
+ static Time last_user_time;
+ static Window user_time_window;
+@@ -200,12 +204,30 @@ static BOOL has_owned_popups( HWND hwnd )
+ }
+ 
+ 
++/***********************************************************************
++ *              init_display_window_list
++ */
++void init_display_window_list( Display *display )
++{
++    struct list *window_list;
++
++    if (!(window_list = heap_alloc( sizeof(*window_list) )))
++    {
++        ERR( "No memory.\n" );
++        return;
++    }
++    list_init( window_list );
++    XSaveContext( gdi_display, (XID)display, display_windows_context, (char *)window_list );
++}
++
++
+ /***********************************************************************
+  *              alloc_win_data
+  */
+ static struct x11drv_win_data *alloc_win_data( Display *display, HWND hwnd )
+ {
+     struct x11drv_win_data *data;
++    struct list *window_list;
+ 
+     if ((data = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*data))))
+     {
+@@ -213,6 +235,17 @@ static struct x11drv_win_data *alloc_win_data( Display *display, HWND hwnd )
+         data->vis = default_visual;
+         data->hwnd = hwnd;
+         EnterCriticalSection( &win_data_section );
++        if (display != gdi_display
++                && !XFindContext( gdi_display, (XID)display, display_windows_context, (char **)&window_list ))
++        {
++            list_add_head( window_list, &data->display_entry );
++        }
++        else
++        {
++            list_init( &data->display_entry );
++            if (display != gdi_display)
++                WARN( "No window list for display %p.\n", display );
++        }
+         XSaveContext( gdi_display, (XID)hwnd, win_data_context, (char *)data );
+     }
+     return data;
+@@ -1764,6 +1797,7 @@ void CDECL X11DRV_DestroyWindow( HWND hwnd )
+     if (data->client_colormap) XFreeColormap( data->display, data->client_colormap );
+     HeapFree( GetProcessHeap(), 0, data->icon_bits );
+     XDeleteContext( gdi_display, (XID)hwnd, win_data_context );
++    list_remove( &data->display_entry );
+     release_win_data( data );
+     HeapFree( GetProcessHeap(), 0, data );
+     destroy_gl_drawable( hwnd );
+@@ -1771,6 +1805,38 @@ void CDECL X11DRV_DestroyWindow( HWND hwnd )
+ }
+ 
+ 
++/***********************************************************************
++ *              destroy_display_windows
++ */
++void destroy_display_windows( Display *display )
++{
++    struct list *window_list, *head;
++    HWND hwnd;
++
++    if (XFindContext( gdi_display, (XID)display, display_windows_context, (char **)&window_list ))
++    {
++        WARN( "No windows list for display %p.\n", display );
++        return;
++    }
++
++    while (1)
++    {
++        EnterCriticalSection( &win_data_section );
++        if ((head = list_head( window_list )))
++            hwnd = LIST_ENTRY( head, struct x11drv_win_data, display_entry )->hwnd;
++        else
++            hwnd = NULL;
++        LeaveCriticalSection( &win_data_section );
++        if (!hwnd) break;
++        TRACE( "Destroying data for hwnd %p.\n", hwnd );
++        X11DRV_DestroyWindow( hwnd );
++    }
++
++    XDeleteContext( gdi_display, (XID)display, display_windows_context );
++    heap_free( window_list );
++}
++
++
+ /***********************************************************************
+  *		X11DRV_DestroyNotify
+  */
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 5ed2fcf73fb..8e79bfd0d32 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -555,6 +555,7 @@ enum x11drv_net_wm_state
+ struct x11drv_win_data
+ {
+     Display    *display;        /* display connection for the thread owning the window */
++    struct list display_entry;  /* list entry in display window list */
+     XVisualInfo vis;            /* X visual used by this window */
+     Colormap    whole_colormap; /* colormap if non-default visual */
+     Colormap    client_colormap; /* colormap for the client window */
+@@ -583,6 +584,8 @@ struct x11drv_win_data
+     unsigned int   icon_size;
+ };
+ 
++extern void init_display_window_list( Display *display ) DECLSPEC_HIDDEN;
++extern void destroy_display_windows( Display *display ) DECLSPEC_HIDDEN;
+ extern struct x11drv_win_data *get_win_data( HWND hwnd ) DECLSPEC_HIDDEN;
+ extern void release_win_data( struct x11drv_win_data *data ) DECLSPEC_HIDDEN;
+ extern Window X11DRV_get_whole_window( HWND hwnd ) DECLSPEC_HIDDEN;
+@@ -619,6 +622,8 @@ static inline void mirror_rect( const RECT *window_rect, RECT *rect )
+ extern XContext winContext DECLSPEC_HIDDEN;
+ /* X context to associate a struct x11drv_win_data to an hwnd */
+ extern XContext win_data_context DECLSPEC_HIDDEN;
++/* X context to associate windows list with a display */
++extern XContext display_windows_context DECLSPEC_HIDDEN;
+ /* X context to associate an X cursor to a Win32 cursor handle */
+ extern XContext cursor_context DECLSPEC_HIDDEN;
+ 
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index e8b273d055e..4be1137dc03 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -608,6 +608,7 @@ static BOOL process_attach(void)
+ 
+     winContext = XUniqueContext();
+     win_data_context = XUniqueContext();
++    display_windows_context = XUniqueContext();
+     cursor_context = XUniqueContext();
+ 
+     if (TRACE_ON(synchronous)) XSynchronize( display, True );
+@@ -645,6 +646,7 @@ void CDECL X11DRV_ThreadDetach(void)
+ 
+     if (data)
+     {
++        destroy_display_windows( data->display );
+         if (GetWindowThreadProcessId( GetDesktopWindow(), NULL ) == GetCurrentThreadId())
+             x11drv_xinput_disable( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
+         if (data->xim) XCloseIM( data->xim );
+@@ -700,6 +702,7 @@ struct x11drv_thread_data *x11drv_init_thread_data(void)
+         ERR_(winediag)( "x11drv: Can't open display: %s. Please ensure that your X server is running and that $DISPLAY is set correctly.\n", XDisplayName(NULL));
+         ExitProcess(1);
+     }
++    init_display_window_list( data->display );
+ 
+     fcntl( ConnectionNumber(data->display), F_SETFD, 1 ); /* set close on exec flag */
+ 
+
+-- 
+2.31.1
+

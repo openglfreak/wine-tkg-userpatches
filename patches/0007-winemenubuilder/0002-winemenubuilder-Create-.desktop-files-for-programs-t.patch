@@ -99,38 +99,30 @@ index 90b23a14934..c6bc8511056 100644
          fprintf(desktop, "NoDisplay=true\n");
          fprintf(desktop, "StartupNotify=true\n");
          if (openWithIcon)
-@@ -2594,18 +2602,25 @@ static BOOL generate_associations(const char *xdg_data_home, const char *package
+@@ -2594,12 +2602,19 @@ static BOOL generate_associations(const char *xdg_data_home, const char *package
  
      for (i = 0; ; i++)
      {
--        WCHAR *extensionW = NULL;
-+        WCHAR *winTypeW = NULL;
-         DWORD size = 1024;
+-        WCHAR *extensionW;
++        WCHAR *winTypeW;
 +        BOOL is_protocol_type = FALSE;
  
-         do
-         {
--            heap_free(extensionW);
--            extensionW = xmalloc(size * sizeof(WCHAR));
--            ret = RegEnumKeyExW(HKEY_CLASSES_ROOT, i, extensionW, &size, NULL, NULL, NULL, NULL);
-+            heap_free(winTypeW);
-+            winTypeW = xmalloc(size * sizeof(WCHAR));
-+            ret = RegEnumKeyExW(HKEY_CLASSES_ROOT, i, winTypeW, &size, NULL, NULL, NULL, NULL);
-             size *= 2;
-         } while (ret == ERROR_MORE_DATA);
+-        if (!(extensionW = reg_enum_keyW(HKEY_CLASSES_ROOT, i)))
++        if (!(winTypeW = reg_enum_keyW(HKEY_CLASSES_ROOT, i)))
+             break;
  
--        if (ret == ERROR_SUCCESS && extensionW[0] == '.' && !is_extension_banned(extensionW))
-+        if (ret == ERROR_SUCCESS && winTypeW[0] != '.')
+-        if (extensionW[0] == '.' && !is_extension_banned(extensionW))
++        if (winTypeW[0] != '.')
 +        {
 +            if (RegGetValueW(HKEY_CLASSES_ROOT, winTypeW, L"URL Protocol", RRF_RT_ANY, NULL, NULL, NULL) == ERROR_SUCCESS)
 +                is_protocol_type = TRUE;
 +        }
 +
-+        if (ret == ERROR_SUCCESS && (is_protocol_type || (winTypeW[0] == '.' && !is_extension_banned(winTypeW))))
++        if (is_protocol_type || (winTypeW[0] == '.' && !is_extension_banned(winTypeW)))
          {
              WCHAR *commandW = NULL;
              WCHAR *executableW = NULL;
-@@ -2241,89 +2241,99 @@ static BOOL generate_associations(const WCHAR *packages_dir, const WCHAR *applic
+@@ -2241,88 +2241,98 @@ static BOOL generate_associations(const WCHAR *packages_dir, const WCHAR *applic
              WCHAR *mimeProgId = NULL;
              struct rb_string_entry *entry;
  
@@ -159,8 +151,7 @@ index 90b23a14934..c6bc8511056 100644
              if (contentTypeW)
                  wcslwr(contentTypeW);
  
--            if (!freedesktop_mime_type_for_extension(&nativeMimeTypes, extensionW, &mimeType))
--                goto end;
+-            mimeType = freedesktop_mime_type_for_extension(&nativeMimeTypes, extensionW);
 -
 -            if (mimeType == NULL)
 +            if (is_protocol_type)
@@ -178,8 +169,7 @@ index 90b23a14934..c6bc8511056 100644
 -                 * and the default name is more intuitive anyway.
 -                 */
 -                if (iconW)
-+                if (!freedesktop_mime_type_for_extension(&nativeMimeTypes, winTypeW, &mimeType))
-+                    goto end;
++                mimeType = freedesktop_mime_type_for_extension(&nativeMimeTypes, winTypeW);
 +
 +                if (mimeType == NULL)
                  {
@@ -289,6 +279,6 @@ index 90b23a14934..c6bc8511056 100644
          }
 -        heap_free(extensionW);
 +        heap_free(winTypeW);
-         if (ret != ERROR_SUCCESS)
-             break;
      }
+ 
+     wine_rb_destroy(&mimeProgidTree, winemenubuilder_rb_destroy, NULL);

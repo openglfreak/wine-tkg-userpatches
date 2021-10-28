@@ -1,0 +1,55 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH] winebuild: Rename delay import libs .text$2 section to .data$2.
+Message-Id: <20211022122252.1807718-1-rbernon@codeweavers.com>
+Date: Fri, 22 Oct 2021 14:22:52 +0200
+
+GNU dlltool outputs the DELAY_IMPORT_DESCRIPTOR of delay import libs in
+a .text$2 section, which is then merged into .text and changes its flags
+to add the DATA flag.
+
+This is incorrect and breaks some DRMs, which are then validating that
+.text sections doesn't have the IMAGE_SCN_CNT_INITIALIZED_DATA flag set.
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+
+This is actually more some kind of RFC, as I'm not sure at all what this
+change really implies and why the descriptor has to be in .text in the
+first place. It seems like some GNU specific thing, as it seems from
+internet comments that MSVC places the descriptor in .data section?
+
+As far as I could test, this works fine and removes the incorrect
+IMAGE_SCN_CNT_INITIALIZED_DATA flag from .text section of DLLs with
+delay imports. Also, changing instead the .text$2 section flags to mark
+it as code instead doesn't work.
+
+In Proton we have some post-processing step to remove that flag, and I
+think it was required by Forza Horizon 4 DRM.
+
+ tools/winebuild/import.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/tools/winebuild/import.c b/tools/winebuild/import.c
+index bba87b1e02c..1a7b59e6678 100644
+--- a/tools/winebuild/import.c
++++ b/tools/winebuild/import.c
+@@ -1665,6 +1665,15 @@ static void build_windows_import_lib( const char *lib_name, DLLSPEC *spec )
+     }
+ 
+     spawn( args );
++
++    if (strendswith( lib_name, ".delay.a" ))
++    {
++        args = find_tool( "objcopy", NULL );
++        strarray_add( &args, "--rename-section" );
++        strarray_add( &args, ".text$2=.data$2" );
++        strarray_add( &args, lib_name );
++        spawn( args );
++    }
+ }
+ 
+ /* create a Unix-style import library */
+
+-- 
+2.33.0
+

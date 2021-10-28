@@ -1,0 +1,83 @@
+From: Zhiyi Zhang <zzhang@codeweavers.com>
+Subject: [PATCH] winex11.drv: Maintain a backing store for layered windows.
+Message-Id: <79f69949-a3a7-e740-1f70-ba8a3a9daf5a@codeweavers.com>
+Date: Wed, 20 Oct 2021 10:08:42 +0800
+
+Copy the window content to a pixmap and set it as the background because
+the X server may discard the window content at any time, even when the
+backing store attribute is set to TRUE when creating a X11 window.
+Layered windows don't get repainted in X11DRV_Expose() like normal
+windows do and their content should always be kept. The window surface
+may be recreated when handling position and changes. So for most of the
+time, there is only one backing store for a window with this patch. It's
+possible that the we can reuse window surfaces but it's a much bigger
+change and risk breaking things.
+
+Fix Word 2016 frame window corruption after it's moved off-screen.
+
+Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
+---
+ dlls/winex11.drv/window.c | 28 ++++++++++++++++++++++++++--
+ 1 file changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 7ec2639e309..c639b9d06d2 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -2706,6 +2706,9 @@ BOOL CDECL X11DRV_UpdateLayeredWindow( HWND hwnd, const UPDATELAYEREDWINDOWINFO
+     HDC hdc = 0;
+     HBITMAP dib;
+     BOOL ret = FALSE;
++    int width, height;
++    Pixmap pixmap;
++    GC gc;
+ 
+     if (!(data = get_win_data( hwnd ))) return FALSE;
+ 
+@@ -2726,11 +2729,15 @@ BOOL CDECL X11DRV_UpdateLayeredWindow( HWND hwnd, const UPDATELAYEREDWINDOWINFO
+     else set_surface_color_key( surface, color_key );
+ 
+     if (surface) window_surface_add_ref( surface );
+-    release_win_data( data );
+ 
+-    if (!surface) return FALSE;
++    if (!surface)
++    {
++        release_win_data( data );
++        return FALSE;
++    }
+     if (!info->hdcSrc)
+     {
++        release_win_data( data );
+         window_surface_release( surface );
+         return TRUE;
+     }
+@@ -2767,7 +2774,24 @@ BOOL CDECL X11DRV_UpdateLayeredWindow( HWND hwnd, const UPDATELAYEREDWINDOWINFO
+     surface->funcs->unlock( surface );
+     surface->funcs->flush( surface );
+ 
++    /* Copy the window content to a pixmap and set it as the background because the X server may
++     * discard the window content at any time, even when the backing store attribute is set to TRUE
++     * when creating a X11 window. Layered windows don't get repainted in X11DRV_Expose() like
++     * normal windows do and their content should always be kept. */
++    width = data->whole_rect.right - data->whole_rect.left;
++    height = data->whole_rect.bottom - data->whole_rect.top;
++    if (width > 0 && height > 0)
++    {
++        pixmap = XCreatePixmap( data->display, data->whole_window, width, height, 32 );
++        gc = XCreateGC( data->display, pixmap, 0, NULL );
++        XCopyArea( data->display, data->whole_window, pixmap, gc, 0, 0, width, height, 0, 0 );
++        XFreeGC( data->display, gc );
++        XSetWindowBackgroundPixmap( data->display, data->whole_window, pixmap );
++        XFreePixmap( data->display, pixmap );
++    }
++
+ done:
++    release_win_data( data );
+     window_surface_release( surface );
+     if (hdc) DeleteDC( hdc );
+     if (dib) DeleteObject( dib );
+
+-- 
+2.32.0
+

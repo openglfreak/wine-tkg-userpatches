@@ -1,0 +1,57 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH v2 4/4] ntdll: Don't return the last NULL address when capturing frames.
+Message-Id: <20211028160211.146519-4-pgofman@codeweavers.com>
+Date: Thu, 28 Oct 2021 19:02:11 +0300
+In-Reply-To: <20211028160211.146519-1-pgofman@codeweavers.com>
+References: <20211028160211.146519-1-pgofman@codeweavers.com>
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/ntdll/signal_i386.c     | 2 +-
+ dlls/ntdll/signal_x86_64.c   | 2 +-
+ dlls/ntdll/tests/exception.c | 2 +-
+ 3 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/signal_i386.c b/dlls/ntdll/signal_i386.c
+index 69ce62c4168..15e53b6059e 100644
+--- a/dlls/ntdll/signal_i386.c
++++ b/dlls/ntdll/signal_i386.c
+@@ -519,7 +519,7 @@ USHORT WINAPI RtlCaptureStackBackTrace( ULONG skip, ULONG count, PVOID *buffer,
+ 
+     for (i = 0; i < count; i++)
+     {
+-        if (!is_valid_frame( frame )) break;
++        if (!is_valid_frame( frame ) || !frame[1]) break;
+         buffer[i] = (void *)frame[1];
+         if (hash) *hash += frame[1];
+         frame = (ULONG *)*frame;
+diff --git a/dlls/ntdll/signal_x86_64.c b/dlls/ntdll/signal_x86_64.c
+index 57c7f81f9ea..d277a72436f 100644
+--- a/dlls/ntdll/signal_x86_64.c
++++ b/dlls/ntdll/signal_x86_64.c
+@@ -1540,7 +1540,7 @@ USHORT WINAPI RtlCaptureStackBackTrace( ULONG skip, ULONG count, PVOID *buffer,
+         status = virtual_unwind( UNW_FLAG_NHANDLER, &dispatch, &context );
+         if (status != STATUS_SUCCESS) return num_entries;
+ 
+-        if (!dispatch.EstablisherFrame) break;
++        if (!dispatch.EstablisherFrame || !context.Rip) break;
+ 
+         if ((dispatch.EstablisherFrame & 7) ||
+             dispatch.EstablisherFrame < (ULONG64)NtCurrentTeb()->Tib.StackLimit ||
+diff --git a/dlls/ntdll/tests/exception.c b/dlls/ntdll/tests/exception.c
+index 336702766ce..60dac376b39 100644
+--- a/dlls/ntdll/tests/exception.c
++++ b/dlls/ntdll/tests/exception.c
+@@ -9143,7 +9143,7 @@ static void test_walk_stack(void)
+     {
+         ok(addrs[i] == addrs2[i], "i %u, addresses do not match, %p vs %p.\n", i, addrs[i], addrs2[i]);
+     }
+-    todo_wine ok(!!addrs[frame_count - 1], "Expected non-NULL last address.\n");
++    ok(!!addrs[frame_count - 1], "Expected non-NULL last address.\n");
+ 
+     for (requested_count = frame_count - 1; requested_count != ARRAY_SIZE(addrs); requested_count = ARRAY_SIZE(addrs))
+     {
+
+-- 
+2.31.1
+

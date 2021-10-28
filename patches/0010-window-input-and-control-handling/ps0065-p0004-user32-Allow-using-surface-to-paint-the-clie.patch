@@ -1,0 +1,69 @@
+From f0da915d7a7ab3846678447e0287d325fb26aeac Mon Sep 17 00:00:00 2001
+From: Paul Gofman <pgofman@codeweavers.com>
+Date: Fri, 10 Sep 2021 21:51:14 +0300
+Subject: [PATCH 4/5] user32: Allow using surface to paint the client area of
+ OpenGL windows.
+
+CW-Bug-ID: #19216
+---
+ dlls/user32/painting.c | 16 +++++-----------
+ server/window.c        |  3 ++-
+ 2 files changed, 7 insertions(+), 12 deletions(-)
+
+diff --git a/dlls/user32/painting.c b/dlls/user32/painting.c
+index db244ff04a5..ecce91a9202 100644
+--- a/dlls/user32/painting.c
++++ b/dlls/user32/painting.c
+@@ -110,7 +110,6 @@ static void update_visible_region( struct dce *dce )
+     HRGN vis_rgn = 0;
+     HWND top_win = 0;
+     DWORD flags = dce->flags;
+-    DWORD paint_flags = 0;
+     size_t size = 256;
+     RECT win_rect, top_rect;
+     WND *win;
+@@ -147,7 +146,6 @@ static void update_visible_region( struct dce *dce )
+                 top_rect.top    = reply->top_rect.top;
+                 top_rect.right  = reply->top_rect.right;
+                 top_rect.bottom = reply->top_rect.bottom;
+-                paint_flags     = reply->paint_flags;
+             }
+             else size = reply->total_size;
+         }
+@@ -162,16 +160,12 @@ static void update_visible_region( struct dce *dce )
+     if (dce->clip_rgn) CombineRgn( vis_rgn, vis_rgn, dce->clip_rgn,
+                                    (flags & DCX_INTERSECTRGN) ? RGN_AND : RGN_DIFF );
+ 
+-    /* don't use a surface to paint the client area of OpenGL windows */
+-    if (!(paint_flags & SET_WINPOS_PIXEL_FORMAT) || (flags & DCX_WINDOW))
++    win = WIN_GetPtr( top_win );
++    if (win && win != WND_DESKTOP && win != WND_OTHER_PROCESS)
+     {
+-        win = WIN_GetPtr( top_win );
+-        if (win && win != WND_DESKTOP && win != WND_OTHER_PROCESS)
+-        {
+-            surface = win->surface;
+-            if (surface) window_surface_add_ref( surface );
+-            WIN_ReleasePtr( win );
+-        }
++        surface = win->surface;
++        if (surface) window_surface_add_ref( surface );
++        WIN_ReleasePtr( win );
+     }
+ 
+     if (!surface) SetRectEmpty( &top_rect );
+diff --git a/server/window.c b/server/window.c
+index 3d41ebbfad6..8f2b32ac907 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -1151,7 +1151,8 @@ static struct region *get_surface_region( struct window *win )
+     set_region_rect( clip, &win->client_rect );
+     if (win->win_region && !intersect_window_region( clip, win )) goto error;
+ 
+-    if ((win->paint_flags & PAINT_HAS_PIXEL_FORMAT) && !subtract_region( region, region, clip ))
++    if (!(win->ex_style & WS_EX_LAYERED) && (win->paint_flags & PAINT_HAS_PIXEL_FORMAT)
++            && !subtract_region( region, region, clip ))
+         goto error;
+ 
+     /* clip children */
+

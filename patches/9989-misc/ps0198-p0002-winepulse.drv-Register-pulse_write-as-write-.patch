@@ -1,0 +1,83 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH 2/3] winepulse.drv: Register pulse_write as write callback.
+Message-Id: <20211026153716.4093289-2-rbernon@codeweavers.com>
+Date: Tue, 26 Oct 2021 17:37:15 +0200
+In-Reply-To: <20211026153716.4093289-1-rbernon@codeweavers.com>
+References: <20211026153716.4093289-1-rbernon@codeweavers.com>
+
+This allows us to write more data to pulse when it notifies us, in
+addition to the timed writes, which may not write anything if pulse
+isn't ready.
+
+This greatly reduces the amount of underflows in Prince of Persia: The
+Forgotten Sands, which started clicking since we moved to PE Faudio.
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+
+The reason is not completely clear, but may be related to the game
+creating a 6-channel master voice, even if the output is only stereo,
+perhaps changing pulse buffer requirements and making it harder to catch
+up missed writes.
+
+ dlls/winepulse.drv/pulse.c | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/winepulse.drv/pulse.c b/dlls/winepulse.drv/pulse.c
+index 590122cc7b1..10260dea106 100644
+--- a/dlls/winepulse.drv/pulse.c
++++ b/dlls/winepulse.drv/pulse.c
+@@ -414,12 +414,12 @@ write:
+     return pa_stream_write(stream->stream, buffer, bytes, NULL, 0, PA_SEEK_RELATIVE);
+ }
+ 
+-static void pulse_write(struct pulse_stream *stream)
++static void pulse_write_callback(pa_stream *s, size_t bytes, void *userdata)
+ {
+     /* write as much data to PA as we can */
++    struct pulse_stream *stream = userdata;
+     UINT32 to_write;
+     BYTE *buf = stream->local_buffer + stream->pa_offs_bytes;
+-    UINT32 bytes = pa_stream_writable_size(stream->stream);
+ 
+     if (stream->just_underran)
+     {
+@@ -437,7 +437,7 @@ static void pulse_write(struct pulse_stream *stream)
+     }
+ 
+     buf = stream->local_buffer + stream->pa_offs_bytes;
+-    TRACE("held: %lu, avail: %u\n", stream->pa_held_bytes, bytes);
++    TRACE("held: %lu, avail: %u\n", stream->pa_held_bytes, (UINT32)bytes);
+     bytes = min(stream->pa_held_bytes, bytes);
+ 
+     if (stream->pa_offs_bytes + bytes > stream->real_bufsize_bytes)
+@@ -1004,6 +1004,7 @@ static HRESULT pulse_stream_connect(struct pulse_stream *stream, UINT32 period_b
+     if (stream->dataflow == eRender) {
+         pa_stream_set_underflow_callback(stream->stream, pulse_underflow_callback, stream);
+         pa_stream_set_started_callback(stream->stream, pulse_started_callback, stream);
++        pa_stream_set_write_callback(stream->stream, pulse_write_callback, stream);
+     }
+     return S_OK;
+ }
+@@ -1316,7 +1317,7 @@ static NTSTATUS pulse_timer_loop(void *args)
+ 
+                 if (stream->dataflow == eRender)
+                 {
+-                    pulse_write(stream);
++                    pulse_write_callback(stream->stream, pa_stream_writable_size(stream->stream), stream);
+ 
+                     /* regardless of what PA does, advance one period */
+                     adv_bytes = min(stream->period_bytes, stream->held_bytes);
+@@ -1380,7 +1381,7 @@ static NTSTATUS pulse_start(void *args)
+         return STATUS_SUCCESS;
+     }
+ 
+-    pulse_write(stream);
++    pulse_write_callback(stream->stream, pa_stream_writable_size(stream->stream), stream);
+ 
+     if (pa_stream_is_corked(stream->stream))
+     {
+
+-- 
+2.33.0
+

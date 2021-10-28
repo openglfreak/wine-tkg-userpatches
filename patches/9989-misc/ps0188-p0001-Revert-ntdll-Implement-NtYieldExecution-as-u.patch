@@ -1,0 +1,53 @@
+From 922cb0d0ed7c469dffd1b11914972f1c20fc7553 Mon Sep 17 00:00:00 2001
+From: Matteo Bruni <mbruni@codeweavers.com>
+Date: Tue, 19 Oct 2021 10:20:01 +0200
+Subject: [PATCH 1/2] Revert "ntdll: Implement NtYieldExecution() as usleep()."
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Rémi found a regression caused by that patch. His analysis suggests
+that it's probably correct for NtYieldExecution() to map to
+sched_yield().
+
+Let's revert the patch and fix the issue in a slightly different way.
+
+This reverts commit a3f5291463db2024a2a5dc417bc967cc6953bdc7.
+
+Signed-off-by: Matteo Bruni <mbruni@codeweavers.com>
+---
+ configure.ac           | 1 +
+ dlls/ntdll/unix/sync.c | 6 +++++-
+ 2 files changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/configure.ac b/configure.ac
+index 947fad88056..e24a6f02f59 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -2220,6 +2220,7 @@ AC_CHECK_FUNCS(\
+ 	readlink \
+ 	renameat \
+ 	renameat2 \
++	sched_yield \
+ 	setproctitle \
+ 	setprogname \
+ 	sigprocmask \
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index ab7881a0ad4..b7655b73bfe 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -1616,8 +1616,12 @@ NTSTATUS WINAPI NtSignalAndWaitForSingleObject( HANDLE signal, HANDLE wait,
+  */
+ NTSTATUS WINAPI NtYieldExecution(void)
+ {
+-    usleep(0);
++#ifdef HAVE_SCHED_YIELD
++    sched_yield();
+     return STATUS_SUCCESS;
++#else
++    return STATUS_NO_YIELD_PERFORMED;
++#endif
+ }
+ 
+ 
+

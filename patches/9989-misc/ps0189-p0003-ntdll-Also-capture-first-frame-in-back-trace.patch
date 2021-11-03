@@ -1,59 +1,44 @@
 From: Paul Gofman <pgofman@codeweavers.com>
-Subject: [PATCH v2 3/4] ntdll: Also capture first frame in back trace on x86.
-Message-Id: <20211028160211.146519-3-pgofman@codeweavers.com>
-Date: Thu, 28 Oct 2021 19:02:10 +0300
-In-Reply-To: <20211028160211.146519-1-pgofman@codeweavers.com>
-References: <20211028160211.146519-1-pgofman@codeweavers.com>
+Subject: [PATCH v4 3/4] ntdll: Also capture first frame in back trace on x86.
+Message-Id: <20211101111400.153412-3-pgofman@codeweavers.com>
+Date: Mon,  1 Nov 2021 14:13:59 +0300
+In-Reply-To: <20211101111400.153412-1-pgofman@codeweavers.com>
+References: <20211101111400.153412-1-pgofman@codeweavers.com>
 
 Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
 ---
-v2:
-    - get rid of parameter intermediate load to %eax.
+v4:
+    - now when extra frame is provided by the helper no need in asm wrapper.
 
- dlls/ntdll/signal_i386.c     | 20 +++++++++++++++++++-
- dlls/ntdll/tests/exception.c |  2 --
- 2 files changed, 19 insertions(+), 3 deletions(-)
+ dlls/ntdll/signal_i386.c     | 5 +----
+ dlls/ntdll/tests/exception.c | 2 --
+ 2 files changed, 1 insertion(+), 6 deletions(-)
 
 diff --git a/dlls/ntdll/signal_i386.c b/dlls/ntdll/signal_i386.c
-index 14971032ce6..69ce62c4168 100644
+index ff3e837c784..b28684839b7 100644
 --- a/dlls/ntdll/signal_i386.c
 +++ b/dlls/ntdll/signal_i386.c
-@@ -480,6 +480,24 @@ __ASM_STDCALL_FUNC( RtlRaiseException, 4,
-                     "ret $4" )  /* actually never returns */
- 
- 
-+/***********************************************************************
-+ *		capture_context_wrapper (NTDLL.@)
-+ */
-+void WINAPI capture_context_wrapper(CONTEXT *);
-+__ASM_STDCALL_FUNC( capture_context_wrapper, 4,
-+                    "pushl %ebp\n\t"
-+                    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t")
-+                    __ASM_CFI(".cfi_rel_offset %ebp,0\n\t")
-+                    "movl %esp,%ebp\n\t"
-+                    __ASM_CFI(".cfi_def_cfa_register %ebp\n\t")
-+                    "pushl 8(%ebp)\n\t"        /* context */
-+                    "call " __ASM_STDCALL("RtlCaptureContext",4) "\n\t"
-+                    "leave\n\t"
-+                    __ASM_CFI(".cfi_def_cfa %esp,4\n\t")
-+                    __ASM_CFI(".cfi_same_value %ebp\n\t")
-+                    "ret $4" )
-+
-+
- /*************************************************************************
-  *		RtlCaptureStackBackTrace (NTDLL.@)
-  */
-@@ -489,7 +507,7 @@ USHORT WINAPI RtlCaptureStackBackTrace( ULONG skip, ULONG count, PVOID *buffer,
-     ULONG i;
+@@ -490,9 +490,6 @@ ULONG WINAPI capture_stack_back_trace( ULONG skip, ULONG count, PVOID *buffer, U
      ULONG *frame;
+     ULONG num_entries = 0;
  
--    RtlCaptureContext( &context );
-+    capture_context_wrapper( &context );
+-    ++skip;
+-    ++count;
+-
+     RtlCaptureContext( &context );
      if (hash) *hash = 0;
      frame = (ULONG *)context.Ebp;
+@@ -507,7 +504,7 @@ ULONG WINAPI capture_stack_back_trace( ULONG skip, ULONG count, PVOID *buffer, U
+         }
+         frame = (ULONG *)*frame;
+     }
+-    return i ? i - 1 : 0;
++    return i;
+ }
+ 
  
 diff --git a/dlls/ntdll/tests/exception.c b/dlls/ntdll/tests/exception.c
-index f7f05dc5799..336702766ce 100644
+index d73e75ee529..121fbedc72e 100644
 --- a/dlls/ntdll/tests/exception.c
 +++ b/dlls/ntdll/tests/exception.c
 @@ -9134,10 +9134,8 @@ static void test_walk_stack(void)

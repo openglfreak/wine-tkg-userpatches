@@ -1,0 +1,144 @@
+From: Zebediah Figura <zfigura@codeweavers.com>
+Subject: [PATCH 1/3] include: Rename LDR_WINE_INTERNAL to LDR_WINE_BUILTIN.
+Message-Id: <20211101063731.260785-1-zfigura@codeweavers.com>
+Date: Mon,  1 Nov 2021 01:37:29 -0500
+
+Signed-off-by: Zebediah Figura <zfigura@codeweavers.com>
+---
+
+This series makes it possible to use dynamic libraries from an external path
+without needing to first copy them into a prefix. To do this I used the
+following configure line on Debian:
+
+    configure --enable-win64 ZLIB_PE_CFLAGS="$(x86_64-w64-mingw32-pkg-config --cflags zlib)" ZLIB_PE_LIBS="$(x86_64-w64-mingw32-pkg-config --libs zlib)" SYSTEMDLLDIR=/usr/x86_64-w64-mingw32/lib/
+
+I would like to submit patches in the future to allow the use of pkg-config for
+automatically detecting compile flags and libraries. I would also like to find
+some way to obviate manual specification of DLL bindirs.
+
+ dlls/kernel32/kernel_main.c    |  2 +-
+ dlls/krnl386.exe16/ne_module.c |  2 +-
+ dlls/ntdll/loader.c            | 10 +++++-----
+ dlls/ntdll/signal_arm64.c      |  2 +-
+ dlls/ntdll/signal_x86_64.c     |  2 +-
+ include/winternl.h             |  2 +-
+ 6 files changed, 10 insertions(+), 10 deletions(-)
+
+diff --git a/dlls/kernel32/kernel_main.c b/dlls/kernel32/kernel_main.c
+index 89394e16430..83c4ebf2130 100644
+--- a/dlls/kernel32/kernel_main.c
++++ b/dlls/kernel32/kernel_main.c
+@@ -136,7 +136,7 @@ static BOOL process_attach( HMODULE module )
+     {
+         LDR_DATA_TABLE_ENTRY *ldr;
+ 
+-        if (LdrFindEntryForAddress( GetModuleHandleW( 0 ), &ldr ) || !(ldr->Flags & LDR_WINE_INTERNAL))
++        if (LdrFindEntryForAddress( GetModuleHandleW( 0 ), &ldr ) || !(ldr->Flags & LDR_WINE_BUILTIN))
+             LoadLibraryA( "krnl386.exe16" );
+     }
+ #endif
+diff --git a/dlls/krnl386.exe16/ne_module.c b/dlls/krnl386.exe16/ne_module.c
+index c26fe778253..108e88e5546 100644
+--- a/dlls/krnl386.exe16/ne_module.c
++++ b/dlls/krnl386.exe16/ne_module.c
+@@ -982,7 +982,7 @@ static HINSTANCE16 MODULE_LoadModule16( LPCSTR libname, BOOL implicit, BOOL lib_
+                         return ERROR_FILE_NOT_FOUND;
+                     }
+                     /* check if module was loaded native */
+-                    if (LdrFindEntryForAddress( main_owner, &ldr ) || !(ldr->Flags & LDR_WINE_INTERNAL))
++                    if (LdrFindEntryForAddress( main_owner, &ldr ) || !(ldr->Flags & LDR_WINE_BUILTIN))
+                     {
+                         FreeLibrary( mod32 );
+                         descr = NULL;
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index dd41d6b66d2..26192e48fba 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -988,7 +988,7 @@ static BOOL is_dll_native_subsystem( LDR_DATA_TABLE_ENTRY *mod, const IMAGE_NT_H
+ 
+     if (nt->OptionalHeader.Subsystem != IMAGE_SUBSYSTEM_NATIVE) return FALSE;
+     if (nt->OptionalHeader.SectionAlignment < page_size) return TRUE;
+-    if (mod->Flags & LDR_WINE_INTERNAL) return TRUE;
++    if (mod->Flags & LDR_WINE_BUILTIN) return TRUE;
+ 
+     if ((imports = RtlImageDirectoryEntryToData( mod->DllBase, TRUE,
+                                                  IMAGE_DIRECTORY_ENTRY_IMPORT, &size )))
+@@ -1221,7 +1221,7 @@ static WINE_MODREF *alloc_module( HMODULE hModule, const UNICODE_STRING *nt_name
+ 
+     wm->ldr.DllBase       = hModule;
+     wm->ldr.SizeOfImage   = nt->OptionalHeader.SizeOfImage;
+-    wm->ldr.Flags         = LDR_DONT_RESOLVE_REFS | (builtin ? LDR_WINE_INTERNAL : 0);
++    wm->ldr.Flags         = LDR_DONT_RESOLVE_REFS | (builtin ? LDR_WINE_BUILTIN : 0);
+     wm->ldr.TlsIndex      = -1;
+     wm->ldr.LoadCount     = 1;
+     wm->CheckSum          = nt->OptionalHeader.CheckSum;
+@@ -1355,7 +1355,7 @@ static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved
+ 
+     if (wm->ldr.Flags & LDR_DONT_RESOLVE_REFS) return STATUS_SUCCESS;
+     if (wm->ldr.TlsIndex != -1) call_tls_callbacks( wm->ldr.DllBase, reason );
+-    if (wm->ldr.Flags & LDR_WINE_INTERNAL && reason == DLL_PROCESS_ATTACH)
++    if (wm->ldr.Flags & LDR_WINE_BUILTIN && reason == DLL_PROCESS_ATTACH)
+         unix_funcs->init_builtin_dll( wm->ldr.DllBase );
+     if (!entry) return STATUS_SUCCESS;
+ 
+@@ -3522,7 +3522,7 @@ static void free_modref( WINE_MODREF *wm )
+     if (!TRACE_ON(module))
+         TRACE_(loaddll)("Unloaded module %s : %s\n",
+                         debugstr_w(wm->ldr.FullDllName.Buffer),
+-                        (wm->ldr.Flags & LDR_WINE_INTERNAL) ? "builtin" : "native" );
++                        (wm->ldr.Flags & LDR_WINE_BUILTIN) ? "builtin" : "native" );
+ 
+     free_tls_slot( &wm->ldr );
+     RtlReleaseActivationContext( wm->ldr.ActivationContext );
+@@ -3955,7 +3955,7 @@ void WINAPI LdrInitializeThunk( CONTEXT *context, ULONG_PTR unknown2, ULONG_PTR
+         }
+         release_address_space();
+         if (wm->ldr.TlsIndex != -1) call_tls_callbacks( wm->ldr.DllBase, DLL_PROCESS_ATTACH );
+-        if (wm->ldr.Flags & LDR_WINE_INTERNAL) unix_funcs->init_builtin_dll( wm->ldr.DllBase );
++        if (wm->ldr.Flags & LDR_WINE_BUILTIN) unix_funcs->init_builtin_dll( wm->ldr.DllBase );
+         if (wm->ldr.ActivationContext) RtlDeactivateActivationContext( 0, cookie );
+         process_breakpoint();
+     }
+diff --git a/dlls/ntdll/signal_arm64.c b/dlls/ntdll/signal_arm64.c
+index 290639b676b..bfbaeab47c9 100644
+--- a/dlls/ntdll/signal_arm64.c
++++ b/dlls/ntdll/signal_arm64.c
+@@ -191,7 +191,7 @@ static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEX
+ 
+     /* then look for host system exception information */
+ 
+-    if (!module || (module->Flags & LDR_WINE_INTERNAL))
++    if (!module || (module->Flags & LDR_WINE_BUILTIN))
+     {
+         status = unix_funcs->unwind_builtin_dll( type, dispatch, context );
+         if (status != STATUS_SUCCESS) return status;
+diff --git a/dlls/ntdll/signal_x86_64.c b/dlls/ntdll/signal_x86_64.c
+index ef32eba68b7..8515b176e5d 100644
+--- a/dlls/ntdll/signal_x86_64.c
++++ b/dlls/ntdll/signal_x86_64.c
+@@ -275,7 +275,7 @@ static NTSTATUS virtual_unwind( ULONG type, DISPATCHER_CONTEXT *dispatch, CONTEX
+ 
+     /* then look for host system exception information */
+ 
+-    if (!module || (module->Flags & LDR_WINE_INTERNAL))
++    if (!module || (module->Flags & LDR_WINE_BUILTIN))
+     {
+         status = unix_funcs->unwind_builtin_dll( type, dispatch, context );
+ 
+diff --git a/include/winternl.h b/include/winternl.h
+index 7a34629edb0..5da3e010bf0 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -3394,7 +3394,7 @@ typedef void (CALLBACK *PLDR_DLL_NOTIFICATION_FUNCTION)(ULONG, LDR_DLL_NOTIFICAT
+ 
+ /* these ones is Wine specific */
+ #define LDR_DONT_RESOLVE_REFS           0x40000000
+-#define LDR_WINE_INTERNAL               0x80000000
++#define LDR_WINE_BUILTIN                0x80000000
+ 
+ /* flag for LdrAddRefDll */
+ #define LDR_ADDREF_DLL_PIN              0x00000001
+
+-- 
+2.33.0
+

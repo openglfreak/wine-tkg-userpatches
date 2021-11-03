@@ -1,0 +1,95 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH 5/5] ntdll: Don't add dependencies for system dlls.
+Message-Id: <20211102102644.718188-5-pgofman@codeweavers.com>
+Date: Tue,  2 Nov 2021 13:26:44 +0300
+In-Reply-To: <20211102102644.718188-1-pgofman@codeweavers.com>
+References: <20211102102644.718188-1-pgofman@codeweavers.com>
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/kernel32/tests/module.c |  4 ++--
+ dlls/ntdll/loader.c          | 17 ++++++++++++++++-
+ 2 files changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/kernel32/tests/module.c b/dlls/kernel32/tests/module.c
+index 466ff3e8d38..2ee23595f55 100644
+--- a/dlls/kernel32/tests/module.c
++++ b/dlls/kernel32/tests/module.c
+@@ -1409,7 +1409,7 @@ static void test_ddag_node(void)
+         }
+ 
+         mod2 = CONTAINING_RECORD(dep_node->Modules.Flink, LDR_DATA_TABLE_ENTRY, NodeModuleLink);
+-        todo_wine ok( !lstrcmpW( mod2->BaseDllName.Buffer, expected_exe_dependencies[i].dllname ),
++        ok( !lstrcmpW( mod2->BaseDllName.Buffer, expected_exe_dependencies[i].dllname ),
+                 "Got unexpected module %s.\n", debugstr_w(mod2->BaseDllName.Buffer));
+ 
+         se2 = dep_node->IncomingDependencies.Tail;
+@@ -1428,7 +1428,7 @@ static void test_ddag_node(void)
+         winetest_pop_context();
+         prev_node = dep_node;
+     }
+-    todo_wine ok( se == node->Dependencies.Tail, "Expected end of the list.\n" );
++    ok( se == node->Dependencies.Tail, "Expected end of the list.\n" );
+ }
+ 
+ START_TEST(module)
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index cf188f4395e..0d831488fe8 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -182,6 +182,8 @@ static WINE_MODREF *cached_modref;
+ static WINE_MODREF *current_modref;
+ static WINE_MODREF *last_failed_modref;
+ 
++static LDR_DDAG_NODE *node_ntdll, *node_kernel32;
++
+ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, const WCHAR *default_ext,
+                           DWORD flags, WINE_MODREF** pwm );
+ static NTSTATUS process_attach( LDR_DDAG_NODE *node, LPVOID lpReserved );
+@@ -1280,7 +1282,10 @@ static NTSTATUS fixup_imports( WINE_MODREF *wm, LPCWSTR load_path )
+             imp = NULL;
+             status = STATUS_DLL_NOT_FOUND;
+         }
+-        else add_module_dependency_after( wm->ldr.DdagNode, imp->ldr.DdagNode, dep_after );
++        else if (!is_import_dll_system( &wm->ldr, &imports[i] ))
++        {
++            add_module_dependency_after( wm->ldr.DdagNode, imp->ldr.DdagNode, dep_after );
++        }
+     }
+     current_modref = prev;
+     if (wm->ldr.ActivationContext) RtlDeactivateActivationContext( 0, cookie );
+@@ -2075,6 +2080,7 @@ static void build_ntdll_module(void)
+     wm = alloc_module( meminfo.AllocationBase, &nt_name, TRUE );
+     assert( wm );
+     wm->ldr.Flags &= ~LDR_DONT_RESOLVE_REFS;
++    node_ntdll = wm->ldr.DdagNode;
+     if (TRACE_ON(relay)) RELAY_SetupDLL( meminfo.AllocationBase );
+ }
+ 
+@@ -4003,6 +4009,7 @@ void WINAPI LdrInitializeThunk( CONTEXT *context, ULONG_PTR unknown2, ULONG_PTR
+             NtTerminateProcess( GetCurrentProcess(), status );
+         }
+         kernel32_handle = kernel32->ldr.DllBase;
++        node_kernel32 = kernel32->ldr.DdagNode;
+         RtlInitAnsiString( &func_name, "BaseThreadInitThunk" );
+         if ((status = LdrGetProcedureAddress( kernel32_handle, &func_name,
+                                               0, (void **)&pBaseThreadInitThunk )) != STATUS_SUCCESS)
+@@ -4052,6 +4059,14 @@ void WINAPI LdrInitializeThunk( CONTEXT *context, ULONG_PTR unknown2, ULONG_PTR
+         if (wm->ldr.ActivationContext)
+             RtlActivateActivationContext( 0, wm->ldr.ActivationContext, &cookie );
+ 
++        if ((status = process_attach( node_ntdll, context ))
++             || (status = process_attach( node_kernel32, context )))
++        {
++            ERR( "Initializing system dll for %s failed, status %x\n",
++                 debugstr_w(NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer), status );
++            NtTerminateProcess( GetCurrentProcess(), status );
++        }
++
+         if ((status = walk_node_dependencies( wm->ldr.DdagNode, context, process_attach )))
+         {
+             if (last_failed_modref)
+
+-- 
+2.31.1
+

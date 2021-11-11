@@ -1,9 +1,7 @@
 From: Zebediah Figura <zfigura@codeweavers.com>
-Subject: [PATCH 2/3] ntdll: Allow loading system DLLs from a path specified at configure time.
-Message-Id: <20211101063731.260785-2-zfigura@codeweavers.com>
-Date: Mon,  1 Nov 2021 01:37:30 -0500
-In-Reply-To: <20211101063731.260785-1-zfigura@codeweavers.com>
-References: <20211101063731.260785-1-zfigura@codeweavers.com>
+Subject: [PATCH v6 1/2] ntdll: Allow loading system DLLs from a path specified at configure time.
+Message-Id: <20211111005621.772637-1-zfigura@codeweavers.com>
+Date: Wed, 10 Nov 2021 18:56:20 -0600
 
 Many distributions provide MinGW-compiled system DLLs which are currently
 bundled with Wine. Unfortunately, while MinGW pkg-config can be used to detect
@@ -12,54 +10,50 @@ in fact use different paths.
 
 Signed-off-by: Zebediah Figura <zfigura@codeweavers.com>
 ---
+v6: rebase on top of current git.
 
-To be clear I don't necessarily think this is *clearly* the best option.
-Obviously it'd be nice to establish some sort of standard along the lines of
-ld.so's standardized search location, but this may be a lengthy process.
-
-An environment variable configurable at runtime would also be useful, as
-LD_LIBRARY_PATH often is. I could see arguments for specifying it in addition
-to, or in lieu of, a path supplied at configure time.
-
-It's also possible that we should allow specifying multiple paths here.
-
-Nevertheless, I believe we should allow some way to load DLLs from an external
-path, rather than forcing the user to manually copy them into the prefix (or
-forcing Wine to be built with bundled dependencies.) I readily welcome consensus
-on any of the above questions, but in lieu thereof, since it is relatively easy
-to effect incremental improvement here, I propose this solution for now.
-
- configure.ac                   |  4 ++++
+ configure.ac                   |  3 +++
+ dlls/ntdll/Makefile.in         |  1 +
  dlls/ntdll/loader.c            | 10 ++++++++--
  dlls/ntdll/unix/env.c          |  1 +
- dlls/ntdll/unix/loader.c       |  5 +++++
+ dlls/ntdll/unix/loader.c       |  3 +++
  dlls/ntdll/unix/unix_private.h |  1 +
- 5 files changed, 19 insertions(+), 2 deletions(-)
+ 6 files changed, 17 insertions(+), 2 deletions(-)
 
 diff --git a/configure.ac b/configure.ac
-index bcce6c01041..8b969ca2dfb 100644
+index f86a5decb07..d4c16e2c3d2 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -36,6 +36,8 @@ AC_ARG_ENABLE(maintainer-mode, AS_HELP_STRING([--enable-maintainer-mode],[enable
- AC_ARG_ENABLE(silent-rules, AS_HELP_STRING([--enable-silent-rules],[use silent build rules (override: "make V=1")]))
- AC_ARG_ENABLE(werror, AS_HELP_STRING([--enable-werror],[treat compilation warnings as errors]))
+@@ -99,6 +99,7 @@ AC_ARG_WITH(xshm,      AS_HELP_STRING([--without-xshm],[do not use XShm (shared
+ AC_ARG_WITH(xxf86vm,   AS_HELP_STRING([--without-xxf86vm],[do not use XFree video mode extension]),
+             [if test "x$withval" = "xno"; then ac_cv_header_X11_extensions_xf86vmode_h=no; ac_cv_header_X11_extensions_xf86vmproto_h=no; fi])
  
-+AC_ARG_VAR([SYSTEMDLLDIR], [path containing system dependency shared libraries])
++AC_ARG_WITH(system-dlldir, AS_HELP_STRING([--with-system-dlldir=DIR],[load external PE dependencies from directory DIR]))
+ AC_ARG_WITH(wine-tools,AS_HELP_STRING([--with-wine-tools=DIR],[use Wine tools from directory DIR]))
+ AC_ARG_WITH(wine64,    AS_HELP_STRING([--with-wine64=DIR],[use the 64-bit Wine in DIR for a Wow64 build]))
+ 
+@@ -266,6 +267,8 @@ then
+     TARGETFLAGS="-b $host_alias $TARGETFLAGS"
+ fi
+ 
++AC_SUBST(system_dlldir,"$with_system_dlldir")
 +
- AC_ARG_WITH(alsa,      AS_HELP_STRING([--without-alsa],[do not use the Alsa sound support]))
- AC_ARG_WITH(capi,      AS_HELP_STRING([--without-capi],[do not use CAPI (ISDN support)]))
- AC_ARG_WITH(coreaudio, AS_HELP_STRING([--without-coreaudio],[do not use the CoreAudio sound support]),
-@@ -109,6 +111,8 @@ AC_ARG_WITH(wine64,    AS_HELP_STRING([--with-wine64=DIR],[use the 64-bit Wine i
+ dnl Check for flex
+ AC_CHECK_PROGS(FLEX,flex,none)
+ if test "$FLEX" = "none"
+diff --git a/dlls/ntdll/Makefile.in b/dlls/ntdll/Makefile.in
+index d3be1fad0bc..bce141bc14b 100644
+--- a/dlls/ntdll/Makefile.in
++++ b/dlls/ntdll/Makefile.in
+@@ -72,5 +72,6 @@ EXTRA_OBJS = unix/version.o
  
- AC_CANONICAL_HOST
- 
-+AS_VAR_IF([SYSTEMDLLDIR],[],[],[AC_DEFINE_UNQUOTED([SYSTEMDLLDIR],["$SYSTEMDLLDIR"],[Define to the path containing system dependency shared libraries.])])
-+
- dnl **** Check for some programs ****
- 
- AC_PROG_MAKE_SET
+ unix_loader_EXTRADEFS = \
+ 	-DBINDIR=\"${bindir}\" \
++	-DSYSTEMDLLDIR=\"${system_dlldir}\" \
+ 	-DDLL_TO_BINDIR=\"`${MAKEDEP} -R ${dlldir} ${bindir}`\" \
+ 	-DBIN_TO_DATADIR=\"`${MAKEDEP} -R ${bindir} ${datadir}/wine`\"
 diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
-index 26192e48fba..42aa787cf34 100644
+index 255d5afef79..a9578ae86bf 100644
 --- a/dlls/ntdll/loader.c
 +++ b/dlls/ntdll/loader.c
 @@ -95,6 +95,7 @@ static int free_lib_count;   /* recursion depth of LdrUnloadDll calls */
@@ -70,7 +64,7 @@ index 26192e48fba..42aa787cf34 100644
  static DWORD default_search_flags;  /* default flags set by LdrSetDefaultDllDirectories */
  static WCHAR *default_load_path;    /* default dll search path */
  
-@@ -2881,12 +2882,15 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, const WC
+@@ -2981,12 +2982,15 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, const WC
      struct file_id id;
      HANDLE mapping = 0;
      SECTION_IMAGE_INFORMATION image_info;
@@ -88,7 +82,7 @@ index 26192e48fba..42aa787cf34 100644
  
      if (*pwm)  /* found already loaded module */
      {
-@@ -3878,6 +3882,8 @@ void WINAPI LdrInitializeThunk( CONTEXT *context, ULONG_PTR unknown2, ULONG_PTR
+@@ -3997,6 +4001,8 @@ void WINAPI LdrInitializeThunk( CONTEXT *context, ULONG_PTR unknown2, ULONG_PTR
          load_global_options();
          version_init();
  
@@ -98,7 +92,7 @@ index 26192e48fba..42aa787cf34 100644
          wm->ldr.LoadCount = -1;
  
 diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
-index 43a34bf831b..1647603efa5 100644
+index 24f4fa5a588..f9e6e625cbb 100644
 --- a/dlls/ntdll/unix/env.c
 +++ b/dlls/ntdll/unix/env.c
 @@ -1296,6 +1296,7 @@ static void add_dynamic_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size )
@@ -110,10 +104,10 @@ index 43a34bf831b..1647603efa5 100644
      {
          sprintf( str, "WINEDLLDIR%u", i );
 diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
-index 0ca4b1ea6dd..5dfe7191dbe 100644
+index 99226d472da..8464637e7e3 100644
 --- a/dlls/ntdll/unix/loader.c
 +++ b/dlls/ntdll/unix/loader.c
-@@ -388,6 +388,7 @@ const char *data_dir = NULL;
+@@ -386,6 +386,7 @@ const char *data_dir = NULL;
  const char *build_dir = NULL;
  const char *config_dir = NULL;
  const char **dll_paths = NULL;
@@ -121,22 +115,20 @@ index 0ca4b1ea6dd..5dfe7191dbe 100644
  const char *user_name = NULL;
  SECTION_IMAGE_INFORMATION main_image_info = { NULL };
  static HMODULE ntdll_module;
-@@ -619,6 +620,10 @@ static void init_paths( char *argv[] )
+@@ -617,6 +618,8 @@ static void init_paths( char *argv[] )
          data_dir = build_path( bin_dir, BIN_TO_DATADIR );
      }
  
-+#ifdef SYSTEMDLLDIR
-+    system_dll_path = SYSTEMDLLDIR;
-+#endif
++    if (strlen(SYSTEMDLLDIR)) system_dll_path = SYSTEMDLLDIR;
 +
      set_dll_path();
      set_home_dir();
      set_config_dir();
 diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
-index 792cb33710d..01c7cc1c103 100644
+index 641de0c465f..de7b66123c1 100644
 --- a/dlls/ntdll/unix/unix_private.h
 +++ b/dlls/ntdll/unix/unix_private.h
-@@ -125,6 +125,7 @@ extern const char *build_dir DECLSPEC_HIDDEN;
+@@ -126,6 +126,7 @@ extern const char *build_dir DECLSPEC_HIDDEN;
  extern const char *config_dir DECLSPEC_HIDDEN;
  extern const char *user_name DECLSPEC_HIDDEN;
  extern const char **dll_paths DECLSPEC_HIDDEN;

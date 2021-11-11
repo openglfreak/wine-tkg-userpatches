@@ -1,9 +1,9 @@
 From: Zebediah Figura <zfigura@codeweavers.com>
-Subject: [PATCH 3/3] ntdll: Prevent loading Wine system dependencies in place of identically named application DLLs.
-Message-Id: <20211101063731.260785-3-zfigura@codeweavers.com>
-Date: Mon,  1 Nov 2021 01:37:31 -0500
-In-Reply-To: <20211101063731.260785-1-zfigura@codeweavers.com>
-References: <20211101063731.260785-1-zfigura@codeweavers.com>
+Subject: [PATCH v6 2/2] ntdll: Prevent loading Wine system dependencies in place of identically named application DLLs.
+Message-Id: <20211111005621.772637-2-zfigura@codeweavers.com>
+Date: Wed, 10 Nov 2021 18:56:21 -0600
+In-Reply-To: <20211111005621.772637-1-zfigura@codeweavers.com>
+References: <20211111005621.772637-1-zfigura@codeweavers.com>
 
 That is, load Wine system dependencies only when they are imported from Wine
 builtins or other system dependencies, and do not match a Wine system dependency
@@ -16,24 +16,33 @@ system dependencies in place of the application's, or vice versa.
 
 Signed-off-by: Zebediah Figura <zfigura@codeweavers.com>
 ---
- dlls/ntdll/loader.c | 45 ++++++++++++++++++++++++++-------------------
- include/winternl.h  |  1 +
- 2 files changed, 27 insertions(+), 19 deletions(-)
+v6: remove a leftover trace.
+
+ dlls/ntdll/loader.c | 54 ++++++++++++++++++++++++++++-----------------
+ 1 file changed, 34 insertions(+), 20 deletions(-)
 
 diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
-index 42aa787cf34..fa18c6c4a26 100644
+index a9578ae86bf..df337de85a4 100644
 --- a/dlls/ntdll/loader.c
 +++ b/dlls/ntdll/loader.c
-@@ -187,7 +187,7 @@ static WINE_MODREF *current_modref;
+@@ -135,6 +135,7 @@ typedef struct _wine_modref
+     LDR_DATA_TABLE_ENTRY  ldr;
+     struct file_id        id;
+     ULONG                 CheckSum;
++    BOOL                  system;
+ } WINE_MODREF;
+ 
+ static UINT tls_module_count;      /* number of modules with TLS directory */
+@@ -186,7 +187,7 @@ static WINE_MODREF *last_failed_modref;
  static LDR_DDAG_NODE *node_ntdll, *node_kernel32;
  
  static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, const WCHAR *default_ext,
 -                          DWORD flags, WINE_MODREF** pwm );
-+                          DWORD flags, WINE_MODREF** pwm, BOOL system );
++                          DWORD flags, WINE_MODREF **pwm, BOOL system );
  static NTSTATUS process_attach( LDR_DDAG_NODE *node, LPVOID lpReserved );
  static FARPROC find_ordinal_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY *exports,
                                      DWORD exp_size, DWORD ordinal, LPCWSTR load_path );
-@@ -506,21 +506,23 @@ static WINE_MODREF *get_modref( HMODULE hmod )
+@@ -505,21 +506,22 @@ static WINE_MODREF *get_modref( HMODULE hmod )
   * Find a module from its base name.
   * The loader_section must be locked while calling this function
   */
@@ -47,28 +56,29 @@ index 42aa787cf34..fa18c6c4a26 100644
  
 -    if (cached_modref && RtlEqualUnicodeString( &name_str, &cached_modref->ldr.BaseDllName, TRUE ))
 +    if (cached_modref && RtlEqualUnicodeString( &name_str, &cached_modref->ldr.BaseDllName, TRUE )
-+            && system == !!(cached_modref->ldr.Flags & LDR_WINE_SYSTEM))
++            && system == cached_modref->system)
          return cached_modref;
  
      mark = &hash_table[hash_basename(name)];
      for (entry = mark->Flink; entry != mark; entry = entry->Flink)
      {
-         LDR_DATA_TABLE_ENTRY *mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, HashLinks);
+-        LDR_DATA_TABLE_ENTRY *mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, HashLinks);
 -        if (RtlEqualUnicodeString( &name_str, &mod->BaseDllName, TRUE ))
-+        if (RtlEqualUnicodeString( &name_str, &mod->BaseDllName, TRUE )
-+                && system == !!(mod->Flags & LDR_WINE_SYSTEM))
++        WINE_MODREF *mod = CONTAINING_RECORD(entry, WINE_MODREF, ldr.HashLinks);
++        if (RtlEqualUnicodeString( &name_str, &mod->ldr.BaseDllName, TRUE ) && system == mod->system)
          {
              cached_modref = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
              return cached_modref;
-@@ -619,6 +621,7 @@ static WINE_MODREF **grow_module_deps( WINE_MODREF *wm, int count )
+@@ -714,6 +716,8 @@ static NTSTATUS walk_node_dependencies( LDR_DDAG_NODE *node, void *context,
   */
  static FARPROC find_forwarded_export( HMODULE module, const char *forward, LPCWSTR load_path )
  {
-+    BOOL system = !!(get_modref( module )->ldr.Flags & (LDR_WINE_SYSTEM | LDR_WINE_BUILTIN));
++    WINE_MODREF *imp = get_modref( module );
++    BOOL system = imp->system || (imp->ldr.Flags & LDR_WINE_INTERNAL);
      const IMAGE_EXPORT_DIRECTORY *exports;
      DWORD exp_size;
      WINE_MODREF *wm;
-@@ -638,10 +641,10 @@ static FARPROC find_forwarded_export( HMODULE module, const char *forward, LPCWS
+@@ -733,10 +737,10 @@ static FARPROC find_forwarded_export( HMODULE module, const char *forward, LPCWS
      if (!wcschr( mod_name, '.' ))
          memcpy( mod_name + (end - forward), L".dll", sizeof(L".dll") );
  
@@ -81,15 +91,15 @@ index 42aa787cf34..fa18c6c4a26 100644
              !(wm->ldr.Flags & LDR_DONT_RESOLVE_REFS))
          {
              if (!imports_fixup_done && current_modref)
-@@ -809,6 +812,7 @@ void * WINAPI RtlFindExportedRoutineByName( HMODULE module, const char *name )
+@@ -903,6 +907,7 @@ void * WINAPI RtlFindExportedRoutineByName( HMODULE module, const char *name )
   */
  static BOOL import_dll( HMODULE module, const IMAGE_IMPORT_DESCRIPTOR *descr, LPCWSTR load_path, WINE_MODREF **pwm )
  {
-+    BOOL system = !!(current_modref->ldr.Flags & (LDR_WINE_SYSTEM | LDR_WINE_BUILTIN));
++    BOOL system = current_modref->system || (current_modref->ldr.Flags & LDR_WINE_INTERNAL);
      NTSTATUS status;
      WINE_MODREF *wmImp;
      HMODULE imp_mod;
-@@ -842,7 +846,7 @@ static BOOL import_dll( HMODULE module, const IMAGE_IMPORT_DESCRIPTOR *descr, LP
+@@ -936,7 +941,7 @@ static BOOL import_dll( HMODULE module, const IMAGE_IMPORT_DESCRIPTOR *descr, LP
      {
          ascii_to_unicode( buffer, name, len );
          buffer[len] = 0;
@@ -98,7 +108,7 @@ index 42aa787cf34..fa18c6c4a26 100644
      }
      else  /* need to allocate a larger buffer */
      {
-@@ -850,7 +854,7 @@ static BOOL import_dll( HMODULE module, const IMAGE_IMPORT_DESCRIPTOR *descr, LP
+@@ -944,7 +949,7 @@ static BOOL import_dll( HMODULE module, const IMAGE_IMPORT_DESCRIPTOR *descr, LP
          if (!ptr) return FALSE;
          ascii_to_unicode( ptr, name, len );
          ptr[len] = 0;
@@ -107,7 +117,7 @@ index 42aa787cf34..fa18c6c4a26 100644
          RtlFreeHeap( GetProcessHeap(), 0, ptr );
      }
  
-@@ -1131,7 +1135,7 @@ static NTSTATUS fixup_imports_ilonly( WINE_MODREF *wm, LPCWSTR load_path, void *
+@@ -1216,7 +1221,7 @@ static NTSTATUS fixup_imports_ilonly( WINE_MODREF *wm, LPCWSTR load_path, void *
      prev = current_modref;
      current_modref = wm;
      assert( !wm->ldr.DdagNode->Dependencies.Tail );
@@ -116,7 +126,7 @@ index 42aa787cf34..fa18c6c4a26 100644
            && !add_module_dependency_after( wm->ldr.DdagNode, imp->ldr.DdagNode, NULL ))
          status = STATUS_NO_MEMORY;
      current_modref = prev;
-@@ -2802,7 +2806,7 @@ done:
+@@ -2902,7 +2907,7 @@ done:
   */
  static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, const WCHAR *default_ext,
                                 UNICODE_STRING *nt_name, WINE_MODREF **pwm, HANDLE *mapping,
@@ -125,7 +135,7 @@ index 42aa787cf34..fa18c6c4a26 100644
  {
      WCHAR *ext, *dllname;
      NTSTATUS status;
-@@ -2843,7 +2847,7 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, con
+@@ -2943,7 +2948,7 @@ static NTSTATUS find_dll_file( const WCHAR *load_path, const WCHAR *libname, con
          else
          {
              if (status != STATUS_SXS_KEY_NOT_FOUND) goto done;
@@ -134,7 +144,7 @@ index 42aa787cf34..fa18c6c4a26 100644
              {
                  status = STATUS_SUCCESS;
                  goto done;
-@@ -2876,7 +2880,7 @@ done:
+@@ -2976,7 +2981,7 @@ done:
   * The loader_section must be locked while calling this function.
   */
  static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, const WCHAR *default_ext,
@@ -143,7 +153,7 @@ index 42aa787cf34..fa18c6c4a26 100644
  {
      UNICODE_STRING nt_name;
      struct file_id id;
-@@ -2887,10 +2891,10 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, const WC
+@@ -2987,10 +2992,13 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, const WC
  
      TRACE( "looking for %s in %s\n", debugstr_w(libname), debugstr_w(load_path) );
  
@@ -153,21 +163,27 @@ index 42aa787cf34..fa18c6c4a26 100644
 +        nts = find_dll_file( system_dll_path.Buffer, libname, default_ext, &nt_name, pwm, &mapping, &image_info, &id, TRUE );
      if (nts)
 -        nts = find_dll_file( load_path, libname, default_ext, &nt_name, pwm, &mapping, &image_info, &id );
++    {
 +        nts = find_dll_file( load_path, libname, default_ext, &nt_name, pwm, &mapping, &image_info, &id, FALSE );
++        system = FALSE;
++    }
  
      if (*pwm)  /* found already loaded module */
      {
-@@ -2927,6 +2931,9 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, const WC
+@@ -3027,6 +3035,12 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, const WC
          break;
      }
  
-+    if (system)
-+        (*pwm)->ldr.Flags |= LDR_WINE_SYSTEM;
++    /* mark the DLL as system only if it was loaded from a system path and is
++     * not builtin. note that builtins can appear to be loaded from a system
++     * path during prefix bootstrap */
++    if (!((*pwm)->ldr.Flags & LDR_WINE_INTERNAL))
++        (*pwm)->system = system;
 +
      if (NtCurrentTeb64())
          NtCurrentTeb64()->Tib.ArbitraryUserPointer = prev;
      else
-@@ -2984,7 +2991,7 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR path_name, DWORD flags,
+@@ -3084,7 +3098,7 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR path_name, DWORD flags,
  
      RtlEnterCriticalSection( &loader_section );
  
@@ -176,7 +192,7 @@ index 42aa787cf34..fa18c6c4a26 100644
  
      if (nts == STATUS_SUCCESS && !(wm->ldr.Flags & LDR_DONT_RESOLVE_REFS))
      {
-@@ -3059,7 +3066,7 @@ NTSTATUS WINAPI LdrGetDllHandleEx( ULONG flags, LPCWSTR load_path, ULONG *dll_ch
+@@ -3159,7 +3173,7 @@ NTSTATUS WINAPI LdrGetDllHandleEx( ULONG flags, LPCWSTR load_path, ULONG *dll_ch
  
      RtlEnterCriticalSection( &loader_section );
  
@@ -185,7 +201,7 @@ index 42aa787cf34..fa18c6c4a26 100644
  
      if (wm) *base = wm->ldr.DllBase;
      else
-@@ -3740,7 +3747,7 @@ static void init_wow64( CONTEXT *context )
+@@ -3860,7 +3874,7 @@ static void init_wow64( CONTEXT *context )
          NTSTATUS status;
          static const WCHAR wow64_path[] = L"C:\\windows\\system32\\wow64.dll";
  
@@ -194,7 +210,7 @@ index 42aa787cf34..fa18c6c4a26 100644
          {
              ERR( "could not load %s, status %x\n", debugstr_w(wow64_path), status );
              NtTerminateProcess( GetCurrentProcess(), status );
-@@ -3891,7 +3898,7 @@ void WINAPI LdrInitializeThunk( CONTEXT *context, ULONG_PTR unknown2, ULONG_PTR
+@@ -4010,7 +4024,7 @@ void WINAPI LdrInitializeThunk( CONTEXT *context, ULONG_PTR unknown2, ULONG_PTR
  
          if (NtCurrentTeb()->WowTebOffset) init_wow64( context );
  
@@ -203,18 +219,6 @@ index 42aa787cf34..fa18c6c4a26 100644
          {
              MESSAGE( "wine: could not load kernel32.dll, status %x\n", status );
              NtTerminateProcess( GetCurrentProcess(), status );
-diff --git a/include/winternl.h b/include/winternl.h
-index 5da3e010bf0..5d4be728b28 100644
---- a/include/winternl.h
-+++ b/include/winternl.h
-@@ -3393,6 +3393,7 @@ typedef void (CALLBACK *PLDR_DLL_NOTIFICATION_FUNCTION)(ULONG, LDR_DLL_NOTIFICAT
- #define LDR_COR_ILONLY                  0x01000000
- 
- /* these ones is Wine specific */
-+#define LDR_WINE_SYSTEM                 0x20000000
- #define LDR_DONT_RESOLVE_REFS           0x40000000
- #define LDR_WINE_BUILTIN                0x80000000
- 
 
 -- 
 2.33.0

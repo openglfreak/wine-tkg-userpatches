@@ -1,0 +1,79 @@
+From: "Gabriel Ivăncescu" <gabrielopcode@gmail.com>
+Subject: [PATCH v6 2/5] nsiproxy: Fill the reply when it's not pending on the unix-side.
+Message-Id: <902aefe680b5597ee105b6e93e07f9c29ed1a433.1636388204.git.gabrielopcode@gmail.com>
+Date: Mon,  8 Nov 2021 18:18:03 +0200
+In-Reply-To: <de1b49690ee3390dca084214ee6cae9170c0d170.1636388204.git.gabrielopcode@gmail.com>
+References: <de1b49690ee3390dca084214ee6cae9170c0d170.1636388204.git.gabrielopcode@gmail.com>
+
+Signed-off-by: Gabriel Ivăncescu <gabrielopcode@gmail.com>
+---
+ dlls/nsiproxy.sys/device.c           | 8 ++------
+ dlls/nsiproxy.sys/icmp_echo.c        | 2 +-
+ dlls/nsiproxy.sys/nsiproxy_private.h | 5 ++---
+ 3 files changed, 5 insertions(+), 10 deletions(-)
+
+diff --git a/dlls/nsiproxy.sys/device.c b/dlls/nsiproxy.sys/device.c
+index 90a7a3d..dd08282 100644
+--- a/dlls/nsiproxy.sys/device.c
++++ b/dlls/nsiproxy.sys/device.c
+@@ -353,13 +353,13 @@ static DWORD WINAPI listen_thread_proc( void *arg )
+ static void handle_queued_send_echo( IRP *irp )
+ {
+     struct nsiproxy_icmp_echo *in = (struct nsiproxy_icmp_echo *)irp->AssociatedIrp.SystemBuffer;
+-    struct nsiproxy_icmp_echo_reply *reply = (struct nsiproxy_icmp_echo_reply *)irp->AssociatedIrp.SystemBuffer;
+     struct icmp_send_echo_params params;
+     NTSTATUS status;
+ 
+     TRACE( "\n" );
+     params.request = in->data + ((in->opt_size + 3) & ~3);
+     params.request_size = in->req_size;
++    params.reply = irp->AssociatedIrp.SystemBuffer;
+     params.ttl = in->ttl;
+     params.tos = in->tos;
+     params.dst = &in->dst;
+@@ -371,11 +371,7 @@ static void handle_queued_send_echo( IRP *irp )
+     {
+         irp->IoStatus.Status = status;
+         if (status == STATUS_SUCCESS)
+-        {
+-            memset( reply, 0, sizeof(*reply) );
+-            reply->status = params.ip_status;
+-            irp->IoStatus.Information = sizeof(*reply);
+-        }
++            irp->IoStatus.Information = params.reply_len;
+         IoCompleteRequest( irp, IO_NO_INCREMENT );
+     }
+     else
+diff --git a/dlls/nsiproxy.sys/icmp_echo.c b/dlls/nsiproxy.sys/icmp_echo.c
+index a4ef02a..a9bdb82 100644
+--- a/dlls/nsiproxy.sys/icmp_echo.c
++++ b/dlls/nsiproxy.sys/icmp_echo.c
+@@ -586,7 +586,7 @@ NTSTATUS icmp_send_echo( void *args )
+     {
+         TRACE( "sendto() rets %d errno %d\n", ret, errno );
+         icmp_data_free( data );
+-        params->ip_status = errno_to_ip_status( errno );
++        params->reply_len = data->ops->set_reply_ip_status( errno_to_ip_status( errno ), params->reply );
+         return STATUS_SUCCESS;
+     }
+ 
+diff --git a/dlls/nsiproxy.sys/nsiproxy_private.h b/dlls/nsiproxy.sys/nsiproxy_private.h
+index 91dd393..8a9f2dd 100644
+--- a/dlls/nsiproxy.sys/nsiproxy_private.h
++++ b/dlls/nsiproxy.sys/nsiproxy_private.h
+@@ -28,9 +28,8 @@ struct icmp_listen_params
+ struct icmp_send_echo_params
+ {
+     SOCKADDR_INET *dst;
+-    void *request;
+-    DWORD request_size;
++    void *request, *reply;
++    DWORD request_size, reply_len;
+     BYTE ttl, tos;
+     HANDLE handle;
+-    ULONG ip_status;
+ };
+
+-- 
+2.31.1
+

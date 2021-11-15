@@ -1,0 +1,205 @@
+From: Zebediah Figura <zfigura@codeweavers.com>
+Subject: [PATCH v9 1/2] ntdll: Allow loading system DLLs from a path specified at configure time.
+Message-Id: <20211112175538.2305823-1-zfigura@codeweavers.com>
+Date: Fri, 12 Nov 2021 11:55:37 -0600
+
+Many distributions provide MinGW-compiled system DLLs which are currently
+bundled with Wine. Unfortunately, while MinGW pkg-config can be used to detect
+the linking path, there is no standardized runtime path, and many distributions
+in fact use different paths.
+
+Signed-off-by: Zebediah Figura <zfigura@codeweavers.com>
+---
+v8, v9: No change.
+
+ configure.ac                   |  3 +++
+ dlls/ntdll/Makefile.in         |  1 +
+ dlls/ntdll/loader.c            | 10 ++++++++--
+ dlls/ntdll/unix/env.c          | 30 ++++++++++++++++++++++++++++++
+ dlls/ntdll/unix/loader.c       | 23 +++++++++++++++++++++++
+ dlls/ntdll/unix/unix_private.h |  1 +
+ 6 files changed, 66 insertions(+), 2 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index f86a5decb07..6ef890f15e0 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -99,6 +99,7 @@ AC_ARG_WITH(xshm,      AS_HELP_STRING([--without-xshm],[do not use XShm (shared
+ AC_ARG_WITH(xxf86vm,   AS_HELP_STRING([--without-xxf86vm],[do not use XFree video mode extension]),
+             [if test "x$withval" = "xno"; then ac_cv_header_X11_extensions_xf86vmode_h=no; ac_cv_header_X11_extensions_xf86vmproto_h=no; fi])
+ 
++AC_ARG_WITH(system-dllpath,AS_HELP_STRING([--with-system-dllpath=PATH],[load external PE dependencies from colon-separated path PATH]))
+ AC_ARG_WITH(wine-tools,AS_HELP_STRING([--with-wine-tools=DIR],[use Wine tools from directory DIR]))
+ AC_ARG_WITH(wine64,    AS_HELP_STRING([--with-wine64=DIR],[use the 64-bit Wine in DIR for a Wow64 build]))
+ 
+@@ -266,6 +267,8 @@ then
+     TARGETFLAGS="-b $host_alias $TARGETFLAGS"
+ fi
+ 
++AC_SUBST(system_dllpath,"$with_system_dllpath")
++
+ dnl Check for flex
+ AC_CHECK_PROGS(FLEX,flex,none)
+ if test "$FLEX" = "none"
+diff --git a/dlls/ntdll/Makefile.in b/dlls/ntdll/Makefile.in
+index d3be1fad0bc..7e823208840 100644
+--- a/dlls/ntdll/Makefile.in
++++ b/dlls/ntdll/Makefile.in
+@@ -72,5 +72,6 @@ EXTRA_OBJS = unix/version.o
+ 
+ unix_loader_EXTRADEFS = \
+ 	-DBINDIR=\"${bindir}\" \
++	-DSYSTEMDLLPATH=\"${system_dllpath}\" \
+ 	-DDLL_TO_BINDIR=\"`${MAKEDEP} -R ${dlldir} ${bindir}`\" \
+ 	-DBIN_TO_DATADIR=\"`${MAKEDEP} -R ${bindir} ${datadir}/wine`\"
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 255d5afef79..7a894081274 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -95,6 +95,7 @@ static int free_lib_count;   /* recursion depth of LdrUnloadDll calls */
+ static ULONG path_safe_mode;  /* path mode set by RtlSetSearchPathMode */
+ static ULONG dll_safe_mode = 1;  /* dll search mode */
+ static UNICODE_STRING dll_directory;  /* extra path for LdrSetDllDirectory */
++static UNICODE_STRING system_dll_path; /* path to search for system dependency dlls */
+ static DWORD default_search_flags;  /* default flags set by LdrSetDefaultDllDirectories */
+ static WCHAR *default_load_path;    /* default dll search path */
+ 
+@@ -2981,12 +2982,15 @@ static NTSTATUS load_dll( const WCHAR *load_path, const WCHAR *libname, const WC
+     struct file_id id;
+     HANDLE mapping = 0;
+     SECTION_IMAGE_INFORMATION image_info;
+-    NTSTATUS nts;
++    NTSTATUS nts = STATUS_DLL_NOT_FOUND;
+     ULONG64 prev;
+ 
+     TRACE( "looking for %s in %s\n", debugstr_w(libname), debugstr_w(load_path) );
+ 
+-    nts = find_dll_file( load_path, libname, default_ext, &nt_name, pwm, &mapping, &image_info, &id );
++    if (system_dll_path.Buffer)
++        nts = find_dll_file( system_dll_path.Buffer, libname, default_ext, &nt_name, pwm, &mapping, &image_info, &id );
++    if (nts)
++        nts = find_dll_file( load_path, libname, default_ext, &nt_name, pwm, &mapping, &image_info, &id );
+ 
+     if (*pwm)  /* found already loaded module */
+     {
+@@ -3997,6 +4001,8 @@ void WINAPI LdrInitializeThunk( CONTEXT *context, ULONG_PTR unknown2, ULONG_PTR
+         load_global_options();
+         version_init();
+ 
++        get_env_var( L"WINESYSTEMDLLPATH", 0, &system_dll_path );
++
+         wm = build_main_module();
+         wm->ldr.LoadCount = -1;
+ 
+diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+index 24f4fa5a588..98ef0308794 100644
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -1281,6 +1281,35 @@ static void add_path_var( WCHAR **env, SIZE_T *pos, SIZE_T *size, const char *na
+ }
+ 
+ 
++static void add_system_dll_path_var( WCHAR **env, SIZE_T *pos, SIZE_T *size )
++{
++    WCHAR *path = NULL;
++    size_t path_len = 0;
++    DWORD i;
++
++    for (i = 0; system_dll_paths[i]; ++i)
++    {
++        WCHAR *nt_name = NULL;
++
++        if (!unix_to_nt_file_name( system_dll_paths[i], &nt_name ))
++        {
++            size_t len = wcslen( nt_name );
++            path = realloc( path, (path_len + len + 1) * sizeof(WCHAR) );
++            memcpy( path + path_len, nt_name, len * sizeof(WCHAR) );
++            path[path_len + len] = ';';
++            path_len += len + 1;
++            free( nt_name );
++        }
++    }
++    if (path_len)
++    {
++        path[path_len - 1] = 0;
++        append_envW( env, pos, size, "WINESYSTEMDLLPATH", path );
++        free( path );
++    }
++}
++
++
+ /*************************************************************************
+  *		add_dynamic_environment
+  *
+@@ -1303,6 +1332,7 @@ static void add_dynamic_environment( WCHAR **env, SIZE_T *pos, SIZE_T *size )
+     }
+     sprintf( str, "WINEDLLDIR%u", i );
+     append_envW( env, pos, size, str, NULL );
++    add_system_dll_path_var( env, pos, size );
+     append_envA( env, pos, size, "WINEUSERNAME", user_name );
+     append_envA( env, pos, size, "WINEDLLOVERRIDES", overrides );
+     if (unix_cp.data)
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 34c7667f6ba..8c9dc7e3320 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -386,6 +386,7 @@ const char *data_dir = NULL;
+ const char *build_dir = NULL;
+ const char *config_dir = NULL;
+ const char **dll_paths = NULL;
++const char **system_dll_paths = NULL;
+ const char *user_name = NULL;
+ SECTION_IMAGE_INFORMATION main_image_info = { NULL };
+ static HMODULE ntdll_module;
+@@ -544,6 +545,27 @@ static void set_dll_path(void)
+ }
+ 
+ 
++static void set_system_dll_path(void)
++{
++    const char *p, *path = SYSTEMDLLPATH;
++    int count = 0;
++
++    if (path && *path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;
++
++    system_dll_paths = malloc( (count + 1) * sizeof(*system_dll_paths) );
++    count = 0;
++
++    if (path && *path)
++    {
++        char *path_copy = strdup(path);
++        for (p = strtok( path_copy, ":" ); p; p = strtok( NULL, ":" ))
++            system_dll_paths[count++] = strdup( p );
++        free( path_copy );
++    }
++    system_dll_paths[count] = NULL;
++}
++
++
+ static void set_home_dir(void)
+ {
+     const char *home = getenv( "HOME" );
+@@ -618,6 +640,7 @@ static void init_paths( char *argv[] )
+     }
+ 
+     set_dll_path();
++    set_system_dll_path();
+     set_home_dir();
+     set_config_dir();
+ }
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index f6db6331e84..7494fb2f3fc 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -123,6 +123,7 @@ extern const char *build_dir DECLSPEC_HIDDEN;
+ extern const char *config_dir DECLSPEC_HIDDEN;
+ extern const char *user_name DECLSPEC_HIDDEN;
+ extern const char **dll_paths DECLSPEC_HIDDEN;
++extern const char **system_dll_paths DECLSPEC_HIDDEN;
+ extern PEB *peb DECLSPEC_HIDDEN;
+ extern USHORT *uctable DECLSPEC_HIDDEN;
+ extern USHORT *lctable DECLSPEC_HIDDEN;
+
+-- 
+2.33.0
+

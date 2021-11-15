@@ -37,40 +37,23 @@ diff --git a/dlls/user32/driver.c b/dlls/user32/driver.c
 index 7ac7714..6dad5dc 100644
 --- a/dlls/user32/driver.c
 +++ b/dlls/user32/driver.c
-@@ -140,6 +140,7 @@ static const USER_DRIVER *load_driver(void)
-         GET_USER_FUNC(SetFocus);
-         GET_USER_FUNC(SetLayeredWindowAttributes);
-         GET_USER_FUNC(SetParent);
-+        GET_USER_FUNC(SetWindowCompositionAttribute);
-         GET_USER_FUNC(SetWindowRgn);
-         GET_USER_FUNC(SetWindowIcon);
-         GET_USER_FUNC(SetWindowStyle);
-@@ -421,6 +422,12 @@ static void CDECL nulldrv_SetParent( HWND hwnd, HWND parent, HWND old_parent )
- {
+@@ -934,6 +935,11 @@ static void CDECL loaderdrv_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BY
+     load_driver()->pGetDC( hdc, hwnd, top_win, win_rect, top_rect, flags );
  }
  
-+static DWORD CDECL nulldrv_SetWindowCompositionAttribute( HWND hwnd, DWORD attribute, void *data )
++static DWORD CDECL loaderdrv_SetWindowCompositionAttribute( HWND hwnd, DWORD attribute, void *data )
 +{
-+    SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
-+    return ~0;
++    return load_driver()->pSetWindowCompositionAttribute( hwnd, attribute, data );
 +}
 +
- static void CDECL nulldrv_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
+ static void CDECL loaderdrv_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
  {
- }
-@@ -522,6 +529,7 @@ static USER_DRIVER null_driver =
-     nulldrv_SetFocus,
-     nulldrv_SetLayeredWindowAttributes,
-     nulldrv_SetParent,
-+    nulldrv_SetWindowCompositionAttribute,
-     nulldrv_SetWindowRgn,
-     nulldrv_SetWindowIcon,
-     nulldrv_SetWindowStyle,
-@@ -737,6 +745,7 @@ static USER_DRIVER lazy_load_driver =
+     load_driver()->pSetWindowRgn( hwnd, hrgn, redraw );
+@@ -1070,6 +1070,7 @@ void CDECL __wine_set_display_driver( struct user_driver_funcs *driver, UINT versi
      nulldrv_SetFocus,
      loaderdrv_SetLayeredWindowAttributes,
      nulldrv_SetParent,
-+    nulldrv_SetWindowCompositionAttribute,
++    loaderdrv_SetWindowCompositionAttribute,
      loaderdrv_SetWindowRgn,
      nulldrv_SetWindowIcon,
      nulldrv_SetWindowStyle,
@@ -87,6 +70,18 @@ index 4434f4b..67f89bb 100644
      default:
          if (msg >= WM_WINE_FIRST_DRIVER_MSG && msg <= WM_WINE_LAST_DRIVER_MSG)
              return USER_Driver->pWindowMessage( hwnd, msg, wparam, lparam );
+diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
+index 7761a1c..3baf39c 100644
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -101,6 +102,7 @@ typedef struct tagUSER_DRIVER {
+     void    (CDECL *pSetFocus)(HWND);
+     void    (CDECL *pSetLayeredWindowAttributes)(HWND,COLORREF,BYTE,DWORD);
+     void    (CDECL *pSetParent)(HWND,HWND,HWND);
++    DWORD   (CDECL *pSetWindowCompositionAttribute)(HWND,DWORD,void*);
+     void    (CDECL *pSetWindowRgn)(HWND,HRGN,BOOL);
+     void    (CDECL *pSetWindowIcon)(HWND,UINT,HICON);
+     void    (CDECL *pSetWindowStyle)(HWND,INT,STYLESTRUCT*);
 diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
 index 7761a1c..3baf39c 100644
 --- a/dlls/user32/user_private.h
@@ -99,14 +94,6 @@ index 7761a1c..3baf39c 100644
      WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
      WM_WINE_LAST_DRIVER_MSG = 0x80001fff
  };
-@@ -101,6 +102,7 @@ typedef struct tagUSER_DRIVER {
-     void   (CDECL *pSetFocus)(HWND);
-     void   (CDECL *pSetLayeredWindowAttributes)(HWND,COLORREF,BYTE,DWORD);
-     void   (CDECL *pSetParent)(HWND,HWND,HWND);
-+    DWORD  (CDECL *pSetWindowCompositionAttribute)(HWND,DWORD,void*);
-     void   (CDECL *pSetWindowRgn)(HWND,HRGN,BOOL);
-     void   (CDECL *pSetWindowIcon)(HWND,UINT,HICON);
-     void   (CDECL *pSetWindowStyle)(HWND,INT,STYLESTRUCT*);
 @@ -366,6 +368,45 @@ typedef struct
  
  #include "poppack.h"
@@ -357,6 +344,31 @@ index 680defc..9840a76 100644
 +    }
 +    return TRUE;
  }
+diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
+index 4434f4b..67f89bb 100644
+--- a/dlls/win32u/driver.c
++++ b/dlls/win32u/driver.c
+@@ -934,6 +934,12 @@ static void CDECL nulldrv_SetParent( HWND hwnd, HWND parent, HWND old_parent )
+ {
+ }
+ 
++static DWORD CDECL nulldrv_SetWindowCompositionAttribute( HWND hwnd, DWORD attribute, void *data )
++{
++    SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
++    return ~0;
++}
++
+ static void CDECL nulldrv_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
+ {
+ }
+@@ -1070,6 +1070,7 @@ void CDECL __wine_set_display_driver( struct user_driver_funcs *driver, UINT ver
+     SET_USER_FUNC(SetFocus);
+     SET_USER_FUNC(SetLayeredWindowAttributes);
+     SET_USER_FUNC(SetParent);
++    SET_USER_FUNC(SetWindowCompositionAttribute);
+     SET_USER_FUNC(SetWindowRgn);
+     SET_USER_FUNC(SetWindowIcon);
+     SET_USER_FUNC(SetWindowStyle);
 diff --git a/server/protocol.def b/server/protocol.def
 index 846d2e1..d96d2e7 100644
 --- a/server/protocol.def

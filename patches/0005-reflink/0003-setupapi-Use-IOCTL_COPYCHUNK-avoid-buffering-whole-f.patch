@@ -53,7 +53,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
      IMAGE_EXPORT_DIRECTORY *exports;
      IMAGE_SECTION_HEADER *section = NULL;
      WORD *ordinals;
-@@ -205,61 +203,82 @@ static void extract_16bit_image( IMAGE_NT_HEADERS *nt, void **data, SIZE_T *size
+@@ -205,60 +203,82 @@ static void extract_16bit_image( IMAGE_NT_HEADERS *nt, void **data, SIZE_T *size
      }
  }
  
@@ -131,8 +131,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
 +        (lstrlenW(src_name) <= 7 || wcscmp( src_name + lstrlenW(src_name) - 7, L"16.fake" )))
      {
 -        *data = file_buffer;
--        if ((lstrlenW(name) > 2 && !wcscmp( name + lstrlenW(name) - 2, L"16" )) ||
--            (lstrlenW(name) > 7 && !wcscmp( name + lstrlenW(name) - 7, L"16.fake" )))
+-        if (lstrlenW(name) > 2 && !wcscmp( name + lstrlenW(name) - 2, L"16" ))
 -            extract_16bit_image( nt, data, size );
 -        ret = 1;
 +        /* can't call CopyFileW here because files are open with no share mode */
@@ -202,25 +201,19 @@ index 203d7c393ce..c17a1c7e2c5 100644
  
      pos = maxlen - len - ARRAY_SIZE(L".fake");
      lstrcpyW( file + pos, name );
-@@ -449,9 +467,9 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
+@@ -449,7 +467,7 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
          ptr = prepend( ptr, ptr, namelen );
          ptr = prepend( ptr, L"\\dlls", 5 );
          ptr = prepend( ptr, build_dir, lstrlenW(build_dir) );
 -        if ((res = read_file( ptr, &data, size ))) goto done;
 +        if ((res = read_file( ptr, h ))) goto done;
-         lstrcpyW( file + pos + len + 1, L".fake" );
--        if ((res = read_file( ptr, &data, size ))) goto done;
-+        if ((res = read_file( ptr, h ))) goto done;
  
          /* now as a program */
          ptr = file + pos;
-@@ -461,9 +479,9 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
+@@ -461,7 +479,7 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
          ptr = prepend( ptr, ptr, namelen );
          ptr = prepend( ptr, L"\\programs", 9 );
          ptr = prepend( ptr, build_dir, lstrlenW(build_dir) );
--        if ((res = read_file( ptr, &data, size ))) goto done;
-+        if ((res = read_file( ptr, h ))) goto done;
-         lstrcpyW( file + pos + len + 1, L".fake" );
 -        if ((res = read_file( ptr, &data, size ))) goto done;
 +        if ((res = read_file( ptr, h ))) goto done;
      }
@@ -297,7 +290,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
          }
      }
  
-@@ -884,23 +908,25 @@ static void register_fake_dll( const WCHAR *name, const void *data, size_t size,
+@@ -884,22 +908,24 @@ static void register_fake_dll( const WCHAR *name, const void *data, size_t size,
      IRegistrar_AddReplacement( registrar, L"SystemRoot", buffer );
      EnumResourceNamesW( module, L"WINE_REGISTRY", register_resource, (LONG_PTR)&hr );
      if (FAILED(hr)) ERR( "failed to register %s: %x\n", debugstr_w(name), hr );
@@ -307,7 +300,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
  }
  
  /* copy a fake dll file to the dest directory */
- static int install_fake_dll( WCHAR *dest, WCHAR *file, const WCHAR *ext, BOOL delete, struct list *delay_copy )
+ static int install_fake_dll( WCHAR *dest, WCHAR *file, BOOL delete, struct list *delay_copy )
  {
      int ret;
 -    SIZE_T size;
@@ -319,7 +312,6 @@ index 203d7c393ce..c17a1c7e2c5 100644
      SIZE_T len = end - name;
 +    HANDLE hsrc = INVALID_HANDLE_VALUE;
  
-     if (ext) lstrcpyW( end, ext );
 -    if (!(ret = read_file( file, &data, &size )))
 +    if (!(ret = read_file( file, &hsrc )))
      {

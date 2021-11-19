@@ -1,0 +1,130 @@
+From: Andrew Eikum <aeikum@codeweavers.com>
+Subject: [PATCH 3/3 optional] kernel32/tests: Add GetQueuedCompletionPort race condition test
+Message-Id: <20211123172118.GQ796@foghorn.codeweavers.com>
+Date: Tue, 23 Nov 2021 11:21:19 -0600
+
+Signed-off-by: Andrew Eikum <aeikum@codeweavers.com>
+---
+
+This patch is optional. It demonstrates the race condition described
+in the first patch. Without the fixes applied, Wine always fails in
+fewer than 50 runs on my machine. Windows never fails. Since it's a
+race condition, it's always going to be flaky, so I'm not sure whether
+it's useful to add these tests (and the added test runtime).
+
+ dlls/kernel32/tests/process.c | 80 ++++++++++++++++++++++++++++++++++-
+ 1 file changed, 78 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/kernel32/tests/process.c b/dlls/kernel32/tests/process.c
+index 0d1a2f1a31d..cdcc564d006 100644
+--- a/dlls/kernel32/tests/process.c
++++ b/dlls/kernel32/tests/process.c
+@@ -2776,12 +2776,43 @@ static void test_QueryInformationJobObject(void)
+     CloseHandle(job);
+ }
+ 
++static struct completion_port_test_data {
++    HANDLE port;
++    HANDLE wait_evt;
++    BOOL quit;
++} completion_port_test_data;
++
++static DWORD WINAPI completion_port_test_threadproc(void *user)
++{
++    while (!completion_port_test_data.quit)
++    {
++        WaitForSingleObject(completion_port_test_data.wait_evt, INFINITE);
++        if (completion_port_test_data.quit)
++        {
++            CloseHandle(completion_port_test_data.port);
++            break;
++        }
++
++        Sleep(10); /* allow main thread to settle into GetQueued() */
++
++        PostQueuedCompletionStatus(completion_port_test_data.port, 1, 0, (OVERLAPPED*)&completion_port_test_data);
++        CloseHandle(completion_port_test_data.port);
++
++        SetEvent(completion_port_test_data.wait_evt);
++    }
++    return 0;
++}
++
+ static void test_CompletionPort(void)
+ {
+     JOBOBJECT_ASSOCIATE_COMPLETION_PORT port_info;
+     PROCESS_INFORMATION pi, pi2;
+-    HANDLE job, port;
+-    BOOL ret;
++    HANDLE job, port, thread;
++    BOOL ret, failed;
++    int tries;
++    DWORD bytes_transferred;
++    ULONG_PTR key;
++    OVERLAPPED *overlapped;
+ 
+     job = pCreateJobObjectW(NULL, NULL);
+     ok(job != NULL, "CreateJobObject error %u\n", GetLastError());
+@@ -2822,6 +2853,50 @@ static void test_CompletionPort(void)
+     CloseHandle(pi.hThread);
+     CloseHandle(job);
+     CloseHandle(port);
++
++    /* no race condition between blocked GetQueuedCompletionStatus and CloseHandle(port) */
++    completion_port_test_data.quit = FALSE;
++    completion_port_test_data.wait_evt = CreateEventW(NULL, FALSE, FALSE, NULL);
++    thread = CreateThread(NULL, 0, &completion_port_test_threadproc, NULL, 0, NULL);
++
++    failed = FALSE;
++    tries = 0;
++    while (tries < 100 && !failed)
++    {
++        completion_port_test_data.port = pCreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);
++        ok(completion_port_test_data.port != NULL, "%u: CreateIoCompletionPort error %u\n", tries, GetLastError());
++
++        SetEvent(completion_port_test_data.wait_evt);
++
++        bytes_transferred = 0xdeadbeef;
++        key = 0xdeadbeee;
++        overlapped = (OVERLAPPED*)0xdeadbeed;
++
++        ret = GetQueuedCompletionStatus(completion_port_test_data.port, &bytes_transferred, &key,
++                &overlapped, INFINITE);
++        ok(ret == TRUE, "%u: GetQueuedCompletionStatus failed: %u\n", tries, GetLastError());
++        if (ret == TRUE)
++        {
++            ok(bytes_transferred == 1, "%u: got bt: 0x%x\n", tries, bytes_transferred);
++            ok(key == 0, "%u: got key: 0x%x\n", tries, key);
++            ok(overlapped == (OVERLAPPED*)&completion_port_test_data, "%u: got overlapped: %p\n", tries, overlapped);
++        }
++        else
++            failed = TRUE;
++
++        ++tries;
++
++        /* wait for other thread to be ready for next test */
++        WaitForSingleObject(completion_port_test_data.wait_evt, INFINITE);
++    }
++
++    completion_port_test_data.quit = TRUE;
++    SetEvent(completion_port_test_data.wait_evt);
++
++    WaitForSingleObject(thread, INFINITE);
++
++    CloseHandle(thread);
++    CloseHandle(completion_port_test_data.wait_evt);
+ }
+ 
+ static void test_KillOnJobClose(void)
+@@ -5055,6 +5130,7 @@ START_TEST(process)
+     }
+     else
+         win_skip("PROCESS_QUERY_LIMITED_INFORMATION is not supported on this platform\n");
++
+     test_process_info(GetCurrentProcess());
+     test_TerminateProcess();
+     test_Startup();
+
+-- 
+2.34.0
+

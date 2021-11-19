@@ -1,0 +1,271 @@
+From 2b30e521fe32db4a8c75cd128f8feedb148de61c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 1 Mar 2021 20:55:26 +0100
+Subject: [PATCH 3/3] win32u: Use shared memory to read thread input keystate.
+
+---
+ dlls/win32u/input.c | 49 ++++++++++++++++++++++++++++++++-------------
+ 1 file changed, 35 insertions(+), 14 deletions(-)
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index d592d9149a3..08d02109707 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -132,38 +132,59 @@ HKL WINAPI NtUserGetKeyboardLayout( DWORD thread_id )
+  */
+ SHORT WINAPI NtUserGetKeyState( INT vkey )
+ {
++    volatile struct desktop_shared_memory *desktop = get_desktop_shared_memory();
++    volatile struct input_shared_memory *foreground = get_foreground_shared_memory();
++    volatile struct input_shared_memory *shared = get_input_shared_memory();
++    DWORD tid = GetCurrentThreadId();
+     SHORT retval = 0;
++    BOOL is_foreground, update_keystate;
+ 
+-    SERVER_START_REQ( get_key_state )
++    SHARED_READ_BEGIN( &foreground->seq )
+     {
+-        req->key = vkey;
+-        if (!wine_server_call( req )) retval = (signed char)(reply->state & 0x81);
++        if ((is_foreground = (foreground->tid == tid)))
++            retval = (signed char)(foreground->keystate[vkey & 0xff] & 0x81);
+     }
+-    SERVER_END_REQ;
++    SHARED_READ_END( &foreground->seq );
++
++    if (!is_foreground)
++    {
++        SHARED_READ_BEGIN( &shared->seq )
++        SHARED_READ_BEGIN( &desktop->seq )
++        {
++            retval = (signed char)(shared->keystate[vkey & 0xff] & 0x81);
++            update_keystate = memcmp( (const void *)desktop->keystate, (const void *)shared->keystate, 256 );
++        }
++        SHARED_READ_END( &desktop->seq );
++        SHARED_READ_END( &shared->seq );
++
++        if (update_keystate) SERVER_START_REQ( get_key_state )
++        {
++            req->key = vkey;
++            if (!wine_server_call( req )) retval = (signed char)(reply->state & 0x81);
++        }
++        SERVER_END_REQ;
++    }
++
+     TRACE("key (0x%x) -> %x\n", vkey, retval);
+     return retval;
+ }
+ 
+ /**********************************************************************
+  *	     NtUserGetKeyboardState    (win32u.@)
+  */
+ BOOL WINAPI NtUserGetKeyboardState( BYTE *state )
+ {
+-    BOOL ret;
+-    UINT i;
++    volatile struct input_shared_memory *shared = get_input_shared_memory();
+ 
+     TRACE("(%p)\n", state);
+ 
+-    memset( state, 0, 256 );
+-    SERVER_START_REQ( get_key_state )
++    SHARED_READ_BEGIN( &shared->seq )
+     {
+-        req->key = -1;
+-        wine_server_set_reply( req, state, 256 );
+-        ret = !wine_server_call_err( req );
+-        for (i = 0; i < 256; i++) state[i] &= 0x81;
++        memcpy( state, (const void *)shared->keystate, 256 );
+     }
+-    SERVER_END_REQ;
+-    return ret;
++    SHARED_READ_END( &shared->seq );
++
++    return TRUE;
+ }
+ 
+ /**********************************************************************
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 5a36f9bb7aa..5ab59e325c9 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -356,4 +356,24 @@ DWORD win32u_mbtowc( CPTABLEINFO *info, WCHAR *dst, DWORD dstlen, const char *src,
+ DWORD win32u_wctomb( CPTABLEINFO *info, char *dst, DWORD dstlen, const WCHAR *src,
+                      DWORD srclen ) DECLSPEC_HIDDEN;
+ 
++#if defined(__i386__) || defined(__x86_64__)
++#define __SHARED_READ_SEQ( x ) (*(x))
++#define __SHARED_READ_FENCE do {} while(0)
++#else
++#define __SHARED_READ_SEQ( x ) __atomic_load_n( x, __ATOMIC_RELAXED )
++#define __SHARED_READ_FENCE __atomic_thread_fence( __ATOMIC_ACQUIRE )
++#endif
++
++#define SHARED_READ_BEGIN( x )                                          \
++    do {                                                                \
++        unsigned int __seq;                                             \
++        do {                                                            \
++            while ((__seq = __SHARED_READ_SEQ( x )) & SEQUENCE_MASK) NtYieldExecution(); \
++            __SHARED_READ_FENCE;
++
++#define SHARED_READ_END( x )                       \
++            __SHARED_READ_FENCE;                   \
++        } while (__SHARED_READ_SEQ( x ) != __seq); \
++    } while(0)
++
+ #endif /* __WINE_WIN32U_PRIVATE */
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 5a36f9bb7aa..5ab59e325c9 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -241,6 +241,8 @@ extern BOOL WINPROC_call_window( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
+     return (struct user_thread_info *)NtCurrentTeb()->Win32ClientInfo;
+ }
+ 
++extern volatile struct desktop_shared_memory *get_desktop_shared_memory( void ) DECLSPEC_HIDDEN;
++
+ extern const struct user_driver_funcs *user_driver DECLSPEC_HIDDEN;
+ 
+ static inline BOOL set_ntstatus( NTSTATUS status )
+diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
+index 95a9eb85099..821c04608e7 100644
+--- a/dlls/win32u/winstation.c
++++ b/dlls/win32u/winstation.c
+@@ -443,6 +443,137 @@ static const WCHAR *get_default_desktop( void *buf, size_t buf_size )
+     return defaultW;
+ }
+ 
++
++static void map_shared_memory_section( const WCHAR *name, SIZE_T size, HANDLE root, HANDLE *handle, void **ptr )
++{
++    OBJECT_ATTRIBUTES attr;
++    UNICODE_STRING section_str;
++    NTSTATUS status;
++
++    section_str.Buffer = name;
++    section_str.MaximumLength = section_str.Length = lstrlenW( name );
++    InitializeObjectAttributes( &attr, &section_str, 0, root, NULL );
++    status = NtOpenSection( handle, SECTION_ALL_ACCESS, &attr );
++    if (status)
++    {
++        ERR( "failed to open section %s: %08x\n", debugstr_w(name), status );
++        *ptr = NULL;
++        *handle = NULL;
++        return;
++    }
++
++    *ptr = NULL;
++    status = NtMapViewOfSection( *handle, GetCurrentProcess(), ptr, 0, 0, NULL,
++                                 &size, ViewUnmap, 0, PAGE_READONLY );
++    if (status)
++    {
++        ERR( "failed to map view of section %s: %08x\n", debugstr_w(name), status );
++        NtClose( *handle );
++        *ptr = NULL;
++        *handle = NULL;
++    }
++}
++
++
++volatile struct desktop_shared_memory *get_desktop_shared_memory( void )
++{
++    static const WCHAR dir_desktop_mapsW[] = {'_','_','w','i','n','e','_','d','e','s','k','t','o','p','_','m','a','p','p','i','n','g','s','\\'};
++    struct user_thread_info *thread_info = get_user_thread_info();
++    HANDLE root = get_winstations_dir_handle(), handles[2];
++    WCHAR buf[MAX_PATH], *ptr;
++    DWORD i, needed;
++
++    if (thread_info->desktop_shared_memory) return thread_info->desktop_shared_memory;
++
++    handles[0] = NtUserGetProcessWindowStation();
++    handles[1] = NtUserGetThreadDesktop( GetCurrentThreadId() );
++
++    memcpy( buf, dir_desktop_mapsW, sizeof(dir_desktop_mapsW) );
++    ptr = buf + ARRAY_SIZE(dir_desktop_mapsW);
++
++    for (i = 0; i < 2; i++)
++    {
++        NtUserGetObjectInformation( handles[i], UOI_NAME, (void *)ptr, sizeof(buf) - (ptr - buf) * sizeof(WCHAR), &needed );
++        ptr += needed / sizeof(WCHAR);
++        if (i == 0) *(ptr - 1) = '\\';
++    }
++
++    map_shared_memory_section( buf, sizeof(struct desktop_shared_memory), root,
++                               &thread_info->desktop_shared_map, (void **)&thread_info->desktop_shared_memory );
++    return thread_info->desktop_shared_memory;
++}
++
++
++volatile struct queue_shared_memory *get_queue_shared_memory( void )
++{
++    static const WCHAR dir_thread_mapsW[] = {'\\','K','e','r','n','e','l','O','b','j','e','c','t','s',
++                                             '\\','_','_','w','i','n','e','_','t','h','r','e','a','d','_','m','a','p','p','i','n','g','s',
++                                             '\\','%','0','8','x','-','q','u','e','u','e',0};
++    struct user_thread_info *thread_info = get_user_thread_info();
++    WCHAR buf[MAX_PATH];
++
++    if (thread_info->queue_shared_memory) return thread_info->queue_shared_memory;
++
++    swprintf( buf, ARRAY_SIZE(buf), dir_thread_mapsW, GetCurrentThreadId() );
++    map_shared_memory_section( buf, sizeof(struct queue_shared_memory), NULL,
++                               &thread_info->queue_shared_map, (void **)&thread_info->queue_shared_memory );
++    return thread_info->queue_shared_memory;
++}
++
++
++static volatile struct input_shared_memory *get_thread_input_shared_memory( DWORD tid, HANDLE *handle,
++                                                                            struct input_shared_memory **ptr )
++{
++    static const WCHAR dir_thread_mapsW[] = {'\\','K','e','r','n','e','l','O','b','j','e','c','t','s',
++                                             '\\','_','_','w','i','n','e','_','t','h','r','e','a','d','_','m','a','p','p','i','n','g','s',
++                                             '\\','%','0','8','x','-','i','n','p','u','t',0};
++    WCHAR buf[MAX_PATH];
++
++    if (*ptr && (*ptr)->tid == tid) return *ptr;
++    if (*ptr) NtClose( *handle );
++
++    swprintf( buf, ARRAY_SIZE(buf), dir_thread_mapsW, tid );
++    map_shared_memory_section( buf, sizeof(struct input_shared_memory), NULL,
++                               handle, (void **)ptr );
++    return *ptr;
++}
++
++
++volatile struct input_shared_memory *get_input_shared_memory( void )
++{
++    volatile struct queue_shared_memory *queue = get_queue_shared_memory();
++    struct user_thread_info *thread_info = get_user_thread_info();
++    DWORD tid;
++
++    SHARED_READ_BEGIN( &queue->seq )
++    {
++        tid = queue->input_tid;
++    }
++    SHARED_READ_END( &queue->seq );
++
++    return get_thread_input_shared_memory( tid, &thread_info->input_shared_map,
++                                           &thread_info->input_shared_memory );
++}
++
++
++volatile struct input_shared_memory *get_foreground_shared_memory( void )
++{
++    volatile struct desktop_shared_memory *desktop = get_desktop_shared_memory();
++    struct user_thread_info *thread_info = get_user_thread_info();
++    DWORD tid;
++
++    SHARED_READ_BEGIN( &desktop->seq )
++    {
++        tid = desktop->foreground_tid;
++    }
++    SHARED_READ_END( &desktop->seq );
++
++    if (!tid) return NULL;
++    return get_thread_input_shared_memory( tid, &thread_info->foreground_shared_map,
++                                           &thread_info->foreground_shared_memory );
++}
++
++
+ /***********************************************************************
+  *           winstation_init
+  *

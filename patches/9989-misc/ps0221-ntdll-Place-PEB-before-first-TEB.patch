@@ -1,0 +1,145 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH] ntdll: Place PEB before first TEB.
+Message-Id: <20211122173335.2594441-1-pgofman@codeweavers.com>
+Date: Mon, 22 Nov 2021 20:33:35 +0300
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/ntdll/tests/wow64.c  | 25 +++++++++++++++++++++++++
+ dlls/ntdll/thread.c       |  4 +---
+ dlls/ntdll/unix/debug.c   |  2 +-
+ dlls/ntdll/unix/virtual.c | 15 ++++++++-------
+ 4 files changed, 35 insertions(+), 11 deletions(-)
+
+diff --git a/dlls/ntdll/tests/wow64.c b/dlls/ntdll/tests/wow64.c
+index be2f2138933..3d2548843be 100644
+--- a/dlls/ntdll/tests/wow64.c
++++ b/dlls/ntdll/tests/wow64.c
+@@ -225,6 +225,14 @@ static void test_query_architectures(void)
+     }
+ }
+ 
++static TEB *test_thread_teb_addr;
++
++static DWORD WINAPI test_teb_addr_thread(void *ptr)
++{
++    test_thread_teb_addr = NtCurrentTeb();
++    return 0;
++}
++
+ static void test_peb_teb(void)
+ {
+     PROCESS_BASIC_INFORMATION proc_info;
+@@ -232,6 +240,7 @@ static void test_peb_teb(void)
+     PROCESS_INFORMATION pi;
+     STARTUPINFOA si = {0};
+     NTSTATUS status;
++    HANDLE thread;
+     void *redir;
+     SIZE_T res;
+     TEB teb;
+@@ -419,6 +428,22 @@ static void test_peb_teb(void)
+     ok( !NtCurrentTeb()->GdiBatchCount, "GdiBatchCount set to %x\n", NtCurrentTeb()->GdiBatchCount );
+     ok( !NtCurrentTeb()->WowTebOffset || broken( NtCurrentTeb()->WowTebOffset == 1 ), /* vista */
+         "WowTebOffset set to %x\n", NtCurrentTeb()->WowTebOffset );
++
++    thread = CreateThread( NULL, 0, test_teb_addr_thread, NULL, 0, NULL );
++    WaitForSingleObject( thread, INFINITE );
++    if (test_thread_teb_addr > NtCurrentTeb())
++    {
++        if (sizeof(void *) > sizeof(int) || is_wow64)
++        {
++            ok( (char *)NtCurrentTeb() - NtCurrentTeb()->WowTebOffset == (char *)NtCurrentTeb()->Peb + 0x1000,
++                "Got unexpected teb %p, peb %p.\n", NtCurrentTeb(), NtCurrentTeb()->Peb );
++        }
++    }
++    else
++    {
++        /* Before Win10 1607. */
++        win_skip( "Old teb placement.\n" );
++    }
+ }
+ 
+ static void test_selectors(void)
+diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+index 37dc7c8ab37..dcf226294e8 100644
+--- a/dlls/ntdll/thread.c
++++ b/dlls/ntdll/thread.c
+@@ -63,9 +63,7 @@ static inline struct debug_info *get_info(void)
+ 
+ static void init_options(void)
+ {
+-    unsigned int offset = page_size * (sizeof(void *) / 4);
+-
+-    debug_options = (struct __wine_debug_channel *)((char *)NtCurrentTeb()->Peb + offset);
++    debug_options = (struct __wine_debug_channel *)((char *)NtCurrentTeb()->Peb - 3 * page_size);
+     while (debug_options[nb_debug_options].name[0]) nb_debug_options++;
+ }
+ 
+diff --git a/dlls/ntdll/unix/debug.c b/dlls/ntdll/unix/debug.c
+index 26e7decc059..7744d421f6d 100644
+--- a/dlls/ntdll/unix/debug.c
++++ b/dlls/ntdll/unix/debug.c
+@@ -324,7 +324,7 @@ void dbg_init(void)
+ 
+     if (nb_debug_options == -1) init_options();
+ 
+-    options = (struct __wine_debug_channel *)((char *)peb + (is_win64 ? 2 : 1) * page_size);
++    options = (struct __wine_debug_channel *)((char *)peb - 3 * page_size);
+     memcpy( options, debug_options, nb_debug_options * sizeof(*options) );
+     free( debug_options );
+     debug_options = options;
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 5873a3e2335..1dcde261bcf 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -2986,6 +2986,7 @@ static TEB *init_teb( void *ptr, BOOL is_wow )
+  */
+ TEB *virtual_alloc_first_teb(void)
+ {
++    static const BOOL is_wow = FALSE;
+     void *ptr;
+     NTSTATUS status;
+     SIZE_T data_size = page_size;
+@@ -3003,12 +3004,12 @@ TEB *virtual_alloc_first_teb(void)
+ 
+     NtAllocateVirtualMemory( NtCurrentProcess(), &teb_block, is_win64 ? 0x7fffffff : 0, &total,
+                              MEM_RESERVE | MEM_TOP_DOWN, PAGE_READWRITE );
+-    teb_block_pos = 30;
+-    ptr = (char *)teb_block + 30 * block_size;
++    teb_block_pos = 2;
++    ptr = (char *)teb_block;
+     data_size = 2 * block_size;
+     NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&ptr, 0, &data_size, MEM_COMMIT, PAGE_READWRITE );
+-    peb = (PEB *)((char *)teb_block + 31 * block_size + (is_win64 ? 0 : page_size));
+-    return init_teb( ptr, FALSE );
++    peb = (PEB *)((char *)teb_block + block_size - page_size - (is_win64 && is_wow ? page_size : 0));
++    return init_teb( (char *)ptr + block_size, is_wow );
+ }
+ 
+ 
+@@ -3033,7 +3034,7 @@ NTSTATUS virtual_alloc_teb( TEB **ret_teb )
+     }
+     else
+     {
+-        if (!teb_block_pos)
++        if (teb_block_pos == 32)
+         {
+             SIZE_T total = 32 * block_size;
+ 
+@@ -3044,9 +3045,9 @@ NTSTATUS virtual_alloc_teb( TEB **ret_teb )
+                 return status;
+             }
+             teb_block = ptr;
+-            teb_block_pos = 32;
++            teb_block_pos = 0;
+         }
+-        ptr = ((char *)teb_block + --teb_block_pos * block_size);
++        ptr = ((char *)teb_block + teb_block_pos++ * block_size);
+         NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&ptr, 0, &block_size,
+                                  MEM_COMMIT, PAGE_READWRITE );
+     }
+
+-- 
+2.33.1
+

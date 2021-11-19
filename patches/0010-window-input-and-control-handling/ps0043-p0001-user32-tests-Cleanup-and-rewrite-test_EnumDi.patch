@@ -1,0 +1,277 @@
+From 12b32be329313ae90a5662e3d9f50ea315686006 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sat, 16 Oct 2021 16:01:03 +0200
+Subject: [PATCH 01/25] user32/tests: Cleanup and rewrite
+ test_EnumDisplayDevices.
+
+---
+ dlls/user32/tests/monitor.c | 230 ++++++++++++++++--------------------
+ 1 file changed, 103 insertions(+), 127 deletions(-)
+
+diff --git a/dlls/user32/tests/monitor.c b/dlls/user32/tests/monitor.c
+index bd348576726..131721d7ec1 100644
+--- a/dlls/user32/tests/monitor.c
++++ b/dlls/user32/tests/monitor.c
+@@ -105,148 +105,124 @@ static int get_bitmap_stride(int width, int bpp)
+     return ((width * bpp + 15) >> 3) & ~1;
+ }
+ 
+-static int adapter_count = 0;
+-static int monitor_count = 0;
+-
+-static void test_enumdisplaydevices_adapter(int index, const DISPLAY_DEVICEA *device, DWORD flags)
++static void test_EnumDisplayDevices(void)
+ {
+-    char buffer[128];
+-    int number;
+-    int vendor_id;
+-    int device_id;
+-    int subsys_id;
+-    int revision_id;
++    DISPLAY_DEVICEW dd = {.cb = sizeof(DISPLAY_DEVICEW)}, adapter = dd, adapter_iface = dd, monitor = dd, monitor_iface = dd;
++    DWORD number, monitor_num, adapter_index, monitor_index, adapter_count = 0, monitor_count = 0;
++    WCHAR buffer[MAX_PATH], monitor_id[MAX_PATH];
++    BOOL ret;
+     HDC hdc;
+ 
+-    adapter_count++;
+-
+-    /* DeviceName */
+-    ok(sscanf(device->DeviceName, "\\\\.\\DISPLAY%d", &number) == 1, "#%d: wrong DeviceName %s\n", index,
+-       device->DeviceName);
+-
+-    /* DeviceKey */
+-    /* \Device\Video? value in HLKM\HARDWARE\DEVICEMAP\VIDEO are not necessarily in order with adapter index.
+-     * Check format only */
+-    ok(sscanf(device->DeviceKey, "\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Video\\%[^\\]\\%04d", buffer, &number) == 2,
+-       "#%d: wrong DeviceKey %s\n", index, device->DeviceKey);
+-
+-    /* DeviceString */
+-    ok(broken(!*device->DeviceString) || /* XP on Testbot will return an empty string, whereas XP on real machine doesn't. Probably a bug in virtual adapter driver */
+-       *device->DeviceString, "#%d: expect DeviceString not empty\n", index);
++    /* Doesn't accept \\.\DISPLAY */
++    dd.cb = sizeof(dd);
++    ret = EnumDisplayDevicesW( L"\\\\.\\DISPLAY", 0, &dd, 0 );
++    ok( !ret, "EnumDisplayDevicesW succeeded\n" );
+ 
+-    /* StateFlags */
+-    if (device->StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)
++    adapter_index = -1;
++    while (EnumDisplayDevicesW( NULL, ++adapter_index, &adapter, 0 ))
+     {
+-        /* Test creating DC */
+-        hdc = CreateDCA(device->DeviceName, NULL, NULL, NULL);
+-        ok(hdc != NULL, "#%d: failed to CreateDC(\"%s\") err=%d\n", index, device->DeviceName, GetLastError());
+-        DeleteDC(hdc);
+-    }
++        winetest_push_context( "adapter %u", adapter_index );
+ 
+-    /* DeviceID */
+-    /* DeviceID should equal to the first string of HardwareID value data in PCI GPU instance. You can verify this
+-     * by changing the data and rerun EnumDisplayDevices. But it's difficult to find corresponding PCI device on
+-     * userland. So here we check the expected format instead. */
+-    if (flags & EDD_GET_DEVICE_INTERFACE_NAME)
+-        ok(strlen(device->DeviceID) == 0 || /* vista+ */
+-           sscanf(device->DeviceID, "PCI\\VEN_%04X&DEV_%04X&SUBSYS_%08X&REV_%02X",
+-                  &vendor_id, &device_id, &subsys_id, &revision_id) == 4, /* XP/2003 ignores EDD_GET_DEVICE_INTERFACE_NAME */
+-           "#%d: got %s\n", index, device->DeviceID);
+-    else
+-    {
+-        ok(broken(strlen(device->DeviceID) == 0) || /* XP on Testbot returns an empty string, whereas real machine doesn't */
+-           sscanf(device->DeviceID, "PCI\\VEN_%04X&DEV_%04X&SUBSYS_%08X&REV_%02X", &vendor_id, &device_id, &subsys_id,
+-                  &revision_id) == 4, "#%d: wrong DeviceID %s\n", index, device->DeviceID);
+-    }
+-}
++        ret = EnumDisplayDevicesW( NULL, adapter_index, &adapter_iface, EDD_GET_DEVICE_INTERFACE_NAME );
++        ok( ret, "EnumDisplayDevicesW failed, error %u\n", GetLastError() );
+ 
+-static void test_enumdisplaydevices_monitor(int monitor_index, const char *adapter_name,
+-                                            DISPLAY_DEVICEA *device, DWORD flags)
+-{
+-    static const char device_key_prefix[] = "\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Class"
+-                                            "\\{4d36e96e-e325-11ce-bfc1-08002be10318}\\";
+-    char monitor_name[32];
+-    char buffer[128];
+-    int number;
+-
+-    monitor_count++;
+-
+-    /* DeviceName */
+-    lstrcpyA(monitor_name, adapter_name);
+-    sprintf(monitor_name + strlen(monitor_name), "\\Monitor%d", monitor_index);
+-    ok(!strcmp(monitor_name, device->DeviceName), "#%d: expect %s, got %s\n", monitor_index, monitor_name, device->DeviceName);
+-
+-    /* DeviceString */
+-    ok(*device->DeviceString, "#%d: expect DeviceString not empty\n", monitor_index);
+-
+-    /* StateFlags */
+-    ok(device->StateFlags <= (DISPLAY_DEVICE_ATTACHED | DISPLAY_DEVICE_ACTIVE),
+-       "#%d wrong state %#x\n", monitor_index, device->StateFlags);
+-
+-    /* DeviceID */
+-    CharLowerA(device->DeviceID);
+-    if (flags & EDD_GET_DEVICE_INTERFACE_NAME)
+-    {   /* HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\[monitor name]\[instance id] GUID_DEVINTERFACE_MONITOR
+-         *                                                  ^             ^                     ^
+-         * Expect format                  \\?\DISPLAY#[monitor name]#[instance id]#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7} */
+-        ok(strlen(device->DeviceID) == 0 || /* vista ~ win7 */
+-           sscanf(device->DeviceID, "\\\\?\\display#%[^#]#%[^#]#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}", buffer, buffer) == 2 || /* win8+ */
+-           sscanf(device->DeviceID, "monitor\\%[^\\]\\{4d36e96e-e325-11ce-bfc1-08002be10318}\\%04d", buffer, &number) == 2, /* XP/2003 ignores EDD_GET_DEVICE_INTERFACE_NAME */
+-           "#%d: wrong DeviceID : %s\n", monitor_index, device->DeviceID);
+-    }
+-    else
+-    {
+-        /* Expect HarewareID value data + Driver value data in HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\[monitor name]\{instance} */
+-        /* But we don't know which monitor instance this belongs to, so check format instead */
+-        ok(sscanf(device->DeviceID, "monitor\\%[^\\]\\{4d36e96e-e325-11ce-bfc1-08002be10318}\\%04d", buffer, &number) == 2,
+-           "#%d: wrong DeviceID : %s\n", monitor_index, device->DeviceID);
+-    }
++        ok( !wcscmp( adapter.DeviceName, adapter_iface.DeviceName ), "got DeviceName %s expected %s\n",
++            debugstr_w(adapter.DeviceName), debugstr_w(adapter_iface.DeviceName) );
++        ok( !wcscmp( adapter.DeviceString, adapter_iface.DeviceString ), "got DeviceString %s expected %s\n",
++            debugstr_w(adapter.DeviceString), debugstr_w(adapter_iface.DeviceString) );
++        ok( adapter.StateFlags == adapter_iface.StateFlags, "got StateFlags %#x expected %#x\n",
++            adapter.StateFlags, adapter_iface.StateFlags );
++        ok( !wcscmp( adapter.DeviceKey, adapter_iface.DeviceKey ), "got DeviceKey %s expected %s\n",
++            debugstr_w(adapter.DeviceKey), debugstr_w(adapter_iface.DeviceKey) );
+ 
+-    /* DeviceKey */
+-    lstrcpynA(buffer, device->DeviceKey, sizeof(device_key_prefix));
+-    ok(!lstrcmpiA(buffer, device_key_prefix), "#%d: wrong DeviceKey : %s\n", monitor_index, device->DeviceKey);
+-    ok(sscanf(device->DeviceKey + sizeof(device_key_prefix) - 1, "%04d", &number) == 1,
+-       "#%d wrong DeviceKey : %s\n", monitor_index, device->DeviceKey);
+-}
+-
+-static void test_enumdisplaydevices(void)
+-{
+-    static const DWORD flags[] = {0, EDD_GET_DEVICE_INTERFACE_NAME};
+-    DISPLAY_DEVICEA dd;
+-    char adapter_name[32];
+-    int number;
+-    int flag_index;
+-    int adapter_index;
+-    int monitor_index;
+-    BOOL ret;
++        if (swscanf( adapter.DeviceName, L"\\\\.\\DISPLAYV%u", &number ) == 1)
++        {
++            skip( "Skipping software devices %s %s\n", debugstr_w(adapter.DeviceName), debugstr_w(adapter.DeviceString) );
++            winetest_pop_context();
++            continue;
++        }
+ 
+-    /* Doesn't accept \\.\DISPLAY */
+-    dd.cb = sizeof(dd);
+-    ret = EnumDisplayDevicesA("\\\\.\\DISPLAY", 0, &dd, 0);
+-    ok(!ret, "Expect failure\n");
++        swprintf( buffer, MAX_PATH, L"\\\\.\\DISPLAY%u", adapter_count + 1 );
++        ok( !wcscmp( adapter.DeviceName, buffer ), "got DeviceName %s expected %s\n",
++            debugstr_w(adapter.DeviceName), debugstr_w(buffer) );
+ 
+-    /* Enumeration */
+-    for (flag_index = 0; flag_index < ARRAY_SIZE(flags); flag_index++)
+-        for (adapter_index = 0; EnumDisplayDevicesA(NULL, adapter_index, &dd, flags[flag_index]); adapter_index++)
++        ok( *adapter.DeviceString, "got empty DeviceString\n" );
++        if (adapter.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)
+         {
+-            lstrcpyA(adapter_name, dd.DeviceName);
+-
+-            if (sscanf(adapter_name, "\\\\.\\DISPLAYV%d", &number) == 1)
+-            {
+-                skip("Skipping software devices %s:%s\n", adapter_name, dd.DeviceString);
+-                continue;
+-            }
++            /* Test creating DC */
++            hdc = CreateDCW( adapter.DeviceName, NULL, NULL, NULL );
++            ok( hdc != 0, "CreateDCW failed error %u\n", GetLastError() );
++            DeleteDC( hdc );
++        }
+ 
+-            test_enumdisplaydevices_adapter(adapter_index, &dd, flags[flag_index]);
++        ok( swscanf( adapter.DeviceKey, L"\\Registry\\Machine\\System\\CurrentControlSet\\Control\\"
++                                         "Video\\%[^\\]\\%04u", buffer, &number ) == 2,
++            "got DeviceKey %s\n", debugstr_w(adapter.DeviceKey) );
+ 
+-            for (monitor_index = 0; EnumDisplayDevicesA(adapter_name, monitor_index, &dd, flags[flag_index]);
+-                 monitor_index++)
+-                test_enumdisplaydevices_monitor(monitor_index, adapter_name, &dd, flags[flag_index]);
++        /* DeviceID should equal to the first string of HardwareID value data in PCI GPU instance. You can verify this
++         * by changing the data and rerun EnumDisplayDevices. But it's difficult to find corresponding PCI device on
++         * userland. So here we check the expected format instead. */
++        todo_wine
++        ok( broken( !*adapter_iface.DeviceID ) ||
++            swscanf( adapter_iface.DeviceID, L"PCI\\VEN_%04X&DEV_%04X&SUBSYS_%08X&REV_%02X",
++                     &number, &number, &number, &number ) == 4,
++            "got interface DeviceID %s\n", debugstr_w(adapter_iface.DeviceID) );
++        ok( swscanf( adapter.DeviceID, L"PCI\\VEN_%04X&DEV_%04X&SUBSYS_%08X&REV_%02X", &number,
++                     &number, &number, &number ) == 4,
++            "got interface DeviceID %s\n", debugstr_w(adapter.DeviceID) );
++
++        monitor_index = -1;
++        while (EnumDisplayDevicesW( adapter.DeviceName, ++monitor_index, &monitor, 0 ))
++        {
++            winetest_push_context( "monitor %u", monitor_index );
++
++            ret = EnumDisplayDevicesW( adapter.DeviceName, monitor_index, &monitor_iface, EDD_GET_DEVICE_INTERFACE_NAME );
++            ok( ret, "EnumDisplayDevicesW failed, error %u\n", GetLastError() );
++
++            ok( !wcscmp( monitor.DeviceName, monitor_iface.DeviceName ), "got DeviceName %s expected %s\n",
++                debugstr_w(monitor.DeviceName), debugstr_w(monitor_iface.DeviceName) );
++            ok( !wcscmp( monitor.DeviceString, monitor_iface.DeviceString ), "got DeviceString %s expected %s\n",
++                debugstr_w(monitor.DeviceString), debugstr_w(monitor_iface.DeviceString) );
++            ok( monitor.StateFlags == monitor_iface.StateFlags, "got StateFlags %#x expected %#x\n",
++                monitor.StateFlags, monitor_iface.StateFlags );
++            ok( !wcscmp( monitor.DeviceKey, monitor_iface.DeviceKey ), "got DeviceKey %s expected %s\n",
++                debugstr_w(monitor.DeviceKey), debugstr_w(monitor_iface.DeviceKey) );
++
++            swprintf( buffer, MAX_PATH, L"%s\\Monitor%u", adapter.DeviceName, monitor_index );
++            ok( !wcscmp( monitor.DeviceName, buffer ), "got DeviceName %s expected %s\n",
++                debugstr_w(monitor.DeviceName), debugstr_w(buffer) );
++
++            ok( *monitor.DeviceString, "got empty DeviceString\n" );
++            ok( !(monitor.StateFlags & ~(DISPLAY_DEVICE_ATTACHED | DISPLAY_DEVICE_ACTIVE)),
++                "got unexpected StateFlags %#x\n", monitor.StateFlags );
++
++            CharLowerW( monitor.DeviceKey );
++            ok( swscanf( monitor.DeviceKey, L"\\registry\\machine\\system\\currentcontrolset\\control\\"
++                                             "class\\{4d36e96e-e325-11ce-bfc1-08002be10318}\\%04u", &monitor_num ) == 1,
++                "got DeviceKey %s\n", debugstr_w(monitor.DeviceKey) );
++
++            ok( broken( !*monitor_iface.DeviceID ) ||
++                swscanf( monitor_iface.DeviceID, L"\\\\?\\DISPLAY#%[^#]#%[^#]#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}",
++                         monitor_id, buffer ) == 2,
++                "got interface DeviceID %s\n", debugstr_w(monitor_iface.DeviceID) );
++            if (!*monitor_iface.DeviceID) wcscpy( monitor_id, L"default_monitor" );
++
++            swprintf( buffer, MAX_PATH, L"monitor\\%s\\{4d36e96e-e325-11ce-bfc1-08002be10318}\\%04u",
++                      monitor_id, monitor_num );
++            ok( !wcsicmp( monitor.DeviceID, buffer ), "got DeviceID %s expected %s\n",
++                debugstr_w(monitor.DeviceID), debugstr_w(buffer) );
++
++            winetest_pop_context();
+         }
+ 
+-    ok(adapter_count > 0, "Expect at least one adapter found\n");
++        adapter_count += 1;
++        monitor_count += monitor_index;
++        winetest_pop_context();
++    }
++
++    ok( adapter_index > 0, "Expect at least one adapter found\n" );
+     /* XP on Testbot doesn't report a monitor, whereas XP on real machine does */
+-    ok(broken(monitor_count == 0) || monitor_count > 0, "Expect at least one monitor found\n");
++    ok( broken( monitor_count == 0 ) || monitor_count > 0, "Expect at least one monitor found\n" );
+ }
+ 
+ struct vid_mode
+@@ -2356,7 +2332,7 @@ static void test_display_dc(void)
+ START_TEST(monitor)
+ {
+     init_function_pointers();
+-    test_enumdisplaydevices();
++    test_EnumDisplayDevices();
+     test_ChangeDisplaySettingsEx();
+     test_DisplayConfigSetDeviceInfo();
+     test_EnumDisplayMonitors();
+-- 
+2.34.0
+

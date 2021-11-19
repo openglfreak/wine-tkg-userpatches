@@ -252,7 +252,27 @@ index cdb3dd931e9..372ab1f6232 100644
  #include "wine/debug.h"
  
  WINE_DEFAULT_DEBUG_CHANNEL(x11drv);
-@@ -232,10 +235,33 @@ static INT CDECL X11DRV_ExtEscape( PHYSDEV dev, INT escape, INT in_count, LPCVOI
+@@ -184,13 +187,19 @@ static HFONT CDECL X11DRV_SelectFont( PHYSDEV dev, HFONT hfont, UINT *aa_flags )
+     return dev->funcs->pSelectFont( dev, hfont, aa_flags );
+ }
+ 
++static int ExtEscapeXCompositeNameWindowPixmapErrorHandler( Display *dpy, XErrorEvent *event, void *arg )
++{
++    return (event->minor_code == X_CompositeNameWindowPixmap && event->error_code == xcomp_error_base + BadMatch);
++}
++
+ /**********************************************************************
+  *           ExtEscape  (X11DRV.@)
+  */
+ static INT CDECL X11DRV_ExtEscape( PHYSDEV dev, INT escape, INT in_count, LPCVOID in_data,
+                                    INT out_count, LPVOID out_data )
+ {
+     X11DRV_PDEVICE *physDev = get_x11drv_dev( dev );
++    int presented = 0;
+ 
+     switch(escape)
+     {
+@@ -232,10 +235,41 @@ static INT CDECL X11DRV_ExtEscape( PHYSDEV dev, INT escape, INT in_count, LPCVOI
  
                      OffsetRect( &rect, -physDev->dc_rect.left, -physDev->dc_rect.top );
                      if (data->flush) XFlush( gdi_display );
@@ -261,24 +281,32 @@ index cdb3dd931e9..372ab1f6232 100644
 -                               0, 0, rect.right, rect.bottom,
 -                               physDev->dc_rect.left, physDev->dc_rect.top );
 +
-+#if defined(SONAME_LIBXPRESENT) && defined(SONAME_LIBXFIXES)
++#if defined(SONAME_LIBXPRESENT) && defined(SONAME_LIBXFIXES) && defined(SONAME_LIBXCOMPOSITE)
 +                    if (use_xpresent && use_xfixes && usexcomposite)
 +                    {
-+                        XserverRegion update, valid;
 +                        XRectangle xrect = {0, 0, rect.right - rect.left, rect.bottom - rect.top};
-+                        Drawable drawable = data->gl_drawable;
++                        XserverRegion update, valid;
++                        Pixmap pixmap;
++
 +                        update = pXFixesCreateRegionFromGC( gdi_display, physDev->gc );
 +                        valid = pXFixesCreateRegion( gdi_display, &xrect, 1 );
-+#ifdef SONAME_LIBXCOMPOSITE
-+                        if (usexcomposite) drawable = pXCompositeNameWindowPixmap( gdi_display, drawable );
-+#endif
-+                        pXPresentPixmap( gdi_display, physDev->drawable, drawable, XNextRequest( gdi_display ),
-+                                         valid, update, physDev->dc_rect.left, physDev->dc_rect.top, None, None,
-+                                         None, 0, 0, 0, 0, NULL, 0 );
++
++                        X11DRV_expect_error( gdi_display, ExtEscapeXCompositeNameWindowPixmapErrorHandler, NULL );
++                        pixmap = pXCompositeNameWindowPixmap( gdi_display, data->gl_drawable );
++                        XSync( gdi_display, False );
++                        if (!X11DRV_check_error())
++                        {
++                            pXPresentPixmap( gdi_display, physDev->drawable, pixmap, XNextRequest( gdi_display ),
++                                             valid, update, physDev->dc_rect.left, physDev->dc_rect.top, None, None,
++                                             None, 0, 0, 0, 0, NULL, 0 );
++                            XFreePixmap( gdi_display, pixmap );
++                            presented = 1;
++                        }
++
 +                        pXFixesDestroyRegion( gdi_display, update );
 +                        pXFixesDestroyRegion( gdi_display, valid );
 +                    }
-+                    else
++                    if (!presented)
 +#endif
 +                    {
 +                        XSetFunction( gdi_display, physDev->gc, GXcopy );
@@ -303,10 +331,11 @@ index 34d1675d2de..80f0ebee689 100644
  extern BOOL managed_mode DECLSPEC_HIDDEN;
  extern BOOL decorated_mode DECLSPEC_HIDDEN;
  extern BOOL private_color_map DECLSPEC_HIDDEN;
-@@ -396,6 +397,7 @@ extern int primary_monitor DECLSPEC_HIDDEN;
+@@ -396,6 +397,8 @@ extern int primary_monitor DECLSPEC_HIDDEN;
  extern int copy_default_colors DECLSPEC_HIDDEN;
  extern int alloc_system_colors DECLSPEC_HIDDEN;
  extern int xrender_error_base DECLSPEC_HIDDEN;
++extern int xcomp_error_base DECLSPEC_HIDDEN;
 +extern int xfixes_event_base DECLSPEC_HIDDEN;
  extern HMODULE x11drv_module DECLSPEC_HIDDEN;
  extern char *process_name DECLSPEC_HIDDEN;
@@ -333,14 +362,23 @@ index 7ffd3593a51..3068241f5cb 100644
  BOOL use_xkb = TRUE;
  BOOL use_take_focus = FALSE;
  BOOL use_primary_selection = FALSE;
-@@ -87,6 +89,7 @@ int copy_default_colors = 128;
+@@ -87,6 +89,8 @@ int copy_default_colors = 128;
  int alloc_system_colors = 256;
  DWORD thread_data_tls_index = TLS_OUT_OF_INDEXES;
  int xrender_error_base = 0;
++int xcomp_error_base = 0;
 +int xfixes_event_base = 0;
  HMODULE x11drv_module = 0;
  char *process_name = NULL;
  
+@@ -481,7 +485,6 @@ static void setup_options(void)
+ #undef MAKE_FUNCPTR
+ 
+ static int xcomp_event_base;
+-static int xcomp_error_base;
+ 
+ static void X11DRV_XComposite_Init(void)
+ {
 @@ -501,6 +504,116 @@ sym_not_found:
  }
  #endif /* defined(SONAME_LIBXCOMPOSITE) */

@@ -1,0 +1,269 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH v2 4/6] ntdll: Implement NtSetInformationVirtualMemory().
+Message-Id: <2f9ba719-6e2f-a950-ddcd-c2b297d0c1ed@gmail.com>
+Date: Fri, 26 Nov 2021 23:50:31 +0900
+In-Reply-To: <d5ebaa2f-d68a-a687-c864-477dc083f833@gmail.com>
+References: <d5ebaa2f-d68a-a687-c864-477dc083f833@gmail.com>
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ configure                 |  6 ++++
+ configure.ac              |  1 +
+ dlls/ntdll/ntdll.spec     |  2 ++
+ dlls/ntdll/unix/loader.c  |  1 +
+ dlls/ntdll/unix/virtual.c | 65 +++++++++++++++++++++++++++++++++++++++
+ dlls/wow64/struct32.h     |  6 ++++
+ dlls/wow64/syscall.h      |  1 +
+ dlls/wow64/virtual.c      | 47 ++++++++++++++++++++++++++++
+ include/config.h.in       |  3 ++
+ 9 files changed, 132 insertions(+)
+
+diff --git a/configure b/configure
+index d974d5b3324..57eb2a8db7c 100755
+--- a/configure
++++ b/configure
+@@ -18886,6 +18886,12 @@ if test "x$ac_cv_func_mach_continuous_time" = xyes
+ then :
+   printf "%s\n" "#define HAVE_MACH_CONTINUOUS_TIME 1" >>confdefs.h
+ 
++fi
++ac_fn_c_check_func "$LINENO" "madvise" "ac_cv_func_madvise"
++if test "x$ac_cv_func_madvise" = xyes
++then :
++  printf "%s\n" "#define HAVE_MADVISE 1" >>confdefs.h
++
+ fi
+ ac_fn_c_check_func "$LINENO" "pipe2" "ac_cv_func_pipe2"
+ if test "x$ac_cv_func_pipe2" = xyes
+diff --git a/configure.ac b/configure.ac
+index 51ac2eb8e56..002541485ad 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1929,6 +1929,7 @@ AC_CHECK_FUNCS(\
+ 	getrandom \
+ 	kqueue \
+ 	mach_continuous_time \
++	madvise \
+ 	pipe2 \
+ 	port_create \
+ 	posix_fadvise \
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+index e5a49ba1a1f..f85af7acebc 100644
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -384,6 +384,7 @@
+ @ stdcall -syscall NtSetInformationProcess(long long ptr long)
+ @ stdcall -syscall NtSetInformationThread(long long ptr long)
+ @ stdcall -syscall NtSetInformationToken(long long ptr long)
++@ stdcall -syscall NtSetInformationVirtualMemory(long long ptr ptr ptr long)
+ @ stdcall -syscall NtSetIntervalProfile(long long)
+ @ stdcall -syscall NtSetIoCompletion(ptr long long long long)
+ @ stdcall -syscall NtSetLdtEntries(long int64 long int64)
+@@ -1405,6 +1406,7 @@
+ @ stdcall -private -syscall ZwSetInformationProcess(long long ptr long) NtSetInformationProcess
+ @ stdcall -private -syscall ZwSetInformationThread(long long ptr long) NtSetInformationThread
+ @ stdcall -private -syscall ZwSetInformationToken(long long ptr long) NtSetInformationToken
++@ stdcall -private -syscall ZwSetInformationVirtualMemory(long long ptr ptr ptr long) NtSetInformationVirtualMemory
+ @ stdcall -private -syscall ZwSetIntervalProfile(long long) NtSetIntervalProfile
+ @ stdcall -private -syscall ZwSetIoCompletion(ptr long long long long) NtSetIoCompletion
+ @ stdcall -private -syscall ZwSetLdtEntries(long int64 long int64) NtSetLdtEntries
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index f19d1d68dc7..d34f0b15d35 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -309,6 +309,7 @@ static void * const syscalls[] =
+     NtSetInformationProcess,
+     NtSetInformationThread,
+     NtSetInformationToken,
++    NtSetInformationVirtualMemory,
+     NtSetIntervalProfile,
+     NtSetIoCompletion,
+     NtSetLdtEntries,
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 5873a3e2335..56cc1214133 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4968,6 +4968,71 @@ NTSTATUS WINAPI NtAreMappedFilesTheSame(PVOID addr1, PVOID addr2)
+ }
+ 
+ 
++static NTSTATUS prefetch_memory( HANDLE process, ULONG_PTR count,
++                                 PMEMORY_RANGE_ENTRY addresses, ULONG flags )
++{
++    ULONG_PTR i;
++    PVOID base;
++    SIZE_T size;
++    static unsigned int once;
++
++    if (!once++) FIXME( "(process=%p,flags=%u) VmPrefetchInformation partial stub\n", process, flags );
++
++    if (process != NtCurrentProcess()) return STATUS_SUCCESS;
++
++    for (i = 0; i < count; i++)
++    {
++        if (!addresses[i].NumberOfBytes) return STATUS_INVALID_PARAMETER_4;
++    }
++
++    for (i = 0; i < count; i++)
++    {
++        MEMORY_RANGE_ENTRY entry;
++        memcpy(&entry, &addresses[i], sizeof(MEMORY_RANGE_ENTRY));
++
++        base = ROUND_ADDR( entry.VirtualAddress, page_mask );
++        size = ROUND_SIZE( entry.VirtualAddress, entry.NumberOfBytes );
++
++#ifdef HAVE_MADVISE
++        madvise(base, size, MADV_WILLNEED);
++#else
++        (void)base;
++        (void)size;
++#endif
++    }
++
++    return STATUS_SUCCESS;
++}
++
++/***********************************************************************
++ *           NtSetInformationVirtualMemory   (NTDLL.@)
++ *           ZwSetInformationVirtualMemory   (NTDLL.@)
++ */
++NTSTATUS WINAPI NtSetInformationVirtualMemory( HANDLE process,
++                                               VIRTUAL_MEMORY_INFORMATION_CLASS info_class,
++                                               ULONG_PTR count, PMEMORY_RANGE_ENTRY addresses,
++                                               PVOID ptr, ULONG size )
++{
++    TRACE("(%p, info_class=%d, %lu, %p, %p, %u)\n",
++          process, info_class, count, addresses, ptr, size);
++
++    switch (info_class)
++    {
++        case VmPrefetchInformation:
++            if (!ptr) return STATUS_INVALID_PARAMETER_5;
++            if (size != sizeof(ULONG)) return STATUS_INVALID_PARAMETER_6;
++            if (!count) return STATUS_INVALID_PARAMETER_3;
++            if (!addresses) return STATUS_ACCESS_VIOLATION;
++            return prefetch_memory( process, count, addresses, *(ULONG *)ptr );
++
++        default:
++            FIXME("(%p,info_class=%d,%lu,%p,%p,%u) Unknown information class\n",
++                  process, info_class, count, addresses, ptr, size);
++            return STATUS_INVALID_PARAMETER_2;
++    }
++}
++
++
+ /**********************************************************************
+  *           NtFlushInstructionCache  (NTDLL.@)
+  */
+diff --git a/dlls/wow64/struct32.h b/dlls/wow64/struct32.h
+index dd5814f431b..07e3f06a1e6 100644
+--- a/dlls/wow64/struct32.h
++++ b/dlls/wow64/struct32.h
+@@ -635,6 +635,12 @@ typedef struct
+     SYSTEM_THREAD_INFORMATION32 ti[1];
+ } SYSTEM_PROCESS_INFORMATION32;
+ 
++typedef struct
++{
++    ULONG VirtualAddress;
++    ULONG NumberOfBytes;
++} MEMORY_RANGE_ENTRY32;
++
+ struct __server_iovec32
+ {
+     ULONG        ptr;
+diff --git a/dlls/wow64/syscall.h b/dlls/wow64/syscall.h
+index 112711875f7..c57829a7e31 100644
+--- a/dlls/wow64/syscall.h
++++ b/dlls/wow64/syscall.h
+@@ -206,6 +206,7 @@
+     SYSCALL_ENTRY( NtSetInformationProcess ) \
+     SYSCALL_ENTRY( NtSetInformationThread ) \
+     SYSCALL_ENTRY( NtSetInformationToken ) \
++    SYSCALL_ENTRY( NtSetInformationVirtualMemory ) \
+     SYSCALL_ENTRY( NtSetIntervalProfile ) \
+     SYSCALL_ENTRY( NtSetIoCompletion ) \
+     SYSCALL_ENTRY( NtSetLdtEntries ) \
+diff --git a/dlls/wow64/virtual.c b/dlls/wow64/virtual.c
+index f4cd50d0ea2..1b1d91502aa 100644
+--- a/dlls/wow64/virtual.c
++++ b/dlls/wow64/virtual.c
+@@ -33,6 +33,21 @@
+ WINE_DEFAULT_DEBUG_CHANNEL(wow);
+ 
+ 
++static MEMORY_RANGE_ENTRY *memory_range_entry_array_32to64( const MEMORY_RANGE_ENTRY32 *addresses32,
++                                                            ULONG_PTR count )
++{
++    MEMORY_RANGE_ENTRY *addresses = Wow64AllocateTemp( sizeof(MEMORY_RANGE_ENTRY) * count );
++    ULONG_PTR i;
++
++    for (i = 0; i < count; i++)
++    {
++        addresses[i].VirtualAddress = (PVOID)(ULONG_PTR)addresses32[i].VirtualAddress;
++        addresses[i].NumberOfBytes = addresses32[i].NumberOfBytes;
++    }
++
++    return addresses;
++}
++
+ /**********************************************************************
+  *           wow64_NtAllocateVirtualMemory
+  */
+@@ -418,6 +433,38 @@ NTSTATUS WINAPI wow64_NtResetWriteWatch( UINT *args )
+ }
+ 
+ 
++/**********************************************************************
++ *           wow64_NtSetInformationVirtualMemory
++ */
++NTSTATUS WINAPI wow64_NtSetInformationVirtualMemory( UINT *args )
++{
++    HANDLE process = get_handle( &args );
++    VIRTUAL_MEMORY_INFORMATION_CLASS info_class = get_ulong( &args );
++    ULONG_PTR count = get_ulong( &args );
++    MEMORY_RANGE_ENTRY32 *addresses32 = get_ptr( &args );
++    PVOID ptr = get_ptr( &args );
++    ULONG len = get_ulong( &args );
++
++    MEMORY_RANGE_ENTRY *addresses;
++
++    if (!count) return STATUS_INVALID_PARAMETER_3;
++    if (!addresses32) return STATUS_ACCESS_VIOLATION;
++    addresses = memory_range_entry_array_32to64( addresses32, count );
++
++    switch (info_class)
++    {
++    case VmPrefetchInformation:
++        if (!ptr) return STATUS_INVALID_PARAMETER_5;
++        if (len != sizeof(ULONG)) return STATUS_INVALID_PARAMETER_6;
++        return NtSetInformationVirtualMemory( process, info_class, count, addresses, ptr, len );
++    default:
++        FIXME( "(%p,info_class=%u,%u,%p,%p,%u): not implemented\n",
++               process, info_class, count, addresses32, ptr, len );
++        return STATUS_INVALID_PARAMETER_2;
++    }
++}
++
++
+ /**********************************************************************
+  *           wow64_NtSetLdtEntries
+  */
+diff --git a/include/config.h.in b/include/config.h.in
+index 9d7b682ce36..eaabbe4b158 100644
+--- a/include/config.h.in
++++ b/include/config.h.in
+@@ -293,6 +293,9 @@
+ /* Define to 1 if you have the <mach-o/loader.h> header file. */
+ #undef HAVE_MACH_O_LOADER_H
+ 
++/* Define to 1 if you have the `madvise' function. */
++#undef HAVE_MADVISE
++
+ /* Define to 1 if you have the <Metal/Metal.h> header file. */
+ #undef HAVE_METAL_METAL_H
+ 
+
+-- 
+2.31.1
+

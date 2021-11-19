@@ -1,0 +1,142 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH] ntdll: Set rcx and r11 on exit from syscall dispatcher on x64.
+Message-Id: <20211124173240.2905495-1-pgofman@codeweavers.com>
+Date: Wed, 24 Nov 2021 20:32:40 +0300
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/ntdll/tests/exception.c    | 74 +++++++++++++++++++++++++++++++++
+ dlls/ntdll/unix/signal_x86_64.c | 13 ++++--
+ 2 files changed, 83 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/tests/exception.c b/dlls/ntdll/tests/exception.c
+index 98187266d50..a592ca9cf3c 100644
+--- a/dlls/ntdll/tests/exception.c
++++ b/dlls/ntdll/tests/exception.c
+@@ -4917,6 +4917,79 @@ static void test_unwind_from_apc(void)
+     ok(pass == 4, "Got unexpected pass %d.\n", pass);
+     ok(test_unwind_apc_called, "Test user APC was not called.\n");
+ }
++
++static void test_syscall_clobbered_regs(void)
++{
++    struct regs
++    {
++        UINT64 rflags_before;
++        UINT64 rcx;
++        UINT64 r11;
++    };
++    static const BYTE code[] =
++    {
++        0xfd,                       /* std */
++        0x9c,                       /* pushf */
++        0x41, 0x8f, 0x00,           /* pop (%r8) */
++        0x41, 0x50,                 /* push %r8 */
++        0x41, 0xff, 0xd1,           /* callq *r9 */
++        0x41, 0x58,                 /* pop %r8 */
++        0x49, 0x89, 0x48, 0x08,     /* mov %rcx,8(%r8) */
++        0x4d, 0x89, 0x58, 0x10,     /* mov %r11,16(%r8) */
++        0xfc,                       /* cld */
++        0xc3,                       /* ret */
++    };
++
++    static const unsigned int flags_mask = 0x844; /* ZF, PF, SF. */
++    NTSTATUS (WINAPI *func)(void *arg1, void *arg2, struct regs *, void *call_addr);
++    NTSTATUS (WINAPI *pNtCancelTimer)(HANDLE, BOOLEAN *);
++    HMODULE hntdll = GetModuleHandleA("ntdll.dll");
++    struct regs regs;
++    CONTEXT context;
++    NTSTATUS status;
++
++    pNtCancelTimer = (void *)GetProcAddress(hntdll, "NtCancelTimer");
++    ok(!!pNtCancelTimer, "NtCancelTimer not found.\n");
++    memcpy(code_mem, code, sizeof(code));
++    func = code_mem;
++    memset(&regs, 0, sizeof(regs));
++    status = func((HANDLE)0xdeadbeef, NULL, &regs, pNtCancelTimer);
++    ok(status == STATUS_INVALID_HANDLE, "Got unexpected status %#x.\n", status);
++
++    /* After the syscall instruction rcx contains the address of the instruction next after syscall
++     * and r11 contains rflags before the instruction. rcx, r11 are set by syscall instruction itself,
++     * looks like Windows is preserving those (setting the the thread context with NtContinue during
++     * the syscall is the special case of course).
++     * ZF, PF, SF (0x44) may be potentially altered in the Nt syscall thunk. */
++    ok(!((regs.rflags_before ^ regs.r11) & ~flags_mask), "Got unexpected rflags_before %s, r11 %s.\n",
++            wine_dbgstr_longlong(regs.rflags_before), wine_dbgstr_longlong(regs.r11));
++    ok((BYTE *)regs.rcx > (BYTE *)pNtCancelTimer && (BYTE *)regs.rcx < (BYTE *)pNtCancelTimer + 0x20,
++            "Got unexpected rcx %s, pNtCancelTimer %p.\n", wine_dbgstr_longlong(regs.rcx), pNtCancelTimer);
++
++    status = func((HANDLE)0xdeadbeef, (BOOLEAN *)0xdeadbeef, &regs, pNtCancelTimer);
++    ok(status == STATUS_ACCESS_VIOLATION, "Got unexpected status %#x.\n", status);
++    ok(!((regs.rflags_before ^ regs.r11) & ~flags_mask), "Got unexpected rflags_before %s, r11 %s.\n",
++            wine_dbgstr_longlong(regs.rflags_before), wine_dbgstr_longlong(regs.r11));
++    ok((BYTE *)regs.rcx > (BYTE *)pNtCancelTimer && (BYTE *)regs.rcx < (BYTE *)pNtCancelTimer + 0x20,
++            "Got unexpected rcx %s, pNtCancelTimer %p.\n", wine_dbgstr_longlong(regs.rcx), pNtCancelTimer);
++
++    context.ContextFlags = CONTEXT_CONTROL;
++    status = func(GetCurrentThread(), &context, &regs, pNtGetContextThread);
++    ok(status == STATUS_SUCCESS, "Got unexpected status %#x.\n", status);
++    ok(!((regs.rflags_before ^ regs.r11) & ~flags_mask), "Got unexpected rflags_before %s, r11 %s.\n",
++            wine_dbgstr_longlong(regs.rflags_before), wine_dbgstr_longlong(regs.r11));
++    ok((BYTE *)regs.rcx > (BYTE *)pNtGetContextThread && (BYTE *)regs.rcx < (BYTE *)pNtGetContextThread + 0x20,
++            "Got unexpected rcx %s, pNtGetContextThread %p.\n", wine_dbgstr_longlong(regs.rcx), pNtGetContextThread);
++
++    status = func(GetCurrentThread(), &context, &regs, pNtSetContextThread);
++    ok(status == STATUS_SUCCESS, "Got unexpected status %#x.\n", status);
++    /* For some reason bit 1 (documented as reserved, always 1) is cleared in r11 after NtSetContextThread()
++     * across all the Win versions. */
++    ok(!(((regs.rflags_before & ~2) ^ regs.r11) & ~flags_mask), "Got unexpected rflags_before %s, r11 %s.\n",
++            wine_dbgstr_longlong(regs.rflags_before), wine_dbgstr_longlong(regs.r11));
++    ok((BYTE *)regs.rcx > (BYTE *)pNtGetContextThread && (BYTE *)regs.rcx < (BYTE *)pNtGetContextThread + 0x20,
++            "Got unexpected rcx %s, pNtGetContextThread %p.\n", wine_dbgstr_longlong(regs.rcx), pNtGetContextThread);
++}
+ #elif defined(__arm__)
+ 
+ #define UNW_FLAG_NHANDLER  0
+@@ -10737,6 +10810,7 @@ START_TEST(exception)
+     test_extended_context();
+     test_copy_context();
+     test_unwind_from_apc();
++    test_syscall_clobbered_regs();
+ 
+ #elif defined(__aarch64__)
+ 
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 4310c1c6a2f..bd25172b309 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -3233,21 +3233,26 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    "movq 0x28(%rcx),%rdi\n\t"
+                    "movq 0x20(%rcx),%rsi\n\t"
+                    "movq 0x08(%rcx),%rbx\n\t"
++                   "movq 0x80(%rcx),%r11\n\t"      /* frame->eflags */
+                    "testl $0x3,%edx\n\t"           /* CONTEXT_CONTROL | CONTEXT_INTEGER */
+                    "jnz 1f\n\t"
+                    "movq 0x88(%rcx),%rsp\n\t"
+-                   "jmpq *0x70(%rcx)\n"            /* frame->rip */
++                   "movq 0x70(%rcx),%rcx\n\t"      /* frame->rip */
++                   "jmpq *%rcx\n\t"
+                    "1:\tleaq 0x70(%rcx),%rsp\n\t"
+                    "testl $0x2,%edx\n\t"           /* CONTEXT_INTEGER */
+-                   "jz 1f\n\t"
+-                   "movq 0x00(%rcx),%rax\n\t"
++                   "jnz 1f\n\t"
++                   "btr $1,%r11\n\t"
++                   "movq (%rsp),%rcx\n\t"          /* frame->rip */
++                   "iretq\n"
++                   "1:\tmovq 0x00(%rcx),%rax\n\t"
+                    "movq 0x18(%rcx),%rdx\n\t"
+                    "movq 0x30(%rcx),%r8\n\t"
+                    "movq 0x38(%rcx),%r9\n\t"
+                    "movq 0x40(%rcx),%r10\n\t"
+                    "movq 0x48(%rcx),%r11\n\t"
+                    "movq 0x10(%rcx),%rcx\n"
+-                   "1:\tiretq\n"
++                   "iretq\n"
+                    "5:\tmovl $0xc000000d,%edx\n\t" /* STATUS_INVALID_PARAMETER */
+                    "movq %rsp,%rcx\n"
+                    __ASM_NAME("__wine_syscall_dispatcher_return") ":\n\t"
+
+-- 
+2.33.1
+

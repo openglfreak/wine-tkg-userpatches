@@ -23,7 +23,7 @@ index 98b2a47ba6d..ebe0152bf1c 100644
  {
      DBusMessageIter iter, drive, variant;
      const char *name;
-@@ -405,11 +406,49 @@ static void udisks2_get_drive_info( const char *drive_name, DBusMessageIter *dic
+@@ -405,11 +406,50 @@ static void udisks2_get_drive_info( const char *drive_name, DBusMessageIter *dic
                      *drive_type = udisks_parse_media_compatibility( &variant );
                  else if (!strcmp( name, "Id" ))
                      p_dbus_message_iter_get_basic( &variant, serial );
@@ -36,12 +36,11 @@ index 98b2a47ba6d..ebe0152bf1c 100644
      }
  }
  
-+static void udisks2_add_scsi_device( const char *unix_device, int optical,
-+    const char *model, UNICODE_STRING *devname )
++static void udisks2_get_scsi_info( const char *unix_device, int optical,
++    const char *model, struct scsi_info *scsi_info )
 +{
 +    WCHAR *name;
 +    HANDLE handle;
-+    SCSI_ADDRESS scsi_addr;
 +    DWORD size;
 +
 +    if (!unix_device)
@@ -61,10 +60,12 @@ index 98b2a47ba6d..ebe0152bf1c 100644
 +        return;
 +    }
 +
-+    if (DeviceIoControl( handle, IOCTL_SCSI_GET_ADDRESS, NULL, 0, &scsi_addr, sizeof(scsi_addr), &size, 0 ))
++    if (DeviceIoControl( handle, IOCTL_SCSI_GET_ADDRESS, NULL, 0, &scsi_info->addr, sizeof(scsi_info->addr), &size, 0 ))
 +    {
-+        create_scsi_entry( &scsi_addr, 255, optical ? "atapi" : "WINE SCSI",
-+            optical ? SCSI_CDROM_PERIPHERAL : SCSI_DISK_PERIPHERAL, model, devname );
++        scsi_info->type = optical ? SCSI_CDROM_PERIPHERAL : SCSI_DISK_PERIPHERAL;
++        scsi_info->init_id = 255; /* FIXME */
++        strcpy( scsi_info->driver, optical ? "atapi" : "WINE SCSI" ); /* FIXME */
++        lstrcpynA( scsi_info->model, model, sizeof(scsi_info->model) );
 +    }
 +
 +    CloseHandle( handle );
@@ -94,19 +95,18 @@ index 98b2a47ba6d..ebe0152bf1c 100644
                  }
                  else if (!strcmp( name, "IdUUID" ))
                  {
-@@ -485,7 +525,13 @@ static void udisks2_add_device( const char *udi, DBusMessageIter *dict, DBusMess
+@@ -485,7 +525,12 @@ static void udisks2_add_device( const char *udi, DBusMessageIter *dict, DBusMess
      }
      if (device)
      {
 -        if (removable) add_dos_device( -1, udi, device, mount_point, drive_type, guid_ptr, NULL );
 +        if (removable)
 +        {
-+            UNICODE_STRING devname;
-+            devname.Buffer = NULL;
-+            add_dos_device( -1, udi, device, mount_point, drive_type, guid_ptr, &devname );
-+            udisks2_add_scsi_device( device, optical, model, &devname );
++            struct scsi_info scsi_info = {0};
++            udisks2_get_scsi_info( device, optical, model, &scsi_info );
++            add_dos_device( -1, udi, device, mount_point, drive_type, guid_ptr, scsi_info.type ? &scsi_info : NULL );
 +        }
-         else if (guid_ptr) add_volume( udi, device, mount_point, DEVICE_HARDDISK_VOL, guid_ptr, id );
+         else if (guid_ptr) add_volume( udi, device, mount_point, DEVICE_HARDDISK_VOL, guid_ptr, id, NULL );
      }
  }
 

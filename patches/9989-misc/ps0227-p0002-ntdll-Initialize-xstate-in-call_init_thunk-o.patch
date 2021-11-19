@@ -1,0 +1,88 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH v2 2/2] ntdll: Initialize xstate in call_init_thunk() on x86.
+Message-Id: <20211124150640.2054031-2-pgofman@codeweavers.com>
+Date: Wed, 24 Nov 2021 18:06:40 +0300
+In-Reply-To: <20211124150640.2054031-1-pgofman@codeweavers.com>
+References: <20211124150640.2054031-1-pgofman@codeweavers.com>
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+    Other thread may be setting xstate during initial suspend.
+
+ dlls/ntdll/unix/signal_i386.c   | 14 ++++++++++++--
+ dlls/ntdll/unix/signal_x86_64.c |  7 ++++++-
+ 2 files changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
+index 16483d8e341..6e4790b81a7 100644
+--- a/dlls/ntdll/unix/signal_i386.c
++++ b/dlls/ntdll/unix/signal_i386.c
+@@ -2364,8 +2364,13 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
+     struct x86_thread_data *thread_data = (struct x86_thread_data *)&teb->GdiTebBatch;
+     struct syscall_frame *frame = thread_data->syscall_frame;
+     CONTEXT *ctx, context = { CONTEXT_ALL };
++    DECLSPEC_ALIGN(64) XSTATE xs;
+     DWORD *stack;
+ 
++    context_init_xstate( &context, &xs );
++    xs.Mask = 0;
++    xs.CompactionMask = xstate_compaction_enabled ? 0x8000000000000000 : 0;
++
+     context.SegCs  = get_cs();
+     context.SegDs  = get_ds();
+     context.SegEs  = get_ds();
+@@ -2380,7 +2385,11 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
+     context.FloatSave.ControlWord = 0x27f;
+     ((XSAVE_FORMAT *)context.ExtendedRegisters)->ControlWord = 0x27f;
+     ((XSAVE_FORMAT *)context.ExtendedRegisters)->MxCsr = 0x1f80;
+-    if ((ctx = get_cpu_area( IMAGE_FILE_MACHINE_I386 ))) *ctx = context;
++    if ((ctx = get_cpu_area( IMAGE_FILE_MACHINE_I386 )))
++    {
++        *ctx = context;
++        ctx->ContextFlags &= ~0x40;
++    }
+ 
+     if (suspend) wait_suspend( &context );
+ 
+@@ -2388,7 +2397,8 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
+     *ctx = context;
+     ctx->ContextFlags = CONTEXT_FULL | CONTEXT_FLOATING_POINT | CONTEXT_EXTENDED_REGISTERS;
+     memset( frame, 0, sizeof(*frame) );
+-    NtSetContextThread( GetCurrentThread(), ctx );
++    context.ContextFlags = ctx->ContextFlags | (context.ContextFlags & CONTEXT_XSTATE);
++    NtSetContextThread( GetCurrentThread(), &context );
+ 
+     stack = (DWORD *)ctx;
+     *(--stack) = 0;
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 04e5c3b2982..4310c1c6a2f 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -2998,9 +2998,13 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
+     struct amd64_thread_data *thread_data = (struct amd64_thread_data *)&teb->GdiTebBatch;
+     struct syscall_frame *frame = thread_data->syscall_frame;
+     CONTEXT *ctx, context = { 0 };
++    DECLSPEC_ALIGN(64) XSTATE xs;
+     I386_CONTEXT *wow_context;
+ 
+     context.ContextFlags = CONTEXT_ALL;
++    context_init_xstate( &context, &xs );
++    xs.Mask = 0;
++    xs.CompactionMask = xstate_compaction_enabled ? 0x8000000000000000 : 0;
+     context.Rcx    = (ULONG_PTR)entry;
+     context.Rdx    = (ULONG_PTR)arg;
+     context.Rsp    = (ULONG_PTR)teb->Tib.StackBase - 0x28;
+@@ -3039,7 +3043,8 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
+     *ctx = context;
+     ctx->ContextFlags = CONTEXT_FULL;
+     memset( frame, 0, sizeof(*frame) );
+-    NtSetContextThread( GetCurrentThread(), ctx );
++    context.ContextFlags = ctx->ContextFlags | (context.ContextFlags & CONTEXT_XSTATE);
++    NtSetContextThread( GetCurrentThread(), &context );
+ 
+     frame->rsp = (ULONG64)ctx - 8;
+     frame->rip = (ULONG64)pLdrInitializeThunk;
+
+-- 
+2.33.1
+

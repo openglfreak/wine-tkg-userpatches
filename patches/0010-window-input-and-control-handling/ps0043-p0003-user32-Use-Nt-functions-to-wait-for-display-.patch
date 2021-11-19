@@ -1,0 +1,50 @@
+From f4141a91fca6ae0acc3bc0a35cf82b109d1fc7f8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 18 Oct 2021 11:09:19 +0200
+Subject: [PATCH 03/25] user32: Use Nt functions to wait for display device
+ initialization.
+
+Preventing undesired last error modification. This doesn't change the
+behavior with default drivers, but it will with the null driver.
+
+This otherwise will cause spurious failures in cursoricon tests when the
+null driver is used.
+---
+ dlls/user32/sysparams.c | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/user32/sysparams.c b/dlls/user32/sysparams.c
+index dd627009f7b..3b8c8c3f940 100644
+--- a/dlls/user32/sysparams.c
++++ b/dlls/user32/sysparams.c
+@@ -615,16 +615,23 @@ void release_display_dc( HDC hdc )
+ 
+ static HANDLE get_display_device_init_mutex( void )
+ {
+-    HANDLE mutex = CreateMutexW( NULL, FALSE, L"display_device_init" );
++    OBJECT_ATTRIBUTES attrs;
++    UNICODE_STRING name_str;
++    NTSTATUS status;
++    HANDLE mutex;
++
++    RtlInitUnicodeString( &name_str, L"display_device_init" );
++    InitializeObjectAttributes( &attrs, &name_str, OBJ_CASE_INSENSITIVE, 0, NULL );
++    if ((status = NtCreateMutant( &mutex, MUTEX_ALL_ACCESS, &attrs, FALSE ))) return NULL;
+ 
+-    WaitForSingleObject( mutex, INFINITE );
++    NtWaitForMultipleObjects( 1, &mutex, TRUE, TRUE, NULL );
+     return mutex;
+ }
+ 
+ static void release_display_device_init_mutex( HANDLE mutex )
+ {
+-    ReleaseMutex( mutex );
+-    CloseHandle( mutex );
++    NtReleaseMutant( mutex, NULL );
++    NtClose( mutex );
+ }
+ 
+ /* Wait until graphics driver is loaded by explorer */
+-- 
+2.34.0
+

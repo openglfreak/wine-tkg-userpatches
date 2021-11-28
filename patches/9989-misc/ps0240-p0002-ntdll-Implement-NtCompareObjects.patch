@@ -1,0 +1,315 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH v3 2/4] ntdll: Implement NtCompareObjects.
+Message-Id: <2f540745-56c6-3f38-7ec3-cec8c55f1546@gmail.com>
+Date: Sun, 28 Nov 2021 19:41:25 +0900
+In-Reply-To: <09cee0b6-5836-f90a-79ac-385a49c6fe83@gmail.com>
+References: <09cee0b6-5836-f90a-79ac-385a49c6fe83@gmail.com>
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ dlls/ntdll/ntdll.spec          |  2 ++
+ dlls/ntdll/unix/loader.c       |  1 +
+ dlls/ntdll/unix/server.c       | 19 +++++++++++++++++++
+ dlls/wow64/sync.c              | 12 ++++++++++++
+ dlls/wow64/syscall.h           |  1 +
+ include/wine/server_protocol.h | 19 ++++++++++++++++++-
+ include/winternl.h             |  1 +
+ server/handle.c                | 17 +++++++++++++++++
+ server/protocol.def            |  7 +++++++
+ server/request.h               |  5 +++++
+ server/trace.c                 | 10 ++++++++++
+ 11 files changed, 93 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+index e5a49ba1a1f..343db34cb6d 100644
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -157,6 +157,7 @@
+ @ stdcall -syscall NtClose(long)
+ # @ stub NtCloseObjectAuditAlarm
+ # @ stub NtCompactKeys
++@ stdcall -syscall NtCompareObjects(ptr ptr)
+ # @ stub NtCompareTokens
+ @ stdcall -syscall NtCompleteConnectPort(ptr)
+ # @ stub NtCompressKey
+@@ -1180,6 +1181,7 @@
+ @ stdcall -private -syscall ZwClose(long) NtClose
+ # @ stub ZwCloseObjectAuditAlarm
+ # @ stub ZwCompactKeys
++@ stdcall -private -syscall ZwCompareObjects(ptr ptr) NtCompareObjects
+ # @ stub ZwCompareTokens
+ @ stdcall -private -syscall ZwCompleteConnectPort(ptr) NtCompleteConnectPort
+ # @ stub ZwCompressKey
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index f19d1d68dc7..61041061b32 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -145,6 +145,7 @@ static void * const syscalls[] =
+     NtCancelTimer,
+     NtClearEvent,
+     NtClose,
++    NtCompareObjects,
+     NtCompleteConnectPort,
+     NtConnectPort,
+     NtContinue,
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 399b1cceb16..a086d0cb583 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1690,6 +1690,25 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE
+ }
+ 
+ 
++/**************************************************************************
++ *           NtCompareObjects   (NTDLL.@)
++ */
++NTSTATUS WINAPI NtCompareObjects( HANDLE first, HANDLE second )
++{
++    NTSTATUS status;
++
++    SERVER_START_REQ( compare_objects )
++    {
++        req->first = wine_server_obj_handle( first );
++        req->second = wine_server_obj_handle( second );
++        status = wine_server_call( req );
++    }
++    SERVER_END_REQ;
++
++    return status;
++}
++
++
+ /**************************************************************************
+  *           NtClose
+  */
+diff --git a/dlls/wow64/sync.c b/dlls/wow64/sync.c
+index 20776378a7d..b8f3fabe06c 100644
+--- a/dlls/wow64/sync.c
++++ b/dlls/wow64/sync.c
+@@ -169,6 +169,18 @@ NTSTATUS WINAPI wow64_NtClearEvent( UINT *args )
+ }
+ 
+ 
++/**********************************************************************
++ *           wow64_NtCompareObjects
++ */
++NTSTATUS WINAPI wow64_NtCompareObjects( UINT *args )
++{
++    HANDLE first = get_handle( &args );
++    HANDLE second = get_handle( &args );
++
++    return NtCompareObjects( first, second );
++}
++
++
+ /**********************************************************************
+  *           wow64_NtCompleteConnectPort
+  */
+diff --git a/dlls/wow64/syscall.h b/dlls/wow64/syscall.h
+index 112711875f7..cb8fed9b99c 100644
+--- a/dlls/wow64/syscall.h
++++ b/dlls/wow64/syscall.h
+@@ -42,6 +42,7 @@
+     SYSCALL_ENTRY( NtCancelTimer ) \
+     SYSCALL_ENTRY( NtClearEvent ) \
+     SYSCALL_ENTRY( NtClose ) \
++    SYSCALL_ENTRY( NtCompareObjects ) \
+     SYSCALL_ENTRY( NtCompleteConnectPort ) \
+     SYSCALL_ENTRY( NtConnectPort ) \
+     SYSCALL_ENTRY( NtContinue ) \
+diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
+index 5a66e9aff8f..b37a8e8e056 100644
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -1252,6 +1252,20 @@ struct dup_handle_reply
+ 
+ 
+ 
++struct compare_objects_request
++{
++    struct request_header __header;
++    obj_handle_t first;
++    obj_handle_t second;
++    char __pad_20[4];
++};
++struct compare_objects_reply
++{
++    struct reply_header __header;
++};
++
++
++
+ struct make_temporary_request
+ {
+     struct request_header __header;
+@@ -5448,6 +5462,7 @@ enum request
+     REQ_close_handle,
+     REQ_set_handle_info,
+     REQ_dup_handle,
++    REQ_compare_objects,
+     REQ_make_temporary,
+     REQ_open_process,
+     REQ_open_thread,
+@@ -5729,6 +5744,7 @@ union generic_request
+     struct close_handle_request close_handle_request;
+     struct set_handle_info_request set_handle_info_request;
+     struct dup_handle_request dup_handle_request;
++    struct compare_objects_request compare_objects_request;
+     struct make_temporary_request make_temporary_request;
+     struct open_process_request open_process_request;
+     struct open_thread_request open_thread_request;
+@@ -6008,6 +6024,7 @@ union generic_reply
+     struct close_handle_reply close_handle_reply;
+     struct set_handle_info_reply set_handle_info_reply;
+     struct dup_handle_reply dup_handle_reply;
++    struct compare_objects_reply compare_objects_reply;
+     struct make_temporary_reply make_temporary_reply;
+     struct open_process_reply open_process_reply;
+     struct open_thread_reply open_thread_reply;
+@@ -6262,7 +6279,7 @@ union generic_reply
+ 
+ /* ### protocol_version begin ### */
+ 
+-#define SERVER_PROTOCOL_VERSION 740
++#define SERVER_PROTOCOL_VERSION 741
+ 
+ /* ### protocol_version end ### */
+ 
+diff --git a/include/winternl.h b/include/winternl.h
+index cfd83f16337..5c2a1c07aeb 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -3872,6 +3872,7 @@ NTSYSAPI NTSTATUS  WINAPI NtCancelTimer(HANDLE, BOOLEAN*);
+ NTSYSAPI NTSTATUS  WINAPI NtClearEvent(HANDLE);
+ NTSYSAPI NTSTATUS  WINAPI NtClose(HANDLE);
+ NTSYSAPI NTSTATUS  WINAPI NtCloseObjectAuditAlarm(PUNICODE_STRING,HANDLE,BOOLEAN);
++NTSYSAPI NTSTATUS  WINAPI NtCompareObjects(HANDLE,HANDLE);
+ NTSYSAPI NTSTATUS  WINAPI NtCompleteConnectPort(HANDLE);
+ NTSYSAPI NTSTATUS  WINAPI NtConnectPort(PHANDLE,PUNICODE_STRING,PSECURITY_QUALITY_OF_SERVICE,PLPC_SECTION_WRITE,PLPC_SECTION_READ,PULONG,PVOID,PULONG);
+ NTSYSAPI NTSTATUS  WINAPI NtContinue(PCONTEXT,BOOLEAN);
+diff --git a/server/handle.c b/server/handle.c
+index 13e40770aea..bc692b8ebeb 100644
+--- a/server/handle.c
++++ b/server/handle.c
+@@ -879,3 +879,20 @@ DECL_HANDLER(make_temporary)
+     }
+     release_object( obj );
+ }
++
++DECL_HANDLER(compare_objects)
++{
++    struct object *obj1, *obj2;
++
++    if (!(obj1 = get_handle_obj( current->process, req->first, 0, NULL ))) return;
++    if (!(obj2 = get_handle_obj( current->process, req->second, 0, NULL )))
++    {
++        release_object( obj1 );
++        return;
++    }
++
++    if (obj1 != obj2) set_error( STATUS_NOT_SAME_OBJECT );
++
++    release_object( obj2 );
++    release_object( obj1 );
++}
+diff --git a/server/protocol.def b/server/protocol.def
+index ad6d2bb58d0..c83e6a2ef7c 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -1121,6 +1121,13 @@ typedef struct
+ @END
+ 
+ 
++/* Test if two handles refer to the same object */
++@REQ(compare_objects)
++    obj_handle_t first;         /* first object handle */
++    obj_handle_t second;        /* second object handle */
++@END
++
++
+ /* Make an object temporary */
+ @REQ(make_temporary)
+     obj_handle_t handle;       /* handle to the object */
+diff --git a/server/request.h b/server/request.h
+index 33d4237f49f..6a63e842357 100644
+--- a/server/request.h
++++ b/server/request.h
+@@ -143,6 +143,7 @@ DECL_HANDLER(get_apc_result);
+ DECL_HANDLER(close_handle);
+ DECL_HANDLER(set_handle_info);
+ DECL_HANDLER(dup_handle);
++DECL_HANDLER(compare_objects);
+ DECL_HANDLER(make_temporary);
+ DECL_HANDLER(open_process);
+ DECL_HANDLER(open_thread);
+@@ -423,6 +424,7 @@ static const req_handler req_handlers[REQ_NB_REQUESTS] =
+     (req_handler)req_close_handle,
+     (req_handler)req_set_handle_info,
+     (req_handler)req_dup_handle,
++    (req_handler)req_compare_objects,
+     (req_handler)req_make_temporary,
+     (req_handler)req_open_process,
+     (req_handler)req_open_thread,
+@@ -874,6 +876,9 @@ C_ASSERT( FIELD_OFFSET(struct dup_handle_request, options) == 32 );
+ C_ASSERT( sizeof(struct dup_handle_request) == 40 );
+ C_ASSERT( FIELD_OFFSET(struct dup_handle_reply, handle) == 8 );
+ C_ASSERT( sizeof(struct dup_handle_reply) == 16 );
++C_ASSERT( FIELD_OFFSET(struct compare_objects_request, first) == 12 );
++C_ASSERT( FIELD_OFFSET(struct compare_objects_request, second) == 16 );
++C_ASSERT( sizeof(struct compare_objects_request) == 24 );
+ C_ASSERT( FIELD_OFFSET(struct make_temporary_request, handle) == 12 );
+ C_ASSERT( sizeof(struct make_temporary_request) == 16 );
+ C_ASSERT( FIELD_OFFSET(struct open_process_request, pid) == 12 );
+diff --git a/server/trace.c b/server/trace.c
+index 903e323273b..99c5d3996ab 100644
+--- a/server/trace.c
++++ b/server/trace.c
+@@ -1749,6 +1749,12 @@ static void dump_dup_handle_reply( const struct dup_handle_reply *req )
+     fprintf( stderr, " handle=%04x", req->handle );
+ }
+ 
++static void dump_compare_objects_request( const struct compare_objects_request *req )
++{
++    fprintf( stderr, " first=%04x", req->first );
++    fprintf( stderr, ", second=%04x", req->second );
++}
++
+ static void dump_make_temporary_request( const struct make_temporary_request *req )
+ {
+     fprintf( stderr, " handle=%04x", req->handle );
+@@ -4581,6 +4587,7 @@ static const dump_func req_dumpers[REQ_NB_REQUESTS] = {
+     (dump_func)dump_close_handle_request,
+     (dump_func)dump_set_handle_info_request,
+     (dump_func)dump_dup_handle_request,
++    (dump_func)dump_compare_objects_request,
+     (dump_func)dump_make_temporary_request,
+     (dump_func)dump_open_process_request,
+     (dump_func)dump_open_thread_request,
+@@ -4859,6 +4866,7 @@ static const dump_func reply_dumpers[REQ_NB_REQUESTS] = {
+     (dump_func)dump_set_handle_info_reply,
+     (dump_func)dump_dup_handle_reply,
+     NULL,
++    NULL,
+     (dump_func)dump_open_process_reply,
+     (dump_func)dump_open_thread_reply,
+     (dump_func)dump_select_reply,
+@@ -5135,6 +5143,7 @@ static const char * const req_names[REQ_NB_REQUESTS] = {
+     "close_handle",
+     "set_handle_info",
+     "dup_handle",
++    "compare_objects",
+     "make_temporary",
+     "open_process",
+     "open_thread",
+@@ -5474,6 +5483,7 @@ static const struct
+     { "NOT_MAPPED_VIEW",             STATUS_NOT_MAPPED_VIEW },
+     { "NOT_REGISTRY_FILE",           STATUS_NOT_REGISTRY_FILE },
+     { "NOT_SAME_DEVICE",             STATUS_NOT_SAME_DEVICE },
++    { "NOT_SAME_OBJECT",             STATUS_NOT_SAME_OBJECT },
+     { "NOT_SUPPORTED",               STATUS_NOT_SUPPORTED },
+     { "NO_DATA_DETECTED",            STATUS_NO_DATA_DETECTED },
+     { "NO_IMPERSONATION_TOKEN",      STATUS_NO_IMPERSONATION_TOKEN },
+
+-- 
+2.31.1
+

@@ -23,7 +23,7 @@ index 98b2a47ba6d..ebe0152bf1c 100644
  {
      DBusMessageIter iter, drive, variant;
      const char *name;
-@@ -405,11 +406,50 @@ static void udisks2_get_drive_info( const char *drive_name, DBusMessageIter *dic
+@@ -405,11 +406,59 @@ static void udisks2_get_drive_info( const char *drive_name, DBusMessageIter *dic
                      *drive_type = udisks_parse_media_compatibility( &variant );
                  else if (!strcmp( name, "Id" ))
                      p_dbus_message_iter_get_basic( &variant, serial );
@@ -39,28 +39,37 @@ index 98b2a47ba6d..ebe0152bf1c 100644
 +static void udisks2_get_scsi_info( const char *unix_device, int optical,
 +    const char *model, struct scsi_info *scsi_info )
 +{
-+    WCHAR *name;
++    WCHAR name[MAX_PATH] = {'\\','?','?','\\','u','n','i','x',0};
++    UNICODE_STRING string;
++    OBJECT_ATTRIBUTES attr = {sizeof(attr)};
++    IO_STATUS_BLOCK iosb;
++    NTSTATUS status;
 +    HANDLE handle;
-+    DWORD size;
++    DWORD len;
 +
 +    if (!unix_device)
 +        return;
 +
-+    if (!(name = wine_get_dos_file_name( unix_device )))
++    len = ntdll_umbstowcs( unix_device, strlen( unix_device ) + 1, &name[8], ARRAY_SIZE(name) - 8 );
++    if (len >= ARRAY_SIZE(name) - 8)
 +    {
-+        ERR("Failed to convert %s to NT, err %u\n", debugstr_a(unix_device), GetLastError());
-+        return;
-+    }
-+    handle = CreateFileW( name, GENERIC_READ | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-+                          NULL, OPEN_EXISTING, 0, 0 );
-+    RtlFreeHeap( GetProcessHeap(), 0, name );
-+    if (handle == INVALID_HANDLE_VALUE)
-+    {
-+        WARN("Failed to open %s, err %u\n", debugstr_a(unix_device), GetLastError());
++        ERR("Failed to convert %s to NT, path too long\n", debugstr_a(unix_device));
 +        return;
 +    }
 +
-+    if (DeviceIoControl( handle, IOCTL_SCSI_GET_ADDRESS, NULL, 0, &scsi_info->addr, sizeof(scsi_info->addr), &size, 0 ))
++    string.Buffer = name;
++    string.Length = len + 8;
++    string.MaximumLength = string.Length;
++    attr.ObjectName = &string;
++    status = NtCreateFile( &handle, GENERIC_READ | SYNCHRONIZE, &attr, &iosb, NULL, FILE_ATTRIBUTE_NORMAL,
++                           FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_NON_DIRECTORY_FILE, NULL, 0 );
++    if (!NT_SUCCESS(status))
++    {
++        WARN("Failed to open %s, status %u\n", debugstr_a(unix_device), status);
++        return;
++    }
++
++    if (NtDeviceIoControlFile( handle, 0, NULL, NULL, &iosb, IOCTL_SCSI_GET_ADDRESS, NULL, 0, &scsi_info->addr, sizeof(scsi_info->addr) ))
 +    {
 +        scsi_info->type = optical ? SCSI_CDROM_PERIPHERAL : SCSI_DISK_PERIPHERAL;
 +        scsi_info->init_id = 255; /* FIXME */
@@ -68,7 +77,7 @@ index 98b2a47ba6d..ebe0152bf1c 100644
 +        lstrcpynA( scsi_info->model, model, sizeof(scsi_info->model) );
 +    }
 +
-+    CloseHandle( handle );
++    NtClose( handle );
 +}
 +
  static void udisks2_add_device( const char *udi, DBusMessageIter *dict, DBusMessageIter *block )
@@ -99,14 +108,14 @@ index 98b2a47ba6d..ebe0152bf1c 100644
      }
      if (device)
      {
--        if (removable) add_dos_device( -1, udi, device, mount_point, drive_type, guid_ptr, NULL );
+-        if (removable) queue_device_op( ADD_DOS_DEVICE, udi, device, mount_point, drive_type, guid_ptr, id, NULL );
 +        if (removable)
 +        {
 +            struct scsi_info scsi_info = {0};
 +            udisks2_get_scsi_info( device, optical, model, &scsi_info );
-+            add_dos_device( -1, udi, device, mount_point, drive_type, guid_ptr, scsi_info.type ? &scsi_info : NULL );
++            queue_device_op( ADD_DOS_DEVICE, udi, device, mount_point, drive_type, guid_ptr, id, scsi_info.type ? &scsi_info : NULL );
 +        }
-         else if (guid_ptr) add_volume( udi, device, mount_point, DEVICE_HARDDISK_VOL, guid_ptr, id, NULL );
+         else if (guid_ptr) queue_device_op( ADD_VOLUME, udi, device, mount_point, DEVICE_HARDDISK_VOL, guid_ptr, id, NULL );
      }
  }
 

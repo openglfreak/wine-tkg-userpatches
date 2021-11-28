@@ -1,17 +1,22 @@
 From: Jinoh Kang <jinoh.kang.kr@gmail.com>
-Subject: [PATCH v2 3/6] ntdll: Add tests for NtSetInformationVirtualMemory().
-Message-Id: <06224ddc-09b1-8a6d-b6bb-356624e501ee@gmail.com>
-Date: Fri, 26 Nov 2021 23:50:20 +0900
-In-Reply-To: <d5ebaa2f-d68a-a687-c864-477dc083f833@gmail.com>
-References: <d5ebaa2f-d68a-a687-c864-477dc083f833@gmail.com>
+Subject: [PATCH v5 3/6] ntdll: Add tests for NtSetInformationVirtualMemory.
+Message-Id: <8d4f2801-d99b-755c-224c-ae0a27de6e79@gmail.com>
+Date: Sun, 28 Nov 2021 11:25:15 +0900
+In-Reply-To: <764352d0-930b-00b6-a617-5e41122cef8d@gmail.com>
+References: <764352d0-930b-00b6-a617-5e41122cef8d@gmail.com>
 
 Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
 ---
- dlls/ntdll/tests/virtual.c | 128 +++++++++++++++++++++++++++++++++++++
- 1 file changed, 128 insertions(+)
+
+Notes:
+    v2 -> v3: Guard wow64 status code tests with todo_wine
+    v4 -> v5: fix one wow64 test item
+
+ dlls/ntdll/tests/virtual.c | 164 +++++++++++++++++++++++++++++++++++++
+ 1 file changed, 164 insertions(+)
 
 diff --git a/dlls/ntdll/tests/virtual.c b/dlls/ntdll/tests/virtual.c
-index adc9b1ae6dc..035d0af1588 100644
+index adc9b1ae6dc..0b1c2d62d23 100644
 --- a/dlls/ntdll/tests/virtual.c
 +++ b/dlls/ntdll/tests/virtual.c
 @@ -39,6 +39,9 @@ static void * (WINAPI *pRtlFindExportedRoutineByName)(HMODULE,const char*);
@@ -24,7 +29,7 @@ index adc9b1ae6dc..035d0af1588 100644
  static const BOOL is_win64 = sizeof(void*) != sizeof(int);
  static BOOL is_wow64;
  
-@@ -1132,6 +1135,129 @@ static void test_syscalls(void)
+@@ -1132,6 +1135,165 @@ static void test_syscalls(void)
      UnmapViewOfFile( ptr );
  }
  
@@ -47,12 +52,24 @@ index adc9b1ae6dc..035d0af1588 100644
 +        "NtSetInformationVirtualMemory unexpected status on invalid info class (1): %08x\n", status);
 +
 +    status = pNtSetInformationVirtualMemory( NtCurrentProcess(), -1UL, 0, NULL, NULL, 0);
-+    ok( status == (!is_wow64 ? STATUS_INVALID_PARAMETER_2 : STATUS_INVALID_PARAMETER_3),
++    ok( status == STATUS_INVALID_PARAMETER_2 || (is_wow64 && status == STATUS_INVALID_PARAMETER_3),
 +        "NtSetInformationVirtualMemory unexpected status on invalid info class (2): %08x\n", status);
++    if (is_wow64)
++    {
++        todo_wine
++        ok( status == STATUS_INVALID_PARAMETER_3,
++            "wow64 NtSetInformationVirtualMemory unexpected status on invalid info class (2): %08x\n", status);
++    }
 +
 +    status = pNtSetInformationVirtualMemory( NtCurrentProcess(), -1UL, 1, NULL, NULL, 32);
-+    ok( status == (!is_wow64 ? STATUS_INVALID_PARAMETER_2 : STATUS_ACCESS_VIOLATION),
++    ok( status == STATUS_INVALID_PARAMETER_2 || (is_wow64 && status == STATUS_ACCESS_VIOLATION),
 +        "NtSetInformationVirtualMemory unexpected status on invalid info class (3): %08x\n", status);
++    if (is_wow64)
++    {
++        todo_wine
++        ok( status == STATUS_ACCESS_VIOLATION,
++            "wow64 NtSetInformationVirtualMemory unexpected status on invalid info class (3): %08x\n", status);
++    }
 +
 +    status = pNtSetInformationVirtualMemory( NtCurrentProcess(), VmPrefetchInformation,
 +                                             1, entries, NULL, 0 );
@@ -62,13 +79,25 @@ index adc9b1ae6dc..035d0af1588 100644
 +
 +    status = pNtSetInformationVirtualMemory( NtCurrentProcess(), VmPrefetchInformation,
 +                                             1, NULL, NULL, 0 );
-+    ok( status == (!is_wow64 ? STATUS_INVALID_PARAMETER_5 : STATUS_ACCESS_VIOLATION),
++    ok( status == STATUS_INVALID_PARAMETER_5 || (is_wow64 && status == STATUS_ACCESS_VIOLATION),
 +        "NtSetInformationVirtualMemory unexpected status on NULL info data (2): %08x\n", status);
++    if (is_wow64)
++    {
++        todo_wine
++        ok( status == STATUS_ACCESS_VIOLATION,
++            "wow64 NtSetInformationVirtualMemory unexpected status on NULL info data (2): %08x\n", status);
++    }
 +
 +    status = pNtSetInformationVirtualMemory( NtCurrentProcess(), VmPrefetchInformation,
 +                                             0, NULL, NULL, 0 );
-+    ok( status == (!is_wow64 ? STATUS_INVALID_PARAMETER_5 : STATUS_INVALID_PARAMETER_3),
++    ok( status == STATUS_INVALID_PARAMETER_5 || (is_wow64 && status == STATUS_INVALID_PARAMETER_3),
 +        "NtSetInformationVirtualMemory unexpected status on NULL info data (3): %08x\n", status);
++    if (is_wow64)
++    {
++        todo_wine
++        ok( status == STATUS_INVALID_PARAMETER_3,
++            "wow64 NtSetInformationVirtualMemory unexpected status on NULL info data (3): %08x\n", status);
++    }
 +
 +    status = pNtSetInformationVirtualMemory( NtCurrentProcess(), VmPrefetchInformation,
 +                                             1, entries, &reservedarg, sizeof(reservedarg) * 2 );
@@ -77,8 +106,14 @@ index adc9b1ae6dc..035d0af1588 100644
 +
 +    status = pNtSetInformationVirtualMemory( NtCurrentProcess(), VmPrefetchInformation,
 +                                             0, NULL, &reservedarg, sizeof(reservedarg) * 2 );
-+    ok( status == (!is_wow64 ? STATUS_INVALID_PARAMETER_6 : STATUS_INVALID_PARAMETER_3),
++    ok( status == STATUS_INVALID_PARAMETER_6 || (is_wow64 && status == STATUS_INVALID_PARAMETER_3),
 +        "NtSetInformationVirtualMemory unexpected status on extended info data (2): %08x\n", status);
++    if (is_wow64)
++    {
++        todo_wine
++        ok( status == STATUS_INVALID_PARAMETER_3,
++            "wow64 NtSetInformationVirtualMemory unexpected status on extended info data (2): %08x\n", status);
++    }
 +
 +    status = pNtSetInformationVirtualMemory( NtCurrentProcess(), VmPrefetchInformation,
 +                                             1, entries, &reservedarg, sizeof(reservedarg) / 2 );
@@ -87,8 +122,14 @@ index adc9b1ae6dc..035d0af1588 100644
 +
 +    status = pNtSetInformationVirtualMemory( NtCurrentProcess(), VmPrefetchInformation,
 +                                             0, NULL, &reservedarg, sizeof(reservedarg) / 2 );
-+    ok( status == (!is_wow64 ? STATUS_INVALID_PARAMETER_6 : STATUS_INVALID_PARAMETER_3),
++    ok( status == STATUS_INVALID_PARAMETER_6 || (is_wow64 && status == STATUS_INVALID_PARAMETER_3),
 +        "NtSetInformationVirtualMemory unexpected status on shrunk info data (2): %08x\n", status);
++    if (is_wow64)
++    {
++        todo_wine
++        ok( status == STATUS_INVALID_PARAMETER_3,
++            "wow64 NtSetInformationVirtualMemory unexpected status on shrunk info data (2): %08x\n", status);
++    }
 +
 +    status = pNtSetInformationVirtualMemory( NtCurrentProcess(), VmPrefetchInformation,
 +                                             0, NULL, &reservedarg, sizeof(reservedarg) );
@@ -154,7 +195,7 @@ index adc9b1ae6dc..035d0af1588 100644
  START_TEST(virtual)
  {
      HMODULE mod;
-@@ -1160,6 +1286,7 @@ START_TEST(virtual)
+@@ -1160,6 +1322,7 @@ START_TEST(virtual)
      pRtlFindExportedRoutineByName = (void *)GetProcAddress(mod, "RtlFindExportedRoutineByName");
      pRtlGetEnabledExtendedFeatures = (void *)GetProcAddress(mod, "RtlGetEnabledExtendedFeatures");
      pNtAllocateVirtualMemoryEx = (void *)GetProcAddress(mod, "NtAllocateVirtualMemoryEx");
@@ -162,7 +203,7 @@ index adc9b1ae6dc..035d0af1588 100644
  
      NtQuerySystemInformation(SystemBasicInformation, &sbi, sizeof(sbi), NULL);
      trace("system page size %#x\n", sbi.PageSize);
-@@ -1171,4 +1298,5 @@ START_TEST(virtual)
+@@ -1171,4 +1334,5 @@ START_TEST(virtual)
      test_NtMapViewOfSection();
      test_user_shared_data();
      test_syscalls();

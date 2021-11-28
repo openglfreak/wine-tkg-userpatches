@@ -1,0 +1,97 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH] cmd: Do not set errorlevel when successfully changing a variable.
+Message-Id: <63e981af-b455-4f4b-b9e3-34f0fdc2b51d@gmail.com>
+Date: Sun, 28 Nov 2021 14:36:58 +0900
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52107
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ programs/cmd/builtins.c                  | 11 +++--------
+ programs/cmd/tests/test_builtins.cmd     |  3 +++
+ programs/cmd/tests/test_builtins.cmd.exp |  6 +++---
+ 3 files changed, 9 insertions(+), 11 deletions(-)
+
+diff --git a/programs/cmd/builtins.c b/programs/cmd/builtins.c
+index d0a954d90fa..8f4b9ca1498 100644
+--- a/programs/cmd/builtins.c
++++ b/programs/cmd/builtins.c
+@@ -4104,7 +4104,6 @@ void WCMD_setshow_env (WCHAR *s) {
+ 
+   LPVOID env;
+   WCHAR *p;
+-  BOOL status;
+   WCHAR string[MAXSTRING];
+ 
+   if (param1[0] == 0x00 && quals[0] == 0x00) {
+@@ -4189,8 +4188,6 @@ void WCMD_setshow_env (WCHAR *s) {
+     }
+ 
+   } else {
+-    DWORD gle;
+-
+     /* set "var=value"jim ignores anything after the last quote */
+     if (*s=='\"') {
+       WCHAR *lastquote;
+@@ -4213,12 +4210,10 @@ void WCMD_setshow_env (WCHAR *s) {
+     if (!*p) p = NULL;
+     WINE_TRACE("set: Setting var '%s' to '%s'\n", wine_dbgstr_w(s),
+                wine_dbgstr_w(p));
+-    status = SetEnvironmentVariableW(s, p);
+-    gle = GetLastError();
+-    if ((!status) & (gle == ERROR_ENVVAR_NOT_FOUND)) {
++    if (!SetEnvironmentVariableW(s, p)) {
++      WCMD_print_error();
+       errorlevel = 1;
+-    } else if (!status) WCMD_print_error();
+-    else if (!interactive) errorlevel = 0;
++    }
+   }
+ }
+ 
+diff --git a/programs/cmd/tests/test_builtins.cmd b/programs/cmd/tests/test_builtins.cmd
+index 47b028207ac..2cc96d32ded 100644
+--- a/programs/cmd/tests/test_builtins.cmd
++++ b/programs/cmd/tests/test_builtins.cmd
+@@ -448,14 +448,17 @@ for /f "delims==" %%i in ('set WINE_ba') do set %%i=
+ for /f "delims==" %%i in ('set WINE_foo') do set %%i=
+ set WINE_FOOBAR 2> nul > nul
+ echo %ErrorLevel%
++call :setError 1234567890
+ set WINE_FOOBAR =  baz
+ echo %ErrorLevel%
+ echo %WINE_FOOBAR%WINE_FOOBAR not defined
+ echo %WINE_FOOBAR %
+ set WINE_FOOBAR 2> nul
++call :setError 1234567890
+ set WINE_FOOBAR =  baz2
+ echo %ErrorLevel%
+ echo %WINE_fOObAr %
++call :setError 1234567890
+ set WINE_FOOBAR= bar
+ echo %ErrorLevel%
+ echo %WINE_FOOBAR%
+diff --git a/programs/cmd/tests/test_builtins.cmd.exp b/programs/cmd/tests/test_builtins.cmd.exp
+index 4c7bc3e0c02..d32571e5afb 100644
+--- a/programs/cmd/tests/test_builtins.cmd.exp
++++ b/programs/cmd/tests/test_builtins.cmd.exp
+@@ -445,13 +445,13 @@ q2
+ q3
+ ------------ Testing 'set' ------------
+ 1
+-0
++1234567890
+ WINE_FOOBAR not defined
+   baz
+ WINE_FOOBAR =  baz
+-0
++1234567890
+   baz2
+-0
++1234567890
+  bar
+ WINE_FOOBAR= bar
+ WINE_FOOBAR =  baz2
+
+-- 
+2.31.1
+

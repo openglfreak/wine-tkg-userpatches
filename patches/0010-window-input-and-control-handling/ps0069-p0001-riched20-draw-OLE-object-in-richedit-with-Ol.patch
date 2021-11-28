@@ -1,0 +1,74 @@
+From: Dongwan Kim <kdw6485@gmail.com>
+Subject: [PATCH 1/4] riched20: draw OLE object in richedit with OleDraw
+Message-Id: <20211122083222.108130-1-kdw6485@gmail.com>
+Date: Mon, 22 Nov 2021 17:32:19 +0900
+
+When OLE object provides IViewObject::Draw,
+Richedit can draw it even though the OLE object
+does not support CF_BITMAP nor CF_ENHMETAFILE.
+
+Signed-off-by: Dongwan Kim <kdw6485@gmail.com>
+---
+ dlls/riched20/richole.c | 24 +++++++++++++++++++++---
+ 1 file changed, 21 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/riched20/richole.c b/dlls/riched20/richole.c
+index 03572511ff7..1a62f0b9f36 100644
+--- a/dlls/riched20/richole.c
++++ b/dlls/riched20/richole.c
+@@ -5653,6 +5653,7 @@ void ME_GetOLEObjectSize(const ME_Context *c, ME_Run *run, SIZE *pSize)
+   STGMEDIUM     stgm;
+   DIBSECTION    dibsect;
+   ENHMETAHEADER emh;
++  int           pixs;
+ 
+   assert(run->nFlags & MERF_GRAPHICS);
+   assert(run->reobj);
+@@ -5691,8 +5692,13 @@ void ME_GetOLEObjectSize(const ME_Context *c, ME_Run *run, SIZE *pSize)
+     fmt.tymed = TYMED_ENHMF;
+     if (IDataObject_GetData(ido, &fmt, &stgm) != S_OK)
+     {
+-      FIXME("unsupported format\n");
+-      pSize->cx = pSize->cy = 0;
++      if( IOleObject_GetExtent(run->reobj->obj.poleobj, DVASPECT_CONTENT, pSize) != S_OK){
++        FIXME("unsupported format\n");
++        pSize->cx = pSize->cy = 0;
++      }
++      pixs = GetDeviceCaps(c->hDC, LOGPIXELSX);
++      pSize->cx = MulDiv(pSize->cx, pixs , 2540);
++      pSize->cy = MulDiv(pSize->cy, pixs , 2540);
+       IDataObject_Release(ido);
+       return;
+     }
+@@ -5735,6 +5741,8 @@ void draw_ole( ME_Context *c, int x, int y, ME_Run *run, BOOL selected )
+   BOOL          has_size;
+   HBITMAP       old_bm;
+   RECT          rc;
++  HRESULT       hr;
++  int           pixs;
+ 
+   assert(run->nFlags & MERF_GRAPHICS);
+   assert(run->reobj);
+@@ -5755,7 +5763,17 @@ void draw_ole( ME_Context *c, int x, int y, ME_Run *run, BOOL selected )
+     fmt.tymed = TYMED_ENHMF;
+     if (IDataObject_GetData(ido, &fmt, &stgm) != S_OK)
+     {
+-      FIXME("Couldn't get storage medium\n");
++      IOleObject_GetExtent(run->reobj->obj.poleobj, DVASPECT_CONTENT, &sz);
++      pixs = GetDeviceCaps(c->hDC, LOGPIXELSX);
++      rc.left = x;
++      rc.top = y - MulDiv(sz.cy, pixs, 2540);
++      rc.right = x + MulDiv(sz.cx, pixs, 2540);
++      rc.bottom = y ;
++      hr = OleDraw(run->reobj->obj.poleobj, DVASPECT_CONTENT, c->hDC, &rc);
++      if (FAILED(hr))
++      {
++        FIXME("Couldn't draw ole object\n");
++      }
+       IDataObject_Release(ido);
+       return;
+     }
+
+-- 
+2.30.2
+

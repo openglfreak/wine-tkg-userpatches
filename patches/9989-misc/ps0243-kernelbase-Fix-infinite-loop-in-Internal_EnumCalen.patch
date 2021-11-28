@@ -1,0 +1,74 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH] kernelbase: Fix infinite loop in Internal_EnumCalendarInfo.
+Message-Id: <e1d70919-5680-f0a9-a879-427fb3ba31a4@gmail.com>
+Date: Mon, 29 Nov 2021 02:50:31 +0900
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52129
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ dlls/kernelbase/locale.c | 24 +++++++++++++++---------
+ 1 file changed, 15 insertions(+), 9 deletions(-)
+
+diff --git a/dlls/kernelbase/locale.c b/dlls/kernelbase/locale.c
+index 10f3b2698b5..779d6071ab0 100644
+--- a/dlls/kernelbase/locale.c
++++ b/dlls/kernelbase/locale.c
+@@ -2722,13 +2722,13 @@ static DWORD get_timezone_id( const TIME_ZONE_INFORMATION *info, LARGE_INTEGER t
+ /******************************************************************************
+  *	Internal_EnumCalendarInfo   (kernelbase.@)
+  */
+-BOOL WINAPI DECLSPEC_HOTPATCH Internal_EnumCalendarInfo( CALINFO_ENUMPROCW proc, LCID lcid, CALID id,
++BOOL WINAPI DECLSPEC_HOTPATCH Internal_EnumCalendarInfo( CALINFO_ENUMPROCW proc, LCID lcid, CALID id_or_all,
+                                                          CALTYPE type, BOOL unicode, BOOL ex,
+                                                          BOOL exex, LPARAM lparam )
+ {
+     WCHAR buffer[256];
+-    DWORD optional = 0;
+-    INT ret;
++    CALID calendars[2], id;
++    INT ret, i;
+ 
+     if (!proc)
+     {
+@@ -2736,16 +2736,24 @@ BOOL WINAPI DECLSPEC_HOTPATCH Internal_EnumCalendarInfo( CALINFO_ENUMPROCW proc,
+         return FALSE;
+     }
+ 
+-    if (id == ENUM_ALL_CALENDARS)
++    if (id_or_all == ENUM_ALL_CALENDARS)
+     {
+         if (!GetLocaleInfoW( lcid, LOCALE_ICALENDARTYPE | LOCALE_RETURN_NUMBER,
+-                             (WCHAR *)&id, sizeof(id) / sizeof(WCHAR) )) return FALSE;
++                             (WCHAR *)&calendars[0], sizeof(calendars[0]) / sizeof(WCHAR) )) return FALSE;
+         if (!GetLocaleInfoW( lcid, LOCALE_IOPTIONALCALENDAR | LOCALE_RETURN_NUMBER,
+-                             (WCHAR *)&optional, sizeof(optional) / sizeof(WCHAR) )) optional = 0;
++                             (WCHAR *)&calendars[1], sizeof(calendars[1]) / sizeof(WCHAR) )) calendars[1] = 0;
++    }
++    else
++    {
++        calendars[0] = id_or_all;
++        calendars[1] = 0;
+     }
+ 
+-    for (;;)
++    for (i = 0; i < ARRAY_SIZE(calendars); i++)
+     {
++        id = calendars[i];
++        if (!id) continue;
++
+         if (type & CAL_RETURN_NUMBER)
+             ret = GetCalendarInfoW( lcid, id, type, NULL, 0, (LPDWORD)buffer );
+         else if (unicode)
+@@ -2764,8 +2772,6 @@ BOOL WINAPI DECLSPEC_HOTPATCH Internal_EnumCalendarInfo( CALINFO_ENUMPROCW proc,
+             else ret = proc( buffer );
+         }
+         if (!ret) break;
+-        if (!optional) break;
+-        id = optional;
+     }
+     return TRUE;
+ }
+
+-- 
+2.31.1
+

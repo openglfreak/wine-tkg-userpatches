@@ -1,0 +1,71 @@
+From: Eric Pouech <eric.pouech@gmail.com>
+Subject: [PATCH] server/console: ensure conhost has created the TTY input stream before waiting
+Message-Id: <163897536494.538828.11615849148535007194.stgit@euterpe>
+Date: Wed,  8 Dec 2021 15:56:06 +0100
+
+some PE executables (like mingw's gdb port) just do something like:
+- WaitForSingleObject(GetStdHandle(STD_INPUT_HANDLE), INFINITE) and hang
+  for ever (the read operations are done *after* the wait operation
+  succeeds)
+(of course, the real wait operation is more complex, but the problematic
+part boils down to that)
+
+this hangs for ever because conhost's main input thread hasn't been started
+yet
+
+this patch sends once a peek IOCTL before waiting, hence ensuring conhost's
+main input stream has been started
+
+this lets i686 and x64_86 mingw's gdb port to accept user's input
+
+(this is second attempt to fix this bug, based on Jacek's feedback on
+first try)
+
+A+
+Signed-off-by: Eric Pouech <eric.pouech@gmail.com>
+
+---
+ server/console.c |   10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/server/console.c b/server/console.c
+index 977c428cf9f..b4ef1d21874 100644
+--- a/server/console.c
++++ b/server/console.c
+@@ -136,6 +136,7 @@ struct console_server
+     struct list           read_queue;  /* blocking read queue */
+     int                   busy;        /* flag if server processing an ioctl */
+     int                   term_fd;     /* UNIX terminal fd */
++    int                   once_input;  /* flag if input thread has already been requested */
+     struct termios        termios;     /* original termios */
+ };
+ 
+@@ -892,6 +893,7 @@ static struct object *create_console_server( void )
+     server->console = NULL;
+     server->busy    = 0;
+     server->term_fd = -1;
++    server->once_input = 0;
+     list_init( &server->queue );
+     list_init( &server->read_queue );
+     server->fd = alloc_pseudo_fd( &console_server_fd_ops, &server->obj, FILE_SYNCHRONOUS_IO_NONALERT );
+@@ -1310,11 +1312,19 @@ static void console_input_dump( struct object *obj, int verbose )
+ 
+ static int console_input_add_queue( struct object *obj, struct wait_queue_entry *entry )
+ {
++    struct console_server* server;
+     if (!current->process->console)
+     {
+         set_error( STATUS_ACCESS_DENIED );
+         return 0;
+     }
++    server = current->process->console->server;
++    /* before waiting, ensure conhost's input thread has been started */
++    if ( server && !server->once_input )
++    {
++        queue_host_ioctl( server, IOCTL_CONDRV_PEEK, 0, NULL, NULL);
++        server->once_input = 1;
++    }
+     return add_queue( &current->process->console->obj, entry );
+ }
+ 
+

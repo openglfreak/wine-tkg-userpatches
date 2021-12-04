@@ -1,0 +1,75 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH v2] ntdll: Support both HP-UX-like libunwind and LLVM libunwind error codes.
+Message-Id: <feab556d5b4bc5a5b02323b21fcec8f5301e8316.1639067168.git.jinoh.kang.kr@gmail.com>
+Date: Fri, 10 Dec 2021 01:26:53 +0900
+
+HP-UX libunwind uses the sign of error code to indicate whether the
+operation was successful; however, LLVM always returns positive error
+codes.
+
+Normalise the sign of the error code so that it handles all flavours of
+libunwind.
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ dlls/ntdll/unix/signal_arm.c    | 5 +++--
+ dlls/ntdll/unix/signal_arm64.c  | 5 +++--
+ dlls/ntdll/unix/signal_x86_64.c | 1 +
+ 3 files changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/unix/signal_arm.c b/dlls/ntdll/unix/signal_arm.c
+index f4987f902e0..48c2bc159b5 100644
+--- a/dlls/ntdll/unix/signal_arm.c
++++ b/dlls/ntdll/unix/signal_arm.c
+@@ -248,12 +248,13 @@ NTSTATUS CDECL unwind_builtin_dll( ULONG type, struct _DISPATCHER_CONTEXT *dispa
+         return STATUS_INVALID_DISPOSITION;
+     }
+     rc = unw_get_proc_info( &cursor, &info );
+-    if (rc != UNW_ESUCCESS && rc != -UNW_ENOINFO)
++    if (rc < 0) rc = -rc;  /* libunwind may return negative error codes */
++    if (rc != UNW_ESUCCESS && rc != UNW_ENOINFO)
+     {
+         WARN( "failed to get info: %d\n", rc );
+         return STATUS_INVALID_DISPOSITION;
+     }
+-    if (rc == -UNW_ENOINFO || ip < info.start_ip || ip > info.end_ip)
++    if (rc == UNW_ENOINFO || ip < info.start_ip || ip > info.end_ip)
+     {
+         NTSTATUS status = context->Pc != context->Lr ?
+                           STATUS_SUCCESS : STATUS_INVALID_DISPOSITION;
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index ae44fb02982..4cdbd888bf0 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -212,12 +212,13 @@ NTSTATUS CDECL unwind_builtin_dll( ULONG type, DISPATCHER_CONTEXT *dispatch, CON
+         return STATUS_INVALID_DISPOSITION;
+     }
+     rc = unw_get_proc_info( &cursor, &info );
+-    if (rc != UNW_ESUCCESS && rc != -UNW_ENOINFO)
++    if (rc < 0) rc = -rc;  /* libunwind may return negative error codes */
++    if (rc != UNW_ESUCCESS && rc != UNW_ENOINFO)
+     {
+         WARN( "failed to get info: %d\n", rc );
+         return STATUS_INVALID_DISPOSITION;
+     }
+-    if (rc == -UNW_ENOINFO || ip < info.start_ip || ip > info.end_ip)
++    if (rc == UNW_ENOINFO || ip < info.start_ip || ip > info.end_ip)
+     {
+         TRACE( "no info found for %lx ip %lx-%lx, assuming leaf function\n",
+                ip, info.start_ip, info.end_ip );
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 3d7b8e256b4..d1e2e27c46c 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -1415,6 +1415,7 @@ static NTSTATUS libunwind_virtual_unwind( ULONG64 ip, ULONG64 *frame, CONTEXT *c
+     *frame = context->Rsp;
+ 
+     rc = unw_get_proc_info(&cursor, &info);
++    if (rc < 0) rc = -rc;  /* libunwind may return negative error codes */
+     if (rc != UNW_ESUCCESS && rc != UNW_ENOINFO)
+     {
+         WARN( "failed to get info: %d\n", rc );
+
+-- 
+2.34.1
+

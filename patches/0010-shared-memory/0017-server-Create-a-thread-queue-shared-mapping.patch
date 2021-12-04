@@ -1,0 +1,280 @@
+From fa0366a5bd86341234c64a3ca867c97046b092c9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sat, 21 Nov 2020 00:20:27 +0100
+Subject: [PATCH 17/44] server: Create a thread queue shared mapping.
+
+---
+ server/directory.c  | 15 ++++++++
+ server/file.h       |  1 +
+ server/protocol.def |  6 ++++
+ server/queue.c      | 85 ++++++++++++++++++++++++---------------------
+ server/thread.c     | 32 +++++++++++++++++
+ server/thread.h     |  2 ++
+ 6 files changed, 101 insertions(+), 40 deletions(-)
+
+diff --git a/server/directory.c b/server/directory.c
+index 455e7323ced..341d855464f 100644
+--- a/server/directory.c
++++ b/server/directory.c
+@@ -296,6 +296,21 @@ struct object *create_desktop_map_directory( struct winstation *winstation )
+     return &ret->obj;
+ }
+ 
++struct object *create_thread_map_directory( void )
++{
++    static const WCHAR dir_kernelW[] = {'K','e','r','n','e','l','O','b','j','e','c','t','s'};
++    static const WCHAR dir_thread_mapsW[] = {'_','_','w','i','n','e','_','t','h','r','e','a','d','_','m','a','p','p','i','n','g','s'};
++    static const struct unicode_str dir_kernel_str = {dir_kernelW, sizeof(dir_kernelW)};
++    static const struct unicode_str dir_thread_maps_str = {dir_thread_mapsW, sizeof(dir_thread_mapsW)};
++    struct directory *mapping_root, *ret;
++
++    mapping_root = create_directory( &root_directory->obj, &dir_kernel_str, OBJ_OPENIF, HASH_SIZE, NULL );
++    ret = create_directory( &mapping_root->obj, &dir_thread_maps_str, OBJ_OPENIF, HASH_SIZE, NULL );
++    release_object( &mapping_root->obj );
++
++    return &ret->obj;
++}
++
+ /* Global initialization */
+ 
+ static void create_session( unsigned int id )
+diff --git a/server/file.h b/server/file.h
+index 8033bc9cf0f..9414a9c59c0 100644
+--- a/server/file.h
++++ b/server/file.h
+@@ -160,6 +160,7 @@ extern const char *get_timeout_str( timeout_t timeout );
+ /* directory functions */
+ 
+ extern struct object *create_desktop_map_directory( struct winstation *winstation );
++extern struct object *create_thread_map_directory( void );
+ 
+ /* file functions */
+ 
+diff --git a/server/protocol.def b/server/protocol.def
+index 4b37fb7a73e..7db7aed7d30 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -846,6 +846,12 @@ struct desktop_shared_memory
+     unsigned char        keystate[256];    /* asynchronous key state */
+ };
+ 
++struct queue_shared_memory
++{
++    unsigned int         seq;              /* sequence number - server updating if (seq_no & SEQUENCE_MASK) != 0 */
++    int                  created;          /* queue has been created */
++};
++
+ /* Bits that must be clear for client to read */
+ #define SEQUENCE_MASK_BITS  4
+ #define SEQUENCE_MASK ((1UL << SEQUENCE_MASK_BITS) - 1)
+diff --git a/server/queue.c b/server/queue.c
+index e883f140dba..20a56c245b4 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -145,6 +145,7 @@ struct msg_queue
+     int                    esync_in_msgwait; /* our thread is currently waiting on us */
+     unsigned int           fsync_idx;
+     int                    fsync_in_msgwait; /* our thread is currently waiting on us */
++    volatile struct queue_shared_memory *shared;  /* thread queue shared memory ptr */
+ };
+ 
+ struct hotkey
+@@ -238,6 +239,46 @@ static unsigned int last_input_time;
+ static cursor_pos_t cursor_history[64];
+ static unsigned int cursor_history_latest;
+ 
++#if defined(__i386__) || defined(__x86_64__)
++
++#define SHARED_WRITE_BEGIN( x )                                  \
++    do {                                                         \
++        volatile unsigned int __seq = *(x);                      \
++        assert( (__seq & SEQUENCE_MASK) != SEQUENCE_MASK );      \
++        *(x) = ++__seq;                                          \
++    } while(0)
++
++#define SHARED_WRITE_END( x )                                    \
++    do {                                                         \
++        volatile unsigned int __seq = *(x);                      \
++        assert( (__seq & SEQUENCE_MASK) != 0 );                  \
++        if ((__seq & SEQUENCE_MASK) > 1) __seq--;                \
++        else __seq += SEQUENCE_MASK;                             \
++        *(x) = __seq;                                            \
++    } while(0)
++
++#else
++
++#define SHARED_WRITE_BEGIN( x )                                         \
++    do {                                                                \
++        assert( (*(x) & SEQUENCE_MASK) != SEQUENCE_MASK );              \
++        if ((__atomic_add_fetch( x, 1, __ATOMIC_RELAXED ) & SEQUENCE_MASK) == 1) \
++            __atomic_thread_fence( __ATOMIC_RELEASE );                  \
++    } while(0)
++
++#define SHARED_WRITE_END( x )                                           \
++    do {                                                                \
++        assert( (*(x) & SEQUENCE_MASK) != 0 );                          \
++        if ((*(x) & SEQUENCE_MASK) > 1)                                 \
++            __atomic_sub_fetch( x, 1, __ATOMIC_RELAXED );               \
++        else {                                                          \
++            __atomic_thread_fence( __ATOMIC_RELEASE );                  \
++            __atomic_add_fetch( x, SEQUENCE_MASK, __ATOMIC_RELAXED );   \
++        }                                                               \
++    } while(0)
++
++#endif
++
+ static void queue_hardware_message( struct desktop *desktop, struct message *msg, int always_queue );
+ static void free_message( struct message *msg );
+ 
+@@ -320,6 +361,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+         queue->esync_in_msgwait = 0;
+         queue->fsync_idx       = 0;
+         queue->fsync_in_msgwait = 0;
++        queue->shared          = thread->queue_shared;
+         list_init( &queue->send_result );
+         list_init( &queue->callback_result );
+         list_init( &queue->pending_timers );
+@@ -329,6 +371,9 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+         if (do_esync())
+             queue->esync_fd = esync_create_fd( 0, 0 );
+ 
++        SHARED_WRITE_BEGIN( &queue->shared->seq );
++        queue->shared->created = TRUE;
++        SHARED_WRITE_END( &queue->shared->seq );
+         thread->queue = queue;
+     }
+     if (new_input) release_object( new_input );
+@@ -417,46 +462,6 @@ static struct message *alloc_hardware_message( lparam_t info, struct hw_msg_sour
+     return msg;
+ }
+ 
+-#if defined(__i386__) || defined(__x86_64__)
+-
+-#define SHARED_WRITE_BEGIN( x )                                  \
+-    do {                                                         \
+-        volatile unsigned int __seq = *(x);                      \
+-        assert( (__seq & SEQUENCE_MASK) != SEQUENCE_MASK );      \
+-        *(x) = ++__seq;                                          \
+-    } while(0)
+-
+-#define SHARED_WRITE_END( x )                                    \
+-    do {                                                         \
+-        volatile unsigned int __seq = *(x);                      \
+-        assert( (__seq & SEQUENCE_MASK) != 0 );                  \
+-        if ((__seq & SEQUENCE_MASK) > 1) __seq--;                \
+-        else __seq += SEQUENCE_MASK;                             \
+-        *(x) = __seq;                                            \
+-    } while(0)
+-
+-#else
+-
+-#define SHARED_WRITE_BEGIN( x )                                         \
+-    do {                                                                \
+-        assert( (*(x) & SEQUENCE_MASK) != SEQUENCE_MASK );              \
+-        if ((__atomic_add_fetch( x, 1, __ATOMIC_RELAXED ) & SEQUENCE_MASK) == 1) \
+-            __atomic_thread_fence( __ATOMIC_RELEASE );                  \
+-    } while(0)
+-
+-#define SHARED_WRITE_END( x )                                           \
+-    do {                                                                \
+-        assert( (*(x) & SEQUENCE_MASK) != 0 );                          \
+-        if ((*(x) & SEQUENCE_MASK) > 1)                                 \
+-            __atomic_sub_fetch( x, 1, __ATOMIC_RELAXED );               \
+-        else {                                                          \
+-            __atomic_thread_fence( __ATOMIC_RELEASE );                  \
+-            __atomic_add_fetch( x, SEQUENCE_MASK, __ATOMIC_RELAXED );   \
+-        }                                                               \
+-    } while(0)
+-
+-#endif
+-
+ static int update_desktop_cursor_pos( struct desktop *desktop, int x, int y )
+ {
+     int updated;
+diff --git a/server/thread.c b/server/thread.c
+index 0ee7196f05b..f6fc85fe2d0 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -48,6 +48,7 @@
+ #include "request.h"
+ #include "user.h"
+ #include "security.h"
++#include "unicode.h"
+ #include "esync.h"
+ 
+ 
+@@ -255,6 +256,8 @@ static inline void init_thread_structure( struct thread *thread )
+     thread->desc_len        = 0;
+     thread->exit_poll       = NULL;
+     thread->fast_sync       = NULL;
++    thread->queue_shared_mapping = NULL;
++    thread->queue_shared         = NULL;
+ 
+     thread->creation_time = current_time;
+     thread->exit_time     = 0;
+@@ -305,6 +308,28 @@ static struct context *create_thread_context( struct thread *thread )
+ }
+ 
+ 
++static volatile void *init_queue_mapping( struct thread *thread )
++{
++    struct unicode_str name;
++    struct object *dir = create_thread_map_directory();
++    char nameA[MAX_PATH];
++    WCHAR *nameW;
++
++    if (!dir) return NULL;
++
++    sprintf( nameA, "%08x-queue", thread->id );
++    nameW = ascii_to_unicode_str( nameA, &name );
++
++    thread->queue_shared_mapping = create_shared_mapping( dir, &name, sizeof(struct queue_shared_memory),
++                                                          NULL, (void **)&thread->queue_shared );
++    release_object( dir );
++    if (thread->queue_shared) memset( (void *)thread->queue_shared, 0, sizeof(*thread->queue_shared) );
++
++    free( nameW );
++    return thread->queue_shared;
++}
++
++
+ /* create a new thread */
+ struct thread *create_thread( int fd, struct process *process, const struct security_descriptor *sd )
+ {
+@@ -387,6 +412,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+         thread->esync_fd = esync_create_fd( 0, 0 );
+         thread->esync_apc_fd = esync_create_fd( 0, 0 );
+     }
++    if (!init_queue_mapping( thread ))
++    {
++        release_object( thread );
++        return NULL;
++    }
+ 
+     set_fd_events( thread->request_fd, POLLIN );  /* start listening to events */
+     add_process_thread( thread->process, thread );
+@@ -445,6 +475,8 @@ static void cleanup_thread( struct thread *thread )
+         }
+     }
+     free( thread->desc );
++    if (thread->queue_shared_mapping) release_object( thread->queue_shared_mapping );
++    thread->queue_shared_mapping = NULL;
+     thread->req_data = NULL;
+     thread->reply_data = NULL;
+     thread->request_fd = NULL;
+diff --git a/server/thread.h b/server/thread.h
+index e5145f9eb07..329c8f255c4 100644
+--- a/server/thread.h
++++ b/server/thread.h
+@@ -93,6 +93,8 @@ struct thread
+     WCHAR                 *desc;          /* thread description string */
+     struct timeout_user   *exit_poll;     /* poll if the thread/process has exited already */
+     struct fast_sync      *fast_sync;     /* fast synchronization object */
++    struct object         *queue_shared_mapping; /* thread queue shared memory mapping */
++    volatile struct queue_shared_memory *queue_shared;  /* thread queue shared memory ptr */
+ };
+ 
+ extern struct thread *current;
+-- 
+2.34.1
+

@@ -1,0 +1,119 @@
+From bb8facf360099af90e2440cde04a1b36ee39d2c3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 7 Dec 2021 20:36:36 +0100
+Subject: [PATCH 3/3] winex11.drv: Support ShowWindow with SWP_NOACTIVATE flag.
+
+This should help with focus incorrectly restored on invisible windows
+that Origin creates and show using ShowWindow with SWP_NOACTIVATE, and
+which are then automatically focused after they are mapped.
+
+When closing the game window, focus is restored to the last window that
+had it, so the invisible ones.
+
+Particularly visible in FIFA 22 where the launcher isn't focused again
+after the game window is closed.
+---
+ dlls/winex11.drv/event.c  | 18 +++++++++++++++++-
+ dlls/winex11.drv/window.c |  9 +++++----
+ dlls/winex11.drv/x11drv.h |  1 +
+ 3 files changed, 23 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index c1942614351..1371c1ee74e 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -591,6 +591,7 @@ DWORD EVENT_x11_time_to_win32_time(Time time)
+     LONG style = GetWindowLongW( hwnd, GWL_STYLE );
+     struct x11drv_win_data *data;
+     BOOL off_desktop;
++    BOOL can_activate;
+     RECT rect;
+ 
+     if (!(style & WS_VISIBLE)) return FALSE;
+@@ -600,8 +602,19 @@ static inline BOOL can_activate_window( HWND hwnd )
+     if (GetWindowRect( hwnd, &rect ) && IsRectEmpty( &rect )) return FALSE;
+     if (!(data = get_win_data( hwnd ))) return FALSE;
+     off_desktop = data->off_desktop;
++    if (off_desktop)
++    {
++        release_win_data( data );
++        return FALSE;
++    }
++    if (!(data = get_win_data( hwnd ))) return TRUE;
++    if (!(can_activate = data->activate))
++    {
++        data->activate = TRUE;
++        set_wm_hints( data );
++    }
+     release_win_data( data );
+-    return !off_desktop;
++    return can_activate;
+ }
+ 
+ 
+@@ -1140,6 +1150,12 @@ static BOOL X11DRV_MapNotify( HWND hwnd, XEvent *event )
+ 
+     if (!(data = get_win_data( hwnd ))) return FALSE;
+ 
++    if (!data->activate && !use_take_focus)
++    {
++        data->activate = TRUE;
++        set_wm_hints( data );
++    }
++
+     if (!data->managed && !data->embedded && data->mapped)
+     {
+         HWND hwndFocus = GetFocus();
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 9e27ff9f9e4..f65b10bdbee 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -918,7 +918,7 @@ static void set_style_hints( struct x11drv_win_data *data, DWORD style, DWORD ex
+     if ((wm_hints = XAllocWMHints()))
+     {
+         wm_hints->flags = InputHint | StateHint | WindowGroupHint;
+-        wm_hints->input = !use_take_focus && !(style & WS_DISABLED);
++        wm_hints->input = !use_take_focus && !(style & WS_DISABLED) && data->activate;
+         wm_hints->initial_state = (style & WS_MINIMIZE) ? IconicState : NormalState;
+         wm_hints->window_group = group_leader;
+         if (data->icon_pixmap)
+@@ -2146,7 +2146,7 @@ void release_win_data( struct x11drv_win_data *data )
+  * Create an X11 data window structure for an existing window.
+  */
+ static struct x11drv_win_data *X11DRV_create_win_data( HWND hwnd, const RECT *window_rect,
+-                                                       const RECT *client_rect )
++                                                       const RECT *client_rect, UINT swp_flags )
+ {
+     Display *display;
+     struct x11drv_win_data *data;
+@@ -2169,7 +2169,7 @@ static struct x11drv_win_data *X11DRV_create_win_data( HWND hwnd, const RECT *wi
+     init_clip_window();  /* make sure the clip window is initialized in this thread */
+ 
+     if (!(data = alloc_win_data( display, hwnd ))) return NULL;
+-
++    data->activate = !(swp_flags & SWP_NOACTIVATE);
+     data->whole_rect = data->window_rect = *window_rect;
+     data->client_rect = *client_rect;
+     if (parent == GetDesktopWindow())
+@@ -2535,7 +2535,8 @@ BOOL CDECL X11DRV_WindowPosChanging( HWND hwnd, HWND insert_after, UINT swp_flag
+     COLORREF key;
+     BOOL layered = GetWindowLongW( hwnd, GWL_EXSTYLE ) & WS_EX_LAYERED;
+ 
+-    if (!data && !(data = X11DRV_create_win_data( hwnd, window_rect, client_rect ))) return TRUE;
++    if (!data && !(data = X11DRV_create_win_data( hwnd, window_rect, client_rect, swp_flags ))) return TRUE;
++    data->activate = !(swp_flags & SWP_NOACTIVATE);
+ 
+     /* check if we need to switch the window to managed */
+     if (!data->managed && data->whole_window && is_window_managed( hwnd, swp_flags, window_rect ))
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 2cbafb562e7..e1396d27c80 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -636,6 +636,7 @@ struct x11drv_win_data
+     RECT        client_rect;    /* client area relative to win32 parent window client area */
+     XIC         xic;            /* X input context */
+     BOOL        managed : 1;    /* is window managed? */
++    BOOL        activate : 1;   /* should the window activate? */
+     BOOL        mapped : 1;     /* is window mapped? (in either normal or iconic state) */
+     BOOL        iconic : 1;     /* is window in iconic state? */
+     BOOL        embedded : 1;   /* is window an XEMBED client? */

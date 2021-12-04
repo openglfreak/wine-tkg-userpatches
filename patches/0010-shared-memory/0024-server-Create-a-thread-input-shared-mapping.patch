@@ -1,0 +1,193 @@
+From ff42d98cae896e9c2abc693bda91c40bc17c4432 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 14 Jan 2021 15:22:05 +0100
+Subject: [PATCH 24/44] server: Create a thread input shared mapping.
+
+---
+ server/protocol.def |  8 ++++++++
+ server/queue.c      | 21 ++++++++++++++++++++-
+ server/thread.c     | 41 ++++++++++++++++++++++++++++++++++++++++-
+ server/thread.h     |  2 ++
+ 4 files changed, 70 insertions(+), 2 deletions(-)
+
+diff --git a/server/protocol.def b/server/protocol.def
+index 3f8dd1aa5af..d37a662e97a 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -854,6 +854,14 @@ struct queue_shared_memory
+     unsigned int         changed_bits;
+     unsigned int         wake_mask;
+     unsigned int         changed_mask;
++    thread_id_t          input_tid;
++};
++
++struct input_shared_memory
++{
++    unsigned int         seq;              /* sequence number - server updating if (seq_no & SEQUENCE_MASK) != 0 */
++    int                  created;
++    thread_id_t          tid;
+ };
+ 
+ /* Bits that must be clear for client to read */
+diff --git a/server/queue.c b/server/queue.c
+index 4cc34e4fdde..2a0341d4aba 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -115,6 +115,8 @@ struct thread_input
+     unsigned char          keystate[256]; /* state of each key */
+     unsigned char          desktop_keystate[256]; /* desktop keystate when keystate was synced */
+     int                    keystate_lock; /* keystate is locked */
++    struct object         *shared_mapping; /* thread input shared memory mapping */
++    volatile struct input_shared_memory *shared;  /* thread input shared memory ptr */
+ };
+ 
+ struct msg_queue
+@@ -304,6 +306,8 @@ static struct thread_input *create_thread_input( struct thread *thread )
+ 
+     if ((input = alloc_object( &thread_input_ops )))
+     {
++        input->shared_mapping = grab_object( thread->input_shared_mapping );
++        input->shared = thread->input_shared;
+         input->focus        = 0;
+         input->capture      = 0;
+         input->active       = 0;
+@@ -323,6 +327,10 @@ static struct thread_input *create_thread_input( struct thread *thread )
+         }
+         memcpy( input->desktop_keystate, (void *)input->desktop->shared->keystate,
+                 sizeof(input->desktop_keystate) );
++
++        SHARED_WRITE_BEGIN( &input->shared->seq );
++        input->shared->created = TRUE;
++        SHARED_WRITE_END( &input->shared->seq );
+     }
+     return input;
+ }
+@@ -376,7 +384,13 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+         SHARED_WRITE_END( &queue->shared->seq );
+         thread->queue = queue;
+     }
+-    if (new_input) release_object( new_input );
++    if (new_input)
++    {
++        SHARED_WRITE_BEGIN( &queue->shared->seq );
++        queue->shared->input_tid = new_input->shared->tid;
++        SHARED_WRITE_END( &queue->shared->seq );
++        release_object( new_input );
++    }
+     return queue;
+ }
+ 
+@@ -433,6 +447,10 @@ static int assign_thread_input( struct thread *thread, struct thread_input *new_
+     queue->input = (struct thread_input *)grab_object( new_input );
+     if (queue->keystate_lock) lock_input_keystate( queue->input );
+     new_input->cursor_count += queue->cursor_count;
++
++    SHARED_WRITE_BEGIN( &queue->shared->seq );
++    queue->shared->input_tid = queue->input->shared->tid;
++    SHARED_WRITE_END( &queue->shared->seq );
+     return 1;
+ }
+ 
+@@ -1211,6 +1229,7 @@ static void thread_input_destroy( struct object *obj )
+         if (input->desktop->foreground_input == input) set_foreground_input( input->desktop, NULL );
+         release_object( input->desktop );
+     }
++    release_object( input->shared_mapping );
+ }
+ 
+ /* fix the thread input data when a window is destroyed */
+diff --git a/server/thread.c b/server/thread.c
+index f6fc85fe2d0..80496446d7c 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -258,6 +258,8 @@ static inline void init_thread_structure( struct thread *thread )
+     thread->exit_poll       = NULL;
+     thread->queue_shared_mapping = NULL;
+     thread->queue_shared         = NULL;
++    thread->input_shared_mapping = NULL;
++    thread->input_shared         = NULL;
+ 
+     thread->creation_time = current_time;
+     thread->exit_time     = 0;
+@@ -323,13 +325,43 @@ static volatile void *init_queue_mapping( struct thread *thread )
+     thread->queue_shared_mapping = create_shared_mapping( dir, &name, sizeof(struct queue_shared_memory),
+                                                           NULL, (void **)&thread->queue_shared );
+     release_object( dir );
+-    if (thread->queue_shared) memset( (void *)thread->queue_shared, 0, sizeof(*thread->queue_shared) );
++    if (thread->queue_shared)
++    {
++        memset( (void *)thread->queue_shared, 0, sizeof(*thread->queue_shared) );
++        thread->queue_shared->input_tid = thread->id;
++    }
+ 
+     free( nameW );
+     return thread->queue_shared;
+ }
+ 
+ 
++static volatile void *init_input_mapping( struct thread *thread )
++{
++    struct unicode_str name;
++    struct object *dir = create_thread_map_directory();
++    char nameA[MAX_PATH];
++    WCHAR *nameW;
++
++    if (!dir) return NULL;
++
++    sprintf( nameA, "%08x-input", thread->id );
++    nameW = ascii_to_unicode_str( nameA, &name );
++
++    thread->input_shared_mapping = create_shared_mapping( dir, &name, sizeof(struct input_shared_memory),
++                                                          NULL, (void **)&thread->input_shared );
++    release_object( dir );
++    if (thread->input_shared)
++    {
++        memset( (void *)thread->input_shared, 0, sizeof(*thread->input_shared) );
++        thread->input_shared->tid = thread->id;
++    }
++
++    free( nameW );
++    return thread->input_shared;
++}
++
++
+ /* create a new thread */
+ struct thread *create_thread( int fd, struct process *process, const struct security_descriptor *sd )
+ {
+@@ -417,6 +449,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+         release_object( thread );
+         return NULL;
+     }
++    if (!init_input_mapping( thread ))
++    {
++        release_object( thread );
++        return NULL;
++    }
+ 
+     set_fd_events( thread->request_fd, POLLIN );  /* start listening to events */
+     add_process_thread( thread->process, thread );
+@@ -477,6 +514,8 @@ static void cleanup_thread( struct thread *thread )
+     free( thread->desc );
+     if (thread->queue_shared_mapping) release_object( thread->queue_shared_mapping );
+     thread->queue_shared_mapping = NULL;
++    if (thread->input_shared_mapping) release_object( thread->input_shared_mapping );
++    thread->input_shared_mapping = NULL;
+     thread->req_data = NULL;
+     thread->reply_data = NULL;
+     thread->request_fd = NULL;
+diff --git a/server/thread.h b/server/thread.h
+index 329c8f255c4..6812c278aaa 100644
+--- a/server/thread.h
++++ b/server/thread.h
+@@ -95,6 +95,8 @@ struct thread
+     struct timeout_user   *exit_poll;     /* poll if the thread/process has exited already */
+     struct object         *queue_shared_mapping; /* thread queue shared memory mapping */
+     volatile struct queue_shared_memory *queue_shared;  /* thread queue shared memory ptr */
++    struct object         *input_shared_mapping; /* thread input shared memory mapping */
++    volatile struct input_shared_memory *input_shared;  /* thread input shared memory ptr */
+ };
+ 
+ extern struct thread *current;
+-- 
+2.34.1
+

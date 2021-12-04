@@ -1,0 +1,102 @@
+From ea5f099dbe1b381a64b752d384649a05627e996c Mon Sep 17 00:00:00 2001
+From: Huw Davies <huw@codeweavers.com>
+Date: Mon, 29 Jun 2020 12:57:39 +0100
+Subject: [PATCH 04/44] server: Add a sequence number to the shared data.
+
+The client should check that the lower SEQUENCE_MASK_BITS are zero before
+reading the data and confirm that the number is unchanged when it's finished.
+
+Signed-off-by: Huw Davies <huw@codeweavers.com>
+---
+ server/protocol.def |  5 +++++
+ server/queue.c      | 46 ++++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 50 insertions(+), 1 deletion(-)
+
+diff --git a/server/protocol.def b/server/protocol.def
+index 2ef50d3f936..da0a4ed0fe7 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -840,9 +840,14 @@ struct shared_cursor
+ 
+ struct desktop_shared_memory
+ {
++    unsigned int         seq;              /* sequence number - server updating if (seq_no & SEQUENCE_MASK) != 0 */
+     struct shared_cursor cursor;           /* global cursor information */
+ };
+ 
++/* Bits that must be clear for client to read */
++#define SEQUENCE_MASK_BITS  4
++#define SEQUENCE_MASK ((1UL << SEQUENCE_MASK_BITS) - 1)
++
+ /****************************************************************/
+ /* Request declarations */
+ 
+diff --git a/server/queue.c b/server/queue.c
+index 90f3761ee53..e81b4b511ea 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -416,16 +416,60 @@ static struct message *alloc_hardware_message( lparam_t info, struct hw_msg_sour
+     return msg;
+ }
+ 
++#if defined(__i386__) || defined(__x86_64__)
++
++#define SHARED_WRITE_BEGIN( x )                                  \
++    do {                                                         \
++        volatile unsigned int __seq = *(x);                      \
++        assert( (__seq & SEQUENCE_MASK) != SEQUENCE_MASK );      \
++        *(x) = ++__seq;                                          \
++    } while(0)
++
++#define SHARED_WRITE_END( x )                                    \
++    do {                                                         \
++        volatile unsigned int __seq = *(x);                      \
++        assert( (__seq & SEQUENCE_MASK) != 0 );                  \
++        if ((__seq & SEQUENCE_MASK) > 1) __seq--;                \
++        else __seq += SEQUENCE_MASK;                             \
++        *(x) = __seq;                                            \
++    } while(0)
++
++#else
++
++#define SHARED_WRITE_BEGIN( x )                                         \
++    do {                                                                \
++        assert( (*(x) & SEQUENCE_MASK) != SEQUENCE_MASK );              \
++        if ((__atomic_add_fetch( x, 1, __ATOMIC_RELAXED ) & SEQUENCE_MASK) == 1) \
++            __atomic_thread_fence( __ATOMIC_RELEASE );                  \
++    } while(0)
++
++#define SHARED_WRITE_END( x )                                           \
++    do {                                                                \
++        assert( (*(x) & SEQUENCE_MASK) != 0 );                          \
++        if ((*(x) & SEQUENCE_MASK) > 1)                                 \
++            __atomic_sub_fetch( x, 1, __ATOMIC_RELAXED );               \
++        else {                                                          \
++            __atomic_thread_fence( __ATOMIC_RELEASE );                  \
++            __atomic_add_fetch( x, SEQUENCE_MASK, __ATOMIC_RELAXED );   \
++        }                                                               \
++    } while(0)
++
++#endif
++
+ static int update_desktop_cursor_pos( struct desktop *desktop, int x, int y )
+ {
+     int updated;
++    unsigned int time = get_tick_count();
+ 
+     x = max( min( x, desktop->cursor.clip.right - 1 ), desktop->cursor.clip.left );
+     y = max( min( y, desktop->cursor.clip.bottom - 1 ), desktop->cursor.clip.top );
+     updated = (desktop->shared->cursor.x != x || desktop->shared->cursor.y != y);
++
++    SHARED_WRITE_BEGIN( &desktop->shared->seq );
+     desktop->shared->cursor.x = x;
+     desktop->shared->cursor.y = y;
+-    desktop->shared->cursor.last_change = get_tick_count();
++    desktop->shared->cursor.last_change = time;
++    SHARED_WRITE_END( &desktop->shared->seq );
+ 
+     return updated;
+ }
+-- 
+2.34.1
+

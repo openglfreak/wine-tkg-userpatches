@@ -71,9 +71,9 @@ index 04e8fe3c0f5..7d6487ccc6a 100644
  
          info->VolumeCreationTime.QuadPart = 0; /* FIXME */
 -        info->VolumeSerialNumber = volume->serial;
--        info->VolumeLabelLength = min( strlenW(volume->label) * sizeof(WCHAR),
+-        info->VolumeLabelLength = min( lstrlenW(volume->label) * sizeof(WCHAR),
 +        info->VolumeSerialNumber = serial;
-+        info->VolumeLabelLength = min( strlenW(label) * sizeof(WCHAR),
++        info->VolumeLabelLength = min( lstrlenW(label) * sizeof(WCHAR),
                                         length - offsetof( FILE_FS_VOLUME_INFORMATION, VolumeLabel ) );
 -        info->SupportsObjects = (get_mountmgr_fs_type(volume->fs_type) == MOUNTMGR_FS_TYPE_NTFS);
 -        memcpy( info->VolumeLabel, volume->label, info->VolumeLabelLength );
@@ -86,20 +86,20 @@ index 04e8fe3c0f5..7d6487ccc6a 100644
          break;
      }
 @@ -1954,8 +1940,8 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
-         static const WCHAR cdfsW[] = {'C','D','F','S'};
-         static const WCHAR udfW[] = {'U','D','F'};
- 
+     }
+     case FileFsAttributeInformation:
+     {
 -        FILE_FS_ATTRIBUTE_INFORMATION *info = irp->AssociatedIrp.SystemBuffer;
 -        enum mountmgr_fs_type fs_type = get_mountmgr_fs_type(volume->fs_type);
 +        FILE_FS_ATTRIBUTE_INFORMATION *info = buff;
 +        enum mountmgr_fs_type fs_type = get_mountmgr_fs_type(fs_type);
+         const WCHAR *fsname;
  
          if (length < sizeof(FILE_FS_ATTRIBUTE_INFORMATION))
-         {
 @@ -1997,17 +1983,64 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
-             break;
          }
- 
+         info->FileSystemNameLength = min( wcslen(fsname) * sizeof(WCHAR), length - offsetof( FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName ) );
+         memcpy(info->FileSystemName, fsname, info->FileSystemNameLength);
 -        io->Information = offsetof( FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName ) + info->FileSystemNameLength;
 +        *size = offsetof( FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName ) + info->FileSystemNameLength;
          status = STATUS_SUCCESS;
@@ -120,7 +120,7 @@ index 04e8fe3c0f5..7d6487ccc6a 100644
 +    const struct mountmgr_volume *input = buff;
 +    FS_INFORMATION_CLASS info_class = input->info_class;
 +    NTSTATUS status = STATUS_NO_SUCH_DEVICE;
-+    int letter = tolowerW( input->letter );
++    int letter = towlower( input->letter );
 +    struct volume *volume;
 +
 +    if (letter && (letter < 'a' || letter > 'z')) return STATUS_INVALID_PARAMETER;

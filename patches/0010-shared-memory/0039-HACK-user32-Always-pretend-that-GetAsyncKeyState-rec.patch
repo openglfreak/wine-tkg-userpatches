@@ -1,0 +1,50 @@
+From 7e50a98293caed9e91efbb08527b8bb2e894b3c0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 1 Mar 2021 20:19:52 +0100
+Subject: [PATCH 39/44] HACK: user32: Always pretend that GetAsyncKeyState
+ recent bit is 0.
+
+---
+ dlls/user32/input.c | 19 +------------------
+ 1 file changed, 1 insertion(+), 18 deletions(-)
+
+diff --git a/dlls/user32/input.c b/dlls/user32/input.c
+index 4c8eda4f4a1..6b25b8ab5a4 100644
+--- a/dlls/user32/input.c
++++ b/dlls/user32/input.c
+@@ -447,7 +447,6 @@ SHORT WINAPI DECLSPEC_HOTPATCH GetAsyncKeyState( INT key )
+ {
+     volatile struct desktop_shared_memory *shared = get_desktop_shared_memory();
+     BYTE state;
+-    SHORT ret;
+ 
+     if (key < 0 || key >= 256 || !shared) return 0;
+ 
+@@ -459,23 +458,7 @@ SHORT WINAPI DECLSPEC_HOTPATCH GetAsyncKeyState( INT key )
+     }
+     SHARED_READ_END( &shared->seq );
+ 
+-    if (!(state & 0x40)) return (state & 0x80) << 8;
+-
+-    /* Need to make a server call to reset the last pressed bit */
+-    ret = 0;
+-    SERVER_START_REQ( get_key_state )
+-    {
+-        req->async = 1;
+-        req->key = key;
+-        if (!wine_server_call( req ))
+-        {
+-            if (reply->state & 0x40) ret |= 0x0001;
+-            if (reply->state & 0x80) ret |= 0x8000;
+-        }
+-    }
+-    SERVER_END_REQ;
+-
+-    return ret;
++    return (state & 0x80) << 8;
+ }
+ 
+ 
+-- 
+2.34.1
+

@@ -1,0 +1,119 @@
+From 392ce75bf8065e0b30704e39bf312a78b267fd40 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sat, 20 Nov 2021 19:10:59 +0100
+Subject: [PATCH 1/4] SPLIT: ntdll: Use lookup tables for invalid chars.
+
+---
+ dlls/ntdll/unix/file.c | 47 +++++++++++++++++++++++++++++++-----------
+ 1 file changed, 35 insertions(+), 12 deletions(-)
+
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 82625f52990..73dd4eba504 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -172,7 +172,6 @@ typedef struct
+ #define IS_SEPARATOR(ch)   ((ch) == '\\' || (ch) == '/')
+ 
+ #define INVALID_NT_CHARS   '*','?','<','>','|','"'
+-#define INVALID_DOS_CHARS  INVALID_NT_CHARS,'+','=',',',';','[',']',' ','\345'
+ 
+ #define MAX_DIR_ENTRY_LEN 255  /* max length of a directory entry in chars */
+ 
+@@ -243,9 +242,38 @@ static pthread_mutex_t mnt_mutex = PTHREAD_MUTEX_INITIALIZER;
+ /* check if a given Unicode char is OK in a DOS short name */
+ static inline BOOL is_invalid_dos_char( WCHAR ch )
+ {
+-    static const WCHAR invalid_chars[] = { INVALID_DOS_CHARS,'~','.',0 };
+-    if (ch > 0x7f) return TRUE;
+-    return wcschr( invalid_chars, ch ) != NULL;
++    static const char is_invalid[0x7f] =
++    {
++        ['*'] = 1, ['?'] = 1, ['<'] = 1, ['>'] = 1, ['|'] = 1, ['"'] = 1, ['+'] = 1, ['='] = 1,
++        [','] = 1, [';'] = 1, ['['] = 1, [']'] = 1, [' '] = 1, ['~'] = 1, ['.'] = 1,
++    };
++    return ch <= 0x7f ? is_invalid[ch] : TRUE;
++}
++
++static inline BOOL is_invalid_8dot3_char( WCHAR ch )
++{
++    static const char is_invalid[0x7f] =
++    {
++        ['*'] = 1, ['?'] = 1, ['<'] = 1, ['>'] = 1, ['|'] = 1, ['"'] = 1, ['+'] = 1, ['='] = 1,
++        [','] = 1, [';'] = 1, ['['] = 1, [']'] = 1, [' '] = 1, [':'] = 1, ['/'] = 1, ['\\'] = 1,
++    };
++    return ch <= 0x7f ? is_invalid[ch] : TRUE;
++}
++
++static inline BOOL is_invalid_nt_char( WCHAR ch )
++{
++    static const char is_invalid[0x7f] =
++    {
++        1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
++        ['*'] = 1, ['?'] = 1, ['<'] = 1, ['>'] = 1, ['|'] = 1, ['"'] = 1,
++    };
++    return ch <= 0x7f ? is_invalid[ch] : FALSE;
++}
++
++static inline BOOL is_invalid_unix_char( WCHAR ch )
++{
++    if (ch == '/') return TRUE;
++    return is_invalid_nt_char( ch );
+ }
+ 
+ /* check if the device can be a mounted volume */
+@@ -1379,7 +1407,6 @@ static BOOLEAN match_filename( const WCHAR *name, int length, const UNICODE_STRI
+  */
+ static BOOLEAN is_legal_8dot3_name( const WCHAR *name, int len )
+ {
+-    static const WCHAR invalid_chars[] = { INVALID_DOS_CHARS,':','/','\\',0 };
+     int i, dot = -1;
+ 
+     if (len > 12) return FALSE;
+@@ -1389,8 +1416,7 @@ static BOOLEAN is_legal_8dot3_name( const WCHAR *name, int len )
+ 
+     for (i = 0; i < len; i++)
+     {
+-        if (name[i] > 0x7f) return FALSE;
+-        if (wcschr( invalid_chars, name[i] )) return FALSE;
++        if (is_invalid_8dot3_char( name[i] )) return FALSE;
+         if (name[i] == '.')
+         {
+             if (dot != -1) return FALSE;
+@@ -3132,7 +3158,6 @@ done:
+ static NTSTATUS lookup_unix_name( const WCHAR *name, int name_len, char **buffer, int unix_len, int pos,
+                                   UINT disposition, BOOL is_unix )
+ {
+-    static const WCHAR invalid_charsW[] = { INVALID_NT_CHARS, '/', 0 };
+     NTSTATUS status;
+     int ret;
+     struct stat st;
+@@ -3159,7 +3184,7 @@ static NTSTATUS lookup_unix_name( const WCHAR *name, int name_len, char **buffer
+         {
+             if (!*ptr) return STATUS_OBJECT_NAME_INVALID;
+             if (is_unix) continue;
+-            if (*ptr < 32 || wcschr( invalid_charsW, *ptr )) return STATUS_OBJECT_NAME_INVALID;
++            if (is_invalid_unix_char( *ptr )) return STATUS_OBJECT_NAME_INVALID;
+         }
+     }
+ 
+@@ -3249,7 +3274,6 @@ static NTSTATUS nt_to_unix_file_name_no_root( const UNICODE_STRING *nameW, char
+                                               UINT disposition )
+ {
+     static const WCHAR unixW[] = {'u','n','i','x'};
+-    static const WCHAR invalid_charsW[] = { INVALID_NT_CHARS, 0 };
+ 
+     NTSTATUS status = STATUS_SUCCESS;
+     const WCHAR *name;
+@@ -3276,8 +3300,7 @@ static NTSTATUS nt_to_unix_file_name_no_root( const UNICODE_STRING *nameW, char
+     for (pos = 0; pos < name_len && pos <= MAX_DIR_ENTRY_LEN; pos++)
+     {
+         if (name[pos] == '\\') break;
+-        if (name[pos] < 32 || wcschr( invalid_charsW, name[pos] ))
+-            return STATUS_OBJECT_NAME_INVALID;
++        if (is_invalid_nt_char( name[pos] )) return STATUS_OBJECT_NAME_INVALID;
+         prefix[pos] = (name[pos] >= 'A' && name[pos] <= 'Z') ? name[pos] + 'a' - 'A' : name[pos];
+     }
+     if (pos > MAX_DIR_ENTRY_LEN) return STATUS_OBJECT_NAME_INVALID;
+-- 
+2.34.1
+

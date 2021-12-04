@@ -1,0 +1,38 @@
+From 77cf8dcd75bfcff9027d08bb346015b55ef7ad1a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 1 Mar 2021 20:55:26 +0100
+Subject: [PATCH 44/44] user32: Use input shared memory for GetKeyState.
+
+---
+ dlls/win32u/input.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 54835b9a815..90aa6754313 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -125,9 +125,20 @@ HKL WINAPI NtUserGetKeyboardLayout( DWORD thread_id )
+  */
+ SHORT WINAPI NtUserGetKeyState( INT vkey )
+ {
++    volatile struct input_shared_memory *shared = __wine_get_input_shared_memory();
+     SHORT retval = 0;
++    BOOL skip = TRUE;
+ 
+-    SERVER_START_REQ( get_key_state )
++    if (!shared) skip = FALSE;
++    else SHARED_READ_BEGIN( &shared->seq )
++    {
++        if (!shared->created) skip = FALSE; /* server needs to create the queue */
++        else if (!shared->keystate_lock) skip = FALSE; /* server needs to call sync_input_keystate */
++        else retval = (signed char)(shared->keystate[vkey & 0xff] & 0x81);
++    }
++    SHARED_READ_END( &shared->seq );
++
++    if (!skip) SERVER_START_REQ( get_key_state )
+     {
+         req->key = vkey;
+         if (!wine_server_call( req )) retval = (signed char)(reply->state & 0x81);
+-- 
+2.34.1
+

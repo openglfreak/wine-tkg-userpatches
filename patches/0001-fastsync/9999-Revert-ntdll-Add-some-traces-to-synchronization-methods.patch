@@ -1,0 +1,246 @@
+From df1bfccafc2c028f9bcc0946abee4a398e41836d Mon Sep 17 00:00:00 2001
+From: Zebediah Figura <z.figura12@gmail.com>
+Date: Tue, 9 Mar 2021 12:08:29 -0600
+Subject: [PATCH 24/31] Revert ntdll: Add some traces to synchronization methods.
+
+---
+ dlls/ntdll/unix/sync.c | 59 ++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 57 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index d5d92145503..8c772d15108 100644
+--- b/dlls/ntdll/unix/sync.c
++++ a/dlls/ntdll/unix/sync.c
+@@ -76,11 +76,9 @@
+ static const char *debugstr_timeout( const LARGE_INTEGER *timeout )
+ {
+     if (!timeout) return "(infinite)";
+-    return wine_dbg_sprintf( "%lld.%07ld", (long long)(timeout->QuadPart / TICKSPERSEC),
+-                             (long)(timeout->QuadPart % TICKSPERSEC) );
++    return wine_dbgstr_longlong( timeout->QuadPart );
+ }
+ 
+-
+ /* return a monotonic time counter, in Win32 ticks */
+ static inline ULONGLONG monotonic_counter(void)
+ {
+@@ -264,9 +262,6 @@
+     data_size_t len;
+     struct object_attributes *objattr;
+ 
+-    TRACE( "access %#x, name %s, initial %d, max %d\n", access,
+-           attr ? debugstr_us(attr->ObjectName) : "(null)", initial, max );
+-
+     *handle = 0;
+     if (max <= 0 || initial < 0 || initial > max) return STATUS_INVALID_PARAMETER;
+     if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
+@@ -294,8 +289,6 @@
+ {
+     NTSTATUS ret;
+ 
+-    TRACE( "access %#x, name %s\n", access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
+-
+     *handle = 0;
+ 
+     if (do_fsync())
+@@ -355,8 +348,6 @@
+ {
+     NTSTATUS ret;
+ 
+-    TRACE( "handle %p, count %u, prev_count %p\n", handle, count, previous );
+-
+     if (do_fsync())
+         return fsync_release_semaphore( handle, count, previous );
+ 
+@@ -381,9 +372,6 @@
+     data_size_t len;
+     struct object_attributes *objattr;
+ 
+-    TRACE( "access %#x, name %s, type %u, state %u\n", access,
+-           attr ? debugstr_us(attr->ObjectName) : "(null)", type, state );
+-
+     *handle = 0;
+     if (type != NotificationEvent && type != SynchronizationEvent) return STATUS_INVALID_PARAMETER;
+     if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
+@@ -411,8 +399,6 @@
+ {
+     NTSTATUS ret;
+ 
+-    TRACE( "access %#x, name %s\n", access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
+-
+     *handle = 0;
+     if ((ret = validate_open_object_attributes( attr ))) return ret;
+ 
+@@ -438,8 +424,6 @@
+     /* This comment is a dummy to make sure this patch applies in the right place. */
+     NTSTATUS ret;
+ 
+-    TRACE( "handle %p, prev_state %p\n", handle, prev_state );
+-
+     if (do_fsync())
+         return fsync_set_event( handle, prev_state );
+ 
+@@ -459,8 +443,6 @@
+     /* This comment is a dummy to make sure this patch applies in the right place. */
+     NTSTATUS ret;
+ 
+-    TRACE( "handle %p, prev_state %p\n", handle, prev_state );
+-
+     if (do_fsync())
+         return fsync_reset_event( handle, prev_state );
+ 
+@@ -490,8 +472,6 @@
+ {
+     NTSTATUS ret;
+ 
+-    TRACE( "handle %p, prev_state %p\n", handle, prev_state );
+-
+     if (do_fsync())
+         return fsync_pulse_event( handle, prev_state );
+ 
+@@ -549,9 +529,6 @@
+     data_size_t len;
+     struct object_attributes *objattr;
+ 
+-    TRACE( "access %#x, name %s, owned %u\n", access,
+-           attr ? debugstr_us(attr->ObjectName) : "(null)", owned );
+-
+     *handle = 0;
+ 
+     if (do_fsync())
+@@ -577,8 +554,6 @@
+ {
+     NTSTATUS ret;
+ 
+-    TRACE( "access %#x, name %s\n", access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
+-
+     *handle = 0;
+     if ((ret = validate_open_object_attributes( attr ))) return ret;
+ 
+@@ -604,8 +579,6 @@
+ {
+     NTSTATUS ret;
+ 
+-    TRACE( "handle %p, prev_count %p\n", handle, prev_count );
+-
+     if (do_fsync())
+         return fsync_release_mutex( handle, prev_count );
+ 
+@@ -1283,9 +1256,6 @@
+     data_size_t len;
+     struct object_attributes *objattr;
+ 
+-    TRACE( "access %#x, name %s, type %u\n", access,
+-           attr ? debugstr_us(attr->ObjectName) : "(null)", type );
+-
+     *handle = 0;
+     if (type != NotificationTimer && type != SynchronizationTimer) return STATUS_INVALID_PARAMETER;
+     if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
+@@ -1313,8 +1283,6 @@
+ {
+     NTSTATUS ret;
+ 
+-    TRACE( "access %#x, name %s\n", access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
+-
+     *handle = 0;
+     if ((ret = validate_open_object_attributes( attr ))) return ret;
+ 
+@@ -1368,8 +1336,6 @@
+ {
+     NTSTATUS ret;
+ 
+-    TRACE( "handle %p, state %p\n", handle, state );
+-
+     SERVER_START_REQ( cancel_timer )
+     {
+         req->handle = wine_server_obj_handle( handle );
+@@ -1438,39 +1404,27 @@
+ 
+     if (!count || count > MAXIMUM_WAIT_OBJECTS) return STATUS_INVALID_PARAMETER_1;
+ 
+-    if (TRACE_ON(sync))
+-    {
+-        TRACE( "wait_any %u, alertable %u, handles {%p", wait_any, alertable, handles[0] );
+-        for (i = 1; i < count; i++) TRACE( ", %p", handles[i] );
+-        TRACE( "}, timeout %s\n", debugstr_timeout(timeout) );
+-    }
+-
+     if (do_fsync())
+     {
+         NTSTATUS ret = fsync_wait_objects( count, handles, wait_any, alertable, timeout );
+         if (ret != STATUS_NOT_IMPLEMENTED)
+             return ret;
+     }
+ 
+     if (do_esync())
+     {
+         NTSTATUS ret = esync_wait_objects( count, handles, wait_any, alertable, timeout );
+         if (ret != STATUS_NOT_IMPLEMENTED)
+             return ret;
+     }
+ 
+     if ((ret = fast_wait( count, handles, wait_any, alertable, timeout )) != STATUS_NOT_IMPLEMENTED)
+-    {
+-        TRACE( "-> %#x\n", ret );
+         return ret;
+-    }
+ 
+     if (alertable) flags |= SELECT_ALERTABLE;
+     select_op.wait.op = wait_any ? SELECT_WAIT : SELECT_WAIT_ALL;
+     for (i = 0; i < count; i++) select_op.wait.handles[i] = wine_server_obj_handle( handles[i] );
+-    ret = server_wait( &select_op, offsetof( select_op_t, wait.handles[count] ), flags, timeout );
+-    TRACE( "-> %#x\n", ret );
+-    return ret;
++    return server_wait( &select_op, offsetof( select_op_t, wait.handles[count] ), flags, timeout );
+ }
+ 
+ 
+@@ -1476,8 +1432,6 @@
+     select_op_t select_op;
+     UINT flags = SELECT_INTERRUPTIBLE;
+ 
+-    TRACE( "signal %p, wait %p, alertable %u, timeout %s\n", signal, wait, alertable, debugstr_timeout(timeout) );
+-
+     if (do_fsync())
+         return fsync_signal_and_wait( signal, wait, alertable, timeout );
+ 
+@@ -1697,9 +1651,6 @@
+     data_size_t len;
+     struct object_attributes *objattr;
+ 
+-    TRACE( "access %#x, name %s, flags %#x\n", access,
+-           attr ? debugstr_us(attr->ObjectName) : "(null)", flags );
+-
+     *handle = 0;
+     if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
+ 
+@@ -1724,8 +1675,6 @@
+ {
+     NTSTATUS ret;
+ 
+-    TRACE( "access %#x, name %s\n", access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
+-
+     *handle = 0;
+     if ((ret = validate_open_object_attributes( attr ))) return ret;
+ 
+@@ -1752,8 +1701,6 @@
+     select_op_t select_op;
+     UINT flags = SELECT_INTERRUPTIBLE;
+ 
+-    TRACE( "handle %p, key %p, alertable %u, timeout %s\n", handle, key, alertable, debugstr_timeout(timeout) );
+-
+     if (!handle) handle = keyed_event;
+     if ((ULONG_PTR)key & 1) return STATUS_INVALID_PARAMETER_1;
+     if (alertable) flags |= SELECT_ALERTABLE;
+@@ -1773,8 +1720,6 @@
+     select_op_t select_op;
+     UINT flags = SELECT_INTERRUPTIBLE;
+ 
+-    TRACE( "handle %p, key %p, alertable %u, timeout %s\n", handle, key, alertable, debugstr_timeout(timeout) );
+-
+     if (!handle) handle = keyed_event;
+     if ((ULONG_PTR)key & 1) return STATUS_INVALID_PARAMETER_1;
+     if (alertable) flags |= SELECT_ALERTABLE;
+-- 
+2.34.1
+

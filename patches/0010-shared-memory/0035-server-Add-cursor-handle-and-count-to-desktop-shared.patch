@@ -1,0 +1,133 @@
+From c0df0116613acfb61db3d9e939d2563e1af40229 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 18 Jan 2021 22:11:03 +0100
+Subject: [PATCH 35/44] server: Add cursor handle and count to desktop shared
+ memory.
+
+---
+ server/protocol.def |  2 ++
+ server/queue.c      | 44 ++++++++++++++++++++++++++------------------
+ 2 files changed, 28 insertions(+), 18 deletions(-)
+
+diff --git a/server/protocol.def b/server/protocol.def
+index 0f59c376fdd..0324816b5f8 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -869,7 +869,9 @@ struct input_shared_memory
+     user_handle_t        menu_owner;       /* handle to the menu owner */
+     user_handle_t        move_size;        /* handle to the moving/resizing window */
+     user_handle_t        caret;            /* handle to the caret window */
++    user_handle_t        cursor;           /* handle to the cursor */
+     rectangle_t          caret_rect;       /* caret rectangle */
++    int                  cursor_count;     /* cursor show count */
+ };
+ 
+ /* Bits that must be clear for client to read */
+diff --git a/server/queue.c b/server/queue.c
+index a29c47418b8..27013785454 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -102,8 +102,6 @@ struct thread_input
+     struct desktop        *desktop;       /* desktop that this thread input belongs to */
+     int                    caret_hide;    /* caret hide count */
+     int                    caret_state;   /* caret on/off state */
+-    user_handle_t          cursor;        /* current cursor */
+-    int                    cursor_count;  /* cursor show count */
+     struct list            msg_list;      /* list of hardware messages */
+     unsigned char          keystate[256]; /* state of each key */
+     unsigned char          desktop_keystate[256]; /* desktop keystate when keystate was synced */
+@@ -309,8 +307,8 @@ static struct thread_input *create_thread_input( struct thread *thread )
+         input->shared->active       = 0;
+         input->shared->menu_owner   = 0;
+         input->shared->move_size    = 0;
+-        input->cursor       = 0;
+-        input->cursor_count = 0;
++        input->shared->cursor       = 0;
++        input->shared->cursor_count = 0;
+         SHARED_WRITE_END( &input->shared->seq );
+         list_init( &input->msg_list );
+         set_caret_window( input, 0 );
+@@ -437,13 +435,17 @@ static int assign_thread_input( struct thread *thread, struct thread_input *new_
+     }
+     if (queue->input)
+     {
+-        queue->input->cursor_count -= queue->cursor_count;
++        SHARED_WRITE_BEGIN( &queue->input->shared->seq );
++        queue->input->shared->cursor_count -= queue->cursor_count;
++        SHARED_WRITE_END( &queue->input->shared->seq );
+         if (queue->keystate_lock) unlock_input_keystate( queue->input );
+         release_object( queue->input );
+     }
+     queue->input = (struct thread_input *)grab_object( new_input );
+     if (queue->keystate_lock) lock_input_keystate( queue->input );
+-    new_input->cursor_count += queue->cursor_count;
++    SHARED_WRITE_BEGIN( &new_input->shared->seq );
++    new_input->shared->cursor_count += queue->cursor_count;
++    SHARED_WRITE_END( &new_input->shared->seq );
+ 
+     SHARED_WRITE_BEGIN( &queue->shared->seq );
+     queue->shared->input_tid = queue->input->shared->tid;
+@@ -1195,7 +1197,9 @@ static void msg_queue_destroy( struct object *obj )
+         free( timer );
+     }
+     if (queue->timeout) remove_timeout_user( queue->timeout );
+-    queue->input->cursor_count -= queue->cursor_count;
++    SHARED_WRITE_BEGIN( &queue->input->shared->seq );
++    queue->input->shared->cursor_count -= queue->cursor_count;
++    SHARED_WRITE_END( &queue->input->shared->seq );
+     if (queue->keystate_lock) unlock_input_keystate( queue->input );
+     release_object( queue->input );
+     if (queue->hooks) release_object( queue->hooks );
+@@ -3260,8 +3264,8 @@ DECL_HANDLER(get_thread_input)
+         reply->menu_owner = input->shared->menu_owner;
+         reply->move_size  = input->shared->move_size;
+         reply->caret      = input->shared->caret;
+-        reply->cursor     = input->cursor;
+-        reply->show_count = input->cursor_count;
++        reply->cursor     = input->shared->cursor;
++        reply->show_count = input->shared->cursor_count;
+         reply->rect       = input->shared->caret_rect;
+     }
+ 
+@@ -3500,25 +3504,29 @@ DECL_HANDLER(set_cursor)
+     if (!queue) return;
+     input = queue->input;
+ 
+-    reply->prev_handle = input->cursor;
+-    reply->prev_count  = input->cursor_count;
++    reply->prev_handle = input->shared->cursor;
++    reply->prev_count  = input->shared->cursor_count;
+     reply->prev_x      = input->desktop->shared->cursor.x;
+     reply->prev_y      = input->desktop->shared->cursor.y;
+ 
++    if ((req->flags & SET_CURSOR_HANDLE) && req->handle &&
++        !get_user_object( req->handle, USER_CLIENT ))
++    {
++        set_win32_error( ERROR_INVALID_CURSOR_HANDLE );
++        return;
++    }
++
++    SHARED_WRITE_BEGIN( &input->shared->seq );
+     if (req->flags & SET_CURSOR_HANDLE)
+     {
+-        if (req->handle && !get_user_object( req->handle, USER_CLIENT ))
+-        {
+-            set_win32_error( ERROR_INVALID_CURSOR_HANDLE );
+-            return;
+-        }
+-        input->cursor = req->handle;
++        input->shared->cursor = req->handle;
+     }
+     if (req->flags & SET_CURSOR_COUNT)
+     {
+         queue->cursor_count += req->show_count;
+-        input->cursor_count += req->show_count;
++        input->shared->cursor_count += req->show_count;
+     }
++    SHARED_WRITE_END( &input->shared->seq );
+     if (req->flags & SET_CURSOR_POS)
+     {
+         set_cursor_pos( input->desktop, req->x, req->y );
+-- 
+2.34.1
+

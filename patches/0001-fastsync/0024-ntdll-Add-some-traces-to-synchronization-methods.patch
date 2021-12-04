@@ -1,0 +1,244 @@
+From df1bfccafc2c028f9bcc0946abee4a398e41836d Mon Sep 17 00:00:00 2001
+From: Zebediah Figura <z.figura12@gmail.com>
+Date: Tue, 9 Mar 2021 12:08:29 -0600
+Subject: [PATCH 24/31] ntdll: Add some traces to synchronization methods.
+
+---
+ dlls/ntdll/unix/sync.c | 59 ++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 57 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index d5d92145503..8c772d15108 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -76,9 +76,11 @@ HANDLE keyed_event = 0;
+ static const char *debugstr_timeout( const LARGE_INTEGER *timeout )
+ {
+     if (!timeout) return "(infinite)";
+-    return wine_dbgstr_longlong( timeout->QuadPart );
++    return wine_dbg_sprintf( "%lld.%07ld", (long long)(timeout->QuadPart / TICKSPERSEC),
++                             (long)(timeout->QuadPart % TICKSPERSEC) );
+ }
+ 
++
+ /* return a monotonic time counter, in Win32 ticks */
+ static inline ULONGLONG monotonic_counter(void)
+ {
+@@ -262,6 +264,9 @@ NTSTATUS WINAPI NtCreateSemaphore( HANDLE *handle, ACCESS_MASK access, const OBJ
+     data_size_t len;
+     struct object_attributes *objattr;
+ 
++    TRACE( "access %#x, name %s, initial %d, max %d\n", access,
++           attr ? debugstr_us(attr->ObjectName) : "(null)", initial, max );
++
+     *handle = 0;
+     if (max <= 0 || initial < 0 || initial > max) return STATUS_INVALID_PARAMETER;
+     if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
+@@ -289,6 +294,8 @@ NTSTATUS WINAPI NtOpenSemaphore( HANDLE *handle, ACCESS_MASK access, const OBJEC
+ {
+     NTSTATUS ret;
+ 
++    TRACE( "access %#x, name %s\n", access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
++
+     *handle = 0;
+ 
+     if (do_fsync())
+@@ -348,6 +355,8 @@ NTSTATUS WINAPI NtReleaseSemaphore( HANDLE handle, ULONG count, ULONG *previous
+ {
+     NTSTATUS ret;
+ 
++    TRACE( "handle %p, count %u, prev_count %p\n", handle, count, previous );
++
+     if (do_fsync())
+         return fsync_release_semaphore( handle, count, previous );
+ 
+@@ -372,6 +381,9 @@ NTSTATUS WINAPI NtCreateEvent( HANDLE *handle, ACCESS_MASK access, const OBJECT_
+     data_size_t len;
+     struct object_attributes *objattr;
+ 
++    TRACE( "access %#x, name %s, type %u, state %u\n", access,
++           attr ? debugstr_us(attr->ObjectName) : "(null)", type, state );
++
+     *handle = 0;
+     if (type != NotificationEvent && type != SynchronizationEvent) return STATUS_INVALID_PARAMETER;
+     if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
+@@ -399,6 +411,8 @@ NTSTATUS WINAPI NtOpenEvent( HANDLE *handle, ACCESS_MASK access, const OBJECT_AT
+ {
+     NTSTATUS ret;
+ 
++    TRACE( "access %#x, name %s\n", access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
++
+     *handle = 0;
+     if ((ret = validate_open_object_attributes( attr ))) return ret;
+ 
+@@ -424,6 +438,8 @@ NTSTATUS WINAPI NtSetEvent( HANDLE handle, LONG *prev_state )
+     /* This comment is a dummy to make sure this patch applies in the right place. */
+     NTSTATUS ret;
+ 
++    TRACE( "handle %p, prev_state %p\n", handle, prev_state );
++
+     if (do_fsync())
+         return fsync_set_event( handle, prev_state );
+ 
+@@ -443,6 +459,8 @@ NTSTATUS WINAPI NtResetEvent( HANDLE handle, LONG *prev_state )
+     /* This comment is a dummy to make sure this patch applies in the right place. */
+     NTSTATUS ret;
+ 
++    TRACE( "handle %p, prev_state %p\n", handle, prev_state );
++
+     if (do_fsync())
+         return fsync_reset_event( handle, prev_state );
+ 
+@@ -472,6 +490,8 @@ NTSTATUS WINAPI NtPulseEvent( HANDLE handle, LONG *prev_state )
+ {
+     NTSTATUS ret;
+ 
++    TRACE( "handle %p, prev_state %p\n", handle, prev_state );
++
+     if (do_fsync())
+         return fsync_pulse_event( handle, prev_state );
+ 
+@@ -529,6 +549,9 @@ NTSTATUS WINAPI NtCreateMutant( HANDLE *handle, ACCESS_MASK access, const OBJECT
+     data_size_t len;
+     struct object_attributes *objattr;
+ 
++    TRACE( "access %#x, name %s, owned %u\n", access,
++           attr ? debugstr_us(attr->ObjectName) : "(null)", owned );
++
+     *handle = 0;
+ 
+     if (do_fsync())
+@@ -554,6 +577,8 @@ NTSTATUS WINAPI NtOpenMutant( HANDLE *handle, ACCESS_MASK access, const OBJECT_A
+ {
+     NTSTATUS ret;
+ 
++    TRACE( "access %#x, name %s\n", access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
++
+     *handle = 0;
+     if ((ret = validate_open_object_attributes( attr ))) return ret;
+ 
+@@ -579,6 +604,8 @@ NTSTATUS WINAPI NtReleaseMutant( HANDLE handle, LONG *prev_count )
+ {
+     NTSTATUS ret;
+ 
++    TRACE( "handle %p, prev_count %p\n", handle, prev_count );
++
+     if (do_fsync())
+         return fsync_release_mutex( handle, prev_count );
+ 
+@@ -1256,6 +1283,9 @@ NTSTATUS WINAPI NtCreateTimer( HANDLE *handle, ACCESS_MASK access, const OBJECT_
+     data_size_t len;
+     struct object_attributes *objattr;
+ 
++    TRACE( "access %#x, name %s, type %u\n", access,
++           attr ? debugstr_us(attr->ObjectName) : "(null)", type );
++
+     *handle = 0;
+     if (type != NotificationTimer && type != SynchronizationTimer) return STATUS_INVALID_PARAMETER;
+     if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
+@@ -1283,6 +1313,8 @@ NTSTATUS WINAPI NtOpenTimer( HANDLE *handle, ACCESS_MASK access, const OBJECT_AT
+ {
+     NTSTATUS ret;
+ 
++    TRACE( "access %#x, name %s\n", access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
++
+     *handle = 0;
+     if ((ret = validate_open_object_attributes( attr ))) return ret;
+ 
+@@ -1336,6 +1368,8 @@ NTSTATUS WINAPI NtCancelTimer( HANDLE handle, BOOLEAN *state )
+ {
+     NTSTATUS ret;
+ 
++    TRACE( "handle %p, state %p\n", handle, state );
++
+     SERVER_START_REQ( cancel_timer )
+     {
+         req->handle = wine_server_obj_handle( handle );
+@@ -1404,27 +1438,37 @@ NTSTATUS WINAPI NtWaitForMultipleObjects( DWORD count, const HANDLE *handles, BO
+ {
+     select_op_t select_op;
+     UINT i, flags = SELECT_INTERRUPTIBLE;
++    NTSTATUS ret;
+ 
+     if (!count || count > MAXIMUM_WAIT_OBJECTS) return STATUS_INVALID_PARAMETER_1;
+ 
++    if (TRACE_ON(sync))
++    {
++        TRACE( "wait_any %u, alertable %u, handles {%p", wait_any, alertable, handles[0] );
++        for (i = 1; i < count; i++) TRACE( ", %p", handles[i] );
++        TRACE( "}, timeout %s\n", debugstr_timeout(timeout) );
++    }
++
+     if (do_fsync())
+     {
+         NTSTATUS ret = fsync_wait_objects( count, handles, wait_any, alertable, timeout );
+         if (ret != STATUS_NOT_IMPLEMENTED)
+             return ret;
+     }
+ 
+     if (do_esync())
+     {
+         NTSTATUS ret = esync_wait_objects( count, handles, wait_any, alertable, timeout );
+         if (ret != STATUS_NOT_IMPLEMENTED)
+             return ret;
+     }
+ 
+     if (alertable) flags |= SELECT_ALERTABLE;
+     select_op.wait.op = wait_any ? SELECT_WAIT : SELECT_WAIT_ALL;
+     for (i = 0; i < count; i++) select_op.wait.handles[i] = wine_server_obj_handle( handles[i] );
+-    return server_wait( &select_op, offsetof( select_op_t, wait.handles[count] ), flags, timeout );
++    ret = server_wait( &select_op, offsetof( select_op_t, wait.handles[count] ), flags, timeout );
++    TRACE( "-> %#x\n", ret );
++    return ret;
+ }
+ 
+ 
+@@ -1432,6 +1476,8 @@ NTSTATUS WINAPI NtSignalAndWaitForSingleObject( HANDLE signal, HANDLE wait,
+     select_op_t select_op;
+     UINT flags = SELECT_INTERRUPTIBLE;
+ 
++    TRACE( "signal %p, wait %p, alertable %u, timeout %s\n", signal, wait, alertable, debugstr_timeout(timeout) );
++
+     if (do_fsync())
+         return fsync_signal_and_wait( signal, wait, alertable, timeout );
+ 
+@@ -1651,6 +1697,9 @@ NTSTATUS WINAPI NtCreateKeyedEvent( HANDLE *handle, ACCESS_MASK access,
+     data_size_t len;
+     struct object_attributes *objattr;
+ 
++    TRACE( "access %#x, name %s, flags %#x\n", access,
++           attr ? debugstr_us(attr->ObjectName) : "(null)", flags );
++
+     *handle = 0;
+     if ((ret = alloc_object_attributes( attr, &objattr, &len ))) return ret;
+ 
+@@ -1675,6 +1724,8 @@ NTSTATUS WINAPI NtOpenKeyedEvent( HANDLE *handle, ACCESS_MASK access, const OBJE
+ {
+     NTSTATUS ret;
+ 
++    TRACE( "access %#x, name %s\n", access, attr ? debugstr_us(attr->ObjectName) : "(null)" );
++
+     *handle = 0;
+     if ((ret = validate_open_object_attributes( attr ))) return ret;
+ 
+@@ -1701,6 +1752,8 @@ NTSTATUS WINAPI NtWaitForKeyedEvent( HANDLE handle, const void *key,
+     select_op_t select_op;
+     UINT flags = SELECT_INTERRUPTIBLE;
+ 
++    TRACE( "handle %p, key %p, alertable %u, timeout %s\n", handle, key, alertable, debugstr_timeout(timeout) );
++
+     if (!handle) handle = keyed_event;
+     if ((ULONG_PTR)key & 1) return STATUS_INVALID_PARAMETER_1;
+     if (alertable) flags |= SELECT_ALERTABLE;
+@@ -1720,6 +1773,8 @@ NTSTATUS WINAPI NtReleaseKeyedEvent( HANDLE handle, const void *key,
+     select_op_t select_op;
+     UINT flags = SELECT_INTERRUPTIBLE;
+ 
++    TRACE( "handle %p, key %p, alertable %u, timeout %s\n", handle, key, alertable, debugstr_timeout(timeout) );
++
+     if (!handle) handle = keyed_event;
+     if ((ULONG_PTR)key & 1) return STATUS_INVALID_PARAMETER_1;
+     if (alertable) flags |= SELECT_ALERTABLE;
+-- 
+2.34.1
+

@@ -8,57 +8,59 @@ Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
 v2:
     - add device local heap sizes instead of taking maximum (matches wined3d behaviour).
 
- dlls/winex11.drv/display.c | 11 +++++++++++
+ dlls/win32u/sysparams.c    | 11 +++++++++++
  dlls/winex11.drv/x11drv.h  |  1 +
  dlls/winex11.drv/xrandr.c  | 11 +++++++++++
  3 files changed, 23 insertions(+)
 
-diff --git a/dlls/winex11.drv/display.c b/dlls/winex11.drv/display.c
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
 index bf32e82cb3e..c1d405ae951 100644
---- a/dlls/winex11.drv/display.c
-+++ b/dlls/winex11.drv/display.c
-@@ -464,6 +464,8 @@ static BOOL X11DRV_InitGpu(HDEVINFO devinfo, const struct x11drv_gpu *gpu, INT g
-                            WCHAR *driver, LUID *gpu_luid)
- {
-     static const WCHAR adapter_stringW[] = {'H','a','r','d','w','a','r','e','I','n','f','o','r','m','a','t','i','o','n','.','A','d','a','p','t','e','r','S','t','r','i','n','g',0};
-+    static const WCHAR qw_mem_sizeW[] = {'H','a','r','d','w','a','r','e','I','n','f','o','r','m','a','t','i','o','n','.','q','w','M','e','m','o','r','y','S','i','z','e',0};
-+    static const WCHAR mem_sizeW[] = {'H','a','r','d','w','a','r','e','I','n','f','o','r','m','a','t','i','o','n','.','M','e','m','o','r','y','S','i','z','e',0};
-     static const WCHAR bios_stringW[] = {'H','a','r','d','w','a','r','e','I','n','f','o','r','m','a','t','i','o','n','.','B','i','o','s','S','t','r','i','n','g',0};
-     static const WCHAR chip_typeW[] = {'H','a','r','d','w','a','r','e','I','n','f','o','r','m','a','t','i','o','n','.','C','h','i','p','T','y','p','e',0};
-     static const WCHAR dac_typeW[] = {'H','a','r','d','w','a','r','e','I','n','f','o','r','m','a','t','i','o','n','.','D','a','c','T','y','p','e',0};
-@@ -566,6 +568,15 @@ static BOOL X11DRV_InitGpu(HDEVINFO devinfo, const struct x11drv_gpu *gpu, INT g
-     if (RegSetValueExW(hkey, dac_typeW, 0, REG_BINARY, (const BYTE *)ramdacW, sizeof(ramdacW)))
-         goto done;
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -464,6 +464,12 @@ static void add_gpu( const struct gdi_gpu *gpu, void *param )
+     static const WCHAR adapter_stringW[] =
+         {'H','a','r','d','w','a','r','e','I','n','f','o','r','m','a','t','i','o','n',
+          '.','A','d','a','p','t','e','r','S','t','r','i','n','g',0};
++    static const WCHAR qw_mem_sizeW[] =
++        {'H','a','r','d','w','a','r','e','I','n','f','o','r','m','a','t','i','o','n',
++         '.','q','w','M','e','m','o','r','y','S','i','z','e',0};
++    static const WCHAR mem_sizeW[] =
++        {'H','a','r','d','w','a','r','e','I','n','f','o','r','m','a','t','i','o','n',
++         '.','M','e','m','o','r','y','S','i','z','e',0};
+     static const WCHAR bios_stringW[] =
+         {'H','a','r','d','w','a','r','e','I','n','f','o','r','m','a','t','i','o','n','.',
+          'B','i','o','s','S','t','r','i','n','g',0};
+@@ -566,6 +568,13 @@ static void add_gpu( const struct gdi_gpu *gpu, void *param )
+     set_reg_value( hkey, chip_typeW, REG_BINARY, desc, size );
+     set_reg_value( hkey, dac_typeW, REG_BINARY, ramdacW, sizeof(ramdacW) );
  
 +    if (gpu->vram_size)
 +    {
 +        size = min(0xfff00000, gpu->vram_size);
-+        if (RegSetValueExW(hkey, mem_sizeW, 0, REG_DWORD, (const BYTE *)&size, sizeof(size)))
-+            goto done;
-+        if (RegSetValueExW(hkey, qw_mem_sizeW, 0, REG_QWORD, (const BYTE *)&gpu->vram_size, sizeof(gpu->vram_size)))
-+            goto done;
++        set_reg_value(hkey, mem_sizeW, REG_DWORD, (const BYTE *)&size, sizeof(size));
++        set_reg_value(hkey, qw_mem_sizeW, REG_QWORD, (const BYTE *)&gpu->vram_size, sizeof(gpu->vram_size));
 +    }
 +
-     RegCloseKey(hkey);
+     NtClose( hkey );
  
-     /* Retrieve driver value for adapters */
-diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+     link_device( ctx->gpuid, guid_devinterface_display_adapterW );
+diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
 index e82ee921830..07f83b6a5fc 100644
---- a/dlls/winex11.drv/x11drv.h
-+++ b/dlls/winex11.drv/x11drv.h
-@@ -732,6 +732,7 @@ struct x11drv_gpu
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -732,6 +732,7 @@ struct gdi_gpu
+     UINT subsys_id;
      UINT revision_id;
-     /* Vulkan device UUID */
-     GUID vulkan_uuid;
+     GUID vulkan_uuid;     /* Vulkan device UUID */
 +    UINT64 vram_size;
  };
  
- /* Represent an adapter in EnumDisplayDevices context */
+ struct gdi_adapter
 diff --git a/dlls/winex11.drv/xrandr.c b/dlls/winex11.drv/xrandr.c
 index 8faece9023a..0ced47d4e57 100644
 --- a/dlls/winex11.drv/xrandr.c
 +++ b/dlls/winex11.drv/xrandr.c
-@@ -650,8 +650,10 @@ static BOOL get_gpu_properties_from_vulkan( struct x11drv_gpu *gpu, const XRRPro
+@@ -650,8 +650,10 @@ static BOOL get_gpu_properties_from_vulkan( struct gdi_gpu *gpu, const XRRPro
      };
      const struct vulkan_funcs *vulkan_funcs = get_vulkan_driver( WINE_VULKAN_DRIVER_VERSION );
      VkResult (*pvkGetRandROutputDisplayEXT)( VkPhysicalDevice, Display *, RROutput, VkDisplayKHR * );
@@ -69,7 +71,7 @@ index 8faece9023a..0ced47d4e57 100644
      uint32_t device_count, device_idx, output_idx;
      VkPhysicalDevice *vk_physical_devices = NULL;
      VkPhysicalDeviceProperties2 properties2;
-@@ -660,6 +662,7 @@ static BOOL get_gpu_properties_from_vulkan( struct x11drv_gpu *gpu, const XRRPro
+@@ -660,6 +662,7 @@ static BOOL get_gpu_properties_from_vulkan( struct gdi_gpu *gpu, const XRRPro
      VkInstance vk_instance = NULL;
      VkDisplayKHR vk_display;
      BOOL ret = FALSE;
@@ -77,7 +79,7 @@ index 8faece9023a..0ced47d4e57 100644
      VkResult vr;
  
      if (!vulkan_funcs)
-@@ -686,6 +689,7 @@ static BOOL get_gpu_properties_from_vulkan( struct x11drv_gpu *gpu, const XRRPro
+@@ -686,6 +689,7 @@ static BOOL get_gpu_properties_from_vulkan( struct gdi_gpu *gpu, const XRRPro
  
      LOAD_VK_FUNC(vkEnumeratePhysicalDevices)
      LOAD_VK_FUNC(vkGetPhysicalDeviceProperties2KHR)
@@ -85,7 +87,7 @@ index 8faece9023a..0ced47d4e57 100644
      LOAD_VK_FUNC(vkGetRandROutputDisplayEXT)
  #undef LOAD_VK_FUNC
  
-@@ -724,6 +728,13 @@ static BOOL get_gpu_properties_from_vulkan( struct x11drv_gpu *gpu, const XRRPro
+@@ -724,6 +728,13 @@ static BOOL get_gpu_properties_from_vulkan( struct gdi_gpu *gpu, const XRRPro
  
              pvkGetPhysicalDeviceProperties2KHR( vk_physical_devices[device_idx], &properties2 );
              memcpy( &gpu->vulkan_uuid, id.deviceUUID, sizeof(id.deviceUUID) );

@@ -1,0 +1,208 @@
+From 84b060351b6426efbbfbbbb9772ccaed199014c3 Mon Sep 17 00:00:00 2001
+From: Huw Davies <huw@codeweavers.com>
+Date: Tue, 30 Jun 2020 11:24:53 +0100
+Subject: [PATCH 05/44] user32: Use the desktop shared data for GetCursorPos().
+
+---
+ dlls/user32/input.c        | 20 +++++-------
+ dlls/user32/user_main.c    |  7 ++++
+ dlls/user32/user_private.h | 21 ++++++++++++
+ dlls/user32/winstation.c   | 67 ++++++++++++++++++++++++++++++++++++++
+ include/ntuser.h           |  2 ++
+ 5 files changed, 106 insertions(+), 11 deletions(-)
+
+diff --git a/dlls/user32/input.c b/dlls/user32/input.c
+index 6dc256f24a7..3f79c05e665 100644
+--- a/dlls/user32/input.c
++++ b/dlls/user32/input.c
+@@ -306,25 +306,23 @@ void WINAPI mouse_event( DWORD dwFlags, DWORD dx, DWORD dy,
+  */
+ BOOL WINAPI DECLSPEC_HOTPATCH GetCursorPos( POINT *pt )
+ {
+-    BOOL ret;
++    BOOL ret = TRUE;
+     DWORD last_change;
+     UINT dpi;
++    volatile struct desktop_shared_memory *shared = get_desktop_shared_memory();
+ 
+-    if (!pt) return FALSE;
++    if (!pt || !shared) return FALSE;
+ 
+-    SERVER_START_REQ( set_cursor )
++    SHARED_READ_BEGIN( &shared->seq )
+     {
+-        if ((ret = !wine_server_call( req )))
+-        {
+-            pt->x = reply->new_x;
+-            pt->y = reply->new_y;
+-            last_change = reply->last_change;
+-        }
++        pt->x = shared->cursor.x;
++        pt->y = shared->cursor.y;
++        last_change = shared->cursor.last_change;
+     }
+-    SERVER_END_REQ;
++    SHARED_READ_END( &shared->seq );
+ 
+     /* query new position from graphics driver if we haven't updated recently */
+-    if (ret && GetTickCount() - last_change > 100) ret = USER_Driver->pGetCursorPos( pt );
++    if (GetTickCount() - last_change > 100) ret = USER_Driver->pGetCursorPos( pt );
+     if (ret && (dpi = get_thread_dpi()))
+     {
+         DPI_AWARENESS_CONTEXT context;
+diff --git a/dlls/user32/user_main.c b/dlls/user32/user_main.c
+index e489bcda17a..1f961174705 100644
+--- a/dlls/user32/user_main.c
++++ b/dlls/user32/user_main.c
+@@ -267,6 +267,13 @@ static void thread_detach(void)
+     HeapFree( GetProcessHeap(), 0, thread_info->key_state );
+     HeapFree( GetProcessHeap(), 0, thread_info->rawinput );
+ 
++    if (thread_info->desktop_shared_map)
++    {
++        CloseHandle( thread_info->desktop_shared_map );
++        thread_info->desktop_shared_map = NULL;
++        thread_info->desktop_shared_memory = NULL;
++    }
++
+     exiting_thread_id = 0;
+ }
+ 
+diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
+index c2152900a9b..34aa56537be 100644
+--- a/dlls/user32/user_private.h
++++ b/dlls/user32/user_private.h
+@@ -215,6 +215,7 @@ extern BOOL WINPROC_call_window( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
+ 
+ extern const WCHAR *CLASS_GetVersionedName(const WCHAR *classname, UINT *basename_offset,
+         WCHAR *combined, BOOL register_class) DECLSPEC_HIDDEN;
++extern volatile struct desktop_shared_memory *get_desktop_shared_memory( void ) DECLSPEC_HIDDEN;
+ 
+ /* kernel callbacks */
+ 
+@@ -308,4 +309,24 @@ void WINAPI USER_ScrollBarDraw(HWND, HDC, INT, enum SCROLL_HITTEST,
+                                const struct SCROLL_TRACKING_INFO *, BOOL, BOOL, RECT *, INT, INT,
+                                INT, BOOL) DECLSPEC_HIDDEN;
+ 
++#if defined(__i386__) || defined(__x86_64__)
++#define __SHARED_READ_SEQ( x ) (*(x))
++#define __SHARED_READ_FENCE do {} while(0)
++#else
++#define __SHARED_READ_SEQ( x ) __atomic_load_n( x, __ATOMIC_RELAXED )
++#define __SHARED_READ_FENCE __atomic_thread_fence( __ATOMIC_ACQUIRE )
++#endif
++
++#define SHARED_READ_BEGIN( x )                                          \
++    do {                                                                \
++        unsigned int __seq;                                             \
++        do {                                                            \
++            while ((__seq = __SHARED_READ_SEQ( x )) & SEQUENCE_MASK) NtYieldExecution(); \
++            __SHARED_READ_FENCE;
++
++#define SHARED_READ_END( x )                       \
++            __SHARED_READ_FENCE;                   \
++        } while (__SHARED_READ_SEQ( x ) != __seq); \
++    } while(0)
++
+ #endif /* __WINE_USER_PRIVATE_H */
+diff --git a/dlls/user32/winstation.c b/dlls/user32/winstation.c
+index 122d8486e1f..802ba9eceb0 100644
+--- a/dlls/user32/winstation.c
++++ b/dlls/user32/winstation.c
+@@ -100,6 +100,67 @@ static const WCHAR *get_winstation_default_name( void )
+     return ret ? default_name : NULL;
+ }
+ 
++
++static void map_shared_memory_section( const WCHAR *name, SIZE_T size, HANDLE root, HANDLE *handle, void **ptr )
++{
++    OBJECT_ATTRIBUTES attr;
++    UNICODE_STRING section_str;
++    NTSTATUS status;
++
++    RtlInitUnicodeString( &section_str, name );
++    InitializeObjectAttributes( &attr, &section_str, 0, root, NULL );
++    status = NtOpenSection( handle, SECTION_ALL_ACCESS, &attr );
++    if (status)
++    {
++        ERR( "failed to open section %s: %08x\n", debugstr_w(name), status );
++        *ptr = NULL;
++        *handle = NULL;
++        return;
++    }
++
++    *ptr = NULL;
++    status = NtMapViewOfSection( *handle, GetCurrentProcess(), ptr, 0, 0, NULL,
++                                 &size, ViewUnmap, 0, PAGE_READONLY );
++    if (status)
++    {
++        ERR( "failed to map view of section %s: %08x\n", debugstr_w(name), status );
++        CloseHandle( *handle );
++        *ptr = NULL;
++        *handle = NULL;
++    }
++}
++
++
++volatile struct desktop_shared_memory *get_desktop_shared_memory( void )
++{
++    static const WCHAR *dir_desktop_maps = L"__wine_desktop_mappings\\";
++    struct user_thread_info *thread_info = get_user_thread_info();
++    HANDLE root = get_winstations_dir_handle(), handles[2];
++    WCHAR buf[MAX_PATH], *ptr;
++    DWORD i, needed;
++
++    if (thread_info->desktop_shared_memory) return thread_info->desktop_shared_memory;
++
++    handles[0] = GetProcessWindowStation();
++    handles[1] = GetThreadDesktop( GetCurrentThreadId() );
++
++    memcpy( buf, dir_desktop_maps, wcslen(dir_desktop_maps) * sizeof(WCHAR) );
++    ptr = buf + wcslen(dir_desktop_maps);
++
++    for (i = 0; i < 2; i++)
++    {
++        GetUserObjectInformationW( handles[i], UOI_NAME, (void *)ptr, sizeof(buf) - (ptr - buf) * sizeof(WCHAR), &needed );
++        ptr += needed / sizeof(WCHAR);
++        if (i == 0) *(ptr - 1) = '\\';
++    }
++
++    map_shared_memory_section( buf, sizeof(struct desktop_shared_memory), root,
++                               &thread_info->desktop_shared_map, (void **)&thread_info->desktop_shared_memory );
++    return thread_info->desktop_shared_memory;
++}
++
++
++
+ /***********************************************************************
+  *              CreateWindowStationA  (USER32.@)
+  */
+@@ -323,6 +384,12 @@ BOOL WINAPI SetThreadDesktop( HDESK handle )
+         thread_info->top_window = 0;
+         thread_info->msg_window = 0;
+         if (key_state_info) key_state_info->time = 0;
++        if (thread_info->desktop_shared_map)
++        {
++            CloseHandle( thread_info->desktop_shared_map );
++            thread_info->desktop_shared_map = NULL;
++            thread_info->desktop_shared_memory = NULL;
++        }
+     }
+     return ret;
+ }
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 3edfeab188e..ec5bcf703ba 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -77,6 +77,8 @@ struct user_thread_info
+     HWND                          top_window;             /* Desktop window */
+     HWND                          msg_window;             /* HWND_MESSAGE parent window */
+     struct rawinput_thread_data  *rawinput;               /* RawInput thread local data / buffer */
++    HANDLE                        desktop_shared_map;     /* HANDLE to server's desktop shared memory */
++    struct desktop_shared_memory *desktop_shared_memory;  /* Ptr to server's desktop shared memory */
+ };
+ 
+ C_ASSERT( sizeof(struct user_thread_info) <= sizeof(((TEB *)0)->Win32ClientInfo) );
+-- 
+2.34.1
+

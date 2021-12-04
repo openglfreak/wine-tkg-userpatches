@@ -1,0 +1,27 @@
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 259d668730d..a661e378e75 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -1308,15 +1308,20 @@ static BOOL update_display_cache(void)
+ 
+ static BOOL lock_display_devices(void)
+ {
++    static const WCHAR winsta0[] = {'W','i','n','S','t','a','0'};
++    RTL_USER_PROCESS_PARAMETERS *params = NtCurrentTeb()->Peb->ProcessParameters;
+     USEROBJECTFLAGS flags;
+     HWINSTA winstation;
++    const WCHAR *start = params->Desktop.Buffer, *end = start + params->Desktop.Length;
+ 
+     pthread_mutex_lock( &display_lock );
+ 
+     /* Report physical monitor information only if window station has visible display surfaces */
+     winstation = NtUserGetProcessWindowStation();
+-    if (NtUserGetObjectInformation( winstation, UOI_FLAGS, &flags, sizeof(flags), NULL ) &&
+-        (flags.dwFlags & WSF_VISIBLE))
++    for (; start++ != end && start != '\\'; ++start);
++    if ((end - start >= sizeof(winsta0) && !wcsncmp( start, winsta0, end - start )) ||
++        (NtUserGetObjectInformation( winstation, UOI_FLAGS, &flags, sizeof(flags), NULL ) &&
++            (flags.dwFlags & WSF_VISIBLE)))
+     {
+         pthread_mutex_unlock( &display_lock );
+         if (!update_display_cache()) return FALSE;

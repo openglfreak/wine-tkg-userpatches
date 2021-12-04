@@ -1,0 +1,89 @@
+From b2f6ceebc6e2757cc65aaf63beb20f54314bf08d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 18 Oct 2021 11:10:49 +0200
+Subject: [PATCH 02/14] user32/tests: Add some (Enum|Change)DisplaySettings
+ last error tests.
+
+---
+ dlls/user32/tests/monitor.c | 31 +++++++++++++++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/dlls/user32/tests/monitor.c b/dlls/user32/tests/monitor.c
+index 131721d7ec1..bd89a8d9a40 100644
+--- a/dlls/user32/tests/monitor.c
++++ b/dlls/user32/tests/monitor.c
+@@ -225,6 +225,27 @@ static void test_EnumDisplayDevices(void)
+     ok( broken( monitor_count == 0 ) || monitor_count > 0, "Expect at least one monitor found\n" );
+ }
+ 
++static void test_EnumDisplaySettings(void)
++{
++    DISPLAY_DEVICEW adapter = {.cb = sizeof(DISPLAY_DEVICEW)};
++    DEVMODEW devmode = {.dmSize = sizeof(DEVMODEW)};
++    BOOL ret;
++
++    ret = EnumDisplayDevicesW( NULL, 0, &adapter, 0 );
++    ok( ret, "EnumDisplayDevicesW failed, error %u\n", GetLastError() );
++
++    SetLastError( 0xdeadbeef );
++    ret = EnumDisplaySettingsExW( adapter.DeviceName, ENUM_REGISTRY_SETTINGS, &devmode, 0 );
++    ok( ret, "EnumDisplaySettingsExW failed, error %u\n", GetLastError() );
++    todo_wine
++    ok( GetLastError() == 0xdeadbeef, "EnumDisplaySettingsExW set last error %u\n", GetLastError() );
++
++    SetLastError( 0xdeadbeef );
++    ret = EnumDisplaySettingsExW( adapter.DeviceName, ENUM_CURRENT_SETTINGS, &devmode, 0 );
++    ok( ret, "EnumDisplaySettingsExW failed, error %u\n", GetLastError() );
++    ok( GetLastError() == 0xdeadbeef, "EnumDisplaySettingsExW set last error %u\n", GetLastError() );
++}
++
+ struct vid_mode
+ {
+     DWORD w, h, bpp, freq, fields;
+@@ -521,8 +542,11 @@ static void test_ChangeDisplaySettingsEx(void)
+         dm.dmSize = sizeof(dm);
+         dm.dmFields = DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT;
+         dm.dmPosition = devices[0].original_mode.dmPosition;
++        SetLastError(0xdeadbeef);
+         res = ChangeDisplaySettingsExA(devices[0].name, &dm, NULL, CDS_UPDATEREGISTRY | CDS_NORESET, NULL);
+         ok(res == DISP_CHANGE_SUCCESSFUL, "ChangeDisplaySettingsExA %s returned unexpected %d\n", devices[0].name, res);
++        todo_wine
++        ok(GetLastError() == 0xdeadbeef, "ChangeDisplaySettingsExA set last error %u\n", GetLastError());
+         res = ChangeDisplaySettingsExA(NULL, NULL, NULL, 0, NULL);
+         ok(res == DISP_CHANGE_SUCCESSFUL ||
+                 broken(res == DISP_CHANGE_FAILED), /* win8 TestBot */
+@@ -538,8 +562,11 @@ static void test_ChangeDisplaySettingsEx(void)
+         ok(count == old_count, "Expect monitor count %d, got %d\n", old_count, count);
+ 
+         /* Restore registry settings */
++        SetLastError(0xdeadbeef);
+         res = ChangeDisplaySettingsExA(devices[0].name, &devices[0].original_mode, NULL,
+                 CDS_UPDATEREGISTRY | CDS_NORESET, NULL);
++        todo_wine
++        ok(GetLastError() == 0xdeadbeef, "ChangeDisplaySettingsExA set last error %u\n", GetLastError());
+         ok(res == DISP_CHANGE_SUCCESSFUL ||
+                 broken(res == DISP_CHANGE_BADPARAM) || /* win10 */
+                 broken(res == DISP_CHANGE_FAILED), /* win8 TestBot */
+@@ -563,8 +590,11 @@ static void test_ChangeDisplaySettingsEx(void)
+         dm.dmSize = sizeof(dm);
+         dm.dmFields = DM_POSITION;
+         dm.dmPosition = devices[1].original_mode.dmPosition;
++        SetLastError(0xdeadbeef);
+         res = ChangeDisplaySettingsExA(devices[1].name, &dm, NULL, CDS_UPDATEREGISTRY | CDS_NORESET, NULL);
+         ok(res == DISP_CHANGE_SUCCESSFUL, "ChangeDisplaySettingsExA %s returned unexpected %d\n", devices[1].name, res);
++        todo_wine
++        ok(GetLastError() == 0xdeadbeef, "ChangeDisplaySettingsExA set last error %u\n", GetLastError());
+         res = ChangeDisplaySettingsExA(devices[1].name, NULL, NULL, 0, NULL);
+         ok(res == DISP_CHANGE_SUCCESSFUL, "ChangeDisplaySettingsExA %s returned unexpected %d\n", devices[1].name, res);
+ 
+@@ -2333,6 +2363,7 @@ START_TEST(monitor)
+ {
+     init_function_pointers();
+     test_EnumDisplayDevices();
++    test_EnumDisplaySettings();
+     test_ChangeDisplaySettingsEx();
+     test_DisplayConfigSetDeviceInfo();
+     test_EnumDisplayMonitors();
+-- 
+2.34.1
+

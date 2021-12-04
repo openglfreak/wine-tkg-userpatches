@@ -1,0 +1,401 @@
+From 9e7b68410c28dfb203c69bf6ebae9cef380f92a6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 3 Dec 2021 22:10:44 +0100
+Subject: [PATCH 12/14] user32: Move writing mode to registry out of graphics
+ drivers.
+
+---
+ dlls/win32u/sysparams.c     | 117 +++++++++++++++++++++++++++++++++++-
+ dlls/winemac.drv/display.c  |  81 +------------------------
+ dlls/winex11.drv/settings.c | 107 +--------------------------------
+ 3 files changed, 118 insertions(+), 187 deletions(-)
+
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 3d7d46d8cce..4961fade8cb 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -1471,6 +1471,70 @@ static BOOL is_detached_mode( const DEVMODEW *mode )
+            mode->dmPelsHeight == 0;
+ }
+ 
++/* check the display mode and fill the position field if not set. */
++static BOOL check_display_mode( UNICODE_STRING *devname, DEVMODEW *mode )
++{
++    DEVMODEW full;
++    DWORD i = 0;
++
++    if (is_detached_mode( mode )) return TRUE;
++
++    while (NtUserEnumDisplaySettings( devname, i++, &full, EDS_ROTATEDMODE ))
++    {
++        if ((mode->dmFields & DM_BITSPERPEL) && mode->dmBitsPerPel && full.dmBitsPerPel != mode->dmBitsPerPel)
++            continue;
++        if ((mode->dmFields & DM_PELSWIDTH) && full.dmPelsWidth != mode->dmPelsWidth)
++            continue;
++        if ((mode->dmFields & DM_PELSHEIGHT) && full.dmPelsHeight != mode->dmPelsHeight)
++            continue;
++        if ((mode->dmFields & DM_DISPLAYFREQUENCY) && mode->dmDisplayFrequency && full.dmDisplayFrequency &&
++            mode->dmDisplayFrequency != 1 && mode->dmDisplayFrequency != full.dmDisplayFrequency)
++            continue;
++        if ((mode->dmFields & DM_DISPLAYORIENTATION) && full.dmDisplayOrientation != mode->dmDisplayOrientation)
++            continue;
++
++        if (!(mode->dmFields & DM_BITSPERPEL))
++        {
++            mode->dmFields |= DM_BITSPERPEL;
++            mode->dmBitsPerPel = full.dmBitsPerPel;
++        }
++        if (!(mode->dmFields & DM_PELSWIDTH))
++        {
++            mode->dmFields |= DM_PELSWIDTH;
++            mode->dmPelsWidth = full.dmPelsWidth;
++        }
++        if (!(mode->dmFields & DM_PELSHEIGHT))
++        {
++            mode->dmFields |= DM_PELSHEIGHT;
++            mode->dmPelsHeight = full.dmPelsHeight;
++        }
++        if (!(mode->dmFields & DM_DISPLAYFREQUENCY))
++        {
++            mode->dmFields |= DM_DISPLAYFREQUENCY;
++            mode->dmDisplayFrequency = full.dmDisplayFrequency;
++        }
++        if (!(mode->dmFields & DM_DISPLAYFLAGS))
++        {
++            mode->dmFields |= DM_DISPLAYFLAGS;
++            mode->dmDisplayFlags = full.dmDisplayFlags;
++        }
++        if (!(mode->dmFields & DM_POSITION))
++        {
++            mode->dmFields |= DM_POSITION;
++            mode->dmPosition = full.dmPosition;
++        }
++        if (!(mode->dmFields & DM_DISPLAYORIENTATION))
++        {
++            mode->dmFields |= DM_DISPLAYORIENTATION;
++            mode->dmDisplayOrientation = full.dmDisplayOrientation;
++        }
++
++        return TRUE;
++    }
++
++    return FALSE;
++}
++
+ static BOOL read_registry_settings( const WCHAR *path, DEVMODEW *dev_mode )
+ {
+     char buffer[offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data[sizeof(DWORD)])];
+@@ -1547,6 +1611,46 @@ static BOOL read_registry_settings( const WCHAR *path, DEVMODEW *dev_mode )
+     return ret;
+ }
+ 
++static BOOL write_registry_settings( const WCHAR *path, const DEVMODEW *devmode )
++{
++    HANDLE mutex;
++    HKEY key;
++
++    mutex = get_display_device_init_mutex();
++
++    if (!config_key && !(config_key = reg_open_key( NULL, config_keyW, sizeof(config_keyW) )))
++        return FALSE;
++
++    if (!(key = reg_open_key( config_key, path, lstrlenW( path ) * sizeof(WCHAR) )))
++    {
++        release_display_device_init_mutex( mutex );
++        return FALSE;
++    }
++
++    set_reg_value( key, default_bits_per_pel_w, REG_DWORD,
++                   &devmode->dmBitsPerPel, sizeof(DWORD) );
++    set_reg_value( key, default_x_resolution_w, REG_DWORD,
++                   &devmode->dmPelsWidth, sizeof(DWORD) );
++    set_reg_value( key, default_y_resolution_w, REG_DWORD,
++                   &devmode->dmPelsHeight, sizeof(DWORD) );
++    set_reg_value( key, default_v_refresh_w, REG_DWORD,
++                   &devmode->dmDisplayFrequency, sizeof(DWORD) );
++    set_reg_value( key, default_flags_w, REG_DWORD,
++                   &devmode->dmDisplayFlags, sizeof(DWORD) );
++    set_reg_value( key, default_x_panning_w, REG_DWORD,
++                   &devmode->dmPosition.x, sizeof(DWORD) );
++    set_reg_value( key, default_y_panning_w, REG_DWORD,
++                   &devmode->dmPosition.y, sizeof(DWORD) );
++    set_reg_value( key, default_orientation_w, REG_DWORD,
++                   &devmode->dmDisplayOrientation, sizeof(DWORD) );
++    set_reg_value( key, default_fixed_output_w, REG_DWORD,
++                   &devmode->dmDisplayFixedOutput, sizeof(DWORD) );
++
++    NtClose( key );
++    release_display_device_init_mutex( mutex );
++    return TRUE;
++}
++
+ /***********************************************************************
+  *	     NtUserChangeDisplaySettingsExW    (win32u.@)
+  */
+@@ -1554,6 +1658,7 @@ LONG WINAPI NtUserChangeDisplaySettings( UNICODE_STRING *devname, DEVMODEW *devm
+                                          DWORD flags, void *lparam )
+ {
+     WCHAR device_name[CCHDEVICENAME];
++    WCHAR registry_path[MAX_PATH];
+     struct adapter *adapter;
+     BOOL def_mode = TRUE;
+     DEVMODEW dm;
+@@ -1571,7 +1676,11 @@ LONG WINAPI NtUserChangeDisplaySettings( UNICODE_STRING *devname, DEVMODEW *devm
+     }
+ 
+     if (!lock_display_devices()) return DISP_CHANGE_FAILED;
+-    if ((adapter = find_adapter( devname ))) lstrcpyW( device_name, adapter->dev.device_name );
++    if ((adapter = find_adapter( devname )))
++    {
++        lstrcpyW( device_name, adapter->dev.device_name );
++        lstrcpynW( registry_path, adapter->config_key, MAX_PATH );
++    }
+     unlock_display_devices();
+     if (!adapter)
+     {
+@@ -1630,6 +1739,12 @@ LONG WINAPI NtUserChangeDisplaySettings( UNICODE_STRING *devname, DEVMODEW *devm
+             devmode->dmPelsHeight = dm.dmPelsHeight;
+     }
+ 
++    if (flags & CDS_UPDATEREGISTRY)
++    {
++        if (!check_display_mode( devname, devmode )) return DISP_CHANGE_BADMODE;
++        if (!write_registry_settings( registry_path, devmode )) return DISP_CHANGE_NOTUPDATED;
++    }
++
+     ret = user_driver->pChangeDisplaySettingsEx( device_name, devmode, hwnd, flags, lparam );
+     if (ret != DISP_CHANGE_SUCCESSFUL)
+         ERR( "Changing %s display settings returned %d.\n", debugstr_us(devname), ret );
+diff --git a/dlls/winemac.drv/display.c b/dlls/winemac.drv/display.c
+index 76cff80c056..638a4ad11ba 100644
+--- a/dlls/winemac.drv/display.c
++++ b/dlls/winemac.drv/display.c
+@@ -87,79 +87,6 @@ static void release_display_device_init_mutex(HANDLE mutex)
+     CloseHandle(mutex);
+ }
+ 
+-static BOOL get_display_device_reg_key(const WCHAR *device_name, WCHAR *key, unsigned len)
+-{
+-    WCHAR value_name[MAX_PATH], buffer[MAX_PATH], *end_ptr;
+-    DWORD adapter_index, size;
+-
+-    /* Device name has to be \\.\DISPLAY%d */
+-    if (strncmpiW(device_name, adapter_prefixW, ARRAY_SIZE(adapter_prefixW)))
+-        return FALSE;
+-
+-    /* Parse \\.\DISPLAY* */
+-    adapter_index = strtolW(device_name + ARRAY_SIZE(adapter_prefixW), &end_ptr, 10) - 1;
+-    if (*end_ptr)
+-        return FALSE;
+-
+-    /* Open \Device\Video* in HKLM\HARDWARE\DEVICEMAP\VIDEO\ */
+-    sprintfW(value_name, device_video_fmtW, adapter_index);
+-    size = sizeof(buffer);
+-    if (RegGetValueW(HKEY_LOCAL_MACHINE, video_keyW, value_name, RRF_RT_REG_SZ, NULL, buffer, &size))
+-        return FALSE;
+-
+-    if (len < lstrlenW(buffer + 18) + 1)
+-        return FALSE;
+-
+-    /* Skip \Registry\Machine\ prefix */
+-    lstrcpyW(key, buffer + 18);
+-    TRACE("display device %s registry settings key %s.\n", wine_dbgstr_w(device_name), wine_dbgstr_w(key));
+-    return TRUE;
+-}
+-
+-
+-static BOOL write_registry_settings(const WCHAR *device_name, const DEVMODEW *dm)
+-{
+-    WCHAR wine_mac_reg_key[MAX_PATH];
+-    HANDLE mutex;
+-    HKEY hkey;
+-    BOOL ret = TRUE;
+-
+-    mutex = get_display_device_init_mutex();
+-    if (!get_display_device_reg_key(device_name, wine_mac_reg_key, ARRAY_SIZE(wine_mac_reg_key)))
+-    {
+-        release_display_device_init_mutex(mutex);
+-        return FALSE;
+-    }
+-
+-    if (RegCreateKeyExW(HKEY_CURRENT_CONFIG, wine_mac_reg_key, 0, NULL,
+-                        REG_OPTION_VOLATILE, KEY_WRITE, NULL, &hkey, NULL))
+-    {
+-        release_display_device_init_mutex(mutex);
+-        return FALSE;
+-    }
+-
+-#define set_value(name, data) \
+-    if (RegSetValueExA(hkey, name, 0, REG_DWORD, (const BYTE*)(data), sizeof(DWORD))) \
+-        ret = FALSE
+-
+-    set_value("DefaultSettings.BitsPerPel", &dm->dmBitsPerPel);
+-    set_value("DefaultSettings.XResolution", &dm->dmPelsWidth);
+-    set_value("DefaultSettings.YResolution", &dm->dmPelsHeight);
+-    set_value("DefaultSettings.VRefresh", &dm->dmDisplayFrequency);
+-    set_value("DefaultSettings.Flags", &dm->dmDisplayFlags);
+-    set_value("DefaultSettings.XPanning", &dm->dmPosition.x);
+-    set_value("DefaultSettings.YPanning", &dm->dmPosition.y);
+-    set_value("DefaultSettings.Orientation", &dm->dmDisplayOrientation);
+-    set_value("DefaultSettings.FixedOutput", &dm->dmDisplayFixedOutput);
+-
+-#undef set_value
+-
+-    RegCloseKey(hkey);
+-    release_display_device_init_mutex(mutex);
+-    return ret;
+-}
+-
+-
+ static BOOL write_display_settings(HKEY parent_hkey, CGDirectDisplayID displayID)
+ {
+     BOOL ret = FALSE;
+@@ -858,13 +785,7 @@ better:
+         /* we have a valid mode */
+         TRACE("Requested display settings match mode %ld\n", best);
+ 
+-        if ((flags & CDS_UPDATEREGISTRY) && !write_registry_settings(devname, devmode))
+-        {
+-            WARN("Failed to update registry\n");
+-            ret = DISP_CHANGE_NOTUPDATED;
+-        }
+-        else if (flags & (CDS_TEST | CDS_NORESET))
+-            ret = DISP_CHANGE_SUCCESSFUL;
++        if (flags & (CDS_TEST | CDS_NORESET)) ret = DISP_CHANGE_SUCCESSFUL;
+         else if (lstrcmpiW(primary_adapter, devname))
+         {
+             FIXME("Changing non-primary adapter settings is currently unsupported.\n");
+diff --git a/dlls/winex11.drv/settings.c b/dlls/winex11.drv/settings.c
+index 1485283e6ed..f94a57f3d18 100644
+--- a/dlls/winex11.drv/settings.c
++++ b/dlls/winex11.drv/settings.c
+@@ -219,83 +219,6 @@ void init_registry_display_settings(void)
+     }
+ }
+ 
+-static BOOL get_display_device_reg_key(const WCHAR *device_name, WCHAR *key, unsigned len)
+-{
+-    static const WCHAR display[] = {'\\','\\','.','\\','D','I','S','P','L','A','Y'};
+-    static const WCHAR video_value_fmt[] = {'\\','D','e','v','i','c','e','\\',
+-                                            'V','i','d','e','o','%','d',0};
+-    static const WCHAR video_key[] = {'H','A','R','D','W','A','R','E','\\',
+-                                      'D','E','V','I','C','E','M','A','P','\\',
+-                                      'V','I','D','E','O','\\',0};
+-    WCHAR value_name[MAX_PATH], buffer[MAX_PATH], *end_ptr;
+-    DWORD adapter_index, size;
+-
+-    /* Device name has to be \\.\DISPLAY%d */
+-    if (strncmpiW(device_name, display, ARRAY_SIZE(display)))
+-        return FALSE;
+-
+-    /* Parse \\.\DISPLAY* */
+-    adapter_index = strtolW(device_name + ARRAY_SIZE(display), &end_ptr, 10) - 1;
+-    if (*end_ptr)
+-        return FALSE;
+-
+-    /* Open \Device\Video* in HKLM\HARDWARE\DEVICEMAP\VIDEO\ */
+-    sprintfW(value_name, video_value_fmt, adapter_index);
+-    size = sizeof(buffer);
+-    if (RegGetValueW(HKEY_LOCAL_MACHINE, video_key, value_name, RRF_RT_REG_SZ, NULL, buffer, &size))
+-        return FALSE;
+-
+-    if (len < lstrlenW(buffer + 18) + 1)
+-        return FALSE;
+-
+-    /* Skip \Registry\Machine\ prefix */
+-    lstrcpyW(key, buffer + 18);
+-    TRACE("display device %s registry settings key %s.\n", wine_dbgstr_w(device_name), wine_dbgstr_w(key));
+-    return TRUE;
+-}
+-
+-static BOOL write_registry_settings(const WCHAR *device_name, const DEVMODEW *dm)
+-{
+-    WCHAR wine_x11_reg_key[MAX_PATH];
+-    HANDLE mutex;
+-    HKEY hkey;
+-    BOOL ret = TRUE;
+-
+-    mutex = get_display_device_init_mutex();
+-    if (!get_display_device_reg_key(device_name, wine_x11_reg_key, ARRAY_SIZE(wine_x11_reg_key)))
+-    {
+-        release_display_device_init_mutex(mutex);
+-        return FALSE;
+-    }
+-
+-    if (RegCreateKeyExW(HKEY_CURRENT_CONFIG, wine_x11_reg_key, 0, NULL,
+-                        REG_OPTION_VOLATILE, KEY_WRITE, NULL, &hkey, NULL))
+-    {
+-        release_display_device_init_mutex(mutex);
+-        return FALSE;
+-    }
+-
+-#define set_value(name, data) \
+-    if (RegSetValueExA(hkey, name, 0, REG_DWORD, (const BYTE*)(data), sizeof(DWORD))) \
+-        ret = FALSE
+-
+-    set_value("DefaultSettings.BitsPerPel", &dm->dmBitsPerPel);
+-    set_value("DefaultSettings.XResolution", &dm->dmPelsWidth);
+-    set_value("DefaultSettings.YResolution", &dm->dmPelsHeight);
+-    set_value("DefaultSettings.VRefresh", &dm->dmDisplayFrequency);
+-    set_value("DefaultSettings.Flags", &dm->u2.dmDisplayFlags);
+-    set_value("DefaultSettings.XPanning", &dm->u1.s2.dmPosition.x);
+-    set_value("DefaultSettings.YPanning", &dm->u1.s2.dmPosition.y);
+-    set_value("DefaultSettings.Orientation", &dm->u1.s2.dmDisplayOrientation);
+-    set_value("DefaultSettings.FixedOutput", &dm->u1.s2.dmDisplayFixedOutput);
+-
+-#undef set_value
+-
+-    RegCloseKey(hkey);
+-    release_display_device_init_mutex(mutex);
+-    return ret;
+-}
+-
+ BOOL get_primary_adapter(WCHAR *name)
+ {
+     DISPLAY_DEVICEW dd;
+@@ -869,41 +792,13 @@ LONG CDECL X11DRV_ChangeDisplaySettingsEx( LPCWSTR devname, LPDEVMODEW devmode,
+                                            HWND hwnd, DWORD flags, LPVOID lpvoid )
+ {
+     struct x11drv_display_setting *displays;
+-    INT display_idx, display_count;
+-    DEVMODEW *full_mode;
++    INT display_count;
+     LONG ret;
+ 
+     ret = get_display_settings(&displays, &display_count, devname, devmode);
+     if (ret != DISP_CHANGE_SUCCESSFUL)
+         return ret;
+ 
+-    if (flags & CDS_UPDATEREGISTRY && devname && devmode)
+-    {
+-        for (display_idx = 0; display_idx < display_count; ++display_idx)
+-        {
+-            if (!lstrcmpiW(displays[display_idx].desired_mode.dmDeviceName, devname))
+-            {
+-                full_mode = get_full_mode(displays[display_idx].id, &displays[display_idx].desired_mode);
+-                if (!full_mode)
+-                {
+-                    heap_free(displays);
+-                    return DISP_CHANGE_BADMODE;
+-                }
+-
+-                if (!write_registry_settings(devname, full_mode))
+-                {
+-                    ERR("Failed to write %s display settings to registry.\n", wine_dbgstr_w(devname));
+-                    free_full_mode(full_mode);
+-                    heap_free(displays);
+-                    return DISP_CHANGE_NOTUPDATED;
+-                }
+-
+-                free_full_mode(full_mode);
+-                break;
+-            }
+-        }
+-    }
+-
+     if (flags & (CDS_TEST | CDS_NORESET))
+     {
+         heap_free(displays);
+-- 
+2.34.1
+

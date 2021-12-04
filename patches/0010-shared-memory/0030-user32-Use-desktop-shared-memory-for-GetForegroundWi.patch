@@ -1,0 +1,114 @@
+From 394c4275ca344a2f374c8cfe2d2bf578961d2114 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 18 Jan 2021 17:58:36 +0100
+Subject: [PATCH 30/44] user32: Use desktop shared memory for
+ GetForegroundWindow.
+
+---
+ dlls/user32/focus.c        |  9 +++++----
+ dlls/user32/user_main.c    |  7 +++++++
+ dlls/user32/user_private.h |  1 +
+ dlls/user32/winstation.c   | 19 +++++++++++++++++++
+ include/ntuser.h           |  2 ++
+ 5 files changed, 34 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/user32/focus.c b/dlls/user32/focus.c
+index bcd4c169708..5c5c52cd287 100644
+--- a/dlls/user32/focus.c
++++ b/dlls/user32/focus.c
+@@ -392,14 +392,15 @@ HWND WINAPI GetFocus(void)
+  */
+ HWND WINAPI GetForegroundWindow(void)
+ {
++    volatile struct input_shared_memory *shared = get_foreground_shared_memory();
+     HWND ret = 0;
+ 
+-    SERVER_START_REQ( get_thread_input )
++    if (!shared) return 0;
++    SHARED_READ_BEGIN( &shared->seq )
+     {
+-        req->tid = 0;
+-        if (!wine_server_call_err( req )) ret = wine_server_ptr_handle( reply->foreground );
++        ret = wine_server_ptr_handle( shared->active );
+     }
+-    SERVER_END_REQ;
++    SHARED_READ_END( &shared->seq );
+     return ret;
+ }
+ 
+diff --git a/dlls/user32/user_main.c b/dlls/user32/user_main.c
+index 6237cda8eb7..c0e2bd21d54 100644
+--- a/dlls/user32/user_main.c
++++ b/dlls/user32/user_main.c
+@@ -287,6 +287,13 @@ static void thread_detach(void)
+         thread_info->input_shared_memory = NULL;
+     }
+ 
++    if (thread_info->foreground_shared_memory)
++    {
++        CloseHandle( thread_info->foreground_shared_map );
++        thread_info->foreground_shared_map = NULL;
++        thread_info->foreground_shared_memory = NULL;
++    }
++
+     exiting_thread_id = 0;
+ }
+ 
+diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
+index c796adde3ee..3f8f36079d5 100644
+--- a/dlls/user32/user_private.h
++++ b/dlls/user32/user_private.h
+@@ -210,6 +210,7 @@ extern const WCHAR *CLASS_GetVersionedName(const WCHAR *classname, UINT *basenam
+ extern volatile struct desktop_shared_memory *get_desktop_shared_memory( void ) DECLSPEC_HIDDEN;
+ extern volatile struct queue_shared_memory *get_queue_shared_memory( void ) DECLSPEC_HIDDEN;
+ extern volatile struct input_shared_memory *get_input_shared_memory( void ) DECLSPEC_HIDDEN;
++extern volatile struct input_shared_memory *get_foreground_shared_memory( void ) DECLSPEC_HIDDEN;
+ 
+ /* kernel callbacks */
+ 
+diff --git a/dlls/user32/winstation.c b/dlls/user32/winstation.c
+index 6e711e9287a..e77692f6bff 100644
+--- a/dlls/user32/winstation.c
++++ b/dlls/user32/winstation.c
+@@ -207,6 +207,25 @@ volatile struct input_shared_memory *get_input_shared_memory( void )
+ }
+ 
+ 
++volatile struct input_shared_memory *get_foreground_shared_memory( void )
++{
++    volatile struct desktop_shared_memory *desktop = get_desktop_shared_memory();
++    struct user_thread_info *thread_info = get_user_thread_info();
++    DWORD tid;
++
++    if (!desktop) return NULL;
++    SHARED_READ_BEGIN( &desktop->seq )
++    {
++        tid = desktop->foreground_tid;
++    }
++    SHARED_READ_END( &desktop->seq );
++
++    if (!tid) return NULL;
++    return get_thread_input_shared_memory( tid, &thread_info->foreground_shared_map,
++                                           &thread_info->foreground_shared_memory );
++}
++
++
+ /***********************************************************************
+  *              CreateWindowStationA  (USER32.@)
+  */
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 302701f293f..c70f876a91b 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -84,6 +84,8 @@ struct user_thread_info
+     struct queue_shared_memory   *queue_shared_memory;     /* Ptr to server's thread queue shared memory */
+     HANDLE                        input_shared_map;       /* HANDLE to server's thread input shared memory */
+     struct input_shared_memory   *input_shared_memory;     /* Ptr to server's thread input shared memory */
++    HANDLE                        foreground_shared_map;    /* HANDLE to server's thread input shared memory */
++    struct input_shared_memory   *foreground_shared_memory; /* Ptr to server's thread input shared memory */
+ };
+ 
+ C_ASSERT( sizeof(struct user_thread_info) <= sizeof(((TEB *)0)->Win32ClientInfo) );
+-- 
+2.34.1
+

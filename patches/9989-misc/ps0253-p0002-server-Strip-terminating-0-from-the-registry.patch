@@ -1,0 +1,70 @@
+From: Dmitry Timoshkov <dmitry@baikal.ru>
+Subject: [PATCH v2 2/2] server: Strip terminating '\0' from the registry key name.
+Message-Id: <20211207100118.ad38782357861a7d3e3ba48d@baikal.ru>
+Date: Tue, 7 Dec 2021 10:01:18 +0300
+
+Signed-off-by: Dmitry Timoshkov <dmitry@baikal.ru>
+---
+ dlls/ntdll/tests/reg.c | 18 +++++++++++++++++-
+ server/registry.c      |  2 ++
+ 2 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/tests/reg.c b/dlls/ntdll/tests/reg.c
+index 74d82b85be4..024d9026785 100644
+--- a/dlls/ntdll/tests/reg.c
++++ b/dlls/ntdll/tests/reg.c
+@@ -457,6 +457,14 @@ todo_wine
+     ok( status == STATUS_OBJECT_TYPE_MISMATCH, "NtOpenKey failed: 0x%08x\n", status );
+     pRtlFreeUnicodeString( &str );
+ 
++    pRtlCreateUnicodeStringFromAsciiz( &str, "\\REGISTRY\\Machine\\Software\\Classes" );
++    str.Length += sizeof(WCHAR); /* include terminating \0 in the length */
++    status = pNtOpenKey( &key, KEY_READ, &attr );
++    ok( status == STATUS_SUCCESS || broken(status == STATUS_OBJECT_NAME_NOT_FOUND) /* win8 */,
++        "NtOpenKey failed: 0x%08x\n", status );
++    if (!status) pNtClose( key );
++    pRtlFreeUnicodeString( &str );
++
+     if (!pNtOpenKeyEx)
+     {
+         win_skip("NtOpenKeyEx not available\n");
+@@ -631,13 +639,21 @@ static void test_NtCreateKey(void)
+     status = pNtCreateKey( &subkey, am, &attr, 0, 0, 0, 0 );
+     ok( status == STATUS_SUCCESS,
+         "NtCreateKey failed: 0x%08x\n", status );
+-    if (!status) pNtClose( subkey );
++    pNtClose( subkey );
+     pRtlFreeUnicodeString( &str );
+ 
+     pRtlCreateUnicodeStringFromAsciiz( &str, "\\REGISTRY\\MACHINE\\SOFTWARE\\CLASSES" );
+     status = pNtCreateKey( &subkey, am, &attr, 0, 0, 0, 0 );
+     ok( status == STATUS_SUCCESS,
+         "NtCreateKey failed: 0x%08x\n", status );
++    pNtClose( subkey );
++    pRtlFreeUnicodeString( &str );
++
++    pRtlCreateUnicodeStringFromAsciiz( &str, "\\REGISTRY\\Machine\\Software\\Classes" );
++    str.Length += sizeof(WCHAR); /* include terminating \0 in the length */
++    status = pNtCreateKey( &subkey, am, &attr, 0, 0, 0, 0 );
++    ok( status == STATUS_SUCCESS || broken(status == STATUS_OBJECT_PATH_NOT_FOUND) /* win8 */,
++        "NtCreateKey failed: 0x%08x\n", status );
+     if (!status) pNtClose( subkey );
+     pRtlFreeUnicodeString( &str );
+ 
+diff --git a/server/registry.c b/server/registry.c
+index 00b8e47be03..d87bb4d2dae 100644
+--- a/server/registry.c
++++ b/server/registry.c
+@@ -479,6 +479,8 @@ static inline void get_req_path( struct unicode_str *str, int skip_root )
+     str->str = get_req_data();
+     str->len = (get_req_data_size() / sizeof(WCHAR)) * sizeof(WCHAR);
+ 
++    while (str->len && !str->str[str->len / sizeof(WCHAR) - 1]) str->len -= sizeof(WCHAR);
++
+     if (skip_root && str->len >= sizeof(root_name) && !memicmp_strW( str->str, root_name, sizeof(root_name) ))
+     {
+         str->str += ARRAY_SIZE( root_name );
+
+-- 
+2.34.1
+

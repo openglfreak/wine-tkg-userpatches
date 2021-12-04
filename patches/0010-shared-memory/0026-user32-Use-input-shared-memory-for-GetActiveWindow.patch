@@ -1,0 +1,127 @@
+From 5e66dcd39951c4b5e997356fdea7b7dce771eb33 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 14 Jan 2021 15:22:05 +0100
+Subject: [PATCH 26/44] user32: Use input shared memory for GetActiveWindow.
+
+---
+ dlls/user32/focus.c        |  9 +++++----
+ dlls/user32/user_main.c    |  7 +++++++
+ dlls/user32/user_private.h |  1 +
+ dlls/user32/winstation.c   | 33 +++++++++++++++++++++++++++++++++
+ include/ntuser.h           |  2 ++
+ 5 files changed, 48 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/user32/focus.c b/dlls/user32/focus.c
+index b11743b32a7..ac38a4f01ba 100644
+--- a/dlls/user32/focus.c
++++ b/dlls/user32/focus.c
+@@ -356,14 +356,15 @@ BOOL WINAPI SetForegroundWindow( HWND hwnd )
+  */
+ HWND WINAPI GetActiveWindow(void)
+ {
++    volatile struct input_shared_memory *shared = get_input_shared_memory();
+     HWND ret = 0;
+ 
+-    SERVER_START_REQ( get_thread_input )
++    if (!shared) return 0;
++    SHARED_READ_BEGIN( &shared->seq )
+     {
+-        req->tid = GetCurrentThreadId();
+-        if (!wine_server_call_err( req )) ret = wine_server_ptr_handle( reply->active );
++        ret = wine_server_ptr_handle( shared->active );
+     }
+-    SERVER_END_REQ;
++    SHARED_READ_END( &shared->seq );
+     return ret;
+ }
+ 
+diff --git a/dlls/user32/user_main.c b/dlls/user32/user_main.c
+index 123e5aa72b0..6237cda8eb7 100644
+--- a/dlls/user32/user_main.c
++++ b/dlls/user32/user_main.c
+@@ -280,6 +280,13 @@ static void thread_detach(void)
+         thread_info->queue_shared_memory = NULL;
+     }
+ 
++    if (thread_info->input_shared_map)
++    {
++        CloseHandle( thread_info->input_shared_map );
++        thread_info->input_shared_map = NULL;
++        thread_info->input_shared_memory = NULL;
++    }
++
+     exiting_thread_id = 0;
+ }
+ 
+diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
+index 01646a43e10..c796adde3ee 100644
+--- a/dlls/user32/user_private.h
++++ b/dlls/user32/user_private.h
+@@ -209,6 +209,7 @@ extern const WCHAR *CLASS_GetVersionedName(const WCHAR *classname, UINT *basenam
+         WCHAR *combined, BOOL register_class) DECLSPEC_HIDDEN;
+ extern volatile struct desktop_shared_memory *get_desktop_shared_memory( void ) DECLSPEC_HIDDEN;
+ extern volatile struct queue_shared_memory *get_queue_shared_memory( void ) DECLSPEC_HIDDEN;
++extern volatile struct input_shared_memory *get_input_shared_memory( void ) DECLSPEC_HIDDEN;
+ 
+ /* kernel callbacks */
+ 
+diff --git a/dlls/user32/winstation.c b/dlls/user32/winstation.c
+index 90a585675ba..6e711e9287a 100644
+--- a/dlls/user32/winstation.c
++++ b/dlls/user32/winstation.c
+@@ -174,6 +174,39 @@ volatile struct queue_shared_memory *get_queue_shared_memory( void )
+ }
+ 
+ 
++static volatile struct input_shared_memory *get_thread_input_shared_memory( DWORD tid, HANDLE *handle,
++                                                                            struct input_shared_memory **ptr )
++{
++    WCHAR buf[MAX_PATH];
++
++    if (*ptr && (*ptr)->tid == tid) return *ptr;
++    if (*ptr) CloseHandle( *handle );
++
++    swprintf( buf, ARRAY_SIZE(buf), L"\\KernelObjects\\__wine_thread_mappings\\%08x-input", tid );
++    map_shared_memory_section( buf, sizeof(struct input_shared_memory), NULL,
++                               handle, (void **)ptr );
++    return *ptr;
++}
++
++
++volatile struct input_shared_memory *get_input_shared_memory( void )
++{
++    volatile struct queue_shared_memory *queue = get_queue_shared_memory();
++    struct user_thread_info *thread_info = get_user_thread_info();
++    DWORD tid;
++
++    if (!queue) return NULL;
++    SHARED_READ_BEGIN( &queue->seq )
++    {
++        tid = queue->input_tid;
++    }
++    SHARED_READ_END( &queue->seq );
++
++    return get_thread_input_shared_memory( tid, &thread_info->input_shared_map,
++                                           &thread_info->input_shared_memory );
++}
++
++
+ /***********************************************************************
+  *              CreateWindowStationA  (USER32.@)
+  */
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 97efb5b3586..302701f293f 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -82,6 +82,8 @@ struct user_thread_info
+     struct desktop_shared_memory *desktop_shared_memory;  /* Ptr to server's desktop shared memory */
+     HANDLE                        queue_shared_map;       /* HANDLE to server's thread queue shared memory */
+     struct queue_shared_memory   *queue_shared_memory;     /* Ptr to server's thread queue shared memory */
++    HANDLE                        input_shared_map;       /* HANDLE to server's thread input shared memory */
++    struct input_shared_memory   *input_shared_memory;     /* Ptr to server's thread input shared memory */
+ };
+ 
+ C_ASSERT( sizeof(struct user_thread_info) <= sizeof(((TEB *)0)->Win32ClientInfo) );
+-- 
+2.34.1
+

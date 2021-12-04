@@ -1,0 +1,216 @@
+From d5d853978d0cdcddf7aabe0cc163b6d1713b9bfc Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sat, 6 Mar 2021 00:05:36 +0100
+Subject: [PATCH 01/44] server: Create a desktop shared mapping.
+
+Signed-off-by: Huw Davies <huw@codeweavers.com>
+---
+ server/directory.c  | 17 +++++++++++++++++
+ server/file.h       |  6 ++++++
+ server/mapping.c    | 19 ++++++++++++++++++-
+ server/protocol.def |  5 +++++
+ server/user.h       | 28 +++++++++++++++-------------
+ server/winstation.c | 22 ++++++++++++++++++++++
+ 6 files changed, 83 insertions(+), 14 deletions(-)
+
+diff --git a/server/directory.c b/server/directory.c
+index ed3ab1ebb8f..455e7323ced 100644
+--- a/server/directory.c
++++ b/server/directory.c
+@@ -37,6 +37,7 @@
+ #include "process.h"
+ #include "file.h"
+ #include "unicode.h"
++#include "user.h"
+ 
+ #define HASH_SIZE 7  /* default hash size */
+ 
+@@ -279,6 +280,22 @@ struct object *get_directory_obj( struct process *process, obj_handle_t handle )
+     return get_handle_obj( process, handle, 0, &directory_ops );
+ }
+ 
++struct object *create_desktop_map_directory( struct winstation *winstation )
++{
++    static const WCHAR dir_desktop_mapsW[] = {'_','_','w','i','n','e','_','d','e','s','k','t','o','p','_','m','a','p','p','i','n','g','s'};
++    static const struct unicode_str dir_desktop_maps_str = {dir_desktop_mapsW, sizeof(dir_desktop_mapsW)};
++    struct object *root;
++    struct directory *mapping_root, *ret;
++    const struct unicode_str winsta_name = {winstation->obj.name->name, winstation->obj.name->len};
++
++    root = winstation->obj.name->parent;
++    mapping_root = create_directory( root, &dir_desktop_maps_str, OBJ_OPENIF, HASH_SIZE, NULL );
++    ret = create_directory( &mapping_root->obj, &winsta_name, OBJ_OPENIF, HASH_SIZE, NULL );
++    release_object( &mapping_root->obj );
++
++    return &ret->obj;
++}
++
+ /* Global initialization */
+ 
+ static void create_session( unsigned int id )
+diff --git a/server/file.h b/server/file.h
+index 705fe0e37f0..8033bc9cf0f 100644
+--- a/server/file.h
++++ b/server/file.h
+@@ -157,6 +157,10 @@ extern struct timeout_user *add_timeout_user( timeout_t when, timeout_callback f
+ extern void remove_timeout_user( struct timeout_user *user );
+ extern const char *get_timeout_str( timeout_t timeout );
+ 
++/* directory functions */
++
++extern struct object *create_desktop_map_directory( struct winstation *winstation );
++
+ /* file functions */
+ 
+ extern struct file *get_file_obj( struct process *process, obj_handle_t handle,
+@@ -189,6 +193,8 @@ extern struct mapping *create_fd_mapping( struct object *root, const struct unic
+                                                 unsigned int attr, const struct security_descriptor *sd );
+ extern struct object *create_hypervisor_data_mapping( struct object *root, const struct unicode_str *name,
+                                                       unsigned int attr, const struct security_descriptor *sd );
++extern struct object *create_shared_mapping( struct object *root, const struct unicode_str *name,
++                                             mem_size_t size, const struct security_descriptor *sd, void **ptr );
+ 
+ /* device functions */
+ 
+diff --git a/server/mapping.c b/server/mapping.c
+index 77727e7e8c8..b535ab3d3cf 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -1102,7 +1102,7 @@ int get_page_size(void)
+ }
+ 
+ struct object *create_user_data_mapping( struct object *root, const struct unicode_str *name,
+-                                        unsigned int attr, const struct security_descriptor *sd )
++                                         unsigned int attr, const struct security_descriptor *sd )
+ {
+     void *ptr;
+     struct mapping *mapping;
+@@ -1118,6 +1118,23 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
+     return &mapping->obj;
+ }
+ 
++struct object *create_shared_mapping( struct object *root, const struct unicode_str *name,
++                                      mem_size_t size, const struct security_descriptor *sd, void **ptr )
++{
++    struct mapping *mapping;
++
++    if (!(mapping = create_mapping( root, name, OBJ_OPENIF, size, SEC_COMMIT, 0,
++                                    FILE_READ_DATA | FILE_WRITE_DATA, sd ))) return NULL;
++    *ptr = mmap( NULL, mapping->size, PROT_WRITE, MAP_SHARED, get_unix_fd( mapping->fd ), 0 );
++    if (*ptr == MAP_FAILED)
++    {
++        release_object( &mapping->obj );
++        return NULL;
++    }
++
++    return &mapping->obj;
++}
++
+ /* create a file mapping */
+ DECL_HANDLER(create_mapping)
+ {
+diff --git a/server/protocol.def b/server/protocol.def
+index 97c6e717ff8..5bb2fc3cd41 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -831,6 +831,11 @@ typedef struct
+     lparam_t info;
+ } cursor_pos_t;
+ 
++struct desktop_shared_memory
++{
++    int placeholder;
++};
++
+ /****************************************************************/
+ /* Request declarations */
+ 
+diff --git a/server/user.h b/server/user.h
+index 80f7e91f12c..ad39c9f5bc2 100644
+--- a/server/user.h
++++ b/server/user.h
+@@ -64,19 +64,21 @@ struct global_cursor
+ 
+ struct desktop
+ {
+-    struct object        obj;              /* object header */
+-    unsigned int         flags;            /* desktop flags */
+-    struct winstation   *winstation;       /* winstation this desktop belongs to */
+-    struct list          entry;            /* entry in winstation list of desktops */
+-    struct window       *top_window;       /* desktop window for this desktop */
+-    struct window       *msg_window;       /* HWND_MESSAGE top window */
+-    struct hook_table   *global_hooks;     /* table of global hooks on this desktop */
+-    struct list          hotkeys;          /* list of registered hotkeys */
+-    struct timeout_user *close_timeout;    /* timeout before closing the desktop */
+-    struct thread_input *foreground_input; /* thread input of foreground thread */
+-    unsigned int         users;            /* processes and threads using this desktop */
+-    struct global_cursor cursor;           /* global cursor information */
+-    unsigned char        keystate[256];    /* asynchronous key state */
++    struct object                          obj;              /* object header */
++    unsigned int                           flags;            /* desktop flags */
++    struct winstation                     *winstation;       /* winstation this desktop belongs to */
++    struct list                            entry;            /* entry in winstation list of desktops */
++    struct window                         *top_window;       /* desktop window for this desktop */
++    struct window                         *msg_window;       /* HWND_MESSAGE top window */
++    struct hook_table                     *global_hooks;     /* table of global hooks on this desktop */
++    struct list                            hotkeys;          /* list of registered hotkeys */
++    struct timeout_user                   *close_timeout;    /* timeout before closing the desktop */
++    struct thread_input                   *foreground_input; /* thread input of foreground thread */
++    unsigned int                           users;            /* processes and threads using this desktop */
++    struct global_cursor                   cursor;           /* global cursor information */
++    struct object                         *shared_mapping;   /* desktop shared memory mapping */
++    volatile struct desktop_shared_memory *shared;           /* desktop shared memory ptr */
++    unsigned char                          keystate[256];    /* asynchronous key state */
+ };
+ 
+ /* user handles functions */
+diff --git a/server/winstation.c b/server/winstation.c
+index 1535321da2d..128a9f0ac47 100644
+--- a/server/winstation.c
++++ b/server/winstation.c
+@@ -218,6 +218,22 @@ struct desktop *get_desktop_obj( struct process *process, obj_handle_t handle, u
+     return (struct desktop *)get_handle_obj( process, handle, access, &desktop_ops );
+ }
+ 
++static volatile void *init_desktop_mapping( struct desktop *desktop, const struct unicode_str *name )
++{
++    struct object *dir = create_desktop_map_directory( desktop->winstation );
++
++    desktop->shared = NULL;
++    desktop->shared_mapping = NULL;
++
++    if (!dir) return NULL;
++
++    desktop->shared_mapping = create_shared_mapping( dir, name, sizeof(struct desktop_shared_memory),
++                                                     NULL, (void **)&desktop->shared );
++    release_object( dir );
++    if (desktop->shared) memset( (void *)desktop->shared, 0, sizeof(*desktop->shared) );
++    return desktop->shared;
++}
++
+ /* create a desktop object */
+ static struct desktop *create_desktop( const struct unicode_str *name, unsigned int attr,
+                                        unsigned int flags, struct winstation *winstation )
+@@ -241,6 +257,11 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned
+             memset( desktop->keystate, 0, sizeof(desktop->keystate) );
+             list_add_tail( &winstation->desktops, &desktop->entry );
+             list_init( &desktop->hotkeys );
++            if (!init_desktop_mapping( desktop, name ))
++            {
++                release_object( desktop );
++                return NULL;
++            }
+         }
+         else clear_error();
+     }
+@@ -294,6 +315,7 @@ static void desktop_destroy( struct object *obj )
+     if (desktop->global_hooks) release_object( desktop->global_hooks );
+     if (desktop->close_timeout) remove_timeout_user( desktop->close_timeout );
+     list_remove( &desktop->entry );
++    release_object( desktop->shared_mapping );
+     release_object( desktop->winstation );
+ }
+ 
+-- 
+2.34.1
+

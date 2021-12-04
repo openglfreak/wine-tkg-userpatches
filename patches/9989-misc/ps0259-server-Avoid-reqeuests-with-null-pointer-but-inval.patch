@@ -1,0 +1,77 @@
+From: "Bernhard Übelacker" <bernhardu@mailbox.org>
+Subject: [PATCH] server: Avoid reqeuests with null pointer but invalid size.
+Message-Id: <20211209172517.2717447-1-bernhardu@mailbox.org>
+Date: Thu,  9 Dec 2021 18:25:17 +0100
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=51770
+Signed-off-by: Bernhard Übelacker <bernhardu@mailbox.org>
+---
+ dlls/kernel32/tests/volume.c | 16 ++++++++++++++++
+ dlls/ntdll/unix/file.c       |  2 ++
+ include/wine/server.h        |  2 +-
+ 3 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/kernel32/tests/volume.c b/dlls/kernel32/tests/volume.c
+index 723dfabb817..6934ea3044e 100644
+--- a/dlls/kernel32/tests/volume.c
++++ b/dlls/kernel32/tests/volume.c
+@@ -618,6 +618,7 @@ static void test_disk_query_property(void)
+     STORAGE_PROPERTY_QUERY query = {0};
+     STORAGE_DESCRIPTOR_HEADER header = {0};
+     STORAGE_DEVICE_DESCRIPTOR descriptor = {0};
++    STORAGE_DEVICE_NUMBER device_number = {0};
+     HANDLE handle;
+     DWORD error;
+     DWORD size;
+@@ -654,6 +655,21 @@ static void test_disk_query_property(void)
+     ok(descriptor.Version == sizeof(descriptor), "got descriptor.Version %d\n", descriptor.Version);
+     ok(descriptor.Size >= sizeof(descriptor), "got descriptor.Size %d\n", descriptor.Size);
+ 
++    SetLastError(0xdeadbeef);
++    ret = DeviceIoControl(handle, IOCTL_STORAGE_GET_DEVICE_NUMBER, NULL, 0, &device_number, sizeof(device_number), &size, NULL);
++    error = GetLastError();
++    ok(ret, "expect ret %#x, got %#x\n", TRUE, ret);
++    ok(error == 0xdeadbeef, "expect err %#x, got err %#x\n", 0xdeadbeef, error);
++    ok(size == sizeof(device_number), "got size %d\n", size);
++
++    /* unclean call with correctly in_buffer=NULL but incorrectly in_size=4 */
++    SetLastError(0xdeadbeef);
++    ret = DeviceIoControl(handle, IOCTL_STORAGE_GET_DEVICE_NUMBER, NULL, 4, &device_number, sizeof(device_number), &size, NULL);
++    error = GetLastError();
++    ok(ret, "expect ret %#x, got %#x\n", TRUE, ret);
++    ok(error == 0xdeadbeef, "expect err %#x, got err %#x\n", 0xdeadbeef, error);
++    ok(size == sizeof(device_number), "got size %d\n", size);
++
+     CloseHandle(handle);
+ }
+ 
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 10d8f3de4a3..a47a371cb82 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -4921,6 +4921,8 @@ static NTSTATUS server_ioctl_file( HANDLE handle, HANDLE event,
+ 
+     if (status != STATUS_PENDING) free( async );
+ 
++    if (wait_handle && status == STATUS_ACCESS_VIOLATION)
++        ERR("Sending request failed but wait requested. Expect the application to hang.\n");
+     if (wait_handle) status = wait_async( wait_handle, (options & FILE_SYNCHRONOUS_IO_ALERT) );
+     return status;
+ }
+diff --git a/include/wine/server.h b/include/wine/server.h
+index 57bcdbbb00d..d0cc2a98874 100644
+--- a/include/wine/server.h
++++ b/include/wine/server.h
+@@ -71,7 +71,7 @@ static inline data_size_t wine_server_reply_size( const void *reply )
+ static inline void wine_server_add_data( void *req_ptr, const void *ptr, data_size_t size )
+ {
+     struct __server_request_info * const req = req_ptr;
+-    if (size)
++    if (size && ptr != NULL)
+     {
+         req->data[req->data_count].ptr = ptr;
+         req->data[req->data_count++].size = size;
+
+-- 
+2.33.0
+

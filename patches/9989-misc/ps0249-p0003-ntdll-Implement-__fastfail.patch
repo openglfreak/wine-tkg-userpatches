@@ -1,0 +1,285 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH v5 3/4] ntdll: Implement __fastfail().
+Message-Id: <da335113-412d-1907-ab90-3fb27896fa83@gmail.com>
+Date: Fri, 10 Dec 2021 01:04:36 +0900
+In-Reply-To: <28eb4ec4-d1e3-c1c3-3076-a282d425c6b4@gmail.com>
+References: <28eb4ec4-d1e3-c1c3-3076-a282d425c6b4@gmail.com>
+
+__fastfail() is used by the Visual C++ runtime and Windows system
+libraries to signal that the in-process state is corrupted and
+unrecoverable.
+
+If __fastfail() is invoked, the NT kernel raises a second-chance
+non-continuable exception STATUS_STACK_BUFFER_OVERRUN.  This quickly
+terminates the process, bypassing all in-process exception handlers
+(since they all rely on the potentially corrupted process state).
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+
+Notes:
+    v3 -> v4: fix BRK #0xF003 detection on ARM64
+          	  add comments
+    v4 -> v5: use NtRaiseException()
+
+ dlls/ntdll/tests/exception.c    |  1 -
+ dlls/ntdll/unix/signal_arm.c    | 40 +++++++++++++++++++++++++++++++--
+ dlls/ntdll/unix/signal_arm64.c  | 40 +++++++++++++++++++++++++++++++++
+ dlls/ntdll/unix/signal_i386.c   | 38 ++++++++++++++++++++++++++++++-
+ dlls/ntdll/unix/signal_x86_64.c | 35 +++++++++++++++++++++++++++++
+ 5 files changed, 150 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/tests/exception.c b/dlls/ntdll/tests/exception.c
+index c0d3ae19a51..14b1396dbc2 100644
+--- a/dlls/ntdll/tests/exception.c
++++ b/dlls/ntdll/tests/exception.c
+@@ -8429,7 +8429,6 @@ static void subtest_fastfail(unsigned int code)
+ 
+     } while (de.dwDebugEventCode != EXIT_PROCESS_DEBUG_EVENT);
+ 
+-    todo_wine
+     ok(had_ff || broken(had_se) /* Win7 */, "fast fail did not occur\n");
+ 
+     wait_child_process( pi.hProcess );
+diff --git a/dlls/ntdll/unix/signal_arm.c b/dlls/ntdll/unix/signal_arm.c
+index ebc08984adf..072e402f68b 100644
+--- a/dlls/ntdll/unix/signal_arm.c
++++ b/dlls/ntdll/unix/signal_arm.c
+@@ -614,6 +614,32 @@ static void setup_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec )
+ }
+ 
+ 
++/***********************************************************************
++ *           raise_second_chance_exception
++ *
++ * Raise a second chance exception.
++ */
++static void raise_second_chance_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec )
++{
++    CONTEXT context;
++
++    rec->ExceptionAddress = (void *)PC_sig(sigcontext);
++    if (is_inside_syscall( sigcontext ))
++    {
++        /* Windows would bug check here */
++        ERR("Direct second chance exception code %x flags %x addr %p (inside syscall)\n",
++            rec->ExceptionCode, rec->ExceptionFlags, rec->ExceptionAddress );
++        NtTerminateProcess( NtCurrentProcess(), rec->ExceptionCode );
++    }
++    else
++    {
++        save_context( &context, sigcontext );
++        NtRaiseException( rec, &context, FALSE );
++        restore_context( &context, sigcontext );
++    }
++}
++
++
+ /***********************************************************************
+  *           call_user_apc_dispatcher
+  */
+@@ -803,13 +829,23 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+     switch (get_trap_code(signal, context))
+     {
+     case TRAP_ARM_PRIVINFLT:   /* Invalid opcode exception */
+-        if (*(WORD *)PC_sig(context) == 0xdefe)  /* breakpoint */
++        switch (*(WORD *)PC_sig(context))
+         {
++        case 0xdefb:  /* __fastfail */
++            rec.ExceptionCode = STATUS_STACK_BUFFER_OVERRUN;
++            rec.ExceptionFlags = EH_NONCONTINUABLE;
++            rec.NumberParameters = 1;
++            rec.ExceptionInformation[0] = REGn_sig( 0, context );
++            raise_second_chance_exception( context, &rec );
++            return;
++        case 0xdefe:  /* breakpoint */
+             rec.ExceptionCode = EXCEPTION_BREAKPOINT;
+             rec.NumberParameters = 1;
+             break;
++        default:
++            rec.ExceptionCode = EXCEPTION_ILLEGAL_INSTRUCTION;
++            break;
+         }
+-        rec.ExceptionCode = EXCEPTION_ILLEGAL_INSTRUCTION;
+         break;
+     case TRAP_ARM_PAGEFLT:  /* Page fault */
+         rec.NumberParameters = 2;
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index f2612412366..ad19a9d5ca7 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -655,6 +655,32 @@ static void setup_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec )
+ }
+ 
+ 
++/***********************************************************************
++ *           raise_second_chance_exception
++ *
++ * Raise a second chance exception.
++ */
++static void raise_second_chance_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec )
++{
++    CONTEXT context;
++
++    rec->ExceptionAddress = (void *)PC_sig(sigcontext);
++    if (is_inside_syscall( sigcontext ))
++    {
++        /* Windows would bug check here */
++        ERR("Direct second chance exception code %x flags %x addr %p (inside syscall)\n",
++            rec->ExceptionCode, rec->ExceptionFlags, rec->ExceptionAddress );
++        NtTerminateProcess( NtCurrentProcess(), rec->ExceptionCode );
++    }
++    else
++    {
++        save_context( &context, sigcontext );
++        NtRaiseException( rec, &context, FALSE );
++        restore_context( &context, sigcontext );
++    }
++}
++
++
+ /***********************************************************************
+  *           call_user_apc_dispatcher
+  */
+@@ -899,6 +925,7 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+     EXCEPTION_RECORD rec = { 0 };
++    ucontext_t *context = sigcontext;
+ 
+     switch (siginfo->si_code)
+     {
+@@ -907,6 +934,19 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+         break;
+     case TRAP_BRKPT:
+     default:
++        /* debug exceptions do not update ESR on Linux, so we fetch the instruction directly. */
++        if (!(PSTATE_sig( context ) & 0x10) && /* AArch64 (not WoW) */
++            !(PC_sig( context ) & 3) &&
++            *(ULONG *)PC_sig( context ) == 0xd43e0060UL) /* brk #0xf003 */
++        {
++            /* __fastfail */
++            rec.ExceptionCode = STATUS_STACK_BUFFER_OVERRUN;
++            rec.ExceptionFlags = EH_NONCONTINUABLE;
++            rec.NumberParameters = 1;
++            rec.ExceptionInformation[0] = REGn_sig( 0, context );
++            raise_second_chance_exception( context, &rec );
++            return;
++        }
+         rec.ExceptionCode = EXCEPTION_BREAKPOINT;
+         rec.NumberParameters = 1;
+         break;
+diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
+index bf3abc1a587..d0780403f8a 100644
+--- a/dlls/ntdll/unix/signal_i386.c
++++ b/dlls/ntdll/unix/signal_i386.c
+@@ -1485,6 +1485,30 @@ static void setup_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec )
+     setup_raise_exception( sigcontext, stack, rec, &xcontext );
+ }
+ 
++/***********************************************************************
++ *           raise_second_chance_exception
++ *
++ * Raise a second chance exception.
++ */
++static void raise_second_chance_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec, struct xcontext *xcontext )
++{
++    rec->ExceptionAddress = (void *)EIP_sig( sigcontext );
++    if (is_inside_syscall( sigcontext ))
++    {
++        /* Windows would bug check here */
++        WINE_ERR("Direct second chance exception code %x flags %x addr %p (inside syscall)\n",
++                 rec->ExceptionCode, rec->ExceptionFlags, rec->ExceptionAddress );
++        NtTerminateProcess( NtCurrentProcess(), rec->ExceptionCode );
++    }
++    else
++    {
++        save_context( xcontext, sigcontext );
++        NtRaiseException( rec, &xcontext->c, FALSE );
++        restore_context( xcontext, sigcontext );
++    }
++}
++
++
+ /* stack layout when calling an user apc function.
+  * FIXME: match Windows ABI. */
+ struct apc_stack_layout
+@@ -1772,8 +1796,20 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+     EXCEPTION_RECORD rec = { 0 };
+     struct xcontext xcontext;
+     ucontext_t *ucontext = sigcontext;
+-    void *stack = setup_exception_record( sigcontext, &rec, &xcontext );
++    void *stack;
+ 
++    if (TRAP_sig(ucontext) == TRAP_x86_PROTFLT && ERROR_sig(ucontext) == ((0x29 << 3) | 2))
++    {
++        /* __fastfail: process state is corrupted - skip setup_exception_record */
++        rec.ExceptionCode = STATUS_STACK_BUFFER_OVERRUN;
++        rec.ExceptionFlags = EH_NONCONTINUABLE;
++        rec.NumberParameters = 1;
++        rec.ExceptionInformation[0] = ECX_sig( ucontext );
++        raise_second_chance_exception( ucontext, &rec, &xcontext );
++        return;
++    }
++
++    stack = setup_exception_record( sigcontext, &rec, &xcontext );
+     switch (TRAP_sig(ucontext))
+     {
+     case TRAP_x86_OFLOW:   /* Overflow exception */
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index d32e38875a4..ec1e461fbc0 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -2197,6 +2197,30 @@ static void setup_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec )
+ }
+ 
+ 
++/***********************************************************************
++ *           raise_second_chance_exception
++ *
++ * Raise a second chance exception.
++ */
++static void raise_second_chance_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec, struct xcontext *xcontext )
++{
++    rec->ExceptionAddress = (void *)RIP_sig(sigcontext);
++    if (is_inside_syscall( sigcontext ))
++    {
++        /* Windows would bug check here */
++        ERR("Direct second chance exception code %x flags %x addr %p (inside syscall)\n",
++            rec->ExceptionCode, rec->ExceptionFlags, rec->ExceptionAddress );
++        NtTerminateProcess( NtCurrentProcess(), rec->ExceptionCode );
++    }
++    else
++    {
++        save_context( xcontext, sigcontext );
++        NtRaiseException( rec, &xcontext->c, FALSE );
++        restore_context( xcontext, sigcontext );
++    }
++}
++
++
+ /***********************************************************************
+  *           call_user_apc_dispatcher
+  */
+@@ -2551,6 +2575,17 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+     struct xcontext context;
+     ucontext_t *ucontext = sigcontext;
+ 
++    if (TRAP_sig(ucontext) == TRAP_x86_PROTFLT && ERROR_sig(ucontext) == ((0x29 << 3) | 2))
++    {
++        /* __fastfail: process state is corrupted */
++        rec.ExceptionCode = STATUS_STACK_BUFFER_OVERRUN;
++        rec.ExceptionFlags = EH_NONCONTINUABLE;
++        rec.NumberParameters = 1;
++        rec.ExceptionInformation[0] = RCX_sig( ucontext );
++        raise_second_chance_exception( ucontext, &rec, &context );
++        return;
++    }
++
+     rec.ExceptionAddress = (void *)RIP_sig(ucontext);
+     save_context( &context, sigcontext );
+ 
+
+-- 
+2.31.1
+

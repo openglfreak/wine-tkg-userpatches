@@ -1,0 +1,48 @@
+From 888c547910838f4a9fbe1273d7d1c2e79389f238 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 22 Jan 2021 17:34:25 +0100
+Subject: [PATCH 21/44] user32: Call get_message request at least once every
+ 3s.
+
+So that the thread queue isn't incorrectly flagged as hung.
+---
+ dlls/user32/message.c | 3 ++-
+ include/ntuser.h      | 1 +
+ 2 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/message.c b/dlls/user32/message.c
+index cb7f57c8bec..d3d26c17695 100644
+--- a/dlls/user32/message.c
++++ b/dlls/user32/message.c
+@@ -2689,7 +2689,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+ 
+         thread_info->msg_source = prev_source;
+ 
+-        if (!shared || waited) skip = FALSE;
++        if (!shared || waited || GetTickCount() - thread_info->last_getmsg_time >= 3000) skip = FALSE;
+         else SHARED_READ_BEGIN( &shared->seq )
+         {
+             /* not created yet */
+@@ -2719,6 +2719,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+             req->wake_mask = changed_mask & (QS_SENDMESSAGE | QS_SMRESULT);
+             req->changed_mask = changed_mask;
+             wine_server_set_reply( req, buffer, buffer_size );
++            thread_info->last_getmsg_time = GetTickCount();
+             if (!(res = wine_server_call( req )))
+             {
+                 size = wine_server_reply_size( reply );
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 2a0deabb5bd..97efb5b3586 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -59,6 +59,7 @@ struct user_thread_info
+     DWORD                         wake_mask;              /* Current queue wake mask */
+     DWORD                         changed_mask;           /* Current queue changed mask */
+     DWORD                         last_driver_time;       /* Get/PeekMessage driver event time */
++    DWORD                         last_getmsg_time;       /* Get/PeekMessage last request time */
+     WORD                          recursion_count;        /* SendMessage recursion counter */
+     WORD                          message_count;          /* Get/PeekMessage loop counter */
+     WORD                          hook_call_depth;        /* Number of recursively called hook procs */
+-- 
+2.34.1
+

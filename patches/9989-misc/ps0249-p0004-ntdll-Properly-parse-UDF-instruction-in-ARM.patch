@@ -1,0 +1,82 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH v5 4/4] ntdll: Properly parse UDF instruction in ARM.
+Message-Id: <8f16acf2-bccd-8ffe-2121-6d6a68ffba1d@gmail.com>
+Date: Fri, 10 Dec 2021 01:04:42 +0900
+In-Reply-To: <28eb4ec4-d1e3-c1c3-3076-a282d425c6b4@gmail.com>
+References: <28eb4ec4-d1e3-c1c3-3076-a282d425c6b4@gmail.com>
+
+Today, the UDF instruction handler code assumes Thumb mode code, and
+cannot recognise the UDF.W form or equivalent instructions in ARM mode
+encoding.
+
+Fix this by generalising the UDF instruction parser code.
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ dlls/ntdll/unix/signal_arm.c | 35 ++++++++++++++++++++++++++++++++---
+ 1 file changed, 32 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/unix/signal_arm.c b/dlls/ntdll/unix/signal_arm.c
+index 072e402f68b..bed6ef91403 100644
+--- a/dlls/ntdll/unix/signal_arm.c
++++ b/dlls/ntdll/unix/signal_arm.c
+@@ -359,6 +359,35 @@ static inline WORD get_error_code( const ucontext_t *sigcontext )
+ }
+ 
+ 
++/***********************************************************************
++ *           get_udf_immediate
++ *
++ * Get the immediate operand if the PC is at a UDF instruction.
++ */
++static inline int get_udf_immediate( const ucontext_t *sigcontext )
++{
++    if (CPSR_sig(sigcontext) & 0x20)
++    {
++        WORD thumb_insn = *(WORD *)PC_sig(sigcontext);
++        if ((thumb_insn >> 8) == 0xde) return thumb_insn & 0xff;
++        if ((thumb_insn & 0xfff0) == 0xf7f0)  /* udf.w */
++        {
++            WORD ext = *(WORD *)(PC_sig(sigcontext) + 2);
++            if ((ext & 0xf000) == 0xa000) return ((thumb_insn & 0xf) << 12) | (ext & 0x0fff);
++        }
++    }
++    else
++    {
++        DWORD arm_insn = *(DWORD *)PC_sig(sigcontext);
++        if ((arm_insn & 0xfff000f0) == 0xe7f000f0)
++        {
++            return ((arm_insn >> 4) & 0xfff0) | (arm_insn & 0xf);
++        }
++    }
++    return -1;
++}
++
++
+ /***********************************************************************
+  *           save_context
+  *
+@@ -829,16 +858,16 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+     switch (get_trap_code(signal, context))
+     {
+     case TRAP_ARM_PRIVINFLT:   /* Invalid opcode exception */
+-        switch (*(WORD *)PC_sig(context))
++        switch (get_udf_immediate( context ))
+         {
+-        case 0xdefb:  /* __fastfail */
++        case 0xfb:  /* __fastfail */
+             rec.ExceptionCode = STATUS_STACK_BUFFER_OVERRUN;
+             rec.ExceptionFlags = EH_NONCONTINUABLE;
+             rec.NumberParameters = 1;
+             rec.ExceptionInformation[0] = REGn_sig( 0, context );
+             raise_second_chance_exception( context, &rec );
+             return;
+-        case 0xdefe:  /* breakpoint */
++        case 0xfe:  /* breakpoint */
+             rec.ExceptionCode = EXCEPTION_BREAKPOINT;
+             rec.NumberParameters = 1;
+             break;
+
+-- 
+2.31.1
+

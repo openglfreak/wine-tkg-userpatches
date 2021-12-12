@@ -1,0 +1,123 @@
+From: Patrick Hibbs <hibbsncc1701@gmail.com>
+Subject: [PATCH 1/2] ntdll: Implement alloc_size support in NtCreateFile.
+Message-Id: <20211211020831.390038-1-hibbsncc1701@gmail.com>
+Date: Fri, 10 Dec 2021 21:08:30 -0500
+
+Use posix_fallocate to reserve space for files.
+Function will print a warning at runtime if posix_fallocate isn't supported.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52171
+Signed-off-by: Patrick Hibbs <hibbsncc1701@gmail.com>
+---
+ dlls/ntdll/unix/file.c | 73 ++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 70 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 51c92df57e3..07204a8553d 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -3743,6 +3743,10 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
+     char *unix_name;
+     BOOL created = FALSE;
+     NTSTATUS status;
++    ULONG new_attributes, new_disposition;
++    struct stat st;
++    LARGE_INTEGER remaining_bytes;
++    int perr, unix_handle;
+ 
+     TRACE( "handle=%p access=%08x name=%s objattr=%08x root=%p sec=%p io=%p alloc_size=%p "
+            "attr=%08x sharing=%08x disp=%d options=%08x ea=%p.0x%08x\n",
+@@ -3753,8 +3757,6 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
+     *handle = 0;
+     if (!attr || !attr->ObjectName) return STATUS_INVALID_PARAMETER;
+ 
+-    if (alloc_size) FIXME( "alloc_size not supported\n" );
+-
+     new_attr = *attr;
+     if (options & FILE_OPEN_BY_FILE_ID)
+     {
+@@ -3783,14 +3785,79 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
+         status = STATUS_SUCCESS;
+     }
+ 
++#ifdef HAVE_POSIX_FALLOCATE
++    /* Windows doesn't care about the requested access permissions
++     * when performing space reservation. (Windows will trim / grow
++     * the reserved space even if a caller requests read-only
++     * access.)
++     *
++     * Windows *does* care about the disposition given and whether
++     * or not an overwrite will actually occur. (Windows will return
++     * STATUS_OBJECT_NAME_NOT_FOUND if disposition is FILE_OVERWRITE
++     * and the file doesn't exist.)
++     *
++     * POSIX cares about the requested permissions all of the time.
++     * We need to make sure that we ask for enough permissions to
++     * perform the disk space reservation. Afterwards reopen the file
++     * with the desired permissions. As this temporary fd isn't going
++     * to be kept anyway, avoid the round trips to the server by doing
++     * the work here. */
++    if (alloc_size && alloc_size->QuadPart > 0 &&
++        disposition != FILE_OPEN &&
++        (created || (disposition != FILE_OVERWRITE ||
++        status != STATUS_OBJECT_NAME_NOT_FOUND)))
++    {
++        remaining_bytes.QuadPart = 0;
++        new_disposition = FILE_OPEN;
++
++        if (created)
++            remaining_bytes.QuadPart = alloc_size->QuadPart;
++        else
++        {
++            if (get_file_info( AT_FDCWD, unix_name, FILE_OPEN_REPARSE_POINT, &st, &new_attributes ) == -1)
++                status = errno_to_status( errno );
++            else
++            {
++                if ((S_ISREG(st.st_mode)) && ((st.st_blocks * 512) < alloc_size->QuadPart))
++                    remaining_bytes.QuadPart = (alloc_size->QuadPart - (st.st_blocks * 512));
++            }
++        }
++
++        if (remaining_bytes.QuadPart > 0)
++        {
++            if (created || disposition == FILE_SUPERSEDE || disposition == FILE_OVERWRITE)
++                unix_handle = open( unix_name, O_RDWR | O_CREAT | O_TRUNC | O_DIRECT | O_SYNC, S_IRWXU );
++            else
++                unix_handle = open( unix_name, O_RDWR | O_DIRECT | O_SYNC, S_IRWXU );
++
++            if (unix_handle == -1)
++                status = errno_to_status( errno );
++            else
++            {
++                perr = posix_fallocate( unix_handle, 0, remaining_bytes.QuadPart );
++                if (perr)
++                    status = errno_to_status( perr );
++
++                close( unix_handle );
++            }
++        }
++    }
++    else
++    {
++        new_disposition = disposition;
++    }
++#else
++        WARN_ONCE("Preallocating files is not supported!\n");
++#endif
++
+     if (status != STATUS_SUCCESS)
+     {
+         WARN( "%s not found (%x)\n", debugstr_us(attr->ObjectName), io->u.Status );
+         return status;
+     }
+ 
+     status = open_unix_file( handle, unix_name, access, &new_attr, attributes,
+-                                   sharing, disposition, options, ea_buffer, ea_length );
++                                   sharing, new_disposition, options, ea_buffer, ea_length );
+ 
+     if (status == STATUS_SUCCESS)
+     {
+
+-- 
+2.30.2
+

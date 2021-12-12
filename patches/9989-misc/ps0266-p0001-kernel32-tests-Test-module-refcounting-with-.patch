@@ -1,0 +1,435 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH v3 1/2] kernel32/tests: Test module refcounting with forwarded exports.
+Message-Id: <9f35d05c-7b92-24c9-8de3-1258d3b401fc@gmail.com>
+Date: Sun, 12 Dec 2021 22:26:22 +0900
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ dlls/kernel32/tests/Makefile.in   |  10 +-
+ dlls/kernel32/tests/forward1.c    |  12 ++
+ dlls/kernel32/tests/forward1.spec |   1 +
+ dlls/kernel32/tests/forward2.c    |   7 ++
+ dlls/kernel32/tests/forward2.spec |   1 +
+ dlls/kernel32/tests/forward3.c    |   7 ++
+ dlls/kernel32/tests/forward3.spec |   1 +
+ dlls/kernel32/tests/forward4.c    |  28 +++++
+ dlls/kernel32/tests/forward4.spec |   1 +
+ dlls/kernel32/tests/iatgas.h      |  77 +++++++++++++
+ dlls/kernel32/tests/loader.c      | 177 ++++++++++++++++++++++++++++++
+ 11 files changed, 321 insertions(+), 1 deletion(-)
+ create mode 100644 dlls/kernel32/tests/forward1.c
+ create mode 100644 dlls/kernel32/tests/forward1.spec
+ create mode 100644 dlls/kernel32/tests/forward2.c
+ create mode 100644 dlls/kernel32/tests/forward2.spec
+ create mode 100644 dlls/kernel32/tests/forward3.c
+ create mode 100644 dlls/kernel32/tests/forward3.spec
+ create mode 100644 dlls/kernel32/tests/forward4.c
+ create mode 100644 dlls/kernel32/tests/forward4.spec
+ create mode 100644 dlls/kernel32/tests/iatgas.h
+
+diff --git a/dlls/kernel32/tests/Makefile.in b/dlls/kernel32/tests/Makefile.in
+index e9516603ce9..7ef3508bad4 100644
+--- a/dlls/kernel32/tests/Makefile.in
++++ b/dlls/kernel32/tests/Makefile.in
+@@ -37,4 +37,12 @@ SOURCES = \
+ 	toolhelp.c \
+ 	version.c \
+ 	virtual.c \
+-	volume.c
++	volume.c \
++	forward1.c \
++	forward1.spec \
++	forward2.c \
++	forward2.spec \
++	forward3.c \
++	forward3.spec \
++	forward4.c \
++	forward4.spec
+diff --git a/dlls/kernel32/tests/forward1.c b/dlls/kernel32/tests/forward1.c
+new file mode 100644
+index 00000000000..0a10e18e4ae
+--- /dev/null
++++ b/dlls/kernel32/tests/forward1.c
+@@ -0,0 +1,12 @@
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++
++BOOL WINAPI DllMain(HINSTANCE instance_new, DWORD reason, LPVOID reserved)
++{
++    return TRUE;
++}
++
++int forward_test_func(void)
++{
++    return 1;
++}
+diff --git a/dlls/kernel32/tests/forward1.spec b/dlls/kernel32/tests/forward1.spec
+new file mode 100644
+index 00000000000..09911d484a3
+--- /dev/null
++++ b/dlls/kernel32/tests/forward1.spec
+@@ -0,0 +1 @@
++@ cdecl forward_test_func()
+diff --git a/dlls/kernel32/tests/forward2.c b/dlls/kernel32/tests/forward2.c
+new file mode 100644
+index 00000000000..0ed3885e0df
+--- /dev/null
++++ b/dlls/kernel32/tests/forward2.c
+@@ -0,0 +1,7 @@
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++
++BOOL WINAPI DllMain(HINSTANCE instance_new, DWORD reason, LPVOID reserved)
++{
++    return TRUE;
++}
+diff --git a/dlls/kernel32/tests/forward2.spec b/dlls/kernel32/tests/forward2.spec
+new file mode 100644
+index 00000000000..9a13a033444
+--- /dev/null
++++ b/dlls/kernel32/tests/forward2.spec
+@@ -0,0 +1 @@
++@ cdecl forward_test_func() forward1.forward_test_func
+diff --git a/dlls/kernel32/tests/forward3.c b/dlls/kernel32/tests/forward3.c
+new file mode 100644
+index 00000000000..0ed3885e0df
+--- /dev/null
++++ b/dlls/kernel32/tests/forward3.c
+@@ -0,0 +1,7 @@
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++
++BOOL WINAPI DllMain(HINSTANCE instance_new, DWORD reason, LPVOID reserved)
++{
++    return TRUE;
++}
+diff --git a/dlls/kernel32/tests/forward3.spec b/dlls/kernel32/tests/forward3.spec
+new file mode 100644
+index 00000000000..e2bd24f2a8d
+--- /dev/null
++++ b/dlls/kernel32/tests/forward3.spec
+@@ -0,0 +1 @@
++@ cdecl forward_test_func() forward2.forward_test_func
+diff --git a/dlls/kernel32/tests/forward4.c b/dlls/kernel32/tests/forward4.c
+new file mode 100644
+index 00000000000..1ec8b2b3e24
+--- /dev/null
++++ b/dlls/kernel32/tests/forward4.c
+@@ -0,0 +1,28 @@
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++
++#ifdef __GNUC__
++#include "iatgas.h"
++
++INLINE_IMPORT_BEGIN("forward3.dll")
++    IMPORT_ENTRY(0, "forward_test_func", IMPSYM(forward_test_func))
++INLINE_IMPORT_END()
++
++extern int (*IMPSYM(forward_test_func))(void);
++
++int test_func_stub(void)
++{
++    return IMPSYM(forward_test_func)();
++}
++#else
++int test_func_stub(void)
++{
++    /* unimplemented */
++    for (;;);
++}
++#endif
++
++BOOL WINAPI DllMain(HINSTANCE instance_new, DWORD reason, LPVOID reserved)
++{
++    return TRUE;
++}
+diff --git a/dlls/kernel32/tests/forward4.spec b/dlls/kernel32/tests/forward4.spec
+new file mode 100644
+index 00000000000..cb6d4add796
+--- /dev/null
++++ b/dlls/kernel32/tests/forward4.spec
+@@ -0,0 +1 @@
++@ cdecl test_func_stub()
+diff --git a/dlls/kernel32/tests/iatgas.h b/dlls/kernel32/tests/iatgas.h
+new file mode 100644
+index 00000000000..154da6b0d2a
+--- /dev/null
++++ b/dlls/kernel32/tests/iatgas.h
+@@ -0,0 +1,77 @@
++/*
++ * Inline assembly import library generator
++ *
++ * Copyright 2021 Jinoh Kang
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifdef __i386__
++#define SYM(x) _ ## x
++#define IMPSYM(x) _imp__ ## x
++#else
++#define SYM(x) x
++#define IMPSYM(x) __imp_ ## x
++#endif
++#define STRINGIFY_ARG(x) #x
++#define STRINGIFY(x) STRINGIFY_ARG(x)
++
++#if defined(_WIN64)
++#define PTRSIZE_STR "8"
++#elif defined(_WIN32)
++#define PTRSIZE_STR "4"
++#else
++#error unknown pointer size
++#endif
++
++#define INLINE_IMPORT_BEGIN(dll_name) \
++    __asm__( \
++        ".section \".idata$2\", \"aw\"\n" \
++        ".skip 4\n"         /* OriginalFirstThunk */ \
++        ".reloc . - 4, rva32, 4f\n" \
++        ".long 0\n"         /* TimeDateStamp */ \
++        ".long -1\n"        /* ForwarderChain */ \
++        ".skip 4\n"         /* Name */ \
++        ".reloc . - 4, rva32, 7f\n" \
++        ".skip 4\n"         /* FirstThunk */ \
++        ".reloc . - 4, rva32, 5f\n" \
++        ".section \".idata$4\", \"a\"\n" \
++        "4:\n" \
++        ".section \".idata$5\", \"aw\"\n" \
++        "5:\n" \
++        ".section \".idata$7\", \"a\"\n" \
++        "7:\n" \
++        ".asciz \"" dll_name "\"\n" \
++        ".p2align 2\n"
++#define IMPORT_ENTRY(hint, name, impsym) \
++        ".section \".idata$4\", \"a\"\n" \
++        ".skip " PTRSIZE_STR "\n" \
++        ".reloc . - " PTRSIZE_STR ", rva32, 6f\n" \
++        ".section \".idata$5\", \"aw\"\n" \
++        STRINGIFY(SYM(impsym)) ":\n" \
++        ".skip " PTRSIZE_STR "\n" \
++        ".reloc . - " PTRSIZE_STR ", rva32, 6f\n" \
++        ".section \".idata$6\", \"a\"\n" \
++        "6:\n" \
++        ".short " STRINGIFY_ARG(hint) "\n" \
++        ".asciz \"" name "\"\n" \
++        ".p2align 1\n"
++#define INLINE_IMPORT_END() \
++        ".section \".idata$4\", \"a\"\n" \
++        ".skip " PTRSIZE_STR "\n" \
++        ".section \".idata$5\", \"aw\"\n" \
++        ".skip " PTRSIZE_STR "\n" \
++        ".text\n" \
++    );
+diff --git a/dlls/kernel32/tests/loader.c b/dlls/kernel32/tests/loader.c
+index 308cf1a44a0..52d14562205 100644
+--- a/dlls/kernel32/tests/loader.c
++++ b/dlls/kernel32/tests/loader.c
+@@ -1641,6 +1641,180 @@ static void test_ImportDescriptors(void)
+     }
+ }
+ 
++static void extract_resource(const char *name, const char *type, const char *path)
++{
++    DWORD written;
++    HANDLE file;
++    HRSRC res;
++    void *ptr;
++
++    file = CreateFileA(path, GENERIC_READ|GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, 0);
++    ok(file != INVALID_HANDLE_VALUE, "file creation failed, at %s, error %d\n", path, GetLastError());
++
++    res = FindResourceA(NULL, name, type);
++    ok( res != 0, "couldn't find resource\n" );
++    ptr = LockResource( LoadResource( GetModuleHandleA(NULL), res ));
++    WriteFile( file, ptr, SizeofResource( GetModuleHandleA(NULL), res ), &written, NULL );
++    ok( written == SizeofResource( GetModuleHandleA(NULL), res ), "couldn't write resource\n" );
++    CloseHandle( file );
++}
++
++static void test_static_forwarded_import_refs(void)
++{
++    CHAR temp_path[MAX_PATH], dir_path[MAX_PATH];
++    CHAR forward1_path[MAX_PATH];
++    CHAR forward2_path[MAX_PATH];
++    CHAR forward3_path[MAX_PATH];
++    CHAR forward4_path[MAX_PATH];
++    HMODULE forward1, forward2, forward3, forward4;
++
++    GetTempPathA( ARRAY_SIZE(temp_path), temp_path );
++    GetTempFileNameA( temp_path, "ldr", GetTickCount() | 1UL, dir_path );
++    ok( CreateDirectoryA( dir_path, NULL ), "failed to create dir %s, error %u\n",
++        dir_path, GetLastError() );
++
++    snprintf( forward1_path, MAX_PATH, "%s\\forward1.dll", dir_path );
++    snprintf( forward2_path, MAX_PATH, "%s\\forward2.dll", dir_path );
++    snprintf( forward3_path, MAX_PATH, "%s\\forward3.dll", dir_path );
++    snprintf( forward4_path, MAX_PATH, "%s\\forward4.dll", dir_path );
++    extract_resource( "forward1.dll", "TESTDLL", forward1_path );
++    extract_resource( "forward2.dll", "TESTDLL", forward2_path );
++    extract_resource( "forward3.dll", "TESTDLL", forward3_path );
++    extract_resource( "forward4.dll", "TESTDLL", forward4_path );
++
++    forward1 = LoadLibraryA( forward1_path );
++    ok( !!forward1, "couldn't find %s: %u\n", forward1_path, GetLastError() );
++    forward2 = LoadLibraryA( forward2_path );
++    ok( !!forward2, "couldn't find %s: %u\n", forward2_path, GetLastError() );
++    forward3 = LoadLibraryA( forward3_path );
++    ok( !!forward3, "couldn't find %s: %u\n", forward3_path, GetLastError() );
++    forward4 = LoadLibraryA( forward4_path );
++    ok( !!forward4, "couldn't find %s: %u\n", forward4_path, GetLastError() );
++
++    FreeLibrary( forward1 );
++    FreeLibrary( forward2 );
++    FreeLibrary( forward3 );
++
++    todo_wine
++    ok( !!GetModuleHandleA( "forward1.dll" ), "forward1.dll unexpectedly unloaded\n" );
++    todo_wine
++    ok( !!GetModuleHandleA( "forward2.dll" ), "forward2.dll unexpectedly unloaded\n" );
++    ok( !!GetModuleHandleA( "forward3.dll" ), "forward3.dll unexpectedly unloaded\n" );
++
++    FreeLibrary( forward4 );
++
++    ok( !GetModuleHandleA( "forward1.dll" ), "forward1.dll unexpectedly kept open\n" );
++    ok( !GetModuleHandleA( "forward2.dll" ), "forward2.dll unexpectedly kept open\n" );
++    ok( !GetModuleHandleA( "forward3.dll" ), "forward3.dll unexpectedly kept open\n" );
++    ok( !GetModuleHandleA( "forward4.dll" ), "forward4.dll unexpectedly kept open\n" );
++
++    DeleteFileA( forward1_path );
++    DeleteFileA( forward2_path );
++    DeleteFileA( forward3_path );
++    DeleteFileA( forward4_path );
++    RemoveDirectoryA( dir_path );
++}
++
++static void test_dynamic_forwarded_import_refs(void)
++{
++    CHAR temp_path[MAX_PATH], dir_path[MAX_PATH];
++    CHAR forward1_path[MAX_PATH];
++    CHAR forward2_path[MAX_PATH];
++    CHAR forward3_path[MAX_PATH];
++    HMODULE forward1, forward2, forward3;
++    FARPROC proc1, proc2, proc3;
++
++    GetTempPathA( ARRAY_SIZE(temp_path), temp_path );
++    GetTempFileNameA( temp_path, "ldr", GetTickCount() | 1UL, dir_path );
++    ok( CreateDirectoryA( dir_path, NULL ), "failed to create dir %s, error %u\n",
++        dir_path, GetLastError() );
++
++    snprintf( forward1_path, MAX_PATH, "%s\\forward1.dll", dir_path );
++    snprintf( forward2_path, MAX_PATH, "%s\\forward2.dll", dir_path );
++    snprintf( forward3_path, MAX_PATH, "%s\\forward3.dll", dir_path );
++    extract_resource( "forward1.dll", "TESTDLL", forward1_path );
++    extract_resource( "forward2.dll", "TESTDLL", forward2_path );
++    extract_resource( "forward3.dll", "TESTDLL", forward3_path );
++
++    forward1 = LoadLibraryA( forward1_path );
++    ok( !!forward1, "couldn't find %s: %u\n", forward1_path, GetLastError() );
++    forward2 = LoadLibraryA( forward2_path );
++    ok( !!forward2, "couldn't find %s: %u\n", forward2_path, GetLastError() );
++    forward3 = LoadLibraryA( forward3_path );
++    ok( !!forward3, "couldn't find %s: %u\n", forward3_path, GetLastError() );
++
++    proc1 = GetProcAddress(forward1, "forward_test_func");
++    ok( !!proc1, "cannot resolve forward1!forward_test_func\n");
++    proc2 = GetProcAddress(forward2, "forward_test_func");
++    ok( !!proc2, "cannot resolve forward2!forward_test_func\n");
++    proc3 = GetProcAddress(forward3, "forward_test_func");
++    ok( !!proc3, "cannot resolve forward3!forward_test_func\n");
++    ok( proc1 == proc3, "forward1!forward_test_func is not equal to forward3!forward_test_func\n");
++    ok( proc2 == proc3, "forward2!forward_test_func is not equal to forward3!forward_test_func\n");
++
++    FreeLibrary( forward1 );
++    FreeLibrary( forward2 );
++
++    todo_wine
++    ok( !!GetModuleHandleA( "forward1.dll" ), "forward1.dll unexpectedly unloaded\n" );
++    todo_wine
++    ok( !!GetModuleHandleA( "forward2.dll" ), "forward2.dll unexpectedly unloaded\n" );
++
++    FreeLibrary( forward3 );
++
++    ok( !GetModuleHandleA( "forward1.dll" ), "forward1.dll unexpectedly kept open\n" );
++    ok( !GetModuleHandleA( "forward2.dll" ), "forward2.dll unexpectedly kept open\n" );
++    ok( !GetModuleHandleA( "forward3.dll" ), "forward3.dll unexpectedly kept open\n" );
++
++    DeleteFileA( forward1_path );
++    DeleteFileA( forward2_path );
++    DeleteFileA( forward3_path );
++    RemoveDirectoryA( dir_path );
++}
++
++static void test_dynamic_forward_export_norefs(void)
++{
++    CHAR temp_path[MAX_PATH], dir_path[MAX_PATH];
++    CHAR forward1_path[MAX_PATH];
++    CHAR forward2_path[MAX_PATH];
++    CHAR forward3_path[MAX_PATH];
++    HMODULE forward1, forward2, forward3;
++
++    GetTempPathA( ARRAY_SIZE(temp_path), temp_path );
++    GetTempFileNameA( temp_path, "ldr", GetTickCount() | 1UL, dir_path );
++    ok( CreateDirectoryA( dir_path, NULL ), "failed to create dir %s, error %u\n",
++        dir_path, GetLastError() );
++
++    snprintf( forward1_path, MAX_PATH, "%s\\forward1.dll", dir_path );
++    snprintf( forward2_path, MAX_PATH, "%s\\forward2.dll", dir_path );
++    snprintf( forward3_path, MAX_PATH, "%s\\forward3.dll", dir_path );
++    extract_resource( "forward1.dll", "TESTDLL", forward1_path );
++    extract_resource( "forward2.dll", "TESTDLL", forward2_path );
++    extract_resource( "forward3.dll", "TESTDLL", forward3_path );
++
++    forward1 = LoadLibraryA( forward1_path );
++    ok( !!forward1, "couldn't find %s: %u\n", forward1_path, GetLastError() );
++    forward2 = LoadLibraryA( forward2_path );
++    ok( !!forward2, "couldn't find %s: %u\n", forward2_path, GetLastError() );
++    forward3 = LoadLibraryA( forward3_path );
++    ok( !!forward3, "couldn't find %s: %u\n", forward3_path, GetLastError() );
++
++    FreeLibrary( forward1 );
++    FreeLibrary( forward3 );
++
++    ok( !GetModuleHandleA( "forward1.dll" ), "forward1.dll unexpectedly kept open\n" );
++    ok( !GetModuleHandleA( "forward3.dll" ), "forward3.dll unexpectedly kept open\n" );
++
++    FreeLibrary( forward2 );
++
++    ok( !GetModuleHandleA( "forward2.dll" ), "forward2.dll unexpectedly kept open\n" );
++
++    DeleteFileA( forward1_path );
++    DeleteFileA( forward2_path );
++    DeleteFileA( forward3_path );
++    RemoveDirectoryA( dir_path );
++}
++
+ static void test_image_mapping(const char *dll_name, DWORD scn_page_access, BOOL is_dll)
+ {
+     HANDLE hfile, hmap;
+@@ -4106,6 +4280,9 @@ START_TEST(loader)
+     test_filenames();
+     test_ResolveDelayLoadedAPI();
+     test_ImportDescriptors();
++    test_static_forwarded_import_refs();
++    test_dynamic_forwarded_import_refs();
++    test_dynamic_forward_export_norefs();
+     test_section_access();
+     test_import_resolution();
+     test_ExitProcess();
+
+-- 
+2.31.1
+

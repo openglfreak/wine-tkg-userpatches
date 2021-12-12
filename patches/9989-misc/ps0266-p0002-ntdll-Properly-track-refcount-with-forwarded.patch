@@ -1,0 +1,153 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH v3 2/2] ntdll: Properly track refcount with forwarded exports.
+Message-Id: <df36e15e-9945-b58a-e727-03ed0b1a3716@gmail.com>
+Date: Sun, 12 Dec 2021 22:27:28 +0900
+In-Reply-To: <9f35d05c-7b92-24c9-8de3-1258d3b401fc@gmail.com>
+References: <9f35d05c-7b92-24c9-8de3-1258d3b401fc@gmail.com>
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52094
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ dlls/kernel32/tests/loader.c |  4 ---
+ dlls/ntdll/loader.c          | 69 ++++++++++++++++++++----------------
+ 2 files changed, 39 insertions(+), 34 deletions(-)
+
+diff --git a/dlls/kernel32/tests/loader.c b/dlls/kernel32/tests/loader.c
+index 52d14562205..94c0de4ada1 100644
+--- a/dlls/kernel32/tests/loader.c
++++ b/dlls/kernel32/tests/loader.c
+@@ -1695,9 +1695,7 @@ static void test_static_forwarded_import_refs(void)
+     FreeLibrary( forward2 );
+     FreeLibrary( forward3 );
+ 
+-    todo_wine
+     ok( !!GetModuleHandleA( "forward1.dll" ), "forward1.dll unexpectedly unloaded\n" );
+-    todo_wine
+     ok( !!GetModuleHandleA( "forward2.dll" ), "forward2.dll unexpectedly unloaded\n" );
+     ok( !!GetModuleHandleA( "forward3.dll" ), "forward3.dll unexpectedly unloaded\n" );
+ 
+@@ -1755,9 +1753,7 @@ static void test_dynamic_forwarded_import_refs(void)
+     FreeLibrary( forward1 );
+     FreeLibrary( forward2 );
+ 
+-    todo_wine
+     ok( !!GetModuleHandleA( "forward1.dll" ), "forward1.dll unexpectedly unloaded\n" );
+-    todo_wine
+     ok( !!GetModuleHandleA( "forward2.dll" ), "forward2.dll unexpectedly unloaded\n" );
+ 
+     FreeLibrary( forward3 );
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index d11f3f0f79d..d251ee8b283 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -749,7 +749,7 @@ static FARPROC find_forwarded_export( HMODULE module, const char *forward, LPCWS
+ {
+     const IMAGE_EXPORT_DIRECTORY *exports;
+     DWORD exp_size;
+-    WINE_MODREF *wm;
++    WINE_MODREF *wm = NULL, *imp;
+     WCHAR mod_name[256];
+     const char *end = strrchr(forward, '.');
+     FARPROC proc = NULL;
+@@ -757,30 +757,24 @@ static FARPROC find_forwarded_export( HMODULE module, const char *forward, LPCWS
+     if (!end) return NULL;
+     if (build_import_name( mod_name, forward, end - forward )) return NULL;
+ 
+-    if (!(wm = find_basename_module( mod_name )))
++    imp = get_modref( module );
++    TRACE( "delay loading %s for '%s'\n", debugstr_w(mod_name), forward );
++    if (load_dll( load_path, mod_name, 0, &wm, imp->system ) == STATUS_SUCCESS &&
++        !(wm->ldr.Flags & LDR_DONT_RESOLVE_REFS))
+     {
+-        WINE_MODREF *imp = get_modref( module );
+-        TRACE( "delay loading %s for '%s'\n", debugstr_w(mod_name), forward );
+-        if (load_dll( load_path, mod_name, 0, &wm, imp->system ) == STATUS_SUCCESS &&
+-            !(wm->ldr.Flags & LDR_DONT_RESOLVE_REFS))
++        if ((imports_fixup_done || !current_modref) &&
++            process_attach( wm->ldr.DdagNode, NULL ) != STATUS_SUCCESS)
+         {
+-            if (!imports_fixup_done && current_modref)
+-            {
+-                add_module_dependency( current_modref->ldr.DdagNode, wm->ldr.DdagNode );
+-            }
+-            else if (process_attach( wm->ldr.DdagNode, NULL ) != STATUS_SUCCESS)
+-            {
+-                LdrUnloadDll( wm->ldr.DllBase );
+-                wm = NULL;
+-            }
++            LdrUnloadDll( wm->ldr.DllBase );
++            wm = NULL;
+         }
++    }
+ 
+-        if (!wm)
+-        {
+-            ERR( "module not found for forward '%s' used by %s\n",
+-                 forward, debugstr_w(imp->ldr.FullDllName.Buffer) );
+-            return NULL;
+-        }
++    if (!wm)
++    {
++        ERR( "module not found for forward '%s' used by %s\n",
++             forward, debugstr_w(imp->ldr.FullDllName.Buffer) );
++        return NULL;
+     }
+     if ((exports = RtlImageDirectoryEntryToData( wm->ldr.DllBase, TRUE,
+                                                  IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_size )))
+@@ -800,6 +794,11 @@ static FARPROC find_forwarded_export( HMODULE module, const char *forward, LPCWS
+             " If you are using builtin %s, try using the native one instead.\n",
+             forward, debugstr_w(get_modref(module)->ldr.FullDllName.Buffer),
+             debugstr_w(get_modref(module)->ldr.BaseDllName.Buffer) );
++        if (wm) LdrUnloadDll( wm->ldr.DllBase );
++    }
++    else if (current_modref)
++    {
++        add_module_dependency( current_modref->ldr.DdagNode, wm->ldr.DdagNode );
+     }
+     return proc;
+ }
+@@ -1844,21 +1843,31 @@ NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
+     IMAGE_EXPORT_DIRECTORY *exports;
+     DWORD exp_size;
+     NTSTATUS ret = STATUS_PROCEDURE_NOT_FOUND;
++    WINE_MODREF *prev, *wm;
+ 
+     lock_loader_exclusive();
+ 
+-    /* check if the module itself is invalid to return the proper error */
+-    if (!get_modref( module )) ret = STATUS_DLL_NOT_FOUND;
+-    else if ((exports = RtlImageDirectoryEntryToData( module, TRUE,
+-                                                      IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_size )))
++    wm = get_modref( module );
++    if (!wm) ret = STATUS_DLL_NOT_FOUND;
++    else
+     {
+-        void *proc = name ? find_named_export( module, exports, exp_size, name->Buffer, -1, NULL )
+-                          : find_ordinal_export( module, exports, exp_size, ord - exports->Base, NULL );
+-        if (proc && !is_hidden_export( proc ))
++        prev = current_modref;
++        current_modref = wm;
++
++        /* check if the module itself is invalid to return the proper error */
++        if ((exports = RtlImageDirectoryEntryToData( module, TRUE,
++                                                     IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_size )))
+         {
+-            *address = proc;
+-            ret = STATUS_SUCCESS;
++            void *proc = name ? find_named_export( module, exports, exp_size, name->Buffer, -1, NULL )
++                              : find_ordinal_export( module, exports, exp_size, ord - exports->Base, NULL );
++            if (proc && !is_hidden_export( proc ))
++            {
++                *address = proc;
++                ret = STATUS_SUCCESS;
++            }
+         }
++
++        current_modref = prev;
+     }
+ 
+     unlock_loader();
+
+-- 
+2.31.1
+

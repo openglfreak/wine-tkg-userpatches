@@ -1,0 +1,85 @@
+From ff8f2cc87ea6da9b83cbe1b78bd4b7f19dcc5435 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 9 Dec 2021 19:27:31 +0100
+Subject: [PATCH 3/8] winex11.drv: Pass XEvent instead of Display to set_focus.
+
+---
+ dlls/winex11.drv/event.c | 18 +++++++++---------
+ 1 file changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index d1889e9790b..8cafa623b56 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -672,7 +672,7 @@ extern WINUSERAPI BOOL CDECL __wine_set_foreground_window( HWND hwnd, DWORD time
+ /**********************************************************************
+  *              set_focus
+  */
+-static void set_focus( Display *display, HWND hwnd, Time time )
++static void set_focus( XEvent *xev, HWND hwnd, Time time )
+ {
+     HWND focus;
+     Window win;
+@@ -691,7 +691,7 @@ static void set_focus( Display *display, HWND hwnd, Time time )
+     if (win)
+     {
+         TRACE( "setting focus to %p (%lx) time=%ld\n", focus, win, time );
+-        XSetInputFocus( display, win, RevertToParent, time );
++        XSetInputFocus( xev->xany.display, win, RevertToParent, time );
+     }
+ }
+ 
+@@ -709,13 +709,13 @@ static void handle_manager_message( HWND hwnd, XEvent *xev )
+ }
+ 
+ 
+-static void try_focus_another_window( Display *display, Time time )
++static void try_focus_another_window( XEvent *xev, Time time )
+ {
+     HWND hwnd = GetFocus();
+     if (hwnd) hwnd = GetAncestor( hwnd, GA_ROOT );
+     if (!hwnd) hwnd = GetActiveWindow();
+     if (!hwnd) hwnd = x11drv_thread_data()->last_focus;
+-    if (hwnd && can_activate_window(hwnd)) set_focus( display, hwnd, time );
++    if (hwnd && can_activate_window(hwnd)) set_focus( xev, hwnd, time );
+ }
+ 
+ 
+@@ -805,7 +805,7 @@ static void handle_wm_protocols( HWND hwnd, XEvent *xev )
+                                        MAKELONG( HTMENU, WM_LBUTTONDOWN ) );
+             if (ma != MA_NOACTIVATEANDEAT && ma != MA_NOACTIVATE)
+             {
+-                set_focus( event->display, hwnd, event_time );
++                set_focus( xev, hwnd, event_time );
+                 return;
+             }
+         }
+@@ -814,11 +814,11 @@ static void handle_wm_protocols( HWND hwnd, XEvent *xev )
+             hwnd = GetForegroundWindow();
+             if (!hwnd) hwnd = last_focus;
+             if (!hwnd) hwnd = GetDesktopWindow();
+-            set_focus( event->display, hwnd, event_time );
++            set_focus( xev, hwnd, event_time );
+             return;
+         }
+         /* try to find some other window to give the focus to */
+-        try_focus_another_window( event->display, event_time );
++        try_focus_another_window( xev, event_time );
+     }
+     else if (protocol == x11drv_atom(_NET_WM_PING))
+     {
+@@ -896,9 +896,9 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
+     /* if the window was shown with SWP_NOACTIVATE and never received user input,
+      * it should not activate */
+     if (read_user_time( event->display, event->window, &user_time ) && !user_time)
+-        set_focus( event->display, GetForegroundWindow(), CurrentTime );
++        set_focus( xev, GetForegroundWindow(), CurrentTime );
+     else if (!can_activate_window(hwnd))
+-        try_focus_another_window( event->display, CurrentTime );
++        try_focus_another_window( xev, CurrentTime );
+     else SetForegroundWindow( hwnd );
+     return TRUE;
+ }
+-- 
+2.34.1
+

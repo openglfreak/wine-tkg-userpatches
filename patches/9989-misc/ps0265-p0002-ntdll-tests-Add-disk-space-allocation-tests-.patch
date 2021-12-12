@@ -1,0 +1,143 @@
+From: Patrick Hibbs <hibbsncc1701@gmail.com>
+Subject: [PATCH 2/2] ntdll/tests: Add disk space allocation tests for NtCreateFile.
+Message-Id: <20211211020831.390038-2-hibbsncc1701@gmail.com>
+Date: Fri, 10 Dec 2021 21:08:31 -0500
+In-Reply-To: <20211211020831.390038-1-hibbsncc1701@gmail.com>
+References: <20211211020831.390038-1-hibbsncc1701@gmail.com>
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52171
+Signed-off-by: Patrick Hibbs <hibbsncc1701@gmail.com>
+---
+ dlls/ntdll/tests/file.c | 81 ++++++++++++++++++++++++++++-------------
+ 1 file changed, 56 insertions(+), 25 deletions(-)
+
+diff --git a/dlls/ntdll/tests/file.c b/dlls/ntdll/tests/file.c
+index 19ae5f2ac21..69b75a52fb7 100644
+--- a/dlls/ntdll/tests/file.c
++++ b/dlls/ntdll/tests/file.c
+@@ -4170,28 +4170,42 @@ static void test_NtCreateFile(void)
+ {
+     static const struct test_data
+     {
+-        DWORD disposition, attrib_in, status, result, attrib_out, needs_cleanup;
++        DWORD disposition, attrib_in, status, result, attrib_out, alloc_in, alloc_out, enable_write, needs_cleanup;
+     } td[] =
+     {
+-    /* 0*/{ FILE_CREATE, FILE_ATTRIBUTE_READONLY, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE|FILE_ATTRIBUTE_READONLY, FALSE },
+-    /* 1*/{ FILE_CREATE, 0, STATUS_OBJECT_NAME_COLLISION, 0, 0, TRUE },
+-    /* 2*/{ FILE_CREATE, 0, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE, FALSE },
+-    /* 3*/{ FILE_OPEN, FILE_ATTRIBUTE_READONLY, 0, FILE_OPENED, FILE_ATTRIBUTE_ARCHIVE, TRUE },
+-    /* 4*/{ FILE_OPEN, FILE_ATTRIBUTE_READONLY, STATUS_OBJECT_NAME_NOT_FOUND, 0, 0, FALSE },
+-    /* 5*/{ FILE_OPEN_IF, 0, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE, FALSE },
+-    /* 6*/{ FILE_OPEN_IF, FILE_ATTRIBUTE_READONLY, 0, FILE_OPENED, FILE_ATTRIBUTE_ARCHIVE, TRUE },
+-    /* 7*/{ FILE_OPEN_IF, FILE_ATTRIBUTE_READONLY, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE|FILE_ATTRIBUTE_READONLY, FALSE },
+-    /* 8*/{ FILE_OPEN_IF, 0, 0, FILE_OPENED, FILE_ATTRIBUTE_ARCHIVE|FILE_ATTRIBUTE_READONLY, FALSE },
+-    /* 9*/{ FILE_OVERWRITE, 0, STATUS_ACCESS_DENIED, 0, 0, TRUE },
+-    /*10*/{ FILE_OVERWRITE, 0, STATUS_OBJECT_NAME_NOT_FOUND, 0, 0, FALSE },
+-    /*11*/{ FILE_CREATE, 0, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE, FALSE },
+-    /*12*/{ FILE_OVERWRITE, FILE_ATTRIBUTE_READONLY, 0, FILE_OVERWRITTEN, FILE_ATTRIBUTE_ARCHIVE|FILE_ATTRIBUTE_READONLY, FALSE },
+-    /*13*/{ FILE_OVERWRITE_IF, 0, STATUS_ACCESS_DENIED, 0, 0, TRUE },
+-    /*14*/{ FILE_OVERWRITE_IF, 0, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE, FALSE },
+-    /*15*/{ FILE_OVERWRITE_IF, FILE_ATTRIBUTE_READONLY, 0, FILE_OVERWRITTEN, FILE_ATTRIBUTE_ARCHIVE|FILE_ATTRIBUTE_READONLY, FALSE },
+-    /*16*/{ FILE_SUPERSEDE, 0, 0, FILE_SUPERSEDED, FILE_ATTRIBUTE_ARCHIVE, FALSE },
+-    /*17*/{ FILE_SUPERSEDE, FILE_ATTRIBUTE_READONLY, 0, FILE_SUPERSEDED, FILE_ATTRIBUTE_ARCHIVE|FILE_ATTRIBUTE_READONLY, TRUE },
+-    /*18*/{ FILE_SUPERSEDE, 0, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE, TRUE }
++    /* 0*/{ FILE_CREATE, FILE_ATTRIBUTE_READONLY, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE|FILE_ATTRIBUTE_READONLY, 0, 0, FALSE, FALSE },
++    /* 1*/{ FILE_CREATE, 0, STATUS_OBJECT_NAME_COLLISION, 0, 0, 0, 0, FALSE, TRUE },
++    /* 2*/{ FILE_CREATE, 0, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE, 0, 0, FALSE, FALSE },
++    /* 3*/{ FILE_OPEN, FILE_ATTRIBUTE_READONLY, 0, FILE_OPENED, FILE_ATTRIBUTE_ARCHIVE, 0, 0, FALSE, TRUE },
++    /* 4*/{ FILE_OPEN, FILE_ATTRIBUTE_READONLY, STATUS_OBJECT_NAME_NOT_FOUND, 0, 0, 0, 0, FALSE, FALSE },
++    /* 5*/{ FILE_OPEN_IF, 0, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE, 0, 0, FALSE, FALSE },
++    /* 6*/{ FILE_OPEN_IF, FILE_ATTRIBUTE_READONLY, 0, FILE_OPENED, FILE_ATTRIBUTE_ARCHIVE, 0, 0, FALSE, TRUE },
++    /* 7*/{ FILE_OPEN_IF, FILE_ATTRIBUTE_READONLY, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE|FILE_ATTRIBUTE_READONLY, 0, 0, FALSE, FALSE },
++    /* 8*/{ FILE_OPEN_IF, 0, 0, FILE_OPENED, FILE_ATTRIBUTE_ARCHIVE|FILE_ATTRIBUTE_READONLY, 0, 0, FALSE, FALSE },
++    /* 9*/{ FILE_OVERWRITE, 0, STATUS_ACCESS_DENIED, 0, 0, 0, 0, FALSE, TRUE },
++    /*10*/{ FILE_OVERWRITE, 0, STATUS_OBJECT_NAME_NOT_FOUND, 0, 0, 0, 0, FALSE, FALSE },
++    /*11*/{ FILE_CREATE, 0, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE, 0, 0, FALSE, FALSE },
++    /*12*/{ FILE_OVERWRITE, FILE_ATTRIBUTE_READONLY, 0, FILE_OVERWRITTEN, FILE_ATTRIBUTE_ARCHIVE|FILE_ATTRIBUTE_READONLY, 0, 0, FALSE, FALSE },
++    /*13*/{ FILE_OVERWRITE_IF, 0, STATUS_ACCESS_DENIED, 0, 0, 0, 0, FALSE, TRUE },
++    /*14*/{ FILE_OVERWRITE_IF, 0, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE, 0, 0, FALSE, FALSE },
++    /*15*/{ FILE_OVERWRITE_IF, FILE_ATTRIBUTE_READONLY, 0, FILE_OVERWRITTEN, FILE_ATTRIBUTE_ARCHIVE|FILE_ATTRIBUTE_READONLY, 0, 0, FALSE, FALSE },
++    /*16*/{ FILE_SUPERSEDE, 0, 0, FILE_SUPERSEDED, FILE_ATTRIBUTE_ARCHIVE, 0, 0, FALSE, FALSE },
++    /*17*/{ FILE_SUPERSEDE, FILE_ATTRIBUTE_READONLY, 0, FILE_SUPERSEDED, FILE_ATTRIBUTE_ARCHIVE|FILE_ATTRIBUTE_READONLY, 0, 0, FALSE, TRUE },
++    /*18*/{ FILE_SUPERSEDE, 0, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE, 0, 0, FALSE, TRUE },
++    /*19*/{ FILE_CREATE, 0, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE, 2000, 2000, FALSE, TRUE },
++    /*20*/{ FILE_CREATE, 0, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE, 2000, 2000, TRUE, FALSE },
++    /*21*/{ FILE_OVERWRITE, 0, 0, FILE_OVERWRITTEN, FILE_ATTRIBUTE_ARCHIVE, 2000, 2000, FALSE, FALSE },
++    /*22*/{ FILE_OPEN, 0, 0, FILE_OPENED, FILE_ATTRIBUTE_ARCHIVE, 2000, 0, TRUE, TRUE },
++    /*23*/{ FILE_OVERWRITE, 0, STATUS_OBJECT_NAME_NOT_FOUND, 0, 0, 2000, 0, FALSE, TRUE },
++    /*24*/{ FILE_OVERWRITE, 0, STATUS_OBJECT_NAME_NOT_FOUND, 0, 0, 2000, 0, TRUE, TRUE },
++    /*25*/{ FILE_OVERWRITE_IF, 0, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE, 2000, 2000, TRUE, FALSE },
++    /*26*/{ FILE_OVERWRITE_IF, 0, 0, FILE_OVERWRITTEN, FILE_ATTRIBUTE_ARCHIVE, 2000, 2000, TRUE, TRUE },
++    /*27*/{ FILE_SUPERSEDE, 0, 0, FILE_CREATED, FILE_ATTRIBUTE_ARCHIVE, 2000, 2000, FALSE, FALSE },
++    /*28*/{ FILE_SUPERSEDE, 0, 0, FILE_SUPERSEDED, FILE_ATTRIBUTE_ARCHIVE, 2000, 2000, TRUE, FALSE },
++    /*29*/{ FILE_SUPERSEDE, 0, 0, FILE_SUPERSEDED, FILE_ATTRIBUTE_ARCHIVE, 2000, 2000, FALSE, FALSE },
++    /*30*/{ FILE_OPEN, 0, 0, FILE_OPENED, FILE_ATTRIBUTE_ARCHIVE, 0, 2000, FALSE, FALSE },
++    /*31*/{ FILE_OPEN, 0, 0, FILE_OPENED, FILE_ATTRIBUTE_ARCHIVE, 2000, 0, FALSE, TRUE },/* Win7 dealloc without write permission! */
++    /*32*/{ FILE_OPEN, 0, STATUS_OBJECT_NAME_NOT_FOUND, 0, 0, 2000, 0, FALSE, FALSE }
+     };
+     static const WCHAR fooW[] = {'f','o','o',0};
+     NTSTATUS status;
+@@ -4201,6 +4215,8 @@ static void test_NtCreateFile(void)
+     IO_STATUS_BLOCK io;
+     UNICODE_STRING nameW;
+     DWORD ret, i;
++    LARGE_INTEGER li;
++    FILE_NETWORK_OPEN_INFORMATION info;
+ 
+     GetTempPathW(MAX_PATH, path);
+     GetTempFileNameW(path, fooW, 0, path);
+@@ -4214,17 +4230,22 @@ static void test_NtCreateFile(void)
+     attr.SecurityDescriptor = NULL;
+     attr.SecurityQualityOfService = NULL;
+ 
++    info.AllocationSize.QuadPart = 0;
++
+     for (i = 0; i < ARRAY_SIZE(td); i++)
+     {
+-        status = pNtCreateFile(&handle, GENERIC_READ, &attr, &io, NULL,
++        li.QuadPart = td[i].alloc_in;
++
++        status = pNtCreateFile(&handle, ((td[i].enable_write) ? (GENERIC_READ | GENERIC_WRITE) : (GENERIC_READ)),
++                               &attr, &io, ((li.QuadPart > 0) ? (&li) : (NULL)),
+                                td[i].attrib_in, FILE_SHARE_READ|FILE_SHARE_WRITE,
+                                td[i].disposition, 0, NULL, 0);
+ 
+-        ok(status == td[i].status, "%d: expected %#x got %#x\n", i, td[i].status, status);
++        ok(status == td[i].status, "%d: status expected %#x got %#x\n", i, td[i].status, status);
+ 
+         if (!status)
+         {
+-            ok(io.Information == td[i].result,"%d: expected %#x got %#lx\n", i, td[i].result, io.Information);
++            ok(io.Information == td[i].result,"%d: result expected %#x got %#lx\n", i, td[i].result, io.Information);
+ 
+             ret = GetFileAttributesW(path);
+             ret &= ~FILE_ATTRIBUTE_NOT_CONTENT_INDEXED;
+@@ -4232,11 +4253,21 @@ static void test_NtCreateFile(void)
+             if (ret != td[i].attrib_out)
+             {
+             todo_wine
+-                ok(ret == td[i].attrib_out, "%d: expected %#x got %#x\n", i, td[i].attrib_out, ret);
++                ok(ret == td[i].attrib_out, "%d: attribute expected %#x got %#x\n", i, td[i].attrib_out, ret);
+                 SetFileAttributesW(path, td[i].attrib_out);
+             }
+             else
+-                ok(ret == td[i].attrib_out, "%d: expected %#x got %#x\n", i, td[i].attrib_out, ret);
++                ok(ret == td[i].attrib_out, "%d: attribute expected %#x got %#x\n", i, td[i].attrib_out, ret);
++
++            if (td[i].alloc_in)
++            {
++                status = pNtQueryFullAttributesFile( &attr, &info );
++                ok(status == STATUS_SUCCESS,
++                    "%d: query failed %x\n", i, status);
++                ok(info.AllocationSize.QuadPart >= td[i].alloc_out,
++                    "%d: alloc_size failed expected %#x got %#I64x\n", i, td[i].alloc_out,
++                    info.AllocationSize.QuadPart);
++            }
+ 
+             CloseHandle(handle);
+         }
+
+-- 
+2.30.2
+

@@ -1,0 +1,53 @@
+From: Alex Henrie <alexhenrie24@gmail.com>
+Subject: [PATCH 8/9] combase: Don't change attr->ObjectName in create_key (cppcheck)
+Message-Id: <20211220045751.94611-1-alexhenrie24@gmail.com>
+Date: Sun, 19 Dec 2021 21:57:51 -0700
+
+ObjectName can't point to a local variable because it is used later
+outside of this function.
+
+Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
+---
+ dlls/combase/combase.c | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/combase/combase.c b/dlls/combase/combase.c
+index 4677972656f..a3ba3a53fe6 100644
+--- a/dlls/combase/combase.c
++++ b/dlls/combase/combase.c
+@@ -186,18 +186,16 @@ static NTSTATUS create_key(HKEY *retkey, ACCESS_MASK access, OBJECT_ATTRIBUTES *
+         HANDLE subkey, root = attr->RootDirectory;
+         WCHAR *buffer = attr->ObjectName->Buffer;
+         DWORD attrs, pos = 0, i = 0, len = attr->ObjectName->Length / sizeof(WCHAR);
+-        UNICODE_STRING str;
+ 
+         while (i < len && buffer[i] != '\\') i++;
+         if (i == len) return status;
+ 
+         attrs = attr->Attributes;
+-        attr->ObjectName = &str;
+ 
+         while (i < len)
+         {
+-            str.Buffer = buffer + pos;
+-            str.Length = (i - pos) * sizeof(WCHAR);
++            attr->ObjectName->Buffer = buffer + pos;
++            attr->ObjectName->Length = (i - pos) * sizeof(WCHAR);
+             status = NtCreateKey(&subkey, access, attr, 0, NULL, 0, NULL);
+             if (attr->RootDirectory != root) NtClose(attr->RootDirectory);
+             if (status) return status;
+@@ -206,8 +204,8 @@ static NTSTATUS create_key(HKEY *retkey, ACCESS_MASK access, OBJECT_ATTRIBUTES *
+             pos = i;
+             while (i < len && buffer[i] != '\\') i++;
+         }
+-        str.Buffer = buffer + pos;
+-        str.Length = (i - pos) * sizeof(WCHAR);
++        attr->ObjectName->Buffer = buffer + pos;
++        attr->ObjectName->Length = (i - pos) * sizeof(WCHAR);
+         attr->Attributes = attrs;
+         status = NtCreateKey((HANDLE *)retkey, access, attr, 0, NULL, 0, NULL);
+         if (attr->RootDirectory != root) NtClose(attr->RootDirectory);
+
+-- 
+2.34.1
+

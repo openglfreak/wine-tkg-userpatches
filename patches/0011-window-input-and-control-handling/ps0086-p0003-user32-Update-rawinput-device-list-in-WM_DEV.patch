@@ -1,0 +1,38 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH 3/4] user32: Update rawinput device list in WM_DEVICECHANGE callback.
+Message-Id: <20211223143311.3563916-3-rbernon@codeweavers.com>
+Date: Thu, 23 Dec 2021 15:33:10 +0100
+In-Reply-To: <20211223143311.3563916-1-rbernon@codeweavers.com>
+References: <20211223143311.3563916-1-rbernon@codeweavers.com>
+
+The SDL library calls GetRawInputDeviceList quickly after it has
+detected a new device, from a WM_DEVICECHANGE notification.
+
+It uses rawinput device information to find out whether it is an XInput
+device, when its name contains "IG_", or if the device should be opened
+through DInput.
+
+If the device is missing from the rawinput list, it considers it as a
+DInput device, and may end up with the same device used twice.
+
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/user32/input.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/dlls/user32/input.c b/dlls/user32/input.c
+index 08a00c0e647..7134ab0fbb2 100644
+--- a/dlls/user32/input.c
++++ b/dlls/user32/input.c
+@@ -1156,6 +1156,7 @@ BOOL WINAPI EnableMouseInPointer(BOOL enable)
+ 
+ static DWORD CALLBACK devnotify_window_callback(HANDLE handle, DWORD flags, DEV_BROADCAST_HDR *header)
+ {
++    rawinput_update_device_list();
+     SendMessageTimeoutW(handle, WM_DEVICECHANGE, flags, (LPARAM)header, SMTO_ABORTIFHUNG, 2000, NULL);
+     return 0;
+ }
+
+-- 
+2.34.1
+

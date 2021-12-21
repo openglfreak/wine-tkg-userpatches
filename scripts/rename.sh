@@ -218,8 +218,13 @@ main() (
             continue
         esac
 
-        if [ 1 -ne "$(grep -c '^Subject: ' -- "${patch}")" ]; then
-            printf 'Error: Patch contains multiple Subjects: %s\n' "$(_tty_filename "${patch}")" >&2
+        subject_count="$(grep -c '^Subject: ' -- "${patch}")" ||:
+        if [ 1 -ne "${subject_count}" ]; then
+            if [ 1 -lt "${subject_count}" ]; then
+                printf 'Error: Patch contains multiple Subjects: %s\n' "$(_tty_filename "${patch}")" >&2
+            else
+                printf 'Error: Patch contains no Subjects: %s\n' "$(_tty_filename "${patch}")" >&2
+            fi
             continue
         fi
 

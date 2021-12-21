@@ -1,0 +1,61 @@
+From: Torge Matthies <openglfreak@googlemail.com>
+Subject: [PATCH resend 2/2] ws2_32/tests: Test short fd_set with select().
+Message-Id: <20211224005130.15298-2-openglfreak@googlemail.com>
+Date: Fri, 24 Dec 2021 01:51:30 +0100
+In-Reply-To: <20211224005130.15298-1-openglfreak@googlemail.com>
+References: <20211224005130.15298-1-openglfreak@googlemail.com>
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/ws2_32/tests/sock.c | 20 ++++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
+index 02713a7c625..cdf5a804952 100644
+--- a/dlls/ws2_32/tests/sock.c
++++ b/dlls/ws2_32/tests/sock.c
+@@ -3152,7 +3152,7 @@ static void test_select(void)
+     static char tmp_buf[1024];
+ 
+     SOCKET fdListen, fdRead, fdWrite;
+-    fd_set readfds, writefds, exceptfds;
++    fd_set readfds, writefds, exceptfds, *alloc_readfds;
+     unsigned int maxfd;
+     int ret, len;
+     char buffer;
+@@ -3160,7 +3160,8 @@ static void test_select(void)
+     struct sockaddr_in address;
+     select_thread_params thread_params;
+     HANDLE thread_handle;
+-    DWORD ticks, id;
++    DWORD ticks, id, old_protect;
++    void *page_pair;
+ 
+     fdRead = socket(AF_INET, SOCK_STREAM, 0);
+     ok( (fdRead != INVALID_SOCKET), "socket failed unexpectedly: %d\n", WSAGetLastError() );
+@@ -3326,6 +3327,21 @@ static void test_select(void)
+     ok(FD_ISSET(fdWrite, &readfds), "fdWrite socket is not in the set\n");
+     ok(FD_ISSET(fdRead, &readfds), "fdRead socket is not in the set\n");
+ 
++    page_pair = VirtualAlloc(NULL, 0x1000 * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
++    if (!page_pair)
++        ok(0, "VirtualAlloc error %d\n", GetLastError());
++    else
++    {
++        BOOL vprot_ret = VirtualProtect((char*)page_pair + 0x1000, 0x1000, PAGE_NOACCESS, &old_protect);
++        ok(vprot_ret, "VirtualProtect error %d\n", GetLastError());
++        alloc_readfds = ((char*)page_pair + 0x1000) - offsetof(fd_set, fd_array[1]);
++        alloc_readfds->fd_count = 1;
++        alloc_readfds->fd_array[0] = fdRead;
++        ret = select(fdRead+1, alloc_readfds, NULL, NULL, &select_timeout);
++        ok(ret == 1, "select returned %d\n", ret);
++        VirtualFree(page_pair, 0, MEM_RELEASE);
++    }
++
+     closesocket(fdRead);
+     closesocket(fdWrite);
+ 
+
+-- 
+2.34.1
+

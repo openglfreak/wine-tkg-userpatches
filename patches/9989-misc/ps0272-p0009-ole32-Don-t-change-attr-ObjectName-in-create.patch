@@ -1,0 +1,53 @@
+From: Alex Henrie <alexhenrie24@gmail.com>
+Subject: [PATCH 9/9] ole32: Don't change attr->ObjectName in create_key (cppcheck)
+Message-Id: <20211220045823.95090-1-alexhenrie24@gmail.com>
+Date: Sun, 19 Dec 2021 21:58:23 -0700
+
+ObjectName can't point to a local variable because it is used later
+outside of this function.
+
+Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
+---
+ dlls/ole32/compobj.c | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/ole32/compobj.c b/dlls/ole32/compobj.c
+index 815fdcb11d0..66cc81470b1 100644
+--- a/dlls/ole32/compobj.c
++++ b/dlls/ole32/compobj.c
+@@ -216,18 +216,16 @@ static NTSTATUS create_key( HKEY *retkey, ACCESS_MASK access, OBJECT_ATTRIBUTES
+         HANDLE subkey, root = attr->RootDirectory;
+         WCHAR *buffer = attr->ObjectName->Buffer;
+         DWORD attrs, pos = 0, i = 0, len = attr->ObjectName->Length / sizeof(WCHAR);
+-        UNICODE_STRING str;
+ 
+         while (i < len && buffer[i] != '\\') i++;
+         if (i == len) return status;
+ 
+         attrs = attr->Attributes;
+-        attr->ObjectName = &str;
+ 
+         while (i < len)
+         {
+-            str.Buffer = buffer + pos;
+-            str.Length = (i - pos) * sizeof(WCHAR);
++            attr->ObjectName->Buffer = buffer + pos;
++            attr->ObjectName->Length = (i - pos) * sizeof(WCHAR);
+             status = NtCreateKey( &subkey, access, attr, 0, NULL, 0, NULL );
+             if (attr->RootDirectory != root) NtClose( attr->RootDirectory );
+             if (status) return status;
+@@ -236,8 +234,8 @@ static NTSTATUS create_key( HKEY *retkey, ACCESS_MASK access, OBJECT_ATTRIBUTES
+             pos = i;
+             while (i < len && buffer[i] != '\\') i++;
+         }
+-        str.Buffer = buffer + pos;
+-        str.Length = (i - pos) * sizeof(WCHAR);
++        attr->ObjectName->Buffer = buffer + pos;
++        attr->ObjectName->Length = (i - pos) * sizeof(WCHAR);
+         attr->Attributes = attrs;
+         status = NtCreateKey( (PHANDLE)retkey, access, attr, 0, NULL, 0, NULL );
+         if (attr->RootDirectory != root) NtClose( attr->RootDirectory );
+
+-- 
+2.34.1
+

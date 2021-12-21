@@ -1,0 +1,66 @@
+From: Alex Henrie <alexhenrie24@gmail.com>
+Subject: [PATCH 1/4] dwrite: Handle memory allocation failures in bidi_compute_bracket_pairs (cppcheck)
+Message-Id: <20211222075722.74157-1-alexhenrie24@gmail.com>
+Date: Wed, 22 Dec 2021 00:57:22 -0700
+
+Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
+---
+ dlls/dwrite/bidi.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/dwrite/bidi.c b/dlls/dwrite/bidi.c
+index cc62509b557..df79d3ff58d 100644
+--- a/dlls/dwrite/bidi.c
++++ b/dlls/dwrite/bidi.c
+@@ -629,12 +629,14 @@ static BracketPair *bidi_compute_bracket_pairs(IsolatedRun *iso_run)
+     WCHAR *open_stack;
+     int *stack_index;
+     int stack_top = iso_run->length;
+-    BracketPair *out = NULL;
++    BracketPair *out = NULL, *new_out;
+     int pair_count = 0;
+     int i;
+ 
+     open_stack = malloc(sizeof(WCHAR) * iso_run->length);
++    if (!open_stack) return NULL;
+     stack_index = malloc(sizeof(int) * iso_run->length);
++    if (!stack_index) goto done;
+ 
+     for (i = 0; i < iso_run->length; i++) {
+         unsigned short ubv = get_table_entry(bidi_bracket_table, iso_run->item[i].ch);
+@@ -643,6 +645,7 @@ static BracketPair *bidi_compute_bracket_pairs(IsolatedRun *iso_run)
+             if (!out)
+             {
+                 out = malloc(sizeof(BracketPair));
++                if (!out) goto done;
+                 out[0].start = -1;
+             }
+ 
+@@ -665,7 +668,14 @@ static BracketPair *bidi_compute_bracket_pairs(IsolatedRun *iso_run)
+                         out[pair_count].start = stack_index[j];
+                         out[pair_count].end = i;
+                         pair_count++;
+-                        out = realloc(out, sizeof(BracketPair) * (pair_count+1));
++                        new_out = realloc(out, sizeof(BracketPair) * (pair_count+1));
++                        if (!new_out)
++                        {
++                            free(out);
++                            out = NULL;
++                            goto done;
++                        }
++                        out = new_out;
+                         out[pair_count].start = -1;
+                         stack_top = j+1;
+                         break;
+@@ -682,6 +692,7 @@ static BracketPair *bidi_compute_bracket_pairs(IsolatedRun *iso_run)
+     else if (pair_count > 1)
+         qsort(out, pair_count, sizeof(BracketPair), bracketpair_compr);
+ 
++done:
+     free(open_stack);
+     free(stack_index);
+     return out;
+
+-- 
+2.34.1
+

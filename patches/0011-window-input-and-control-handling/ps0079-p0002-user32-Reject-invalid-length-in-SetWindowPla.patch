@@ -1,0 +1,51 @@
+From: Esme Povirk <esme@codeweavers.com>
+Subject: [PATCH 2/2] user32: Reject invalid length in SetWindowPlacement.
+Message-Id: <20211217210126.3895-2-esme@codeweavers.com>
+Date: Fri, 17 Dec 2021 15:01:26 -0600
+In-Reply-To: <20211217210126.3895-1-esme@codeweavers.com>
+References: <20211217210126.3895-1-esme@codeweavers.com>
+
+Signed-off-by: Esme Povirk <esme@codeweavers.com>
+---
+The DayZ launcher has some invalid calls that, while I can't check this
+directly, probably also happen on Windows.
+
+ dlls/user32/tests/win.c | 2 --
+ dlls/user32/winpos.c    | 5 +++++
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
+index 7ebba960951..8085c40e7a4 100644
+--- a/dlls/user32/tests/win.c
++++ b/dlls/user32/tests/win.c
+@@ -11971,10 +11971,8 @@ static void test_window_placement(void)
+     wp.length = 0;
+     SetLastError(0xdeadbeef);
+     ret = SetWindowPlacement(hwnd, &wp);
+-todo_wine {
+     ok(!ret, "SetWindowPlacement should have failed\n");
+     ok(GetLastError() == ERROR_INVALID_PARAMETER, "wrong error %u\n", GetLastError());
+-}
+ 
+     DestroyWindow(hwnd);
+ }
+diff --git a/dlls/user32/winpos.c b/dlls/user32/winpos.c
+index ff23206b395..eeae9337c33 100644
+--- a/dlls/user32/winpos.c
++++ b/dlls/user32/winpos.c
+@@ -1530,6 +1530,11 @@ BOOL WINAPI SetWindowPlacement( HWND hwnd, const WINDOWPLACEMENT *wpl )
+ {
+     UINT flags = PLACE_MAX | PLACE_RECT;
+     if (!wpl) return FALSE;
++    if (wpl->length != sizeof(*wpl))
++    {
++        SetLastError(ERROR_INVALID_PARAMETER);
++        return FALSE;
++    }
+     if (wpl->flags & WPF_SETMINPOSITION) flags |= PLACE_MIN;
+     return WINPOS_SetPlacement( hwnd, wpl, flags );
+ }
+
+-- 
+2.30.2
+

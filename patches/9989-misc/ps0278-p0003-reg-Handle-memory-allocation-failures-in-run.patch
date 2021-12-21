@@ -1,0 +1,49 @@
+From: Alex Henrie <alexhenrie24@gmail.com>
+Subject: [PATCH 3/4] reg: Handle memory allocation failures in run_delete (cppcheck)
+Message-Id: <20211222080040.74700-1-alexhenrie24@gmail.com>
+Date: Wed, 22 Dec 2021 01:00:40 -0700
+
+Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
+---
+ programs/reg/delete.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/programs/reg/delete.c b/programs/reg/delete.c
+index cf0108664fd..344fb6614c5 100644
+--- a/programs/reg/delete.c
++++ b/programs/reg/delete.c
+@@ -87,9 +87,14 @@ static int run_delete(HKEY root, WCHAR *path, REGSAM sam, WCHAR *key_name, WCHAR
+     if (value_all)
+     {
+         DWORD max_value_len = 256, value_len;
+-        WCHAR *value_name;
++        WCHAR *value_name, *new_value_name;
+ 
+         value_name = malloc(max_value_len * sizeof(WCHAR));
++        if (!value_name)
++        {
++            output_error(ERROR_NOT_ENOUGH_MEMORY);
++            return 1;
++        }
+ 
+         while (1)
+         {
+@@ -110,7 +115,13 @@ static int run_delete(HKEY root, WCHAR *path, REGSAM sam, WCHAR *key_name, WCHAR
+             else if (rc == ERROR_MORE_DATA)
+             {
+                 max_value_len *= 2;
+-                value_name = realloc(value_name, max_value_len * sizeof(WCHAR));
++                new_value_name = realloc(value_name, max_value_len * sizeof(WCHAR));
++                if (!new_value_name)
++                {
++                    output_error(ERROR_NOT_ENOUGH_MEMORY);
++                    return 1;
++                }
++                value_name = new_value_name;
+             }
+             else break;
+         }
+
+-- 
+2.34.1
+

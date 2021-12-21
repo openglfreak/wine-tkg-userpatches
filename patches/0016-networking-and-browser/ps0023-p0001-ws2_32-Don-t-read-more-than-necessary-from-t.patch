@@ -1,0 +1,85 @@
+From: Torge Matthies <openglfreak@googlemail.com>
+Subject: [PATCH resend 1/2] ws2_32: Don't read more than necessary from the inputs in select().
+Message-Id: <20211224005130.15298-1-openglfreak@googlemail.com>
+Date: Fri, 24 Dec 2021 01:51:29 +0100
+
+.NET Framework / old .NET Core seems to allocate not more space than
+necessary for the fd_set inputs, so if the allocation fell on the edge
+of the end of the heap, Wine tried to read past it.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52259
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/ws2_32/socket.c | 27 +++++++++++++++------------
+ 1 file changed, 15 insertions(+), 12 deletions(-)
+
+diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
+index 648284c10a3..446cbd0b469 100644
+--- a/dlls/ws2_32/socket.c
++++ b/dlls/ws2_32/socket.c
+@@ -2395,9 +2395,9 @@ int WINAPI select( int count, fd_set *read_ptr, fd_set *write_ptr,
+     FD_ZERO( &read );
+     FD_ZERO( &write );
+     FD_ZERO( &except );
+-    if (read_ptr) read = *read_ptr;
+-    if (write_ptr) write = *write_ptr;
+-    if (except_ptr) except = *except_ptr;
++    if (read_ptr) read.fd_count = read_ptr->fd_count;
++    if (write_ptr) write.fd_count = write_ptr->fd_count;
++    if (except_ptr) except.fd_count = except_ptr->fd_count;
+ 
+     if (!(sync_event = get_sync_event())) return -1;
+ 
+@@ -2408,26 +2408,29 @@ int WINAPI select( int count, fd_set *read_ptr, fd_set *write_ptr,
+ 
+     for (i = 0; i < read.fd_count; ++i)
+     {
+-        params->sockets[params->count].socket = read.fd_array[i];
++        poll_socket = read_ptr->fd_array[i];
++        read.fd_array[i] = poll_socket;
++        params->sockets[params->count].socket = poll_socket;
+         params->sockets[params->count].flags = AFD_POLL_READ | AFD_POLL_ACCEPT | AFD_POLL_HUP;
+         ++params->count;
+-        poll_socket = read.fd_array[i];
+     }
+ 
+     for (i = 0; i < write.fd_count; ++i)
+     {
+-        params->sockets[params->count].socket = write.fd_array[i];
++        poll_socket = write_ptr->fd_array[i];
++        write.fd_array[i] = poll_socket;
++        params->sockets[params->count].socket = poll_socket;
+         params->sockets[params->count].flags = AFD_POLL_WRITE;
+         ++params->count;
+-        poll_socket = write.fd_array[i];
+     }
+ 
+     for (i = 0; i < except.fd_count; ++i)
+     {
+-        params->sockets[params->count].socket = except.fd_array[i];
++        poll_socket = except_ptr->fd_array[i];
++        except.fd_array[i] = poll_socket;
++        params->sockets[params->count].socket = poll_socket;
+         params->sockets[params->count].flags = AFD_POLL_OOB | AFD_POLL_CONNECT_ERR;
+         ++params->count;
+-        poll_socket = except.fd_array[i];
+     }
+ 
+     if (!params->count)
+@@ -2450,9 +2453,9 @@ int WINAPI select( int count, fd_set *read_ptr, fd_set *write_ptr,
+     if (!status)
+     {
+         /* pointers may alias, so clear them all first */
+-        if (read_ptr) FD_ZERO( read_ptr );
+-        if (write_ptr) FD_ZERO( write_ptr );
+-        if (except_ptr) FD_ZERO( except_ptr );
++        if (read_ptr) read_ptr->fd_count = 0;
++        if (write_ptr) write_ptr->fd_count = 0;
++        if (except_ptr) except_ptr->fd_count = 0;
+ 
+         for (i = 0; i < params->count; ++i)
+         {
+
+-- 
+2.34.1
+

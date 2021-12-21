@@ -1,0 +1,102 @@
+From: Dmitry Timoshkov <dmitry@baikal.ru>
+Subject: [PATCH v2 1/2] user32/tests: Add some tests for WM_NCCALCSIZE.
+Message-Id: <20211222232450.68b48f6c438f21117e0bdd83@baikal.ru>
+Date: Wed, 22 Dec 2021 23:24:50 +0300
+
+Signed-off-by: Dmitry Timoshkov <dmitry@baikal.ru>
+---
+ dlls/user32/tests/win.c | 70 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 70 insertions(+)
+
+diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
+index 0156987f529..b93839e40b5 100644
+--- a/dlls/user32/tests/win.c
++++ b/dlls/user32/tests/win.c
+@@ -12328,6 +12328,75 @@ static void test_DragDetect(void)
+     ok(!(GetKeyState( VK_LBUTTON ) & 0x8000), "got VK_LBUTTON\n");
+ }
+ 
++static void test_WM_NCCALCSIZE(void)
++{
++    WNDCLASSA cls;
++    HWND hwnd;
++    NCCALCSIZE_PARAMS params;
++    WINDOWPOS winpos;
++    RECT client_rect, window_rect;
++    LRESULT ret;
++
++    cls.style = CS_DBLCLKS | CS_VREDRAW | CS_HREDRAW;
++    cls.lpfnWndProc = DefWindowProcA;
++    cls.cbClsExtra = 0;
++    cls.cbWndExtra = 0;
++    cls.hInstance = GetModuleHandleA(0);
++    cls.hIcon = 0;
++    cls.hCursor = LoadCursorA(0, (LPCSTR)IDC_ARROW);
++    cls.hbrBackground = GetStockObject(WHITE_BRUSH);
++    cls.lpszMenuName = NULL;
++    cls.lpszClassName = "dummy_window_class";
++    ret = RegisterClassA(&cls);
++    ok(ret, "RegisterClass error %u\n", GetLastError());
++
++    hwnd = CreateWindowExA(0, "dummy_window_class", NULL,
++                           WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_POPUP,
++                           100, 100, 200, 200, 0, 0, GetModuleHandleA(NULL), NULL);
++    ok(hwnd != 0, "CreateWindowEx error %u\n", GetLastError());
++
++    GetWindowRect(hwnd, &window_rect);
++    params.rgrc[0] = window_rect;
++    params.rgrc[1] = window_rect;
++    GetClientRect(hwnd, &client_rect);
++    MapWindowPoints(hwnd, 0, (POINT *)&client_rect, 2);
++    params.rgrc[2] = client_rect;
++
++    winpos.hwnd = hwnd;
++    winpos.hwndInsertAfter = HWND_TOP;
++    winpos.x = window_rect.left;
++    winpos.y = window_rect.top;
++    winpos.cx = window_rect.right - window_rect.left;
++    winpos.cy = window_rect.bottom - window_rect.top;
++    winpos.flags = SWP_NOMOVE;
++    params.lppos = &winpos;
++
++    ret = SendMessageW(hwnd, WM_NCCALCSIZE, TRUE, (LPARAM)&params);
++todo_wine
++    ok(!ret, "got %08x\n", ret);
++    ok(EqualRect(&params.rgrc[0], &client_rect), "got %s\n", wine_dbgstr_rect(&params.rgrc[0]));
++
++    params.rgrc[0] = window_rect;
++    ret = DefWindowProcA(hwnd, WM_NCCALCSIZE, TRUE, (LPARAM)&params);
++todo_wine
++    ok(!ret, "got %08x\n", ret);
++    ok(EqualRect(&params.rgrc[0], &client_rect), "got %s\n", wine_dbgstr_rect(&params.rgrc[0]));
++
++    GetWindowRect(hwnd, &window_rect);
++    ret = SendMessageW(hwnd, WM_NCCALCSIZE, FALSE, (LPARAM)&window_rect);
++todo_wine
++    ok(!ret, "got %08x\n", ret);
++    ok(EqualRect(&window_rect, &client_rect), "got %s\n", wine_dbgstr_rect(&window_rect));
++
++    GetWindowRect(hwnd, &window_rect);
++    ret = DefWindowProcA(hwnd, WM_NCCALCSIZE, FALSE, (LPARAM)&window_rect);
++todo_wine
++    ok(!ret, "got %08x\n", ret);
++    ok(EqualRect(&window_rect, &client_rect), "got %s\n", wine_dbgstr_rect(&window_rect));
++
++    DestroyWindow(hwnd);
++}
++
+ START_TEST(win)
+ {
+     char **argv;
+@@ -12497,6 +12566,7 @@ START_TEST(win)
+     test_SC_SIZE();
+     test_cancel_mode();
+     test_DragDetect();
++    test_WM_NCCALCSIZE();
+ 
+     /* add the tests above this line */
+     if (hhook) UnhookWindowsHookEx(hhook);
+
+-- 
+2.34.1
+

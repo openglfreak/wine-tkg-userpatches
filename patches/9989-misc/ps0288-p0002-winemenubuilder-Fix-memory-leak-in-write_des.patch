@@ -1,0 +1,61 @@
+From: Alex Henrie <alexhenrie24@gmail.com>
+Subject: [PATCH 2/4] winemenubuilder: Fix memory leak in write_desktop_entry (Coverity)
+Message-Id: <20211229041431.187382-2-alexhenrie24@gmail.com>
+Date: Tue, 28 Dec 2021 21:14:09 -0700
+In-Reply-To: <20211229041431.187382-1-alexhenrie24@gmail.com>
+References: <20211229041431.187382-1-alexhenrie24@gmail.com>
+
+Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
+---
+ programs/winemenubuilder/winemenubuilder.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/programs/winemenubuilder/winemenubuilder.c b/programs/winemenubuilder/winemenubuilder.c
+index 620086f9776..1a11afb7791 100644
+--- a/programs/winemenubuilder/winemenubuilder.c
++++ b/programs/winemenubuilder/winemenubuilder.c
+@@ -1251,6 +1251,7 @@ static BOOL write_desktop_entry(const WCHAR *link, const WCHAR *location, const
+     int needs_chmod = FALSE;
+     const WCHAR *name;
+     const WCHAR *prefix = _wgetenv( L"WINECONFIGDIR" );
++    WCHAR *default_location = NULL;
+ 
+     WINE_TRACE("(%s,%s,%s,%s,%s,%s,%s,%s,%s)\n", wine_dbgstr_w(link), wine_dbgstr_w(location),
+                wine_dbgstr_w(linkname), wine_dbgstr_w(path), wine_dbgstr_w(args),
+@@ -1260,13 +1261,17 @@ static BOOL write_desktop_entry(const WCHAR *link, const WCHAR *location, const
+     name = PathFindFileNameW( linkname );
+     if (!location)
+     {
+-        location = heap_wprintf(L"%s\\%s.desktop", xdg_desktop_dir, name);
++        default_location = heap_wprintf(L"%s\\%s.desktop", xdg_desktop_dir, name);
++        location = default_location;
+         needs_chmod = TRUE;
+     }
+ 
+     file = _wfopen( location, L"wb" );
+     if (file == NULL)
++    {
++        heap_free(default_location);
+         return FALSE;
++    }
+ 
+     fprintf(file, "[Desktop Entry]\n");
+     fprintf(file, "Name=%s\n", wchars_to_utf8_chars(name));
+@@ -1303,9 +1308,13 @@ static BOOL write_desktop_entry(const WCHAR *link, const WCHAR *location, const
+     {
+         DWORD ret = register_menus_entry(location, link);
+         if (ret != ERROR_SUCCESS)
++        {
++            heap_free(default_location);
+             return FALSE;
++        }
+     }
+ 
++    heap_free(default_location);
+     return TRUE;
+ }
+ 
+
+-- 
+2.34.1
+

@@ -1,0 +1,99 @@
+From 8a11705c616ea3447491eb8182030cc05ec7326d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 14 Oct 2021 18:44:52 +0200
+Subject: [PATCH 3/7] server: Use an explicit field to flag desktop windows.
+
+Instead or using the parent pointer only.
+
+This also checks if the pointer itself is NULL, as the function is
+sometimes called with win->parent parameter, which could be NULL for
+orphan windows.
+---
+ server/window.c | 16 ++++++++++------
+ 1 file changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/server/window.c b/server/window.c
+index c414f763955..29d7e0d533c 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -80,6 +80,7 @@ struct window
+     unsigned int     is_layered : 1;  /* has layered info been set? */
+     unsigned int     is_cloaked : 1;  /* is the window cloaked by the app? */
+     unsigned int     is_cloaked_by_shell : 1;
++    unsigned int     is_desktop : 1;  /* is it a desktop window? */
+     unsigned int     color_key;       /* color key for a layered window */
+     unsigned int     alpha;           /* alpha value for a layered window */
+     unsigned int     layered_flags;   /* flags for a layered window */
+@@ -140,7 +141,7 @@ static inline struct window *get_window( user_handle_t handle )
+ /* check if window is the desktop */
+ static inline int is_desktop_window( const struct window *win )
+ {
+-    return !win->parent;  /* only desktop windows have no parent */
++    return win && !win->parent && win->is_desktop;
+ }
+ 
+ /* get next window in Z-order list */
+@@ -183,7 +184,7 @@ static inline void update_pixel_format_flags( struct window *win )
+ static unsigned int get_monitor_dpi( struct window *win )
+ {
+     /* FIXME: we return the desktop window DPI for now */
+-    while (!is_desktop_window( win )) win = win->parent;
++    while (win->parent) win = win->parent;
+     return win->dpi ? win->dpi : USER_DEFAULT_SCREEN_DPI;
+ }
+ 
+@@ -502,6 +503,7 @@ static struct window *create_window( struct window *parent, struct window *owner
+     win->is_layered     = 0;
+     win->is_cloaked     = 0;
+     win->is_cloaked_by_shell = 0;
++    win->is_desktop     = parent ? 0 : 1;
+     win->dpi_awareness  = DPI_AWARENESS_PER_MONITOR_AWARE;
+     win->dpi            = 0;
+     win->user_data      = 0;
+@@ -662,7 +664,7 @@ static void map_dpi_region( struct window *win, struct region *region, unsigned
+ /* convert coordinates from client to screen coords */
+ static inline void client_to_screen( struct window *win, int *x, int *y )
+ {
+-    for ( ; win && !is_desktop_window(win); win = win->parent)
++    for ( ; win && win->parent; win = win->parent)
+     {
+         *x += win->client_rect.left;
+         *y += win->client_rect.top;
+@@ -833,7 +835,8 @@ struct thread *window_thread_from_point( user_handle_t scope, int x, int y )
+ static int all_windows_from_point( struct window *top, int x, int y, unsigned int dpi,
+                                    struct user_handle_array *array )
+ {
+-    if (!is_desktop_window( top ) && !is_desktop_window( top->parent ))
++    assert( top != NULL );
++    if (top->parent && !is_desktop_window( top->parent ))
+     {
+         screen_to_client( top->parent, &x, &y, dpi );
+         dpi = top->parent->dpi;
+@@ -941,13 +944,14 @@ static struct region *intersect_window_region( struct region *region, struct win
+ /* convert coordinates from client to screen coords */
+ static inline void client_to_screen_rect( struct window *win, rectangle_t *rect )
+ {
+-    for ( ; win && !is_desktop_window(win); win = win->parent)
++    for ( ; win && win->parent; win = win->parent)
+         offset_rect( rect, win->client_rect.left, win->client_rect.top );
+ }
+ 
+ /* map the region from window to screen coordinates */
+ static inline void map_win_region_to_screen( struct window *win, struct region *region )
+ {
++    assert( win != NULL );
+     if (!is_desktop_window(win))
+     {
+         int x = win->window_rect.left;
+@@ -2287,7 +2291,7 @@ DECL_HANDLER(set_window_pos)
+     unsigned int flags = req->swp_flags;
+ 
+     if (!win) return;
+-    if (!win->parent) flags |= SWP_NOZORDER;  /* no Z order for the desktop */
++    if (is_desktop_window(win)) flags |= SWP_NOZORDER;  /* no Z order for the desktop */
+ 
+     if (!(flags & SWP_NOZORDER))
+     {
+-- 
+2.34.1
+

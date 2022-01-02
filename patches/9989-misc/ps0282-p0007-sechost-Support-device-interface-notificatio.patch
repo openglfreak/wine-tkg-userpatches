@@ -1,0 +1,91 @@
+From 96398548a5fa1f8bbfb78391a1d9e883edf58229 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 24 Dec 2021 15:46:32 +0100
+Subject: [PATCH 7/8] sechost: Support device interface notifications
+ filtering.
+
+---
+ dlls/dinput8/tests/hid.c |  7 ++-----
+ dlls/sechost/service.c   | 20 ++++++++++++++++++--
+ 2 files changed, 20 insertions(+), 7 deletions(-)
+
+diff --git a/dlls/dinput8/tests/hid.c b/dlls/dinput8/tests/hid.c
+index f16a4856723..0dcf1af0017 100644
+--- a/dlls/dinput8/tests/hid.c
++++ b/dlls/dinput8/tests/hid.c
+@@ -10009,7 +10009,6 @@ static LRESULT CALLBACK devnotify_wndproc( HWND hwnd, UINT msg, WPARAM wparam, L
+ 
+         winetest_push_context( "%u", device_change_count );
+ 
+-        todo_wine_if( IsEqualGUID( &iface->dbcc_classguid, &control_class ) && !device_change_all )
+         ok( IsEqualGUID( &iface->dbcc_classguid, &expect_guid ), "got dbch_classguid %s\n",
+             debugstr_guid( &iface->dbcc_classguid ) );
+         ok( iface->dbcc_size >= offsetof( DEV_BROADCAST_DEVICEINTERFACE_W, dbcc_name[wcslen( iface->dbcc_name ) + 1] ),
+@@ -10214,8 +10213,7 @@ static void test_RegisterDeviceNotification(void)
+     while (PeekMessageW( &msg, hwnd, 0, 0, PM_REMOVE )) DispatchMessageW( &msg );
+ 
+     device_change_count = 0;
+-    if (!strcmp( winetest_platform, "wine" )) device_change_expect = 4;
+-    else device_change_expect = 2;
++    device_change_expect = 2;
+     device_change_hwnd = hwnd;
+     device_change_all = FALSE;
+     stop_event = CreateEventW( NULL, FALSE, FALSE, NULL );
+@@ -10248,8 +10246,7 @@ static void test_RegisterDeviceNotification(void)
+     while (PeekMessageW( &msg, hwnd, 0, 0, PM_REMOVE )) DispatchMessageW( &msg );
+ 
+     device_change_count = 0;
+-    if (!strcmp( winetest_platform, "wine" )) device_change_expect = 4;
+-    else device_change_expect = 2;
++    device_change_expect = 2;
+     device_change_hwnd = hwnd;
+     device_change_all = FALSE;
+     stop_event = CreateEventW( NULL, FALSE, FALSE, NULL );
+diff --git a/dlls/sechost/service.c b/dlls/sechost/service.c
+index e568ada8d9d..67fbd4023cb 100644
+--- a/dlls/sechost/service.c
++++ b/dlls/sechost/service.c
+@@ -1930,6 +1930,23 @@ struct device_notify_registration
+     struct device_notification_details details;
+ };
+ 
++static BOOL notification_filter_matches( DEV_BROADCAST_HDR *filter, DEV_BROADCAST_HDR *event )
++{
++    if (!filter->dbch_devicetype) return TRUE;
++    if (filter->dbch_devicetype != event->dbch_devicetype) return FALSE;
++
++    if (filter->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE)
++    {
++        DEV_BROADCAST_DEVICEINTERFACE_W *filter_iface = (DEV_BROADCAST_DEVICEINTERFACE_W *)filter;
++        DEV_BROADCAST_DEVICEINTERFACE_W *event_iface = (DEV_BROADCAST_DEVICEINTERFACE_W *)event;
++        if (filter_iface->dbcc_size == offsetof(DEV_BROADCAST_DEVICEINTERFACE_W, dbcc_classguid)) return TRUE;
++        return IsEqualGUID( &filter_iface->dbcc_classguid, &event_iface->dbcc_classguid );
++    }
++
++    FIXME( "Filter dbch_devicetype %u not implemented\n", filter->dbch_devicetype );
++    return TRUE;
++}
++
+ static DWORD WINAPI device_notify_proc( void *arg )
+ {
+     WCHAR transport[] = PLUGPLAY_TRANSPORT;
+@@ -2014,6 +2031,7 @@ static DWORD WINAPI device_notify_proc( void *arg )
+ 
+         for (i = 0; i < details_copy_nelems; i++)
+         {
++            if (!notification_filter_matches( &details_copy[i].filter.header, (DEV_BROADCAST_HDR *)buf )) continue;
+             details_copy[i].cb( details_copy[i].handle, code, (DEV_BROADCAST_HDR *)buf );
+         }
+         MIDL_user_free(buf);
+@@ -2044,8 +2062,6 @@ HDEVNOTIFY WINAPI I_ScRegisterDeviceNotification( struct device_notification_det
+ 
+     TRACE("callback %p, handle %p, filter %p, flags %#x\n", details->cb, details->handle, filter, flags);
+ 
+-    if (filter) FIXME("Notification filters are not yet implemented.\n");
+-
+     if (!(registration = heap_alloc(sizeof(struct device_notify_registration))))
+     {
+         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+-- 
+2.34.1
+

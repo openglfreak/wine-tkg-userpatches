@@ -1,21 +1,21 @@
-From 9be4d2948c225d94c9265ecd99b4311117b33967 Mon Sep 17 00:00:00 2001
+From c078422a4748da075bb69aafa2f6419c6b7dbc45 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Thu, 7 Nov 2019 15:10:02 +0100
-Subject: [PATCH 03/13] user32/tests: Wait for parent window thread before
+Subject: [PATCH 2/7] user32/tests: Wait for parent window thread before
  checking window.
 
 This test is failing from time to time. Making sure the parent thread
-has terminated before continuing triggers the underlying race condition,
-and makes the test to always fail.
+has terminated, before continuing, triggers the underlying race shown
+in previous patch, and makes the test to always fail.
 ---
  dlls/user32/tests/msg.c | 52 ++++++++++++++++++++++++-----------------
  1 file changed, 31 insertions(+), 21 deletions(-)
 
 diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
-index 469c193c1a3..ed50e6cbc09 100644
+index 9b33b708350..38b87ea41e3 100644
 --- a/dlls/user32/tests/msg.c
 +++ b/dlls/user32/tests/msg.c
-@@ -8791,7 +8791,10 @@ static void test_paint_messages(void)
+@@ -8982,7 +8982,10 @@ static void test_paint_messages(void)
  struct wnd_event
  {
      HWND hwnd;
@@ -26,7 +26,7 @@ index 469c193c1a3..ed50e6cbc09 100644
      HANDLE start_event;
      HANDLE stop_event;
  };
-@@ -8822,42 +8825,48 @@ static DWORD CALLBACK create_grand_child_thread( void *param )
+@@ -9013,42 +9016,48 @@ static DWORD CALLBACK create_grand_child_thread( void *param )
  {
      struct wnd_event *wnd_event = param;
      HWND hchild;
@@ -91,7 +91,7 @@ index 469c193c1a3..ed50e6cbc09 100644
          if (ret != 1) break;
          while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) DispatchMessageA(&msg);
      }
-@@ -8997,9 +9006,11 @@ static void test_interthread_messages(void)
+@@ -9188,9 +9197,11 @@ static void test_interthread_messages(void)
      flush_events();
      flush_sequence();
      log_all_parent_messages++;
@@ -104,7 +104,7 @@ index 469c193c1a3..ed50e6cbc09 100644
      for (;;)
      {
          ret = MsgWaitForMultipleObjects(1, &wnd_event.start_event, FALSE, 1000, QS_SENDMESSAGE);
-@@ -9009,18 +9020,17 @@ static void test_interthread_messages(void)
+@@ -9200,18 +9211,17 @@ static void test_interthread_messages(void)
      ok( !ret, "MsgWaitForMultipleObjects failed %x\n", ret );
      /* now wait for the thread without processing messages; this shouldn't deadlock */
      SetEvent( wnd_event.stop_event );
@@ -126,4 +126,6 @@ index 469c193c1a3..ed50e6cbc09 100644
      log_all_parent_messages--;
      DestroyWindow( wnd_event.hwnd );
  
+-- 
+2.34.1
 

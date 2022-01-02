@@ -1,0 +1,75 @@
+From a6c6e9a751a3c27a593a9a53182d10603adb9b08 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 23 Dec 2021 12:15:26 +0100
+Subject: [PATCH 8/9] user32: Use the registered device array in
+ GetRegisteredRawInputDevices.
+
+---
+ dlls/user32/rawinput.c | 33 +++++++++++++++------------------
+ 1 file changed, 15 insertions(+), 18 deletions(-)
+
+diff --git a/dlls/user32/rawinput.c b/dlls/user32/rawinput.c
+index 718a631255b..e0995ef8d3b 100644
+--- a/dlls/user32/rawinput.c
++++ b/dlls/user32/rawinput.c
+@@ -826,8 +826,7 @@ static int __cdecl compare_raw_input_devices(const void *ap, const void *bp)
+  */
+ UINT WINAPI DECLSPEC_HOTPATCH GetRegisteredRawInputDevices(RAWINPUTDEVICE *devices, UINT *device_count, UINT size)
+ {
+-    struct rawinput_device *buffer = NULL;
+-    unsigned int i, status, count = ~0U, buffer_size;
++    unsigned int i, count = *device_count;
+ 
+     TRACE("devices %p, device_count %p, size %u\n", devices, device_count, size);
+ 
+@@ -837,33 +836,31 @@ UINT WINAPI DECLSPEC_HOTPATCH GetRegisteredRawInputDevices(RAWINPUTDEVICE *devic
+         return ~0U;
+     }
+ 
+-    buffer_size = *device_count * sizeof(*buffer);
+-    if (devices && !(buffer = HeapAlloc(GetProcessHeap(), 0, buffer_size)))
+-        return ~0U;
++    EnterCriticalSection( &rawinput_devices_cs );
+ 
+-    SERVER_START_REQ(update_rawinput_devices)
++    *device_count = registered_count;
++    if (!devices)
++        count = 0;
++    else if (*device_count < count)
+     {
+-        if (buffer) wine_server_set_reply(req, buffer, buffer_size);
+-        status = wine_server_call_err(req);
+-        *device_count = reply->device_count;
++        SetLastError(ERROR_INSUFFICIENT_BUFFER);
++        count = ~0U;
+     }
+-    SERVER_END_REQ;
+-
+-    if (buffer && !status)
++    else
+     {
+         for (i = 0, count = *device_count; i < count; ++i)
+         {
+-            devices[i].usUsagePage = buffer[i].usage_page;
+-            devices[i].usUsage = buffer[i].usage;
+-            devices[i].dwFlags = buffer[i].flags;
+-            devices[i].hwndTarget = wine_server_ptr_handle(buffer[i].target);
++            devices[i].usUsagePage = registered_array[i].usage_page;
++            devices[i].usUsage = registered_array[i].usage;
++            devices[i].dwFlags = registered_array[i].flags;
++            devices[i].hwndTarget = wine_server_ptr_handle(registered_array[i].target);
+         }
+ 
+         qsort(devices, count, sizeof(*devices), compare_raw_input_devices);
+     }
+ 
+-    if (buffer) HeapFree(GetProcessHeap(), 0, buffer);
+-    else count = 0;
++    LeaveCriticalSection( &rawinput_devices_cs );
++
+     return count;
+ }
+ 
+-- 
+2.34.1
+

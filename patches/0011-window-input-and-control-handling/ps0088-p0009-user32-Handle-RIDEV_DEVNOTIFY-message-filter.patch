@@ -1,0 +1,137 @@
+From 87392a561b32f3686eba369a2e494e1c54c24178 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 23 Dec 2021 12:30:00 +0100
+Subject: [PATCH 9/9] user32: Handle RIDEV_DEVNOTIFY message filter on the
+ client side.
+
+---
+ dlls/user32/message.c      | 13 ++++++++++---
+ dlls/user32/rawinput.c     | 31 +++++++++++++++++++++++++------
+ dlls/user32/user_private.h |  2 +-
+ server/queue.c             |  2 --
+ 4 files changed, 36 insertions(+), 12 deletions(-)
+
+diff --git a/dlls/user32/message.c b/dlls/user32/message.c
+index 1b02da56319..a982fd75b4c 100644
+--- a/dlls/user32/message.c
++++ b/dlls/user32/message.c
+@@ -2290,9 +2290,15 @@ static void accept_hardware_message( UINT hw_id )
+ static BOOL process_rawinput_message( MSG *msg, UINT hw_id, const struct hardware_msg_data *msg_data )
+ {
+     struct rawinput_thread_data *thread_data = rawinput_thread_data();
++    USAGE usage_page, usage;
++    BOOL ret = TRUE;
++    DWORD flags;
+ 
+     if (msg->message == WM_INPUT_DEVICE_CHANGE)
+-        rawinput_update_device_list();
++    {
++        if (!rawinput_device_get_usages( (HANDLE)msg->lParam, &usage_page, &usage, &flags )) return FALSE;
++        ret = !!(flags & RIDEV_DEVNOTIFY);
++    }
+     else
+     {
+         thread_data->buffer->header.dwSize = RAWINPUT_BUFFER_SIZE;
+@@ -2302,7 +2308,7 @@ static BOOL process_rawinput_message( MSG *msg, UINT hw_id, const struct hardwar
+     }
+ 
+     msg->pt = point_phys_to_win_dpi( msg->hwnd, msg->pt );
+-    return TRUE;
++    return ret;
+ }
+ 
+ /***********************************************************************
+@@ -3245,6 +3251,7 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
+     INT counter = global_key_state_counter;
+     USAGE hid_usage_page, hid_usage;
+     NTSTATUS ret;
++    DWORD dummy;
+     BOOL wait;
+ 
+     info.type     = MSG_HARDWARE;
+@@ -3262,7 +3269,7 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
+         }
+         if (input->u.hi.uMsg == WM_INPUT)
+         {
+-            if (!rawinput_device_get_usages( rawinput->header.hDevice, &hid_usage_page, &hid_usage ))
++            if (!rawinput_device_get_usages( rawinput->header.hDevice, &hid_usage_page, &hid_usage, &dummy ))
+             {
+                 WARN( "unable to get HID usages for device %p\n", rawinput->header.hDevice );
+                 return STATUS_INVALID_HANDLE;
+diff --git a/dlls/user32/rawinput.c b/dlls/user32/rawinput.c
+index e0995ef8d3b..cd3e9675082 100644
+--- a/dlls/user32/rawinput.c
++++ b/dlls/user32/rawinput.c
+@@ -276,18 +276,37 @@ static struct device *find_device_from_handle(HANDLE handle)
+ }
+ 
+ 
+-BOOL rawinput_device_get_usages(HANDLE handle, USAGE *usage_page, USAGE *usage)
++BOOL rawinput_device_get_usages(HANDLE handle, USAGE *usage_page, USAGE *usage, DWORD *flags)
+ {
+     struct device *device;
++    BOOL ret = TRUE;
++    unsigned int i;
+ 
+     *usage_page = *usage = 0;
+ 
+-    if (!(device = find_device_from_handle(handle))) return FALSE;
+-    if (device->info.dwType != RIM_TYPEHID) return FALSE;
++    EnterCriticalSection(&rawinput_devices_cs);
+ 
+-    *usage_page = device->info.hid.usUsagePage;
+-    *usage = device->info.hid.usUsage;
+-    return TRUE;
++    if (!(device = find_device_from_handle(handle))) ret = FALSE;
++    else if (device->info.dwType != RIM_TYPEHID) ret = FALSE;
++    else
++    {
++        *usage_page = device->info.hid.usUsagePage;
++        *usage = device->info.hid.usUsage;
++
++        for (i = 0; i < registered_count; i++)
++        {
++            if (registered_array[i].usage_page == *usage_page &&
++                registered_array[i].usage == *usage)
++            {
++                *flags = registered_array[i].flags;
++                break;
++            }
++        }
++    }
++
++    LeaveCriticalSection(&rawinput_devices_cs);
++
++    return ret;
+ }
+ 
+ 
+diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
+index 6923ddb2906..1b46eeb4058 100644
+--- a/dlls/user32/user_private.h
++++ b/dlls/user32/user_private.h
+@@ -158,7 +158,7 @@ struct tagWND;
+ 
+ struct hardware_msg_data;
+ extern BOOL rawinput_from_hardware_message(RAWINPUT *rawinput, const struct hardware_msg_data *msg_data);
+-extern BOOL rawinput_device_get_usages(HANDLE handle, USAGE *usage_page, USAGE *usage);
++extern BOOL rawinput_device_get_usages(HANDLE handle, USAGE *usage_page, USAGE *usage, DWORD *flags);
+ extern struct rawinput_thread_data *rawinput_thread_data(void);
+ extern void rawinput_update_device_list(void);
+ 
+diff --git a/server/queue.c b/server/queue.c
+index 468049ad6d0..41dd45289cb 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -1750,8 +1750,6 @@ static int queue_rawinput_message( struct process* process, void *arg )
+         device = &entry->device;
+     if (!device) return 0;
+ 
+-    if (raw_msg->message == WM_INPUT_DEVICE_CHANGE && !(device->flags & RIDEV_DEVNOTIFY)) return 0;
+-
+     if (raw_msg->desktop) desktop = (struct desktop *)grab_object( raw_msg->desktop );
+     else if (!(desktop = get_desktop_obj( process, process->desktop, 0 ))) goto done;
+ 
+-- 
+2.34.1
+

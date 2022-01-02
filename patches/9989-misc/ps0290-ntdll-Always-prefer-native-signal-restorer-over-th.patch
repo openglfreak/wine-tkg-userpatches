@@ -1,0 +1,75 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH] ntdll: Always prefer native signal restorer over the custom one.
+Message-Id: <e75635b4-c1b5-7502-3196-7226e4f60ced@gmail.com>
+Date: Thu, 30 Dec 2021 02:51:04 +0900
+
+A few months after the custom signal restorer for Android was commited,
+bionic rolled its own signal restorer.  The patch is at:
+
+  https://android-review.googlesource.com/c/platform/bionic/+/107692
+
+In general, rolling our own signal restorer is not a good idea since it
+interferes with unwinding.  GDB seems especially unhappy when the
+signal restorer's name isn't exactly "__restore_rt".
+
+Fix this by using the custom signal restorer only if the vDSO has
+disappeared and libc doesn't supply its own signal restorer.
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ dlls/ntdll/unix/signal_i386.c | 24 ++++++++++++++++++------
+ 1 file changed, 18 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
+index 6bb5649e2b5..f98269535bb 100644
+--- a/dlls/ntdll/unix/signal_i386.c
++++ b/dlls/ntdll/unix/signal_i386.c
+@@ -50,6 +50,9 @@
+ #ifdef HAVE_SYS_UCONTEXT_H
+ # include <sys/ucontext.h>
+ #endif
++#ifdef HAVE_SYS_AUXV_H
++# include <sys/auxv.h>
++#endif
+ 
+ #include "ntstatus.h"
+ #define WIN32_NO_STATUS
+@@ -150,9 +153,9 @@ typedef struct ucontext
+ #define FPUX_sig(context)    (FPU_sig(context) && !((context)->uc_mcontext.fpregs->status >> 16) ? (XSAVE_FORMAT *)(FPU_sig(context) + 1) : NULL)
+ #define XState_sig(fpu)      (((unsigned int *)fpu->Reserved4)[12] == FP_XSTATE_MAGIC1 ? (XSTATE *)(fpu + 1) : NULL)
+ 
+-#ifdef __ANDROID__
+-/* custom signal restorer since we may have unmapped the one in vdso, and bionic doesn't check for that */
+-void rt_sigreturn(void);
++#if defined(__linux__) && defined(SA_RESTORER)
++/* backup signal restorer if we have unmapped the one in vDSO, and libc doesn't supply its own restorer */
++extern void rt_sigreturn(void) DECLSPEC_HIDDEN;
+ __ASM_GLOBAL_FUNC( rt_sigreturn,
+                    "movl $173,%eax\n\t"  /* NR_rt_sigreturn */
+                    "int $0x80" );
+@@ -2329,9 +2332,18 @@ void signal_init_process(void)
+ 
+     sig_act.sa_mask = server_block_set;
+     sig_act.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
+-#ifdef __ANDROID__
+-    sig_act.sa_flags |= SA_RESTORER;
+-    sig_act.sa_restorer = rt_sigreturn;
++#if defined(__linux__) && defined(SA_RESTORER)
++    if (!getauxval(AT_SYSINFO_EHDR)) {
++        struct sigaction real_sig_act;
++
++        sig_act.sa_sigaction = int_handler;
++        if (sigaction( SIGINT, &sig_act, NULL ) == -1) goto error;
++        if (sigaction( SIGINT, NULL, &real_sig_act ) == -1) goto error;
++        if (!(real_sig_act.sa_flags & SA_RESTORER)) {
++            sig_act.sa_flags |= SA_RESTORER;
++            sig_act.sa_restorer = rt_sigreturn;
++        }
++    }
+ #endif
+     sig_act.sa_sigaction = int_handler;
+     if (sigaction( SIGINT, &sig_act, NULL ) == -1) goto error;
+
+-- 
+2.31.1
+

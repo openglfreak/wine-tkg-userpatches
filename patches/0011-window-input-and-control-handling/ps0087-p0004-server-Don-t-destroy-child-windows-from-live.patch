@@ -1,0 +1,210 @@
+From 126522b2c955cf35b1ee56d184f8d15b179f7164 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 15 Oct 2021 11:08:27 +0200
+Subject: [PATCH 4/7] server: Don't destroy child windows from live other
+ threads.
+
+---
+ dlls/user32/tests/msg.c |  4 ++--
+ dlls/user32/tests/win.c |  7 ------
+ server/window.c         | 52 +++++++++++++++++++++++++++++++++++++----
+ 3 files changed, 50 insertions(+), 13 deletions(-)
+
+diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
+index 38b87ea41e3..de9a2f4f4bc 100644
+--- a/dlls/user32/tests/msg.c
++++ b/dlls/user32/tests/msg.c
+@@ -9034,7 +9034,7 @@ static DWORD CALLBACK create_grand_child_thread( void *param )
+     ok( !ret, "WaitForSingleObject returned %x, error: %u\n", ret, GetLastError() );
+     ok( IsWindow( hchild ), "Child window already destroyed\n" );
+     flush_events();
+-    todo_wine ok( !IsWindow( hchild ), "Child window not destroyed\n" );
++    ok( !IsWindow( hchild ), "Child window not destroyed\n" );
+ 
+     return 0;
+ }
+@@ -9221,7 +9221,7 @@ static void test_interthread_messages(void)
+     CloseHandle( wnd_event.stop_event );
+     CloseHandle( wnd_event.ready_event );
+     flush_events();
+-    ok_sequence( WmExitThreadSeq, "destroy child on thread exit", TRUE );
++    ok_sequence( WmExitThreadSeq, "destroy child on thread exit", FALSE );
+     log_all_parent_messages--;
+     DestroyWindow( wnd_event.hwnd );
+ 
+diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
+index 5c39a05655a..8dbd6c18dfe 100644
+--- a/dlls/user32/tests/win.c
++++ b/dlls/user32/tests/win.c
+@@ -828,7 +828,6 @@ static void test_thread_exit_destroy(void)
+     ok( GetActiveWindow() == adopter, "GetActiveWindow %p, expected %p\n", GetActiveWindow(), adopter );
+     todo_wine
+     ok( GetFocus() == adopter, "GetFocus %p, expected %p\n", GetFocus(), adopter );
+-    todo_wine
+     ok( GetCapture() == child1, "GetCapture %p, expected %p\n", GetCapture(), child1 );
+ 
+     SetActiveWindow( child1 );
+@@ -839,7 +838,6 @@ static void test_thread_exit_destroy(void)
+     ok( GetActiveWindow() == adopter, "GetActiveWindow %p, expected %p\n", GetActiveWindow(), adopter );
+     todo_wine
+     ok( GetFocus() == adopter, "GetFocus %p, expected %p\n", GetFocus(), adopter );
+-    todo_wine
+     ok( GetCapture() == child1, "GetCapture %p, expected %p\n", GetCapture(), child1 );
+ 
+     SetLastError( 0xdeadbeef );
+@@ -883,10 +881,8 @@ static void test_thread_exit_destroy(void)
+     ok( wndproc == old_wndproc, "GetWindowLongPtrW GWLP_WNDPROC returned %p\n", wndproc );
+ 
+     tmp = GetPropW( child1, L"myprop" );
+-    todo_wine
+     ok( HandleToULong(tmp) == 0xdeadbeef, "GetPropW returned %p\n", tmp );
+     tmp = GetPropW( child2, L"myprop" );
+-    todo_wine
+     ok( HandleToULong(tmp) == 0xdeadbeef, "GetPropW returned %p\n", tmp );
+ 
+     /* destroying child1 ourselves succeeds */
+@@ -918,7 +914,6 @@ static void test_thread_exit_destroy(void)
+     rgn = CreateRectRgn( 5, 5, 15, 15 );
+     SetLastError( 0xdeadbeef );
+     ret = SetWindowRgn( child2, rgn, TRUE );
+-    todo_wine
+     ok( ret, "SetWindowRgn failed, error %u\n", GetLastError() );
+     DeleteObject( rgn );
+ 
+@@ -943,13 +938,11 @@ static void test_thread_exit_destroy(void)
+     ok( HandleToULong(tmp) == 0, "GetPropW returned %p\n", tmp );
+ 
+     ret = IsWindow( child2 );
+-    todo_wine
+     ok( !ret, "IsWindow returned %u\n", ret );
+     ret = IsWindow( child3 );
+     todo_wine
+     ok( !ret, "IsWindow returned %u\n", ret );
+     ret = DestroyWindow( child2 );
+-    todo_wine
+     ok( !ret, "DestroyWindow returned %u\n", ret );
+ 
+     DestroyWindow( adopter );
+diff --git a/server/window.c b/server/window.c
+index 29d7e0d533c..d22d0b87f82 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -144,6 +144,12 @@ static inline int is_desktop_window( const struct window *win )
+     return win && !win->parent && win->is_desktop;
+ }
+ 
++/* check if window has lost its parent */
++static inline int is_orphan_window( const struct window *win )
++{
++    return !win->parent && !win->is_desktop;
++}
++
+ /* get next window in Z-order list */
+ static inline struct window *get_next_window( struct window *win )
+ {
+@@ -689,6 +695,7 @@ static int is_visible( const struct window *win )
+ {
+     while (win)
+     {
++        if (is_orphan_window( win )) return 0;
+         if (!(win->style & WS_VISIBLE)) return 0;
+         win = win->parent;
+         /* if parent is minimized children are not visible */
+@@ -1196,6 +1203,7 @@ static int get_window_visible_rect( struct window *win, rectangle_t *rect, int f
+     *rect = frame ? win->window_rect : win->client_rect;
+ 
+     if (!(win->style & WS_VISIBLE)) return 0;
++    if (is_orphan_window( win )) return 0;
+     if (is_desktop_window( win )) return 1;
+ 
+     while (!is_desktop_window( win->parent ))
+@@ -1893,9 +1901,25 @@ void destroy_window( struct window *win )
+ 
+     /* destroy all children */
+     while (!list_empty(&win->children))
+-        destroy_window( LIST_ENTRY( list_head(&win->children), struct window, entry ));
++    {
++        struct window *child = LIST_ENTRY( list_head( &win->children ), struct window, entry );
++        if (!child->thread || child->thread == win->thread) destroy_window( child );
++        else
++        {
++            list_remove( &child->entry );
++            child->parent = NULL;
++        }
++    }
+     while (!list_empty(&win->unlinked))
+-        destroy_window( LIST_ENTRY( list_head(&win->unlinked), struct window, entry ));
++    {
++        struct window *child = LIST_ENTRY( list_head( &win->unlinked ), struct window, entry );
++        if (!child->thread || child->thread == win->thread) destroy_window( child );
++        else
++        {
++            list_remove( &child->entry );
++            child->parent = NULL;
++        }
++    }
+ 
+     /* reset global window pointers, if the corresponding window is destroyed */
+     if (win == shell_window) shell_window = NULL;
+@@ -1938,6 +1962,11 @@ DECL_HANDLER(create_window)
+ 
+     reply->handle = 0;
+     if (req->parent && !(parent = get_window( req->parent ))) return;
++    if (parent && is_orphan_window( parent ))
++    {
++        set_error( STATUS_INVALID_PARAMETER );
++        return;
++    }
+ 
+     if (req->owner)
+     {
+@@ -1988,8 +2017,7 @@ DECL_HANDLER(set_parent)
+ 
+     if (!(win = get_window( req->handle ))) return;
+     if (req->parent && !(parent = get_window( req->parent ))) return;
+-
+-    if (is_desktop_window(win))
++    if (!win->parent)
+     {
+         set_error( STATUS_INVALID_PARAMETER );
+         return;
+@@ -2110,6 +2138,12 @@ DECL_HANDLER(set_window_info)
+     struct window *win = get_window( req->handle );
+ 
+     if (!win) return;
++    if (is_orphan_window( win ))
++    {
++        set_error( STATUS_INVALID_PARAMETER );
++        return;
++    }
++
+     if (req->flags && is_desktop_window(win) && win->thread != current)
+     {
+         set_error( STATUS_ACCESS_DENIED );
+@@ -2291,6 +2325,11 @@ DECL_HANDLER(set_window_pos)
+     unsigned int flags = req->swp_flags;
+ 
+     if (!win) return;
++    if (is_orphan_window( win ))
++    {
++        set_error( STATUS_INVALID_PARAMETER );
++        return;
++    }
+     if (is_desktop_window(win)) flags |= SWP_NOZORDER;  /* no Z order for the desktop */
+ 
+     if (!(flags & SWP_NOZORDER))
+@@ -2481,6 +2520,11 @@ DECL_HANDLER(get_visible_region)
+     struct window *top, *win = get_window( req->window );
+ 
+     if (!win) return;
++    if (is_orphan_window( win ))
++    {
++        set_error( STATUS_INVALID_PARAMETER );
++        return;
++    }
+ 
+     top = get_top_clipping_window( win );
+     if ((region = get_visible_region( win, req->flags )))
+-- 
+2.34.1
+

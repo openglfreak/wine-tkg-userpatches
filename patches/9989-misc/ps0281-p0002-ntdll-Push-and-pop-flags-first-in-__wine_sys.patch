@@ -1,0 +1,47 @@
+From 071567ef70ff6b769b6ff3401a77925148821314 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 28 Sep 2021 10:53:36 +0200
+Subject: [PATCH 2/4] ntdll: Push and pop flags first in
+ __wine_syscall_dispatcher.
+
+So that we don't unnecessarily overwrite the return address.
+---
+ dlls/ntdll/unix/signal_i386.c   | 2 +-
+ dlls/ntdll/unix/signal_x86_64.c | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
+index 6bb5649e2b5..bcc6994d233 100644
+--- a/dlls/ntdll/unix/signal_i386.c
++++ b/dlls/ntdll/unix/signal_i386.c
+@@ -2473,11 +2473,11 @@ __ASM_GLOBAL_FUNC( signal_exit_thread,
+ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    "movl %fs:0x1f8,%ecx\n\t"       /* x86_thread_data()->syscall_frame */
+                    "movw $0,0x02(%ecx)\n\t"        /* frame->restore_flags */
+-                   "popl 0x08(%ecx)\n\t"           /* frame->eip */
+                    "pushfl\n\t"
+                    "pushl $0x202\n\t"
+                    "popfl\n\t"
+                    "popl 0x04(%ecx)\n"             /* frame->eflags */
++                   "popl 0x08(%ecx)\n\t"           /* frame->eip */
+                    __ASM_NAME("__wine_syscall_dispatcher_prolog_end") ":\n\t"
+                    "movl %esp,0x0c(%ecx)\n\t"      /* frame->esp */
+                    "movw %cs,0x10(%ecx)\n\t"
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index b73d54b2cb3..9798cbcc22f 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -3132,9 +3132,9 @@ __ASM_GLOBAL_FUNC( signal_exit_thread,
+ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    "movq %gs:0x30,%rcx\n\t"
+                    "movq 0x328(%rcx),%rcx\n\t"     /* amd64_thread_data()->syscall_frame */
+-                   "popq 0x70(%rcx)\n\t"           /* frame->rip */
+                    "pushfq\n\t"
+                    "popq 0x80(%rcx)\n\t"
++                   "popq 0x70(%rcx)\n\t"           /* frame->rip */
+                    "movl $0,0x94(%rcx)\n\t"        /* frame->restore_flags */
+                    __ASM_NAME("__wine_syscall_dispatcher_prolog_end") ":\n\t"
+                    "movq %rax,0x00(%rcx)\n\t"
+-- 
+2.34.1
+

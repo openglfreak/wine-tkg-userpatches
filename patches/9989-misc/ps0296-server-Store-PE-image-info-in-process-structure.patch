@@ -1,0 +1,118 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH] server: Store PE image info in process structure.
+Message-Id: <20211231115143.1258386-1-pgofman@codeweavers.com>
+Date: Fri, 31 Dec 2021 14:51:43 +0300
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=51829
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+     The effect of the blamed commit 7ef35b33936682c01f1c825b7d1b07567a691c12
+     is that before the commit a process was failing to create due to NT image path passed to
+     RtlCreateUserProcess(). That was wrong, NT path are what actually works on Windows and
+     DOS paths do not. When the process creation working after the commit the new process started
+     failing early in initialization due to the parent process unmapping the image section and
+     remapping that as an anoymous mapping before the user part of process was initialized
+     (build_main_module() needs correct image info from NtQueryInformationProcess( ProcessImageInformation ).
+     The process failure at that stage makes parent process wait for 20 sec until timeout.
+
+ dlls/kernel32/tests/loader.c | 15 +++++++++++++++
+ server/mapping.c             |  1 +
+ server/process.c             | 13 ++-----------
+ server/process.h             |  1 +
+ 4 files changed, 19 insertions(+), 11 deletions(-)
+
+diff --git a/dlls/kernel32/tests/loader.c b/dlls/kernel32/tests/loader.c
+index c5857174403..f990d632f73 100644
+--- a/dlls/kernel32/tests/loader.c
++++ b/dlls/kernel32/tests/loader.c
+@@ -1931,9 +1931,11 @@ static void test_section_access(void)
+     char temp_path[MAX_PATH];
+     char dll_name[MAX_PATH];
+     SIZE_T size;
++    SECTION_IMAGE_INFORMATION image_info;
+     MEMORY_BASIC_INFORMATION info;
+     STARTUPINFOA sti;
+     PROCESS_INFORMATION pi;
++    NTSTATUS status;
+     DWORD ret;
+ 
+     /* prevent displaying of the "Unable to load this DLL" message box */
+@@ -2084,6 +2086,19 @@ static void test_section_access(void)
+             ok(!memcmp(buf, section_data, section.SizeOfRawData), "wrong section data\n");
+         }
+ 
++        status = NtQueryInformationProcess(pi.hProcess, ProcessImageInformation,
++                &image_info, sizeof(image_info), NULL );
++        ok(!status, "Got unexpected status %#x.\n", status);
++        ok(!(image_info.ImageCharacteristics & IMAGE_FILE_DLL),
++                "Got unexpected characteristics %#x.\n", nt_header.FileHeader.Characteristics);
++        status = NtUnmapViewOfSection(pi.hProcess, info.BaseAddress);
++        ok(!status, "Got unexpected status %#x.\n", status);
++        status = NtQueryInformationProcess(pi.hProcess, ProcessImageInformation,
++                &image_info, sizeof(image_info), NULL );
++        ok(!status, "Got unexpected status %#x.\n", status);
++        ok(!(image_info.ImageCharacteristics & IMAGE_FILE_DLL),
++                "Got unexpected characteristics %#x.\n", nt_header.FileHeader.Characteristics);
++
+         SetLastError(0xdeadbeef);
+         ret = TerminateProcess(pi.hProcess, 0);
+         ok(ret, "TerminateProcess() error %d\n", GetLastError());
+diff --git a/server/mapping.c b/server/mapping.c
+index bc9ed5bdcb9..c421bd9961d 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -408,6 +408,7 @@ static void add_process_view( struct thread *thread, struct memory_view *view )
+             process->image = NULL;
+             if (get_view_nt_name( view, &name ) && (process->image = memdup( name.str, name.len )))
+                 process->imagelen = name.len;
++            process->pe_info = view->image;
+             return;
+         }
+     }
+diff --git a/server/process.c b/server/process.c
+index 0cc7f6b60ee..a14950e456b 100644
+--- a/server/process.c
++++ b/server/process.c
+@@ -680,6 +680,7 @@ struct process *create_process( int fd, struct process *parent, unsigned int fla
+     process->esync_fd        = -1;
+     process->fsync_idx       = 0;
+     process->cpu_override.cpu_count = 0;
++    memset( &process->pe_info, 0, sizeof(process->pe_info) );
+     list_init( &process->kernel_object );
+     list_init( &process->thread_list );
+     list_init( &process->locks );
+@@ -1502,17 +1503,7 @@ DECL_HANDLER(get_process_info)
+         reply->session_id       = process->session_id;
+         reply->machine          = process->machine;
+         if (get_reply_max_size())
+-        {
+-            client_ptr_t base;
+-            const pe_image_info_t *info;
+-            struct memory_view *view = get_exe_view( process );
+-            if (view)
+-            {
+-                if ((info = get_view_image_info( view, &base )))
+-                    set_reply_data( info, min( sizeof(*info), get_reply_max_size() ));
+-            }
+-            else set_error( STATUS_PROCESS_IS_TERMINATING );
+-        }
++            set_reply_data( &process->pe_info, min( sizeof(process->pe_info), get_reply_max_size() ));
+         release_object( process );
+     }
+ }
+diff --git a/server/process.h b/server/process.h
+index 22ee8178368..d14df38a13f 100644
+--- a/server/process.h
++++ b/server/process.h
+@@ -89,6 +89,7 @@ struct process
+     int                  esync_fd;        /* esync file descriptor (signaled on exit) */
+     unsigned int         fsync_idx;
+     struct cpu_topology_override cpu_override; /* Overridden CPUs to host CPUs mapping. */
++    pe_image_info_t      pe_info;         /* image info */
+ };
+ 
+ /* process functions */
+
+-- 
+2.33.1
+

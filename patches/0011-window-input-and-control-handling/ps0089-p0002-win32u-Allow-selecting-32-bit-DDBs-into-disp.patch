@@ -1,0 +1,57 @@
+From: Zhiyi Zhang <zzhang@codeweavers.com>
+Subject: [PATCH 2/2] win32u: Allow selecting 32-bit DDBs into display compatible DCs.
+Message-Id: <1b4723cd-2965-dad2-2270-c70769ab6036@codeweavers.com>
+Date: Wed, 29 Dec 2021 15:32:52 +0800
+
+Device context bit depths other than 32-bit are emulated and the real bit depth for display DCs is
+still 32-bit. Thus, a 32-bit DDB should be allowed to be selected into a display compatible DC even
+if the DC reports a different bit depth.
+
+Fix a regression from d171d11.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=51805
+Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
+---
+ dlls/user32/tests/monitor.c | 2 --
+ dlls/win32u/bitmap.c        | 4 +++-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/user32/tests/monitor.c b/dlls/user32/tests/monitor.c
+index e745fb9c7b3..a857b295849 100644
+--- a/dlls/user32/tests/monitor.c
++++ b/dlls/user32/tests/monitor.c
+@@ -2301,7 +2301,6 @@ static void test_display_dc(void)
+             bpp = GetDeviceCaps(mem_dc, BITSPIXEL);
+             ok(bpp == dm2.dmBitsPerPel, "Expected bpp %d, got %d.\n", dm2.dmBitsPerPel, bpp);
+             old_hbitmap = SelectObject(mem_dc, hbitmap);
+-            todo_wine
+             ok(!!old_hbitmap, "Failed to select bitmap.\n");
+             bpp = GetDeviceCaps(mem_dc, BITSPIXEL);
+             ok(bpp == dm2.dmBitsPerPel, "Expected bpp %d, got %d.\n", dm2.dmBitsPerPel, bpp);
+@@ -2329,7 +2328,6 @@ static void test_display_dc(void)
+                     ok(!old_hbitmap || broken(!!old_hbitmap) /* Win7 dual-QXL test bot and XP */,
+                        "Selecting bitmap succeeded.\n");
+                 else
+-                    todo_wine_if(bpps[i] == 32)
+                     ok(!!old_hbitmap || broken(!old_hbitmap) /* Win7 dual-QXL test bot and XP */,
+                        "Failed to select bitmap.\n");
+ 
+diff --git a/dlls/win32u/bitmap.c b/dlls/win32u/bitmap.c
+index 00c8b347af5..2be88715948 100644
+--- a/dlls/win32u/bitmap.c
++++ b/dlls/win32u/bitmap.c
+@@ -401,7 +401,9 @@ HGDIOBJ WINAPI NtGdiSelectBitmap( HDC hdc, HGDIOBJ handle )
+ 
+     if (!is_bitmapobj_dib( bitmap ) &&
+         bitmap->dib.dsBm.bmBitsPixel != 1 &&
+-        bitmap->dib.dsBm.bmBitsPixel != NtGdiGetDeviceCaps( hdc, BITSPIXEL ))
++        bitmap->dib.dsBm.bmBitsPixel != NtGdiGetDeviceCaps( hdc, BITSPIXEL ) &&
++        /* Display compatible DCs should accept 32-bit DDBs because other color depths are emulated */
++        !(NtGdiGetDeviceCaps( hdc, TECHNOLOGY ) == DT_RASDISPLAY && bitmap->dib.dsBm.bmBitsPixel == 32))
+     {
+         WARN( "Wrong format bitmap %u bpp\n", bitmap->dib.dsBm.bmBitsPixel );
+         GDI_ReleaseObj( handle );
+
+-- 
+2.32.0
+

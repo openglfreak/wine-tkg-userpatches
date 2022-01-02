@@ -1,0 +1,40 @@
+From: Keno Fischer <keno@juliacomputing.com>
+Subject: [PATCH] conhost: Fix status for READ_CONSOLE ioctl
+Message-Id: <Ycx6T+/FtXr14Bid@juliacomputing.com>
+Date: Wed, 29 Dec 2021 10:10:07 -0500
+
+Without this patch conhost would attempt to process non-existent input,
+spewing stdout with various cursor moves and incorrectly returning
+the ReadConsole call early. Fix that by only attempting input processing
+if there are actually input records to be processed and properly
+returning STATUS_PENDING if the input processing is not yet complete.
+
+Signed-off-by: Keno Fischer <keno@juliacomputing.com>
+---
+ programs/conhost/conhost.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/programs/conhost/conhost.c b/programs/conhost/conhost.c
+index 78f6e345170..64a77e52b43 100644
+--- a/programs/conhost/conhost.c
++++ b/programs/conhost/conhost.c
+@@ -1385,7 +1385,14 @@ static NTSTATUS read_console( struct console *console, unsigned int ioctl, size_
+     if (edit_line_grow( console, 1 )) console->edit_line.buf[0] = 0;
+ 
+     console->pending_read = out_size;
+-    return process_console_input( console );
++
++    /* If there are any pending input records, cook them now. */
++    if (console->record_count)
++    {
++        process_console_input( console );
++    }
++
++    return console->edit_line.status;
+ }
+ 
+ /* add input events to a console input queue */
+
+-- 
+2.25.1
+

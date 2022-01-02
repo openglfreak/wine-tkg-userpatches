@@ -1,9 +1,7 @@
-From: "Rémi Bernon" <rbernon@codeweavers.com>
-Subject: [PATCH 4/4] xinput1_3: Register device notifications in DllMain.
-Message-Id: <20211223143311.3563916-4-rbernon@codeweavers.com>
-Date: Thu, 23 Dec 2021 15:33:11 +0100
-In-Reply-To: <20211223143311.3563916-1-rbernon@codeweavers.com>
-References: <20211223143311.3563916-1-rbernon@codeweavers.com>
+From 2cf14211c30984d75161d44b0f4555a03a05f6e3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 22 Dec 2021 20:29:01 +0100
+Subject: [PATCH 2/9] xinput1_3: Register device notifications in DllMain.
 
 Instead of doing it lazily, which is more likely to be after the game
 has registered theirs. As the message handling order is the same as the
@@ -15,17 +13,15 @@ or XInputGetState from their window proc, expecting XInput controller
 list to be updated already. If the controller is missing they won't try
 calling XInput functions again until another WM_DEVICECHANGE message is
 received.
-
-Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
 ---
  dlls/xinput1_3/main.c | 55 ++++++++++++++++++++++---------------------
  1 file changed, 28 insertions(+), 27 deletions(-)
 
 diff --git a/dlls/xinput1_3/main.c b/dlls/xinput1_3/main.c
-index 506802d142a..4536b027dc2 100644
+index 6711419dd09..859f3f1208d 100644
 --- a/dlls/xinput1_3/main.c
 +++ b/dlls/xinput1_3/main.c
-@@ -119,7 +119,8 @@ static struct xinput_controller controllers[XUSER_MAX_COUNT] =
+@@ -124,7 +124,8 @@ static struct xinput_controller controllers[XUSER_MAX_COUNT] =
      {{ &controller_critsect_debug[3], -1, 0, 0, 0, 0 }},
  };
  
@@ -35,7 +31,7 @@ index 506802d142a..4536b027dc2 100644
  static HANDLE start_event;
  static HANDLE stop_event;
  static HANDLE done_event;
-@@ -654,34 +655,14 @@ static DWORD WINAPI hid_update_thread_proc(void *param)
+@@ -683,34 +684,14 @@ static DWORD WINAPI hid_update_thread_proc(void *param)
      struct xinput_controller *devices[XUSER_MAX_COUNT + 2];
      HANDLE events[XUSER_MAX_COUNT + 2];
      DWORD i, count = 2, ret = WAIT_TIMEOUT;
@@ -71,7 +67,7 @@ index 506802d142a..4536b027dc2 100644
          if (ret == WAIT_TIMEOUT) update_controller_list();
          if (ret < count - 2) read_controller_state(devices[ret]);
  
-@@ -704,10 +685,6 @@ static DWORD WINAPI hid_update_thread_proc(void *param)
+@@ -733,10 +714,6 @@ static DWORD WINAPI hid_update_thread_proc(void *param)
      while ((ret = MsgWaitForMultipleObjectsEx(count, events, 2000, QS_ALLINPUT, MWMO_ALERTABLE)) < count - 1 ||
              ret == count || ret == WAIT_TIMEOUT);
  
@@ -82,7 +78,7 @@ index 506802d142a..4536b027dc2 100644
      if (ret != count - 1) ERR("update thread exited unexpectedly, ret %u\n", ret);
      SetEvent(done_event);
      return ret;
-@@ -765,15 +742,39 @@ static void controller_unlock(struct xinput_controller *controller)
+@@ -794,15 +771,39 @@ static void controller_unlock(struct xinput_controller *controller)
  
  BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
  {
@@ -123,7 +119,6 @@ index 506802d142a..4536b027dc2 100644
          break;
      }
      return TRUE;
-
 -- 
 2.34.1
 

@@ -1,13 +1,15 @@
 From: Dmitry Timoshkov <dmitry@baikal.ru>
-Subject: [PATCH v2 1/2] server: Terminating '\' in the registry root name is optional.
-Message-Id: <20211207100103.4fc0a6f0f9b47d1ab5e98f87@baikal.ru>
-Date: Tue, 7 Dec 2021 10:01:03 +0300
+Subject: [PATCH v3 1/2] server: Terminating '\' in the registry root name is optional.
+Message-Id: <20211227160958.01fd90541b91b307ab9fdbf7@baikal.ru>
+Date: Mon, 27 Dec 2021 16:09:58 +0300
+
+v3: Check the length and reject invalid root name.
 
 Signed-off-by: Dmitry Timoshkov <dmitry@baikal.ru>
 ---
  dlls/ntdll/tests/reg.c |  2 --
- server/registry.c      | 26 +++++++++++++++++++++++---
- 2 files changed, 23 insertions(+), 5 deletions(-)
+ server/registry.c      | 62 ++++++++++++++++++++++++++++++++++++++----
+ 2 files changed, 56 insertions(+), 8 deletions(-)
 
 diff --git a/dlls/ntdll/tests/reg.c b/dlls/ntdll/tests/reg.c
 index 91b752ac069..74d82b85be4 100644
@@ -30,7 +32,7 @@ index 91b752ac069..74d82b85be4 100644
          "NtCreateKey failed: 0x%08x\n", status );
      if (!status) pNtClose( subkey );
 diff --git a/server/registry.c b/server/registry.c
-index b00abdbc004..00b8e47be03 100644
+index b00abdbc004..4ed3ee9896e 100644
 --- a/server/registry.c
 +++ b/server/registry.c
 @@ -127,7 +127,7 @@ static const timeout_t save_period = 30 * -TICKS_PER_SEC;  /* delay between peri
@@ -60,54 +62,112 @@ index b00abdbc004..00b8e47be03 100644
      return (WCHAR *)ret;
  }
  
-@@ -483,6 +483,11 @@ static inline void get_req_path( struct unicode_str *str, int skip_root )
+@@ -474,7 +474,7 @@ static void key_destroy( struct object *obj )
+ }
+ 
+ /* get the request vararg as registry path */
+-static inline void get_req_path( struct unicode_str *str, int skip_root )
++static inline struct unicode_str *get_req_path( struct unicode_str *str, int skip_root )
+ {
+     str->str = get_req_data();
+     str->len = (get_req_data_size() / sizeof(WCHAR)) * sizeof(WCHAR);
+@@ -483,7 +483,19 @@ static inline void get_req_path( struct unicode_str *str, int skip_root )
      {
          str->str += ARRAY_SIZE( root_name );
          str->len -= sizeof(root_name);
-+        if (str->len && str->str[0] == '\\')
++        if (str->len)
 +        {
++            if (str->str[0] != '\\')
++            {
++                set_error( STATUS_OBJECT_PATH_INVALID );
++                return NULL;
++            }
++
 +            str->str++;
 +            str->len -= sizeof(WCHAR);
 +        }
      }
++    return str;
  }
  
-@@ -734,6 +739,11 @@ static struct key *follow_symlink( struct key *key, int iteration )
+ /* return the next token in a given path */
+@@ -734,6 +746,12 @@ static struct key *follow_symlink( struct key *key, int iteration )
      if (memicmp_strW( path.str, root_name, sizeof(root_name) )) return NULL;
      path.str += ARRAY_SIZE( root_name );
      path.len -= sizeof(root_name);
-+    if (path.len && path.str[0] == '\\')
++    if (path.len)
 +    {
++        if (path.str[0] != '\\') return NULL;
 +        path.str++;
 +        path.len -= sizeof(WCHAR);
 +    }
  
      key = root_key;
      token.str = NULL;
-@@ -2156,6 +2166,11 @@ DECL_HANDLER(create_key)
+@@ -2156,6 +2174,17 @@ DECL_HANDLER(create_key)
      {
          name.str += ARRAY_SIZE( root_name );
          name.len -= sizeof(root_name);
-+        if (name.len && name.str[0] == '\\')
++        if (name.len)
 +        {
++            if (name.str[0] != '\\')
++            {
++                set_error( STATUS_OBJECT_PATH_INVALID );
++                return;
++            }
++
 +            name.str++;
 +            name.len -= sizeof(WCHAR);
 +        }
      }
  
      /* NOTE: no access rights are required from the parent handle to create a key */
-@@ -2314,6 +2329,11 @@ DECL_HANDLER(load_registry)
+@@ -2184,7 +2213,12 @@ DECL_HANDLER(open_key)
+     /* NOTE: no access rights are required to open the parent key, only the child key */
+     if ((parent = get_parent_hkey_obj( req->parent )))
+     {
+-        get_req_path( &name, !req->parent );
++        if (!get_req_path( &name, !req->parent ))
++        {
++            release_object( parent );
++            return;
++        }
++
+         if ((key = open_key( parent, &name, access, req->attributes )))
+         {
+             reply->hkey = alloc_handle( current->process, key, access, req->attributes );
+@@ -2314,6 +2348,17 @@ DECL_HANDLER(load_registry)
      {
          name.str += ARRAY_SIZE( root_name );
          name.len -= sizeof(root_name);
-+        if (name.len && name.str[0] == '\\')
++        if (name.len)
 +        {
++            if (name.str[0] != '\\')
++            {
++                set_error( STATUS_OBJECT_PATH_INVALID );
++                return;
++            }
++
 +            name.str++;
 +            name.len -= sizeof(WCHAR);
 +        }
      }
  
      if ((parent = get_parent_hkey_obj( objattr->rootdir )))
+@@ -2344,7 +2389,12 @@ DECL_HANDLER(unload_registry)
+ 
+     if ((parent = get_parent_hkey_obj( req->parent )))
+     {
+-        get_req_path( &name, !req->parent );
++        if (!get_req_path( &name, !req->parent ))
++        {
++            release_object( parent );
++            return;
++        }
++
+         if ((key = open_key( parent, &name, access, req->attributes )))
+         {
+             if (key->obj.handle_count)
 
 -- 
 2.34.1

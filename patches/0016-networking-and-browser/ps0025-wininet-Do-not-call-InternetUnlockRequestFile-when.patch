@@ -1,0 +1,56 @@
+From: Robert Wilhelm <robert.wilhelm@gmx.net>
+Subject: [PATCH] wininet: Do not call InternetUnlockRequestFile when locking failed.
+Message-Id: <162cef65ac4a0d32f7990717bb2d81a3144ca7ab.camel@gmx.net>
+Date: Wed, 29 Dec 2021 21:40:04 +0100
+
+This should fix crashes on W10L vms, when we pass NULL to InternetUnlockRequestFile after prior lock already failed.
+Crashes are here: https://test.winehq.org/data/tests/wininet:http.html
+Behavior after crash is here: https://testbot.winehq.org/JobDetails.pl?Key=104580
+
+Signed-off-by: Robert Wilhelm <robert.wilhelm@gmx.net>
+---
+ dlls/wininet/tests/http.c | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/wininet/tests/http.c b/dlls/wininet/tests/http.c
+index cf3f62f868a..ee56c64fbd9 100644
+--- a/dlls/wininet/tests/http.c
++++ b/dlls/wininet/tests/http.c
+@@ -1718,10 +1718,13 @@ static void InternetLockRequestFile_test(void)
+
+     ret = InternetLockRequestFile(req.request, &lock2);
+     ok(ret, "InternetLockRequestFile returned: %x(%u)\n", ret, GetLastError());
++    ok(lock2 != NULL, "lock2 == NULL\n");
+     ok(lock == lock2, "lock != lock2\n");
+
+-    ret = InternetUnlockRequestFile(lock2);
+-    ok(ret, "InternetUnlockRequestFile failed: %u\n", GetLastError());
++    if (lock2) {
++        ret = InternetUnlockRequestFile(lock2);
++        ok(ret, "InternetUnlockRequestFile failed: %u\n", GetLastError());
++    }
+
+     ret = DeleteFileA(file_name);
+     ok(!ret && GetLastError() == ERROR_SHARING_VIOLATION, "Deleting file returned %x(%u)\n", ret, GetLastError());
+@@ -1731,8 +1734,12 @@ static void InternetLockRequestFile_test(void)
+     ret = DeleteFileA(file_name);
+     ok(!ret && GetLastError() == ERROR_SHARING_VIOLATION, "Deleting file returned %x(%u)\n", ret, GetLastError());
+
+-    ret = InternetUnlockRequestFile(lock);
+-    ok(ret, "InternetUnlockRequestFile failed: %u\n", GetLastError());
++    ok(lock != NULL, "lock == 0\n");
++    if (lock)
++    {
++        ret = InternetUnlockRequestFile(lock);
++        ok(ret, "InternetUnlockRequestFile failed: %u\n", GetLastError());
++    }
+
+     ret = DeleteFileA(file_name);
+     ok(ret, "Deleting file returned %x(%u)\n", ret, GetLastError());
+--
+2.31.1
+
+
+
+
+

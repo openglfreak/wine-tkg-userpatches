@@ -1,32 +1,35 @@
 From: Jinoh Kang <jinoh.kang.kr@gmail.com>
-Subject: [PATCH v7 2/2] ntdll: Properly track refcount with forwarded exports.
-Message-Id: <301b5e1e-d86f-cefe-8dfb-347f473f444e@gmail.com>
-Date: Thu, 16 Dec 2021 01:41:16 +0900
-In-Reply-To: <8121099e-1cb3-0ed7-c6c4-5a8a2a704751@gmail.com>
-References: <8121099e-1cb3-0ed7-c6c4-5a8a2a704751@gmail.com>
+Subject: [PATCH v8 2/2] ntdll: Properly track refcount with forwarded exports.
+Message-Id: <eaa2331b-c744-7e69-5ef1-cb4e59729874@gmail.com>
+Date: Thu, 20 Jan 2022 02:02:18 +0900
+In-Reply-To: <b4bfba5e-1cd1-3130-5b5d-56c79f80c0f6@gmail.com>
+References: <b4bfba5e-1cd1-3130-5b5d-56c79f80c0f6@gmail.com>
 
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52094
 Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
 ---
- dlls/kernel32/tests/loader.c |  4 ---
+
+Notes:
+    v7 -> v8:
+    - Also do GetProcAddress for forwarded ordinal exports
+
+ dlls/kernel32/tests/loader.c |  3 --
  dlls/ntdll/loader.c          | 69 ++++++++++++++++++++----------------
- 2 files changed, 39 insertions(+), 34 deletions(-)
+ 2 files changed, 39 insertions(+), 33 deletions(-)
 
 diff --git a/dlls/kernel32/tests/loader.c b/dlls/kernel32/tests/loader.c
-index 8c5ab88d9d7..6a19ed0e858 100644
+index 1efd5a7fa5d..40882d3ee34 100644
 --- a/dlls/kernel32/tests/loader.c
 +++ b/dlls/kernel32/tests/loader.c
-@@ -1716,9 +1716,7 @@ static void test_static_forwarded_import_refs(void)
+@@ -1693,7 +1693,6 @@ static void test_static_forwarded_import_refs(void)
+     FreeLibrary( userenv );
+     FreeLibrary( shlwapi );
  
-     if (!skiptest_flag)
-     {
--        todo_wine
-         ok( !!GetModuleHandleA( "forward1.dll" ), "forward1.dll unexpectedly unloaded\n" );
--        todo_wine
-         ok( !!GetModuleHandleA( "forward2.dll" ), "forward2.dll unexpectedly unloaded\n" );
-         ok( !!GetModuleHandleA( "forward3.dll" ), "forward3.dll unexpectedly unloaded\n" );
-     }
-@@ -1777,9 +1775,7 @@ static void test_dynamic_forwarded_import_refs(void)
+-    todo_wine
+     ok( !!GetModuleHandleA( "userenv.dll" ), "userenv.dll unexpectedly unloaded\n" );
+     ok( !!GetModuleHandleA( "shlwapi.dll" ), "shlwapi.dll unexpectedly unloaded\n" );
+ 
+@@ -1756,9 +1755,7 @@ static void test_dynamic_forwarded_import_refs(void)
      FreeLibrary( forward1 );
      FreeLibrary( forward2 );
  
@@ -37,7 +40,7 @@ index 8c5ab88d9d7..6a19ed0e858 100644
  
      FreeLibrary( forward3 );
 diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
-index d11f3f0f79d..d251ee8b283 100644
+index 362e1c66be5..6852f0280af 100644
 --- a/dlls/ntdll/loader.c
 +++ b/dlls/ntdll/loader.c
 @@ -749,7 +749,7 @@ static FARPROC find_forwarded_export( HMODULE module, const char *forward, LPCWS

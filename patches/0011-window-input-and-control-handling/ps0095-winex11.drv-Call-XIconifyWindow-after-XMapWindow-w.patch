@@ -1,0 +1,52 @@
+From f388824ab9784c3a47364f204f1f7443327ade71 Mon Sep 17 00:00:00 2001
+From: Zhiyi Zhang <zzhang@codeweavers.com>
+Date: Wed, 11 Nov 2020 10:41:42 +0800
+Subject: [PATCH] winex11.drv: Call XIconifyWindow() after XMapWindow() with a
+ minimized window.
+
+Mutter always unminimizes a window when handling map requests. So a window could be in
+normal state as far as Mutter concerns while Wine mistakenly considers it still minimized.
+
+Fix Disgaea PC black screen after Alt+Tab in fullscreen mode.
+
+CW-Bug-Id: #18364
+Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
+---
+ dlls/winex11.drv/window.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 07c453643a8..cd1d4c318d5 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1347,6 +1347,9 @@ static void map_window( HWND hwnd, DWORD new_style )
+             update_net_wm_states( data );
+             sync_window_style( data );
+             XMapWindow( data->display, data->whole_window );
++            /* Mutter always unminimizes windows when handling map requests. Restore iconic state */
++            if (new_style & WS_MINIMIZE)
++                XIconifyWindow( data->display, data->whole_window, data->vis.screen );
+             XFlush( data->display );
+             if (data->surface && data->vis.visualid != default_visual.visualid)
+                 data->surface->funcs->flush( data->surface );
+@@ -2938,14 +2941,20 @@ void CDECL X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, UINT swp_flags
+             data->iconic = (new_style & WS_MINIMIZE) != 0;
+             TRACE( "changing win %p iconic state to %u\n", data->hwnd, data->iconic );
+             if (data->iconic)
++            {
+                 XIconifyWindow( data->display, data->whole_window, data->vis.screen );
++            }
+             else if (is_window_rect_mapped( rectWindow ))
+             {
+                 if (swp_flags & SWP_NOACTIVATE)
+                     update_user_time( data->display, data->whole_window, 0 );
+                 else if ((time = x11drv_ticks_to_time( GetTickCount() )))
+                     update_user_time( data->display, data->whole_window, time );
++                /* whole_window could be both iconic and mapped. Since XMapWindow() doesn't do
++                 * anything if the window is already mapped, we need to unmap it first */
++                if (data->mapped)
++                    XUnmapWindow( data->display, data->whole_window );
+                 XMapWindow( data->display, data->whole_window );
+             }
+             update_net_wm_states( data );
+         }

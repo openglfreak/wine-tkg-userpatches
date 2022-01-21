@@ -1,7 +1,7 @@
 From: Jinoh Kang <jinoh.kang.kr@gmail.com>
-Subject: [PATCH v7 1/2] kernel32/tests: Test module refcounting with forwarded exports.
-Message-Id: <8121099e-1cb3-0ed7-c6c4-5a8a2a704751@gmail.com>
-Date: Thu, 16 Dec 2021 01:40:23 +0900
+Subject: [PATCH v8 1/2] kernel32/tests: Test module refcounting with forwarded exports.
+Message-Id: <b4bfba5e-1cd1-3130-5b5d-56c79f80c0f6@gmail.com>
+Date: Thu, 20 Jan 2022 02:00:51 +0900
 
 Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
 ---
@@ -27,34 +27,50 @@ Notes:
     v6 -> v7:
     - forward4.c
       - fix building without MinGW
+    
+    v7 -> v8:
+    - forward[1-3].c
+      - Call DisableThreadLibraryCalls in DllMain
+    - forward4.c: removed
+    - iatgas.h: removed
+    - sforward.c: new file
+    - loader.c
+      - test static forwarded import using shlwapi -> userenv forward
 
- dlls/kernel32/tests/Makefile.in   |  10 +-
- dlls/kernel32/tests/forward1.c    |  17 +++
+ dlls/kernel32/tests/Makefile.in   |  14 ++-
+ dlls/kernel32/tests/forward1.c    |  19 ++++
  dlls/kernel32/tests/forward1.spec |   2 +
- dlls/kernel32/tests/forward2.c    |   7 ++
+ dlls/kernel32/tests/forward2.c    |   9 ++
  dlls/kernel32/tests/forward2.spec |   2 +
- dlls/kernel32/tests/forward3.c    |   7 ++
+ dlls/kernel32/tests/forward3.c    |   9 ++
  dlls/kernel32/tests/forward3.spec |   2 +
- dlls/kernel32/tests/forward4.c    |  41 ++++++
- dlls/kernel32/tests/forward4.spec |   2 +
- dlls/kernel32/tests/iatgas.h      |  85 +++++++++++++
- dlls/kernel32/tests/loader.c      | 199 ++++++++++++++++++++++++++++++
- 11 files changed, 373 insertions(+), 1 deletion(-)
+ dlls/kernel32/tests/loader.c      | 177 ++++++++++++++++++++++++++++++
+ dlls/kernel32/tests/sforward.c    |  16 +++
+ dlls/kernel32/tests/sforward.spec |   1 +
+ 10 files changed, 249 insertions(+), 2 deletions(-)
  create mode 100644 dlls/kernel32/tests/forward1.c
  create mode 100644 dlls/kernel32/tests/forward1.spec
  create mode 100644 dlls/kernel32/tests/forward2.c
  create mode 100644 dlls/kernel32/tests/forward2.spec
  create mode 100644 dlls/kernel32/tests/forward3.c
  create mode 100644 dlls/kernel32/tests/forward3.spec
- create mode 100644 dlls/kernel32/tests/forward4.c
- create mode 100644 dlls/kernel32/tests/forward4.spec
- create mode 100644 dlls/kernel32/tests/iatgas.h
+ create mode 100644 dlls/kernel32/tests/sforward.c
+ create mode 100644 dlls/kernel32/tests/sforward.spec
 
 diff --git a/dlls/kernel32/tests/Makefile.in b/dlls/kernel32/tests/Makefile.in
-index e9516603ce9..7ef3508bad4 100644
+index e9516603ce9..1f8dd3b86a0 100644
 --- a/dlls/kernel32/tests/Makefile.in
 +++ b/dlls/kernel32/tests/Makefile.in
-@@ -37,4 +37,12 @@ SOURCES = \
+@@ -1,5 +1,7 @@
+ TESTDLL   = kernel32.dll
+-IMPORTS   = user32 advapi32
++
++# shlwapi is for testing export forwarding (to userenv)
++IMPORTS   = user32 advapi32 shlwapi
+ 
+ SOURCES = \
+ 	actctx.c \
+@@ -37,4 +39,12 @@ SOURCES = \
  	toolhelp.c \
  	version.c \
  	virtual.c \
@@ -66,19 +82,21 @@ index e9516603ce9..7ef3508bad4 100644
 +	forward2.spec \
 +	forward3.c \
 +	forward3.spec \
-+	forward4.c \
-+	forward4.spec
++	sforward.c \
++	sforward.spec
 diff --git a/dlls/kernel32/tests/forward1.c b/dlls/kernel32/tests/forward1.c
 new file mode 100644
-index 00000000000..985e193c958
+index 00000000000..6419d95eaea
 --- /dev/null
 +++ b/dlls/kernel32/tests/forward1.c
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,19 @@
 +#define WIN32_LEAN_AND_MEAN
 +#include <windows.h>
 +
 +BOOL WINAPI DllMain(HINSTANCE instance_new, DWORD reason, LPVOID reserved)
 +{
++    if (reason == DLL_PROCESS_ATTACH)
++        DisableThreadLibraryCalls( instance_new );
 +    return TRUE;
 +}
 +
@@ -101,15 +119,17 @@ index 00000000000..bf19fa7e011
 +2 cdecl -noname forward_test_func2()
 diff --git a/dlls/kernel32/tests/forward2.c b/dlls/kernel32/tests/forward2.c
 new file mode 100644
-index 00000000000..0ed3885e0df
+index 00000000000..d1e77f45f3c
 --- /dev/null
 +++ b/dlls/kernel32/tests/forward2.c
-@@ -0,0 +1,7 @@
+@@ -0,0 +1,9 @@
 +#define WIN32_LEAN_AND_MEAN
 +#include <windows.h>
 +
 +BOOL WINAPI DllMain(HINSTANCE instance_new, DWORD reason, LPVOID reserved)
 +{
++    if (reason == DLL_PROCESS_ATTACH)
++        DisableThreadLibraryCalls( instance_new );
 +    return TRUE;
 +}
 diff --git a/dlls/kernel32/tests/forward2.spec b/dlls/kernel32/tests/forward2.spec
@@ -122,15 +142,17 @@ index 00000000000..374156d8d06
 +2 cdecl -noname forward_test_func2() forward1.#2
 diff --git a/dlls/kernel32/tests/forward3.c b/dlls/kernel32/tests/forward3.c
 new file mode 100644
-index 00000000000..0ed3885e0df
+index 00000000000..d1e77f45f3c
 --- /dev/null
 +++ b/dlls/kernel32/tests/forward3.c
-@@ -0,0 +1,7 @@
+@@ -0,0 +1,9 @@
 +#define WIN32_LEAN_AND_MEAN
 +#include <windows.h>
 +
 +BOOL WINAPI DllMain(HINSTANCE instance_new, DWORD reason, LPVOID reserved)
 +{
++    if (reason == DLL_PROCESS_ATTACH)
++        DisableThreadLibraryCalls( instance_new );
 +    return TRUE;
 +}
 diff --git a/dlls/kernel32/tests/forward3.spec b/dlls/kernel32/tests/forward3.spec
@@ -141,157 +163,11 @@ index 00000000000..31d019aa071
 @@ -0,0 +1,2 @@
 +1 cdecl forward_test_func() forward2.forward_test_func
 +2 cdecl -noname forward_test_func2() forward2.#2
-diff --git a/dlls/kernel32/tests/forward4.c b/dlls/kernel32/tests/forward4.c
-new file mode 100644
-index 00000000000..df4cfe41c0c
---- /dev/null
-+++ b/dlls/kernel32/tests/forward4.c
-@@ -0,0 +1,41 @@
-+#define WIN32_LEAN_AND_MEAN
-+#include <windows.h>
-+
-+#if (defined(_MSC_VER) && defined(__clang__)) || defined(__MINGW32__) || defined(__CYGWIN__)
-+#include "wine/asm.h"
-+#include "iatgas.h"
-+
-+INLINE_IMPORT_BEGIN("forward3.dll")
-+    INLINE_IMPORT_BY_NAME(1, "forward_test_func", __ASM_NAME("forward_test_func"))
-+    INLINE_IMPORT_BY_ORDINAL(2, __ASM_NAME("forward_test_func2"))
-+INLINE_IMPORT_END()
-+
-+DECLSPEC_IMPORT extern unsigned long forward_test_func(void);
-+DECLSPEC_IMPORT extern unsigned long forward_test_func2(void);
-+
-+unsigned long test_func_stub(void)
-+{
-+    return forward_test_func() ^ forward_test_func2();
-+}
-+
-+const char skiptest[] = "";
-+#else
-+unsigned long test_func_stub(void)
-+{
-+    /* unimplemented */
-+    for (;;) DebugBreak();
-+}
-+
-+#ifdef _MSC_VER
-+const char skiptest[] = "TODO: support building import libraries for TESTDLLs in MSVC";
-+#elif defined(__WINE_PE_BUILD)
-+const char skiptest[] = "TODO: support building import libraries for TESTDLLs in other compilers";
-+#else
-+const char skiptest[] = "TODO: support building import libraries for TESTDLLs as Unixlib (--without-mingw)";
-+#endif
-+#endif
-+
-+BOOL WINAPI DllMain(HINSTANCE instance_new, DWORD reason, LPVOID reserved)
-+{
-+    return TRUE;
-+}
-diff --git a/dlls/kernel32/tests/forward4.spec b/dlls/kernel32/tests/forward4.spec
-new file mode 100644
-index 00000000000..5ff2f47469c
---- /dev/null
-+++ b/dlls/kernel32/tests/forward4.spec
-@@ -0,0 +1,2 @@
-+@ cdecl test_func_stub()
-+@ extern skiptest
-diff --git a/dlls/kernel32/tests/iatgas.h b/dlls/kernel32/tests/iatgas.h
-new file mode 100644
-index 00000000000..8d0184c9ae0
---- /dev/null
-+++ b/dlls/kernel32/tests/iatgas.h
-@@ -0,0 +1,85 @@
-+/*
-+ * Inline assembly import library generator
-+ *
-+ * Copyright 2021 Jinoh Kang
-+ *
-+ * This library is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU Lesser General Public
-+ * License as published by the Free Software Foundation; either
-+ * version 2.1 of the License, or (at your option) any later version.
-+ *
-+ * This library is distributed in the hope that it will be useful,
-+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-+ * Lesser General Public License for more details.
-+ *
-+ * You should have received a copy of the GNU Lesser General Public
-+ * License along with this library; if not, write to the Free Software
-+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
-+ */
-+
-+#ifndef __WINE_KERNEL_IATGAS_H
-+#define __WINE_KERNEL_IATGAS_H
-+
-+#if defined(_WIN64)
-+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-+#define IATGAS_ZERO_EXTEND_32_TO_PTR(line) line "\n\t.skip 4"
-+#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-+#define IATGAS_ZERO_EXTEND_32_TO_PTR(line) ".skip 4\n\t" line
-+#else
-+#error unknown byte order
-+#endif
-+#define IATGAS_EMIT_PTRALIGN ".p2align 3"
-+#define IATGAS_EMIT_IMPORT_BY_ORDINAL(ordinal) ".quad (1<<63)|(" #ordinal ")"
-+#elif defined(_WIN32)
-+#define IATGAS_ZERO_EXTEND_32_TO_PTR(line) line
-+#define IATGAS_EMIT_PTRALIGN ".p2align 2"
-+#define IATGAS_EMIT_IMPORT_BY_ORDINAL(ordinal) ".long (1<<31)|(" #ordinal ")"
-+#else
-+#error unknown pointer size
-+#endif
-+
-+#define INLINE_IMPORT_BEGIN_PROLOG(id) INLINE_IMPORT_BEGIN_PROLOG_(id)
-+#define INLINE_IMPORT_BEGIN_PROLOG_(id) \
-+    __asm__( \
-+        ".section \".idata$2\", \"a\"\n\t"  /* IMAGE_IMPORT_DESCRIPTOR  */ \
-+        ".rva .Limport_ilt_" #id "\n\t"     /*   .OriginalFirstThunk    */ \
-+        ".long 0\n\t"                       /*   .TimeDateStamp         */ \
-+        ".long -1\n\t"                      /*   .ForwarderChain        */ \
-+        ".rva .Limport_dllname_" #id "\n\t" /*   .Name                  */ \
-+        ".rva .Limport_iat_" #id "\n\t"     /*   .FirstThunk            */ \
-+        ".p2align 2\n\t"                    /* (section alignment)      */ \
-+        ".section \".idata$4\", \"a\"\n\t"  /* IMAGE_THUNK_DATA (ILT)   */ \
-+        IATGAS_EMIT_PTRALIGN "\n\t" \
-+        ".Limport_ilt_" #id ":\n\t" \
-+        ".section \".idata$5\", \"a\"\n\t"  /* IMAGE_THUNK_DATA (IAT)   */ \
-+        IATGAS_EMIT_PTRALIGN "\n\t" \
-+        ".Limport_iat_" #id ":\n\t" \
-+        ".section \".idata$7\", \"a\"\n\t" \
-+        ".Limport_dllname_" #id ":\n\t"
-+#define INLINE_IMPORT_BEGIN(dll_name) INLINE_IMPORT_BEGIN_PROLOG(__COUNTER__) \
-+        ".asciz \"" dll_name "\"\n\t"
-+#define INLINE_IMPORT_ENTRY(entry, impsym) \
-+        ".section \".idata$4\", \"a\"\n\t"  /* IMAGE_THUNK_DATA (ILT)   */ \
-+        entry "\n\t"                        /*   .AddressOfData | .Ordinal */ \
-+        ".section \".idata$5\", \"a\"\n\t" \
-+        "__imp_" impsym ":\n\t"             /* IMAGE_THUNK_DATA (IAT)   */ \
-+        entry "\n\t"                        /*   .AddressOfData | .Ordinal */
-+#define INLINE_IMPORT_BY_ORDINAL(ordinal, impsym) \
-+        INLINE_IMPORT_ENTRY(IATGAS_EMIT_IMPORT_BY_ORDINAL(ordinal), impsym)
-+#define INLINE_IMPORT_BY_NAME(hint, name, impsym) \
-+        INLINE_IMPORT_ENTRY(IATGAS_ZERO_EXTEND_32_TO_PTR(".rva .Limport_procname_" impsym), impsym) \
-+        ".section \".idata$6\", \"a\"\n\t" \
-+        ".Limport_procname_" impsym ":\n\t" /* IMAGE_IMPORT_BY_NAME     */ \
-+        ".short " #hint "\n\t"              /*   .Hint                  */ \
-+        ".asciz \"" name "\"\n\t"           /*   .Name                  */ \
-+        ".p2align 1\n\t"                    /* (section alignment)      */
-+#define INLINE_IMPORT_END() \
-+        ".section \".idata$4\", \"a\"\n\t"  /* IMAGE_THUNK_DATA (ILT)   */ \
-+        IATGAS_ZERO_EXTEND_32_TO_PTR(".long 0") "\n\t" \
-+        ".section \".idata$5\", \"a\"\n\t"  /* IMAGE_THUNK_DATA (IAT)   */ \
-+        IATGAS_ZERO_EXTEND_32_TO_PTR(".long 0") "\n\t" \
-+        ".text" \
-+    );
-+
-+#endif
 diff --git a/dlls/kernel32/tests/loader.c b/dlls/kernel32/tests/loader.c
-index 308cf1a44a0..8c5ab88d9d7 100644
+index f990d632f73..1efd5a7fa5d 100644
 --- a/dlls/kernel32/tests/loader.c
 +++ b/dlls/kernel32/tests/loader.c
-@@ -1641,6 +1641,202 @@ static void test_ImportDescriptors(void)
+@@ -1642,6 +1642,180 @@ static void test_ImportDescriptors(void)
      }
  }
  
@@ -315,79 +191,48 @@ index 308cf1a44a0..8c5ab88d9d7 100644
 +
 +static void test_static_forwarded_import_refs(void)
 +{
-+    CHAR temp_path[MAX_PATH], dir_path[MAX_PATH];
-+    CHAR forward1_path[MAX_PATH];
-+    CHAR forward2_path[MAX_PATH];
-+    CHAR forward3_path[MAX_PATH];
-+    CHAR forward4_path[MAX_PATH];
-+    HMODULE forward1, forward2, forward3, forward4;
-+    unsigned long result;
-+    unsigned long (*test_func_stub)(void);
-+    const char *skiptest;
-+    BOOL skiptest_flag = FALSE;
++    CHAR temp_path[MAX_PATH], dir_path[MAX_PATH], sforward_path[MAX_PATH];
++    HMODULE userenv, shlwapi, sforward;
++    FARPROC test_func_stub;
++
++    if (GetModuleHandleA( "userenv.dll" ))
++    {
++        skip("cannot test since userenv.dll is already loaded\n");
++        return;
++    }
 +
 +    GetTempPathA( ARRAY_SIZE(temp_path), temp_path );
 +    GetTempFileNameA( temp_path, "ldr", GetTickCount() | 1UL, dir_path );
 +    ok( CreateDirectoryA( dir_path, NULL ), "failed to create dir %s, error %u\n",
 +        dir_path, GetLastError() );
 +
-+    snprintf( forward1_path, MAX_PATH, "%s\\forward1.dll", dir_path );
-+    snprintf( forward2_path, MAX_PATH, "%s\\forward2.dll", dir_path );
-+    snprintf( forward3_path, MAX_PATH, "%s\\forward3.dll", dir_path );
-+    snprintf( forward4_path, MAX_PATH, "%s\\forward4.dll", dir_path );
-+    extract_resource( "forward1.dll", "TESTDLL", forward1_path );
-+    extract_resource( "forward2.dll", "TESTDLL", forward2_path );
-+    extract_resource( "forward3.dll", "TESTDLL", forward3_path );
-+    extract_resource( "forward4.dll", "TESTDLL", forward4_path );
++    snprintf( sforward_path, MAX_PATH, "%s\\sforward.dll", dir_path );
++    extract_resource( "sforward.dll", "TESTDLL", sforward_path );
 +
-+    forward1 = LoadLibraryA( forward1_path );
-+    ok( !!forward1, "couldn't find %s: %u\n", forward1_path, GetLastError() );
-+    forward2 = LoadLibraryA( forward2_path );
-+    ok( !!forward2, "couldn't find %s: %u\n", forward2_path, GetLastError() );
-+    forward3 = LoadLibraryA( forward3_path );
-+    ok( !!forward3, "couldn't find %s: %u\n", forward3_path, GetLastError() );
-+    forward4 = LoadLibraryA( forward4_path );
-+    ok( !!forward4, "couldn't find %s: %u\n", forward4_path, GetLastError() );
++    userenv = LoadLibraryA( "userenv.dll" );
++    ok( !!userenv, "couldn't find userenv.dll: %u\n", GetLastError() );
++    shlwapi = LoadLibraryA( "shlwapi.dll" );
++    ok( !!shlwapi, "couldn't find shlwapi.dll: %u\n", GetLastError() );
++    sforward = LoadLibraryA( sforward_path );
++    ok( !!sforward, "couldn't find %s: %u\n", sforward_path, GetLastError() );
 +
-+    skiptest = (const char *)GetProcAddress( forward4, "skiptest" );
-+    if (skiptest && *skiptest)
-+    {
-+        skiptest_flag = TRUE;
-+        skip( "forward4: %s\n", skiptest );
-+    }
-+    else
-+    {
-+        test_func_stub = (void *)GetProcAddress( forward4, "test_func_stub" );
-+        ok( !!test_func_stub, "forward4!test_func_stub not found\n" );
-+        result = test_func_stub ? test_func_stub() : -1UL;
-+        ok( result == 0x12345678UL, "forward4!test_func_stub returned %#lx (expected %#lx)\n",
-+            result, 0x12345678UL );
-+    }
++    test_func_stub = GetProcAddress( sforward, "test_func_stub" );
++    ok( !!test_func_stub, "sforward!test_func_stub not found\n" );
 +
-+    FreeLibrary( forward1 );
-+    FreeLibrary( forward2 );
-+    FreeLibrary( forward3 );
++    FreeLibrary( userenv );
++    FreeLibrary( shlwapi );
 +
-+    if (!skiptest_flag)
-+    {
-+        todo_wine
-+        ok( !!GetModuleHandleA( "forward1.dll" ), "forward1.dll unexpectedly unloaded\n" );
-+        todo_wine
-+        ok( !!GetModuleHandleA( "forward2.dll" ), "forward2.dll unexpectedly unloaded\n" );
-+        ok( !!GetModuleHandleA( "forward3.dll" ), "forward3.dll unexpectedly unloaded\n" );
-+    }
++    todo_wine
++    ok( !!GetModuleHandleA( "userenv.dll" ), "userenv.dll unexpectedly unloaded\n" );
++    ok( !!GetModuleHandleA( "shlwapi.dll" ), "shlwapi.dll unexpectedly unloaded\n" );
 +
-+    FreeLibrary( forward4 );
++    FreeLibrary( sforward );
 +
-+    ok( !GetModuleHandleA( "forward1.dll" ), "forward1.dll unexpectedly kept open\n" );
-+    ok( !GetModuleHandleA( "forward2.dll" ), "forward2.dll unexpectedly kept open\n" );
-+    ok( !GetModuleHandleA( "forward3.dll" ), "forward3.dll unexpectedly kept open\n" );
-+    ok( !GetModuleHandleA( "forward4.dll" ), "forward4.dll unexpectedly kept open\n" );
++    ok( !GetModuleHandleA( "userenv.dll" ), "userenv.dll unexpectedly kept open\n" );
++    ok( !GetModuleHandleA( "shlwapi.dll" ), "shlwapi.dll unexpectedly kept open\n" );
++    ok( !GetModuleHandleA( "sforward.dll" ), "sforward.dll unexpectedly kept open\n" );
 +
-+    DeleteFileA( forward1_path );
-+    DeleteFileA( forward2_path );
-+    DeleteFileA( forward3_path );
-+    DeleteFileA( forward4_path );
++    DeleteFileA( sforward_path );
 +    RemoveDirectoryA( dir_path );
 +}
 +
@@ -398,7 +243,7 @@ index 308cf1a44a0..8c5ab88d9d7 100644
 +    CHAR forward2_path[MAX_PATH];
 +    CHAR forward3_path[MAX_PATH];
 +    HMODULE forward1, forward2, forward3;
-+    FARPROC proc1, proc2, proc3;
++    FARPROC proc1, proc2, proc3, oproc1, oproc2, oproc3;
 +
 +    GetTempPathA( ARRAY_SIZE(temp_path), temp_path );
 +    GetTempFileNameA( temp_path, "ldr", GetTickCount() | 1UL, dir_path );
@@ -427,6 +272,15 @@ index 308cf1a44a0..8c5ab88d9d7 100644
 +    ok( !!proc3, "cannot resolve forward3!forward_test_func\n");
 +    ok( proc1 == proc3, "forward1!forward_test_func is not equal to forward3!forward_test_func\n");
 +    ok( proc2 == proc3, "forward2!forward_test_func is not equal to forward3!forward_test_func\n");
++
++    oproc1 = GetProcAddress(forward1, (LPSTR)2);
++    ok( !!oproc1, "cannot resolve forward1!#2 (forward_test_func2)\n");
++    oproc2 = GetProcAddress(forward2, (LPSTR)2);
++    ok( !!oproc2, "cannot resolve forward2!#2 (forward_test_func2)\n");
++    oproc3 = GetProcAddress(forward3, (LPSTR)2);
++    ok( !!oproc3, "cannot resolve forward3!#2 (forward_test_func2)\n");
++    ok( oproc1 == oproc3, "forward1!forward_test_func2 is not equal to forward3!forward_test_func2\n");
++    ok( oproc2 == oproc3, "forward2!forward_test_func2 is not equal to forward3!forward_test_func2\n");
 +
 +    FreeLibrary( forward1 );
 +    FreeLibrary( forward2 );
@@ -494,16 +348,48 @@ index 308cf1a44a0..8c5ab88d9d7 100644
  static void test_image_mapping(const char *dll_name, DWORD scn_page_access, BOOL is_dll)
  {
      HANDLE hfile, hmap;
-@@ -4106,6 +4302,9 @@ START_TEST(loader)
+@@ -4119,9 +4293,12 @@ START_TEST(loader)
+         return;
+     }
+ 
++    test_static_forwarded_import_refs();  /* Must be first; other tests may load userenv.dll */
      test_filenames();
      test_ResolveDelayLoadedAPI();
      test_ImportDescriptors();
-+    test_static_forwarded_import_refs();
 +    test_dynamic_forwarded_import_refs();
 +    test_dynamic_forward_export_norefs();
      test_section_access();
      test_import_resolution();
      test_ExitProcess();
+diff --git a/dlls/kernel32/tests/sforward.c b/dlls/kernel32/tests/sforward.c
+new file mode 100644
+index 00000000000..17f79fb5a74
+--- /dev/null
++++ b/dlls/kernel32/tests/sforward.c
+@@ -0,0 +1,16 @@
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++
++DECLSPEC_IMPORT BOOL WINAPI SHExpandEnvironmentStringsForUserW(HANDLE,LPCWSTR,LPWSTR,DWORD);
++
++void test_func_stub(void)
++{
++    SHExpandEnvironmentStringsForUserW(NULL, NULL, NULL, 0);
++}
++
++BOOL WINAPI DllMain(HINSTANCE instance_new, DWORD reason, LPVOID reserved)
++{
++    if (reason == DLL_PROCESS_ATTACH)
++        DisableThreadLibraryCalls( instance_new );
++    return TRUE;
++}
+diff --git a/dlls/kernel32/tests/sforward.spec b/dlls/kernel32/tests/sforward.spec
+new file mode 100644
+index 00000000000..cb6d4add796
+--- /dev/null
++++ b/dlls/kernel32/tests/sforward.spec
+@@ -0,0 +1 @@
++@ cdecl test_func_stub()
 
 -- 
 2.31.1

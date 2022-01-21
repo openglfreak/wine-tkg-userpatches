@@ -1,0 +1,222 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH 4/4] dlls/ntdll: Call try_recv inside sock_recv only if it is safe to do so.
+Message-Id: <cc8bc246-ad21-496b-9bff-cc11ef78eb14@gmail.com>
+Date: Wed, 19 Jan 2022 04:30:02 +0900
+In-Reply-To: <a01b99bf-2c67-1216-e947-817b6247cb24@gmail.com>
+References: <a01b99bf-2c67-1216-e947-817b6247cb24@gmail.com>
+
+Otherwise, try_recv() call from sock_recv() may race against try_recv()
+call from async_recv_proc(), shuffling the packet order.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52401
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ dlls/ntdll/unix/socket.c | 38 ++++++++++++++++++-------------------
+ dlls/ws2_32/tests/sock.c |  8 ++++----
+ server/protocol.def      |  4 ++--
+ server/sock.c            | 41 ++++++++++++++++++++++++++++------------
+ 4 files changed, 54 insertions(+), 37 deletions(-)
+
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index 71dfcdd1114..b4e4240a9b6 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -686,6 +686,7 @@ static NTSTATUS sock_recv( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
+     NTSTATUS status;
+     unsigned int i;
+     ULONG options;
++    BOOL may_restart, alerted;
+ 
+     if (unix_flags & MSG_OOB)
+     {
+@@ -736,37 +737,36 @@ static NTSTATUS sock_recv( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
+         }
+     }
+ 
+-    status = try_recv( fd, async, &information );
+-
+-    if (status != STATUS_SUCCESS && status != STATUS_BUFFER_OVERFLOW && status != STATUS_DEVICE_NOT_READY)
+-    {
+-        release_fileio( &async->io );
+-        return status;
+-    }
+-
+-    if (status == STATUS_DEVICE_NOT_READY && force_async)
+-        status = STATUS_PENDING;
+-
+     SERVER_START_REQ( recv_socket )
+     {
+-        req->status = status;
+-        req->total  = information;
++        req->force_async = force_async;
+         req->async  = server_async( handle, &async->io, event, apc, apc_user, iosb_client_ptr(io) );
+         req->oob    = !!(unix_flags & MSG_OOB);
+         status = wine_server_call( req );
+         wait_handle = wine_server_ptr_handle( reply->wait );
+         options     = reply->options;
+-        if ((!NT_ERROR(status) || wait_handle) && status != STATUS_PENDING)
+-        {
+-            io->Status = status;
+-            io->Information = information;
+-        }
++        may_restart = reply->may_restart;
+     }
+     SERVER_END_REQ;
+ 
++    information = 0;
++    alerted = status == STATUS_ALERTED;
++    if (alerted)
++    {
++        status = try_recv( fd, async, &information );
++        if (status == STATUS_DEVICE_NOT_READY && may_restart)
++            status = STATUS_PENDING;
++    }
++
++    if ((!NT_ERROR(status) || wait_handle) && status != STATUS_PENDING)
++    {
++        io->Status = status;
++        io->Information = information;
++    }
++
+     if (status != STATUS_PENDING) release_fileio( &async->io );
+ 
+-    if (wait_handle) status = wait_async( wait_handle, options & FILE_SYNCHRONOUS_IO_ALERT );
++    if (wait_handle) status = signal_wait_async( wait_handle, options & FILE_SYNCHRONOUS_IO_ALERT, alerted, status, information );
+     return status;
+ }
+ 
+diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
+index 054e597b719..4199676f460 100644
+--- a/dlls/ws2_32/tests/sock.c
++++ b/dlls/ws2_32/tests/sock.c
+@@ -7750,8 +7750,8 @@ static void test_shutdown(void)
+ 
+     WSASetLastError(0xdeadbeef);
+     ret = recv(server, buffer, sizeof(buffer), 0);
+-    todo_wine ok(ret == -1, "got %d\n", ret);
+-    todo_wine ok(WSAGetLastError() == WSAESHUTDOWN, "got error %u\n", WSAGetLastError());
++    ok(ret == -1, "got %d\n", ret);
++    ok(WSAGetLastError() == WSAESHUTDOWN, "got error %u\n", WSAGetLastError());
+ 
+     ret = send(server, "test", 5, 0);
+     ok(ret == 5, "got %d\n", ret);
+@@ -7845,8 +7845,8 @@ static void test_shutdown(void)
+ 
+     WSASetLastError(0xdeadbeef);
+     ret = recv(server, buffer, sizeof(buffer), 0);
+-    todo_wine ok(ret == -1, "got %d\n", ret);
+-    todo_wine ok(WSAGetLastError() == WSAESHUTDOWN, "got error %u\n", WSAGetLastError());
++    ok(ret == -1, "got %d\n", ret);
++    ok(WSAGetLastError() == WSAESHUTDOWN, "got error %u\n", WSAGetLastError());
+ 
+     WSASetLastError(0xdeadbeef);
+     ret = send(server, "test", 5, 0);
+diff --git a/server/protocol.def b/server/protocol.def
+index ae4729a9e56..d047c7d0cf2 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -1444,11 +1444,11 @@ enum server_fd_type
+ @REQ(recv_socket)
+     int          oob;           /* are we receiving OOB data? */
+     async_data_t async;         /* async I/O parameters */
+-    unsigned int status;        /* status of initial call */
+-    unsigned int total;         /* number of bytes already read */
++    int          force_async;   /* Force asynchronous mode? */
+ @REPLY
+     obj_handle_t wait;          /* handle to wait on for blocking recv */
+     unsigned int options;       /* device open options */
++    int          may_restart;   /* May restart async? */
+ @END
+ 
+ 
+diff --git a/server/sock.c b/server/sock.c
+index 650e67a2e0a..5430b27a1e2 100644
+--- a/server/sock.c
++++ b/server/sock.c
+@@ -3396,7 +3396,8 @@ struct object *create_socket_device( struct object *root, const struct unicode_s
+ DECL_HANDLER(recv_socket)
+ {
+     struct sock *sock = (struct sock *)get_handle_obj( current->process, req->async.handle, 0, &sock_ops );
+-    unsigned int status = req->status;
++    unsigned int status = STATUS_PENDING;
++    int pending = req->force_async;
+     timeout_t timeout = 0;
+     struct async *async;
+     struct fd *fd;
+@@ -3404,8 +3405,8 @@ DECL_HANDLER(recv_socket)
+     if (!sock) return;
+     fd = sock->fd;
+ 
+-    /* recv() returned EWOULDBLOCK, i.e. no data available yet */
+-    if (status == STATUS_DEVICE_NOT_READY && !sock->nonblocking)
++    /* Synchronous, *blocking* I/O requested? */
++    if (!req->force_async && !sock->nonblocking)
+     {
+         /* Set a timeout on the async if necessary.
+          *
+@@ -3416,29 +3417,44 @@ DECL_HANDLER(recv_socket)
+         if (is_fd_overlapped( fd ))
+             timeout = (timeout_t)sock->rcvtimeo * -10000;
+ 
+-        status = STATUS_PENDING;
++        pending = 1;
+     }
+ 
+-    if ((status == STATUS_PENDING || status == STATUS_DEVICE_NOT_READY) && sock->rd_shutdown)
++    if (status == STATUS_PENDING && sock->rd_shutdown)
+         status = STATUS_PIPE_DISCONNECTED;
+ 
++    /* NOTE: If read_q is not empty, we cannot really tell if the already queued asyncs
++     * NOTE: will not consume all available data; if there's no data available,
++     * NOTE: the current request won't be immediately satiable. */
++    if (status == STATUS_PENDING && !async_queued( &sock->read_q ))
++    {
++        struct pollfd pollfd;
++        pollfd.fd = get_unix_fd( sock->fd );
++        pollfd.events = req->oob ? POLLPRI : POLLIN;
++        pollfd.revents = 0;
++        if (poll(&pollfd, 1, 0) >= 0 && pollfd.revents)
++        {
++            /* Give the client opportunity to complete synchronously.
++             * If it turns out that the I/O request is not actually immediately satiable,
++             * the client may then choose to re-queue the async (with STATUS_PENDING). */
++            status = STATUS_ALERTED;
++        }
++    }
++
++    if (!pending && status == STATUS_PENDING) status = STATUS_DEVICE_NOT_READY;
++    if (NT_ERROR( status )) pending = 0;
++
+     sock->pending_events &= ~(req->oob ? AFD_POLL_OOB : AFD_POLL_READ);
+     sock->reported_events &= ~(req->oob ? AFD_POLL_OOB : AFD_POLL_READ);
+ 
+     if ((async = create_request_async( fd, get_fd_comp_flags( fd ), &req->async )))
+     {
+-        if (status == STATUS_SUCCESS)
+-        {
+-            struct iosb *iosb = async_get_iosb( async );
+-            iosb->result = req->total;
+-            release_object( iosb );
+-        }
+         set_error( status );
+ 
+         if (timeout)
+             async_set_timeout( async, timeout, STATUS_IO_TIMEOUT );
+ 
+-        if (status == STATUS_PENDING)
++        if (status == STATUS_PENDING || status == STATUS_ALERTED)
+             queue_async( &sock->read_q, async );
+ 
+         /* always reselect; we changed reported_events above */
+@@ -3446,6 +3462,7 @@ DECL_HANDLER(recv_socket)
+ 
+         reply->wait = async_handoff( async, NULL, 0 );
+         reply->options = get_fd_options( fd );
++        reply->may_restart = pending && status == STATUS_ALERTED;
+         release_object( async );
+     }
+     release_object( sock );
+
+-- 
+2.31.1
+

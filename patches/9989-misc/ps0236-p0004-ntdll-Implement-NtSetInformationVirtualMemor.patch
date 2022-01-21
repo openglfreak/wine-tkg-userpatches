@@ -1,9 +1,9 @@
 From: Jinoh Kang <jinoh.kang.kr@gmail.com>
-Subject: [PATCH v6 4/6] ntdll: Implement NtSetInformationVirtualMemory.
-Message-Id: <24f1112e-b859-2477-e7b3-968e5823004c@gmail.com>
-Date: Fri, 3 Dec 2021 23:37:06 +0900
-In-Reply-To: <a6221984-7278-3a24-4908-b77a4149bd6b@gmail.com>
-References: <a6221984-7278-3a24-4908-b77a4149bd6b@gmail.com>
+Subject: [PATCH 4/6] ntdll: Implement NtSetInformationVirtualMemory (intra-process case).
+Message-Id: <2415db87-0a75-d9a2-09c7-2eb24e6ddad2@gmail.com>
+Date: Thu, 20 Jan 2022 02:29:20 +0900
+In-Reply-To: <d8105173-f9a2-317e-1c27-ddd290627f7a@gmail.com>
+References: <d8105173-f9a2-317e-1c27-ddd290627f7a@gmail.com>
 
 Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
 ---
@@ -26,7 +26,7 @@ Notes:
  6 files changed, 127 insertions(+)
 
 diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
-index 85bc32a1a15..472658193dc 100644
+index bd8e1f5efe6..83393aeb80b 100644
 --- a/dlls/ntdll/ntdll.spec
 +++ b/dlls/ntdll/ntdll.spec
 @@ -385,6 +385,7 @@
@@ -46,10 +46,10 @@ index 85bc32a1a15..472658193dc 100644
  @ stdcall -private -syscall ZwSetIoCompletion(ptr long long long long) NtSetIoCompletion
  @ stdcall -private -syscall ZwSetLdtEntries(long int64 long int64) NtSetLdtEntries
 diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
-index 82d099de3be..5c565df3cf9 100644
+index 96301b1654e..ae8fbded0f3 100644
 --- a/dlls/ntdll/unix/loader.c
 +++ b/dlls/ntdll/unix/loader.c
-@@ -310,6 +310,7 @@ static void * const syscalls[] =
+@@ -308,6 +308,7 @@ static void * const syscalls[] =
      NtSetInformationProcess,
      NtSetInformationThread,
      NtSetInformationToken,
@@ -58,10 +58,10 @@ index 82d099de3be..5c565df3cf9 100644
      NtSetIoCompletion,
      NtSetLdtEntries,
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
-index 5873a3e2335..94b4def341d 100644
+index 1f817cd977d..1f2b2031b37 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -4968,6 +4968,70 @@ NTSTATUS WINAPI NtAreMappedFilesTheSame(PVOID addr1, PVOID addr2)
+@@ -4910,6 +4910,70 @@ NTSTATUS WINAPI NtAreMappedFilesTheSame(PVOID addr1, PVOID addr2)
  }
  
  
@@ -133,12 +133,12 @@ index 5873a3e2335..94b4def341d 100644
   *           NtFlushInstructionCache  (NTDLL.@)
   */
 diff --git a/dlls/wow64/struct32.h b/dlls/wow64/struct32.h
-index ace5929d64d..7b7992826f9 100644
+index b096c8d587b..91acc26436f 100644
 --- a/dlls/wow64/struct32.h
 +++ b/dlls/wow64/struct32.h
-@@ -635,6 +635,12 @@ typedef struct
-     SYSTEM_THREAD_INFORMATION32 ti[1];
- } SYSTEM_PROCESS_INFORMATION32;
+@@ -650,6 +650,12 @@ typedef struct
+     ULONG                       Reserved4;
+ } SYSTEM_EXTENDED_THREAD_INFORMATION32;
  
 +typedef struct
 +{
@@ -150,10 +150,10 @@ index ace5929d64d..7b7992826f9 100644
  {
      ULONG        ptr;
 diff --git a/dlls/wow64/syscall.h b/dlls/wow64/syscall.h
-index 1e122e97314..3f55335a2fe 100644
+index 0c2ba574031..f1a379a00f0 100644
 --- a/dlls/wow64/syscall.h
 +++ b/dlls/wow64/syscall.h
-@@ -208,6 +208,7 @@
+@@ -209,6 +209,7 @@
      SYSCALL_ENTRY( NtSetInformationProcess ) \
      SYSCALL_ENTRY( NtSetInformationThread ) \
      SYSCALL_ENTRY( NtSetInformationToken ) \

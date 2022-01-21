@@ -1,9 +1,9 @@
 From: Jinoh Kang <jinoh.kang.kr@gmail.com>
-Subject: [PATCH v5 3/4] ntdll: Implement __fastfail().
-Message-Id: <da335113-412d-1907-ab90-3fb27896fa83@gmail.com>
-Date: Fri, 10 Dec 2021 01:04:36 +0900
-In-Reply-To: <28eb4ec4-d1e3-c1c3-3076-a282d425c6b4@gmail.com>
-References: <28eb4ec4-d1e3-c1c3-3076-a282d425c6b4@gmail.com>
+Subject: [PATCH v5 resend 3/4] ntdll: Implement __fastfail().
+Message-Id: <c498fdb1-600a-18f7-ddd8-e95bb235bf95@gmail.com>
+Date: Thu, 20 Jan 2022 02:09:31 +0900
+In-Reply-To: <06e66ab0-5c38-a248-f06b-150cd2997f72@gmail.com>
+References: <06e66ab0-5c38-a248-f06b-150cd2997f72@gmail.com>
 
 __fastfail() is used by the Visual C++ runtime and Windows system
 libraries to signal that the in-process state is corrupted and
@@ -30,10 +30,10 @@ Notes:
  5 files changed, 150 insertions(+), 4 deletions(-)
 
 diff --git a/dlls/ntdll/tests/exception.c b/dlls/ntdll/tests/exception.c
-index c0d3ae19a51..14b1396dbc2 100644
+index 488a5e94729..71d25fa3e93 100644
 --- a/dlls/ntdll/tests/exception.c
 +++ b/dlls/ntdll/tests/exception.c
-@@ -8429,7 +8429,6 @@ static void subtest_fastfail(unsigned int code)
+@@ -8446,7 +8446,6 @@ static void subtest_fastfail(unsigned int code)
  
      } while (de.dwDebugEventCode != EXIT_PROCESS_DEBUG_EVENT);
  
@@ -42,10 +42,10 @@ index c0d3ae19a51..14b1396dbc2 100644
  
      wait_child_process( pi.hProcess );
 diff --git a/dlls/ntdll/unix/signal_arm.c b/dlls/ntdll/unix/signal_arm.c
-index ebc08984adf..072e402f68b 100644
+index a1bcb0ddd32..5d919167d0d 100644
 --- a/dlls/ntdll/unix/signal_arm.c
 +++ b/dlls/ntdll/unix/signal_arm.c
-@@ -614,6 +614,32 @@ static void setup_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec )
+@@ -615,6 +615,32 @@ static void setup_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec )
  }
  
  
@@ -78,7 +78,7 @@ index ebc08984adf..072e402f68b 100644
  /***********************************************************************
   *           call_user_apc_dispatcher
   */
-@@ -803,13 +829,23 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+@@ -812,13 +838,23 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
      switch (get_trap_code(signal, context))
      {
      case TRAP_ARM_PRIVINFLT:   /* Invalid opcode exception */
@@ -105,10 +105,10 @@ index ebc08984adf..072e402f68b 100644
      case TRAP_ARM_PAGEFLT:  /* Page fault */
          rec.NumberParameters = 2;
 diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
-index f2612412366..ad19a9d5ca7 100644
+index 94f280e218a..26910173b81 100644
 --- a/dlls/ntdll/unix/signal_arm64.c
 +++ b/dlls/ntdll/unix/signal_arm64.c
-@@ -655,6 +655,32 @@ static void setup_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec )
+@@ -656,6 +656,32 @@ static void setup_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec )
  }
  
  
@@ -141,7 +141,7 @@ index f2612412366..ad19a9d5ca7 100644
  /***********************************************************************
   *           call_user_apc_dispatcher
   */
-@@ -899,6 +925,7 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+@@ -908,6 +934,7 @@ static void bus_handler( int signal, siginfo_t *siginfo, void *sigcontext )
  static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
  {
      EXCEPTION_RECORD rec = { 0 };
@@ -149,7 +149,7 @@ index f2612412366..ad19a9d5ca7 100644
  
      switch (siginfo->si_code)
      {
-@@ -907,6 +934,19 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+@@ -916,6 +943,19 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
          break;
      case TRAP_BRKPT:
      default:
@@ -170,7 +170,7 @@ index f2612412366..ad19a9d5ca7 100644
          rec.NumberParameters = 1;
          break;
 diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
-index bf3abc1a587..d0780403f8a 100644
+index 6bb5649e2b5..f0074216de6 100644
 --- a/dlls/ntdll/unix/signal_i386.c
 +++ b/dlls/ntdll/unix/signal_i386.c
 @@ -1485,6 +1485,30 @@ static void setup_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec )
@@ -204,7 +204,7 @@ index bf3abc1a587..d0780403f8a 100644
  /* stack layout when calling an user apc function.
   * FIXME: match Windows ABI. */
  struct apc_stack_layout
-@@ -1772,8 +1796,20 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+@@ -1780,8 +1804,20 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
      EXCEPTION_RECORD rec = { 0 };
      struct xcontext xcontext;
      ucontext_t *ucontext = sigcontext;
@@ -227,10 +227,10 @@ index bf3abc1a587..d0780403f8a 100644
      {
      case TRAP_x86_OFLOW:   /* Overflow exception */
 diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
-index d32e38875a4..ec1e461fbc0 100644
+index 68e0c7ce66e..90fa04f0309 100644
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
-@@ -2197,6 +2197,30 @@ static void setup_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec )
+@@ -2198,6 +2198,30 @@ static void setup_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec )
  }
  
  
@@ -261,7 +261,7 @@ index d32e38875a4..ec1e461fbc0 100644
  /***********************************************************************
   *           call_user_apc_dispatcher
   */
-@@ -2551,6 +2575,17 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+@@ -2560,6 +2584,17 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
      struct xcontext context;
      ucontext_t *ucontext = sigcontext;
  

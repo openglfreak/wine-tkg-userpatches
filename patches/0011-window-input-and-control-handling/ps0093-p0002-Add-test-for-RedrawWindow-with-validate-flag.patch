@@ -1,0 +1,80 @@
+From: "Roman Pišl" <rpisl@seznam.cz>
+Subject: [PATCH 2/2] Add test for RedrawWindow with validate flag.
+Message-Id: <20220102163746.7994-2-rpisl@seznam.cz>
+Date: Sun,  2 Jan 2022 17:37:46 +0100
+In-Reply-To: <20220102163746.7994-1-rpisl@seznam.cz>
+References: <20220102163746.7994-1-rpisl@seznam.cz>
+
+Signed-off-by: Roman Pišl <rpisl@seznam.cz>
+---
+ dlls/user32/tests/msg.c | 25 ++++++++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
+index c054a145112..a8eed08af93 100644
+--- a/dlls/user32/tests/msg.c
++++ b/dlls/user32/tests/msg.c
+@@ -139,7 +139,8 @@ typedef enum {
+     hook=0x100,
+     winevent_hook=0x200,
+     kbd_hook=0x400,
+-    winevent_hook_todo=0x800
++    winevent_hook_todo=0x800,
++    has_update=0x1000
+ } msg_flags_t;
+ 
+ struct message {
+@@ -2818,6 +2819,10 @@ static void ok_sequence_(const struct message *expected_list, const char *contex
+                 context, count, expected->message);
+             if ((expected->flags & kbd_hook) != (actual->flags & kbd_hook)) dump++;
+ 
++        ok_( file, line) (!(expected->flags & has_update) || (actual->flags & has_update),
++        "%s: %u: the msg 0x%04x should have update region\n",
++                context, count, expected->message);
++
+ 	    expected++;
+ 	    actual++;
+ 	}
+@@ -8269,6 +8274,11 @@ static const struct message WmPaint[] = {
+     { 0 }
+ };
+ 
++static const struct message WmPaintUpdate[] = {
++    { WM_PAINT, sent|has_update },
++    { 0 }
++};
++
+ static const struct message WmParentOnlyPaint[] = {
+     { WM_PAINT, sent|parent },
+     { 0 }
+@@ -8628,6 +8638,16 @@ static void test_paint_messages(void)
+     }
+     ok_sequence( WmGetUpdateRect, "GetUpdateRect", FALSE );
+ 
++    /* RedrawWindow with RDW_VALIDATE triggers WM_PAINT with non-empty update region */
++    flush_sequence();
++    InvalidateRect( hwnd, NULL, FALSE );
++    GetClientRect( hwnd, &rect );
++    SetRectRgn(hrgn, rect.left, rect.top, rect.right, rect.bottom );
++    check_update_rgn( hwnd, hrgn );
++    RedrawWindow( hwnd, &rect, NULL, RDW_INTERNALPAINT|RDW_NOERASE|RDW_NOFRAME|RDW_UPDATENOW|RDW_VALIDATE );
++    check_update_rgn( hwnd, 0 );
++    ok_sequence( WmPaintUpdate, "PaintUpdate", FALSE );
++
+     DestroyWindow( hwnd );
+ 
+     /* now test with a child window */
+@@ -9948,6 +9968,9 @@ static LRESULT MsgCheckProc (BOOL unicode, HWND hwnd, UINT message,
+     msg.flags = sent|wparam|lparam;
+     if (defwndproc_counter) msg.flags |= defwinproc;
+     if (beginpaint_counter) msg.flags |= beginpaint;
++
++    if (message == WM_PAINT && GetUpdateRect(hwnd, NULL, FALSE)) msg.flags |= has_update;
++
+     msg.wParam = wParam;
+     msg.lParam = lParam;
+     msg.descr = "MsgCheckProc";
+
+-- 
+2.30.2
+

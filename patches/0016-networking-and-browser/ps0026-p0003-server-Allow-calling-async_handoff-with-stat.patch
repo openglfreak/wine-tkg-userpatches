@@ -1,0 +1,63 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH 3/4] server: Allow calling async_handoff() with status code STATUS_ALERTED.
+Message-Id: <264076be-bda8-edf8-e061-2e0613e3975a@gmail.com>
+Date: Wed, 19 Jan 2022 04:29:55 +0900
+In-Reply-To: <a01b99bf-2c67-1216-e947-817b6247cb24@gmail.com>
+References: <a01b99bf-2c67-1216-e947-817b6247cb24@gmail.com>
+
+If the server detects that an I/O request could be completed immediately
+(e.g. reading from socket that already has incoming data), it can now
+return STATUS_ALERTED to allow opportunistic synchronous I/O.
+The client will then attempt to perform I/O in nonblocking mode and
+report back the I/O status to the server with signal_wait_async().
+
+If the operation returns e.g. EAGAIN or EWOULDBLOCK, the client can opt
+to either abandon the request (by specifying an error status) or poll
+for it in the server as usual (by specifying STATUS_PENDING).
+
+Without this mechanism the client cannot safely perform immediately
+satiable I/O operations synchronously, since it can potentially
+conflict with other pending I/O operations that have already been
+queued.
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ server/async.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/server/async.c b/server/async.c
+index 339d050b086..e74a141c459 100644
+--- a/server/async.c
++++ b/server/async.c
+@@ -128,7 +128,8 @@ static void async_satisfied( struct object *obj, struct wait_queue_entry *entry
+     if (async->direct_result)
+         async_set_result( &async->obj, async->iosb->status, async->iosb->result );
+ 
+-    if (async->initial_status == STATUS_PENDING && async->blocking)
++    if ((async->initial_status == STATUS_PENDING && async->blocking) ||
++        async->initial_status == STATUS_ALERTED)
+         set_wait_status( entry, async->iosb->status );
+     else
+         set_wait_status( entry, async->initial_status );
+@@ -471,6 +472,17 @@ void async_set_result( struct object *obj, unsigned int status, apc_param_t tota
+     {
+         async->terminated = 0;
+         async->alerted = 0;
++
++        /* If the client attempted to complete synchronously and failed,
++         * then it would have called signal_wait_async() to restart the
++         * operation in the full asynchronous mode.  In this case, we set
++         * the pending flag so that the completion port notification and
++         * APC call will be triggered appropriately.  Also, the async
++         * object is currently in signaled state; unset the signaled flag
++         * if the client wants to block on this async. */
++        async->pending = 1;
++        if (async->blocking) async->signaled = 0;
++
+         async_reselect( async );
+     }
+     else
+
+-- 
+2.31.1
+

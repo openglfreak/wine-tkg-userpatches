@@ -1,9 +1,9 @@
 From: Jinoh Kang <jinoh.kang.kr@gmail.com>
-Subject: [PATCH v3 2/2] server: Allow creating named pipes using \Device\NamedPipe\ as RootDirectory.
-Message-Id: <fbe51431-d2df-97f7-7004-f80834fa6008@gmail.com>
-Date: Fri, 3 Dec 2021 23:49:39 +0900
-In-Reply-To: <cd804f6d-8373-5bb6-c7fc-a364c283e242@gmail.com>
-References: <cd804f6d-8373-5bb6-c7fc-a364c283e242@gmail.com>
+Subject: [PATCH v3 resend 2/2] server: Allow creating named pipes using \Device\NamedPipe\ as RootDirectory.
+Message-Id: <fe8eab95-ac90-4f9d-b589-e1abb22d14f6@gmail.com>
+Date: Tue, 4 Jan 2022 19:08:39 +0900
+In-Reply-To: <f5425e85-bd1b-a340-c4ab-60b3a2819f5a@gmail.com>
+References: <f5425e85-bd1b-a340-c4ab-60b3a2819f5a@gmail.com>
 
 Separate the named pipe root directory from the named pipe device file.
 Open the root directory instead of the device file if the path ends
@@ -18,7 +18,7 @@ Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
  3 files changed, 181 insertions(+), 44 deletions(-)
 
 diff --git a/dlls/ntdll/tests/om.c b/dlls/ntdll/tests/om.c
-index 23b4ff617c2..96b0e2d8c7f 100644
+index 04acf5b2241..b5a32ec1081 100644
 --- a/dlls/ntdll/tests/om.c
 +++ b/dlls/ntdll/tests/om.c
 @@ -1874,7 +1874,7 @@ static void test_query_object(void)
@@ -31,10 +31,10 @@ index 23b4ff617c2..96b0e2d8c7f 100644
      test_file_info( handle );
  
 diff --git a/dlls/ntdll/tests/pipe.c b/dlls/ntdll/tests/pipe.c
-index d774645ee08..10cbcf5f8c4 100644
+index f5ca6077605..4b0fa552748 100644
 --- a/dlls/ntdll/tests/pipe.c
 +++ b/dlls/ntdll/tests/pipe.c
-@@ -2501,7 +2501,7 @@ static void test_empty_name(void)
+@@ -2509,7 +2509,7 @@ static void test_empty_name(void)
  
      pRtlInitUnicodeString(&name, L"nonexistent_pipe");
      status = wait_pipe(hdirectory, &name, &zero_timeout);
@@ -43,7 +43,7 @@ index d774645ee08..10cbcf5f8c4 100644
  
      name.Buffer = NULL;
      name.Length = 0;
-@@ -2642,11 +2642,11 @@ static void test_empty_name(void)
+@@ -2650,11 +2650,11 @@ static void test_empty_name(void)
      timeout.QuadPart = -(LONG64)10000000;
      status = pNtCreateNamedPipeFile(&hpipe, GENERIC_READ|GENERIC_WRITE, &attr, &io, FILE_SHARE_READ|FILE_SHARE_WRITE,
                                      FILE_CREATE, FILE_PIPE_FULL_DUPLEX, 0, 0, 0, 1, 256, 256, &timeout);
@@ -58,7 +58,7 @@ index d774645ee08..10cbcf5f8c4 100644
      CloseHandle(handle);
      CloseHandle(hpipe);
 diff --git a/server/named_pipe.c b/server/named_pipe.c
-index 1bbf7f17a3a..82f76e98548 100644
+index 3e6cf09d4f2..37520789722 100644
 --- a/server/named_pipe.c
 +++ b/server/named_pipe.c
 @@ -103,6 +103,13 @@ struct named_pipe_device_file
@@ -266,7 +266,7 @@ index 1bbf7f17a3a..82f76e98548 100644
  static void pipe_end_flush( struct fd *fd, struct async *async )
  {
      struct pipe_end *pipe_end = get_fd_user( fd );
-@@ -1278,14 +1452,13 @@ static struct pipe_end *create_pipe_client( struct named_pipe *pipe, data_size_t
+@@ -1284,14 +1458,13 @@ static struct pipe_end *create_pipe_client( struct named_pipe *pipe, data_size_t
  
  static int named_pipe_link_name( struct object *obj, struct object_name *name, struct object *parent )
  {
@@ -283,7 +283,7 @@ index 1bbf7f17a3a..82f76e98548 100644
      name->parent = grab_object( parent );
      return 1;
  }
-@@ -1328,43 +1501,7 @@ static struct object *named_pipe_open_file( struct object *obj, unsigned int acc
+@@ -1334,43 +1507,7 @@ static struct object *named_pipe_open_file( struct object *obj, unsigned int acc
  
  static void named_pipe_device_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
  {

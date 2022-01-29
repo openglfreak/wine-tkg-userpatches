@@ -1,0 +1,183 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [RFC PATCH v4 3/5] server: Attempt to complete I/O request immediately in recv_socket.
+Message-Id: <51a23aec-8a67-18b8-a566-b1ae1b3120b3@gmail.com>
+Date: Sat, 29 Jan 2022 16:47:13 +0900
+In-Reply-To: <f58594d9-b43b-2c96-802c-1ee275430dd9@gmail.com>
+References: <f58594d9-b43b-2c96-802c-1ee275430dd9@gmail.com>
+
+Make recv_socket alert the async immediately if poll() call detects that
+there are incoming data in the socket, bypassing the wineserver's main
+polling loop.
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+
+Notes:
+    v3 -> v4: don't update IOSB on synchronous failure
+
+ dlls/ntdll/unix/socket.c       | 22 ++++++++++++++++++----
+ dlls/ntdll/unix/sync.c         | 22 ++++++++++++++++++++++
+ dlls/ntdll/unix/unix_private.h |  1 +
+ server/protocol.def            |  1 +
+ server/sock.c                  | 23 ++++++++++++++++++++++-
+ 5 files changed, 64 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index 71dfcdd1114..1c1ae25ab18 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -686,6 +686,7 @@ static NTSTATUS sock_recv( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
+     NTSTATUS status;
+     unsigned int i;
+     ULONG options;
++    BOOL may_restart, alerted;
+ 
+     if (unix_flags & MSG_OOB)
+     {
+@@ -756,16 +757,29 @@ static NTSTATUS sock_recv( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
+         status = wine_server_call( req );
+         wait_handle = wine_server_ptr_handle( reply->wait );
+         options     = reply->options;
+-        if ((!NT_ERROR(status) || wait_handle) && status != STATUS_PENDING)
++        may_restart = reply->may_restart;
++    }
++    SERVER_END_REQ;
++
++    alerted = status == STATUS_ALERTED;
++    if (alerted)
++    {
++        status = try_recv( fd, async, &information );
++        if (status == STATUS_DEVICE_NOT_READY && may_restart)
++            status = STATUS_PENDING;
++    }
++
++    if (status != STATUS_PENDING)
++    {
++        if (!NT_ERROR(status) || (wait_handle && !alerted))
+         {
+             io->Status = status;
+             io->Information = information;
+         }
++        release_fileio( &async->io );
+     }
+-    SERVER_END_REQ;
+-
+-    if (status != STATUS_PENDING) release_fileio( &async->io );
+ 
++    if (alerted) status = notify_async( &wait_handle, status, information );
+     if (wait_handle) status = wait_async( wait_handle, options & FILE_SYNCHRONOUS_IO_ALERT );
+     return status;
+ }
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index 442243d8bcf..4cb30479322 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -2510,3 +2510,25 @@ NTSTATUS WINAPI NtWaitForAlertByThreadId( const void *address, const LARGE_INTEG
+ }
+ 
+ #endif
++
++/* Notify direct completion of async and close the wait handle if it is no longer needed.
++ * This function is a no-op (returns status as-is) if the supplied handle is NULL.
++ */
++NTSTATUS notify_async( HANDLE *optional_handle, NTSTATUS status, ULONG_PTR information )
++{
++    NTSTATUS ret;
++
++    if (!*optional_handle) return status;
++
++    SERVER_START_REQ( notify_async_direct_result )
++    {
++        req->handle      = wine_server_obj_handle( *optional_handle );
++        req->status      = status;
++        req->information = information;
++        ret = wine_server_call( req );
++        *optional_handle = wine_server_ptr_handle( reply->handle );
++    }
++    SERVER_END_REQ;
++
++    return ret;
++}
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index a79edabc37c..e8e158b5591 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -274,6 +274,7 @@ extern NTSTATUS get_device_info( int fd, struct _FILE_FS_DEVICE_INFORMATION *inf
+ extern void init_files(void) DECLSPEC_HIDDEN;
+ extern void init_cpu_info(void) DECLSPEC_HIDDEN;
+ extern void add_completion( HANDLE handle, ULONG_PTR value, NTSTATUS status, ULONG info, BOOL async ) DECLSPEC_HIDDEN;
++extern NTSTATUS notify_async( HANDLE *optional_handle, NTSTATUS status, ULONG_PTR information );
+ 
+ extern void dbg_init(void) DECLSPEC_HIDDEN;
+ 
+diff --git a/server/protocol.def b/server/protocol.def
+index d79eca074a0..137e6c5a220 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -1456,6 +1456,7 @@ enum server_fd_type
+ @REPLY
+     obj_handle_t wait;          /* handle to wait on for blocking recv */
+     unsigned int options;       /* device open options */
++    int          may_restart;   /* May restart async? */
+ @END
+ 
+ 
+diff --git a/server/sock.c b/server/sock.c
+index 40fb0cac535..14d95451420 100644
+--- a/server/sock.c
++++ b/server/sock.c
+@@ -3397,6 +3397,7 @@ DECL_HANDLER(recv_socket)
+ {
+     struct sock *sock = (struct sock *)get_handle_obj( current->process, req->async.handle, 0, &sock_ops );
+     unsigned int status = req->status;
++    int pending = 0;
+     timeout_t timeout = 0;
+     struct async *async;
+     struct fd *fd;
+@@ -3422,6 +3423,25 @@ DECL_HANDLER(recv_socket)
+     if ((status == STATUS_PENDING || status == STATUS_DEVICE_NOT_READY) && sock->rd_shutdown)
+         status = STATUS_PIPE_DISCONNECTED;
+ 
++    /* NOTE: If read_q is not empty, we cannot really tell if the already queued asyncs
++     * NOTE: will not consume all available data; if there's no data available,
++     * NOTE: the current request won't be immediately satiable. */
++    if ((status == STATUS_PENDING || status == STATUS_DEVICE_NOT_READY) && !async_queued( &sock->read_q ))
++    {
++        struct pollfd pollfd;
++        pollfd.fd = get_unix_fd( sock->fd );
++        pollfd.events = req->oob ? POLLPRI : POLLIN;
++        pollfd.revents = 0;
++        if (poll(&pollfd, 1, 0) >= 0 && pollfd.revents)
++        {
++            /* Give the client opportunity to complete synchronously.
++             * If it turns out that the I/O request is not actually immediately satiable,
++             * the client may then choose to re-queue the async (with STATUS_PENDING). */
++            pending = status == STATUS_PENDING;
++            status = STATUS_ALERTED;
++        }
++    }
++
+     sock->pending_events &= ~(req->oob ? AFD_POLL_OOB : AFD_POLL_READ);
+     sock->reported_events &= ~(req->oob ? AFD_POLL_OOB : AFD_POLL_READ);
+ 
+@@ -3438,7 +3458,7 @@ DECL_HANDLER(recv_socket)
+         if (timeout)
+             async_set_timeout( async, timeout, STATUS_IO_TIMEOUT );
+ 
+-        if (status == STATUS_PENDING)
++        if (status == STATUS_PENDING || status == STATUS_ALERTED)
+             queue_async( &sock->read_q, async );
+ 
+         /* always reselect; we changed reported_events above */
+@@ -3446,6 +3466,7 @@ DECL_HANDLER(recv_socket)
+ 
+         reply->wait = async_handoff( async, NULL, 0 );
+         reply->options = get_fd_options( fd );
++        reply->may_restart = pending && status == STATUS_ALERTED;
+         release_object( async );
+     }
+     release_object( sock );
+
+-- 
+2.34.1
+

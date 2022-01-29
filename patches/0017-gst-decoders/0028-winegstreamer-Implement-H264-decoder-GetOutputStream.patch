@@ -1,0 +1,53 @@
+From bc71f83bb8e81e085b084094862133386b5f0708 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 18 Jan 2022 13:33:36 +0100
+Subject: [PATCH 28/36] winegstreamer: Implement H264 decoder
+ GetOutputStreamInfo.
+
+For: Call of Duty III, Mortal Kombat 11, Shadow Warrior 2,
+Yakuza 4 Remastered, Hard Reset Redux.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=45988
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=47084
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=49715
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52183
+CW-Bug-Id: #16839
+CW-Bug-Id: #18678
+CW-Bug-Id: #19362
+---
+ dlls/winegstreamer/h264_decoder.c | 19 +++++++++++++++++--
+ 1 file changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winegstreamer/h264_decoder.c b/dlls/winegstreamer/h264_decoder.c
+index a12b88deee7..1612365947d 100644
+--- a/dlls/winegstreamer/h264_decoder.c
++++ b/dlls/winegstreamer/h264_decoder.c
+@@ -243,8 +243,23 @@ static HRESULT WINAPI h264_decoder_GetInputStreamInfo(IMFTransform *iface, DWORD
+ 
+ static HRESULT WINAPI h264_decoder_GetOutputStreamInfo(IMFTransform *iface, DWORD id, MFT_OUTPUT_STREAM_INFO *info)
+ {
+-    FIXME("iface %p, id %u, info %p stub!\n", iface, id, info);
+-    return E_NOTIMPL;
++    struct h264_decoder *decoder = impl_from_IMFTransform(iface);
++    IMFMediaType *media_type;
++    HRESULT hr;
++
++    TRACE("iface %p, id %u, info %p.\n", iface, id, info);
++
++    if (!decoder->input_type || !decoder->output_type)
++        return MF_E_TRANSFORM_TYPE_NOT_SET;
++
++    media_type = decoder->output_type;
++
++    info->dwFlags = MFT_OUTPUT_STREAM_WHOLE_SAMPLES | MFT_OUTPUT_STREAM_SINGLE_SAMPLE_PER_BUFFER | MFT_OUTPUT_STREAM_FIXED_SAMPLE_SIZE;
++    if (FAILED(hr = IMFMediaType_GetUINT32(media_type, &MF_MT_SAMPLE_SIZE, &info->cbSize)))
++        info->cbSize = 1920 * 1080 * 2;
++    info->cbAlignment = 0;
++
++    return S_OK;
+ }
+ 
+ static HRESULT WINAPI h264_decoder_GetAttributes(IMFTransform *iface, IMFAttributes **attributes)
+-- 
+2.35.1
+

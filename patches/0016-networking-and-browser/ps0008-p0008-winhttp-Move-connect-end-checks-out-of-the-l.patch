@@ -14,7 +14,7 @@ diff --git a/dlls/winhttp/net.c b/dlls/winhttp/net.c
 index 0cc2bb2bef7..46dc6bd21f0 100644
 --- a/dlls/winhttp/net.c
 +++ b/dlls/winhttp/net.c
-@@ -341,53 +341,51 @@ DWORD netconn_secure_connect( struct netconn *conn, WCHAR *hostname, DWORD secur
+@@ -341,60 +341,58 @@ DWORD netconn_secure_connect( struct netconn *conn, WCHAR *hostname, DWORD secur
          status = InitializeSecurityContextW(cred_handle, &ctx, hostname,  isc_req_flags, 0, 0, &in_desc,
                  0, NULL, &out_desc, &attrs, NULL);
          TRACE("InitializeSecurityContext ret %08x\n", status);
@@ -48,8 +48,13 @@ index 0cc2bb2bef7..46dc6bd21f0 100644
 +    if(status != SEC_E_OK)
 +        goto failed;
  
--            conn->ssl_buf = malloc(conn->ssl_sizes.cbHeader + conn->ssl_sizes.cbMaximumMessage + conn->ssl_sizes.cbTrailer);
--            if(!conn->ssl_buf) {
+-            conn->ssl_read_buf = malloc(conn->ssl_sizes.cbHeader + conn->ssl_sizes.cbMaximumMessage + conn->ssl_sizes.cbTrailer);
+-            if(!conn->ssl_read_buf) {
+-                res = ERROR_OUTOFMEMORY;
+-                break;
+-            }
+-            conn->ssl_write_buf = malloc(conn->ssl_sizes.cbHeader + conn->ssl_sizes.cbMaximumMessage + conn->ssl_sizes.cbTrailer);
+-            if(!conn->ssl_write_buf) {
 -                res = ERROR_OUTOFMEMORY;
 -                break;
 -            }
@@ -69,8 +74,10 @@ index 0cc2bb2bef7..46dc6bd21f0 100644
  
 -    if(status != SEC_E_OK || res != ERROR_SUCCESS) {
 -        WARN("Failed to initialize security context: %08x\n", status);
--        free(conn->ssl_buf);
--        conn->ssl_buf = NULL;
+-        free(conn->ssl_read_buf);
+-        conn->ssl_read_buf = NULL;
+-        free(conn->ssl_write_buf);
+-        conn->ssl_write_buf = NULL;
 -        DeleteSecurityContext(&ctx);
 -        return ERROR_WINHTTP_SECURE_CHANNEL_ERROR;
 +    res = netconn_verify_cert(cert, hostname, security_flags, check_revocation);
@@ -80,8 +87,13 @@ index 0cc2bb2bef7..46dc6bd21f0 100644
 +        goto failed;
      }
  
-+    conn->ssl_buf = malloc(conn->ssl_sizes.cbHeader + conn->ssl_sizes.cbMaximumMessage + conn->ssl_sizes.cbTrailer);
-+    if(!conn->ssl_buf) {
++    conn->ssl_read_buf = malloc(conn->ssl_sizes.cbHeader + conn->ssl_sizes.cbMaximumMessage + conn->ssl_sizes.cbTrailer);
++    if(!conn->ssl_read_buf) {
++        res = ERROR_OUTOFMEMORY;
++        goto failed;
++    }
++    conn->ssl_write_buf = malloc(conn->ssl_sizes.cbHeader + conn->ssl_sizes.cbMaximumMessage + conn->ssl_sizes.cbTrailer);
++    if(!conn->ssl_write_buf) {
 +        res = ERROR_OUTOFMEMORY;
 +        goto failed;
 +    }
@@ -93,8 +105,10 @@ index 0cc2bb2bef7..46dc6bd21f0 100644
 +
 +failed:
 +    WARN("Failed to initialize security context: %08x\n", status);
-+    free(conn->ssl_buf);
-+    conn->ssl_buf = NULL;
++    free(conn->ssl_read_buf);
++    conn->ssl_read_buf = NULL;
++    free(conn->ssl_write_buf);
++    conn->ssl_write_buf = NULL;
 +    DeleteSecurityContext(&ctx);
 +    return ERROR_WINHTTP_SECURE_CHANNEL_ERROR;
  }

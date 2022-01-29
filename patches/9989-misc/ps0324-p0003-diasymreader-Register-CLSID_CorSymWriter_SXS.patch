@@ -1,0 +1,166 @@
+From: Esme Povirk <esme@codeweavers.com>
+Subject: [PATCH 3/5] diasymreader: Register CLSID_CorSymWriter_SXS.
+Message-Id: <20220128190054.662812-3-esme@codeweavers.com>
+Date: Fri, 28 Jan 2022 13:00:52 -0600
+In-Reply-To: <20220128190054.662812-1-esme@codeweavers.com>
+References: <20220128190054.662812-1-esme@codeweavers.com>
+
+Signed-off-by: Esme Povirk <esme@codeweavers.com>
+---
+I think RGS registration is required for this because the way it goes
+through mscoree is unusual. A later patch will add support for this
+kind of COM registration to mscoree.
+
+ dlls/diasymreader/Makefile.in       |  5 ++++
+ dlls/diasymreader/diasymreader.rc   | 23 +++++++++++++++
+ dlls/diasymreader/diasymreader.rgs  | 23 +++++++++++++++
+ dlls/diasymreader/diasymreader.spec |  6 ++--
+ dlls/diasymreader/main.c            | 46 +++++++++++++++++++++++++++++
+ 5 files changed, 100 insertions(+), 3 deletions(-)
+ create mode 100644 dlls/diasymreader/diasymreader.rc
+ create mode 100644 dlls/diasymreader/diasymreader.rgs
+ create mode 100644 dlls/diasymreader/main.c
+
+diff --git a/dlls/diasymreader/Makefile.in b/dlls/diasymreader/Makefile.in
+index 6cc5541adff..2ea95048edd 100644
+--- a/dlls/diasymreader/Makefile.in
++++ b/dlls/diasymreader/Makefile.in
+@@ -1,3 +1,8 @@
+ MODULE    = diasymreader.dll
++IMPORTS   = uuid
+ 
+ EXTRADLLFLAGS = -Wb,--prefer-native
++
++C_SRCS = main.c
++
++RC_SRCS = diasymreader.rc
+diff --git a/dlls/diasymreader/diasymreader.rc b/dlls/diasymreader/diasymreader.rc
+new file mode 100644
+index 00000000000..ce8214c2065
+--- /dev/null
++++ b/dlls/diasymreader/diasymreader.rc
+@@ -0,0 +1,23 @@
++/*
++ * Copyright 2022 Esme Povirk
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <windef.h>
++
++/* @makedep: diasymreader.rgs */
++2 WINE_REGISTRY diasymreader.rgs
++
+diff --git a/dlls/diasymreader/diasymreader.rgs b/dlls/diasymreader/diasymreader.rgs
+new file mode 100644
+index 00000000000..ea5bf07f370
+--- /dev/null
++++ b/dlls/diasymreader/diasymreader.rgs
+@@ -0,0 +1,23 @@
++HKCR
++{
++    NoRemove CLSID
++    {
++        '{0ae2deb0-f901-478b-bb9f-881ee8066788}'
++        {
++            InProcServer32 = s 'mscoree.dll'
++            {
++                val ThreadingModel = s 'Both'
++                '4.0.30319'
++                {
++                    val 'ImplementedInThisVersion' = s ''
++                }
++                ProgID = s 'CorSymWriter_SxS'
++                Server = s 'diasymreader.dll'
++            }
++        }
++    }
++    'CorSymWriter_SxS' = s 'NDP SymWriter'
++    {
++        CLSID = s '{0ae2deb0-f901-478b-bb9f-881ee8066788}'
++    }
++}
+diff --git a/dlls/diasymreader/diasymreader.spec b/dlls/diasymreader/diasymreader.spec
+index 9277fb1bcd9..63644e07fd4 100644
+--- a/dlls/diasymreader/diasymreader.spec
++++ b/dlls/diasymreader/diasymreader.spec
+@@ -1,8 +1,8 @@
+ @ stub CreateNGenPdbWriter
+ @ stub DllCanUnloadNow
+-@ stub DllGetClassObject
++@ stdcall -private DllGetClassObject(ptr ptr ptr)
+ @ stub DllGetClassObjectInternal
+-@ stub DllRegisterServer
+-@ stub DllUnregisterServer
++@ stdcall -private DllRegisterServer()
++@ stdcall -private DllUnregisterServer()
+ @ stub VSDllRegisterServer
+ @ stub VSDllUnregisterServer
+diff --git a/dlls/diasymreader/main.c b/dlls/diasymreader/main.c
+new file mode 100644
+index 00000000000..7c47edb475d
+--- /dev/null
++++ b/dlls/diasymreader/main.c
+@@ -0,0 +1,46 @@
++/* Copyright (C) 2022 Esme Povirk
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <stdarg.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "winnls.h"
++#include "objbase.h"
++#include "ocidl.h"
++#include "rpcproxy.h"
++
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(diasymreader);
++
++HRESULT WINAPI DllGetClassObject(REFCLSID rclsid, REFIID iid, LPVOID *ppv)
++{
++    FIXME("(%s,%s,%p)\n", debugstr_guid(rclsid), debugstr_guid(iid), ppv);
++    return CLASS_E_CLASSNOTAVAILABLE;
++}
++
++HRESULT WINAPI DllRegisterServer(void)
++{
++    return __wine_register_resources();
++}
++
++HRESULT WINAPI DllUnregisterServer(void)
++{
++    return __wine_unregister_resources();
++}
++
+
+-- 
+2.30.2
+

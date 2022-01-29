@@ -1,0 +1,68 @@
+From: Jeff Smith <whydoubt@gmail.com>
+Subject: [PATCH] gdi32: Allow any mode passed to SetBkMode().
+Message-Id: <20201007042229.1313789-1-whydoubt@gmail.com>
+Date: Tue,  6 Oct 2020 23:22:29 -0500
+
+Signed-off-by: Jeff Smith <whydoubt@gmail.com>
+---
+Testing revealed that SetBkMode() does not treat 'invalid' values as one
+might assume.  Discovered this when working on another issue.  Note that
+fixing this to match Windows simplifies one of the tests for that bug.
+
+ dlls/gdi32/dc.c       | 12 ++----------
+ dlls/gdi32/tests/dc.c | 19 ++++++++++++++++++-
+ 2 files changed, 20 insertions(+), 11 deletions(-)
+
+diff --git a/dlls/gdi32/dc.c b/dlls/gdi32/dc.c
+index 2d1bb29f153..2cee924b55f 100644
+--- a/dlls/gdi32/dc.c
++++ b/dlls/gdi32/dc.c
+@@ -678,11 +678,5 @@ INT WINAPI SetBkMode( HDC hdc, INT mode )
+     DC_ATTR *dc_attr;
+     INT ret;
+
+-    if (mode <= 0 || mode > BKMODE_LAST)
+-    {
+-        SetLastError(ERROR_INVALID_PARAMETER);
+-        return 0;
+-    }
+-
+     if (is_meta_dc( hdc )) return METADC_SetBkMode( hdc, mode );
+     if (!(dc_attr = get_dc_attr( hdc ))) return 0;
+     if (dc_attr->emf && !EMFDC_SetBkMode( dc_attr, mode )) return 0;
+diff --git a/dlls/gdi32/tests/dc.c b/dlls/gdi32/tests/dc.c
+index b4a89b213d2..ce9fca1653f 100644
+--- a/dlls/gdi32/tests/dc.c
++++ b/dlls/gdi32/tests/dc.c
+@@ -40,7 +40,7 @@ static void test_dc_values(void)
+ {
+     HDC hdc = CreateDCA("DISPLAY", NULL, NULL, NULL);
+     COLORREF color;
+-    int extra, attr;
++    int extra, attr, mode;
+
+     ok( hdc != NULL, "CreateDC failed\n" );
+     color = SetBkColor( hdc, 0x12345678 );
+@@ -81,6 +81,23 @@ static void test_dc_values(void)
+     extra = GetTextCharacterExtra( hdc );
+     ok( extra == 123, "initial extra %d\n", extra );
+
++    mode = SetBkMode( hdc, TRANSPARENT );
++    ok( mode == OPAQUE, "initial mode %08x\n", mode );
++    mode = GetBkMode( hdc );
++    ok( mode == TRANSPARENT, "wrong mode %08x\n", mode );
++    mode = SetBkMode( hdc, OPAQUE );
++    ok( mode == TRANSPARENT, "wrong mode %08x\n", mode );
++    mode = GetBkMode( hdc );
++    ok( mode == OPAQUE, "wrong mode %08x\n", mode );
++    mode = SetBkMode( hdc, 0 );
++    ok( mode == OPAQUE, "wrong mode %08x\n", mode );
++    mode = GetBkMode( hdc );
++    ok( mode == 0, "wrong mode %08x\n", mode );
++    mode = SetBkMode( hdc, BKMODE_LAST + 1 );
++    ok( mode == 0, "wrong mode %08x\n", mode );
++    mode = GetBkMode( hdc );
++    ok( mode == BKMODE_LAST + 1, "wrong mode %08x\n", mode );
++
+     DeleteDC( hdc );
+ }

@@ -1,16 +1,16 @@
 From: "Alex Xu (Hello71)" <alex_y_xu@yahoo.ca>
 Subject: [PATCH v3 3/5] setupapi: Use IOCTL_COPYCHUNK, avoid buffering whole file
-Message-Id: <20210823155653.228592-4-alex_y_xu@yahoo.ca>
-Date: Mon, 23 Aug 2021 11:56:51 -0400
-In-Reply-To: <20210823155653.228592-1-alex_y_xu@yahoo.ca>
-References: <20210823155653.228592-1-alex_y_xu@yahoo.ca>
+Message-Id: <20220127215056.243525-4-alex_y_xu@yahoo.ca>
+Date: Thu, 27 Jan 2022 16:50:54 -0500
+In-Reply-To: <20220127215056.243525-1-alex_y_xu@yahoo.ca>
+References: <20220127215056.243525-1-alex_y_xu@yahoo.ca>
 
 ---
- dlls/setupapi/fakedll.c | 202 ++++++++++++++++++++++------------------
- 1 file changed, 110 insertions(+), 92 deletions(-)
+ dlls/setupapi/fakedll.c | 198 ++++++++++++++++++++++------------------
+ 1 file changed, 108 insertions(+), 90 deletions(-)
 
 diff --git a/dlls/setupapi/fakedll.c b/dlls/setupapi/fakedll.c
-index 203d7c393ce..c17a1c7e2c5 100644
+index a4b8df4dfb4..85c6f2500d8 100644
 --- a/dlls/setupapi/fakedll.c
 +++ b/dlls/setupapi/fakedll.c
 @@ -19,8 +19,6 @@
@@ -53,7 +53,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
      IMAGE_EXPORT_DIRECTORY *exports;
      IMAGE_SECTION_HEADER *section = NULL;
      WORD *ordinals;
-@@ -205,60 +203,82 @@ static void extract_16bit_image( IMAGE_NT_HEADERS *nt, void **data, SIZE_T *size
+@@ -205,60 +203,81 @@ static void extract_16bit_image( IMAGE_NT_HEADERS *nt, void **data, SIZE_T *size
      }
  }
  
@@ -127,33 +127,12 @@ index 203d7c393ce..c17a1c7e2c5 100644
 +{
 +    BOOL ret = FALSE;
 +
-+    if ((lstrlenW(src_name) <= 2 || wcscmp( src_name + lstrlenW(src_name) - 2, L"16" )) &&
-+        (lstrlenW(src_name) <= 7 || wcscmp( src_name + lstrlenW(src_name) - 7, L"16.fake" )))
++    if (lstrlenW(src_name) > 2 && !wcscmp( src_name + lstrlenW(src_name) - 2, L"16" ))
      {
 -        *data = file_buffer;
 -        if (lstrlenW(name) > 2 && !wcscmp( name + lstrlenW(name) - 2, L"16" ))
 -            extract_16bit_image( nt, data, size );
 -        ret = 1;
-+        /* can't call CopyFileW here because files are open with no share mode */
-+        /* wine extension: IOCTL_COPYCHUNK works even on local files */
-+        SRV_COPYCHUNK_COPY copychunk = {
-+            .ChunkCount = 1,
-+            .Chunk = { [0] = { .Length = 1UL<<30 } }
-+        };
-+        SRV_COPYCHUNK_RESPONSE copychunk_resp;
-+        DWORD count;
-+        ret = DeviceIoControl( src, IOCTL_PREPARE_COPYCHUNK, NULL, 0, &copychunk.SourceFile,
-+                               sizeof(copychunk.SourceFile), &count, NULL );
-+        if (!ret) return FALSE;
-+        do {
-+            ret = DeviceIoControl( dest, IOCTL_COPYCHUNK, &copychunk, sizeof(copychunk),
-+                                   &copychunk_resp, sizeof(copychunk_resp), &count, NULL );
-+            copychunk.Chunk[0].SourceOffset.QuadPart += copychunk_resp.TotalBytesWritten;
-+            copychunk.Chunk[0].DestinationOffset.QuadPart += copychunk_resp.TotalBytesWritten;
-+        } while (ret && copychunk_resp.TotalBytesWritten);
-+    }
-+    else
-+    {
 +        LARGE_INTEGER file_size;
 +        HANDLE src_map;
 +        if (!GetFileSizeEx( src, &file_size )) return FALSE;
@@ -172,6 +151,26 @@ index 203d7c393ce..c17a1c7e2c5 100644
 +            }
 +            CloseHandle( src_map );
 +        }
++    }
++    else
++    {
++        /* can't call CopyFileW here because files are open with no share mode */
++        /* wine extension: IOCTL_COPYCHUNK works even on local files */
++        SRV_COPYCHUNK_COPY copychunk = {
++            .ChunkCount = 1,
++            .Chunk = { [0] = { .Length = 1UL<<30 } }
++        };
++        SRV_COPYCHUNK_RESPONSE copychunk_resp;
++        DWORD count;
++        ret = DeviceIoControl( src, IOCTL_PREPARE_COPYCHUNK, NULL, 0, &copychunk.SourceFile,
++                               sizeof(copychunk.SourceFile), &count, NULL );
++        if (!ret) return FALSE;
++        do {
++            ret = DeviceIoControl( dest, IOCTL_COPYCHUNK, &copychunk, sizeof(copychunk),
++                                   &copychunk_resp, sizeof(copychunk_resp), &count, NULL );
++            copychunk.Chunk[0].SourceOffset.QuadPart += copychunk_resp.TotalBytesWritten;
++            copychunk.Chunk[0].DestinationOffset.QuadPart += copychunk_resp.TotalBytesWritten;
++        } while (ret && copychunk_resp.TotalBytesWritten);
      }
 -done:
 -    close( fd );
@@ -194,12 +193,12 @@ index 203d7c393ce..c17a1c7e2c5 100644
      int res = 0;
 @@ -433,7 +451,7 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
      while ((path = enum_load_path( i++ ))) maxlen = max( maxlen, lstrlenW(path) );
-     maxlen += ARRAY_SIZE(pe_dir) + len + ARRAY_SIZE(L".fake");
+     maxlen += ARRAY_SIZE(pe_dir) + len + 1;
  
 -    if (!(file = HeapAlloc( GetProcessHeap(), 0, maxlen * sizeof(WCHAR) ))) return NULL;
 +    if (!(file = HeapAlloc( GetProcessHeap(), 0, maxlen * sizeof(WCHAR) ))) return -1;
  
-     pos = maxlen - len - ARRAY_SIZE(L".fake");
+     pos = maxlen - len - 1;
      lstrcpyW( file + pos, name );
 @@ -449,7 +467,7 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
          ptr = prepend( ptr, ptr, namelen );
@@ -210,7 +209,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
  
          /* now as a program */
          ptr = file + pos;
-@@ -461,7 +479,7 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
+@@ -459,7 +477,7 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
          ptr = prepend( ptr, ptr, namelen );
          ptr = prepend( ptr, L"\\programs", 9 );
          ptr = prepend( ptr, build_dir, lstrlenW(build_dir) );
@@ -219,7 +218,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
      }
  
      file[pos + len + 1] = 0;
-@@ -471,15 +489,14 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
+@@ -467,15 +485,14 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
      {
          ptr = prepend( file + pos, pe_dir, lstrlenW(pe_dir) );
          ptr = prepend( ptr, path, lstrlenW(path) );
@@ -238,7 +237,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
  }
  
  /* create the fake dll destination file */
-@@ -509,7 +526,7 @@ static HANDLE create_dest_file( const WCHAR *name, BOOL delete )
+@@ -505,7 +522,7 @@ static HANDLE create_dest_file( const WCHAR *name, BOOL delete )
      {
          if (GetLastError() == ERROR_PATH_NOT_FOUND) create_directories( name );
  
@@ -247,7 +246,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
          if (h == INVALID_HANDLE_VALUE)
              ERR( "failed to create %s (error=%u)\n", debugstr_w(name), GetLastError() );
      }
-@@ -842,23 +859,30 @@ static BOOL CALLBACK register_resource( HMODULE module, LPCWSTR type, LPWSTR nam
+@@ -838,23 +855,30 @@ static BOOL CALLBACK register_resource( HMODULE module, LPCWSTR type, LPWSTR nam
      return TRUE;
  }
  
@@ -281,7 +280,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
  
      if (!registrar)
      {
-@@ -873,7 +897,7 @@ static void register_fake_dll( const WCHAR *name, const void *data, size_t size,
+@@ -869,7 +893,7 @@ static void register_fake_dll( const WCHAR *name, const void *data, size_t size,
          if (!registrar)
          {
              ERR( "failed to create IRegistrar: %x\n", hr );
@@ -290,7 +289,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
          }
      }
  
-@@ -884,22 +908,24 @@ static void register_fake_dll( const WCHAR *name, const void *data, size_t size,
+@@ -880,22 +904,24 @@ static void register_fake_dll( const WCHAR *name, const void *data, size_t size,
      IRegistrar_AddReplacement( registrar, L"SystemRoot", buffer );
      EnumResourceNamesW( module, L"WINE_REGISTRY", register_resource, (LONG_PTR)&hr );
      if (FAILED(hr)) ERR( "failed to register %s: %x\n", debugstr_w(name), hr );
@@ -319,7 +318,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
          *end = 0;
          return 0;
      }
-@@ -918,13 +944,14 @@ static int install_fake_dll( WCHAR *dest, WCHAR *file, const WCHAR *ext, BOOL de
+@@ -913,13 +939,14 @@ static int install_fake_dll( WCHAR *dest, WCHAR *file, BOOL delete, struct list
          {
              TRACE( "%s -> %s\n", debugstr_w(file), debugstr_w(dest) );
  
@@ -337,7 +336,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
      *destname = 0;  /* restore it for next file */
      *end = 0;
      return ret;
-@@ -933,30 +960,25 @@ static int install_fake_dll( WCHAR *dest, WCHAR *file, const WCHAR *ext, BOOL de
+@@ -928,30 +955,25 @@ static int install_fake_dll( WCHAR *dest, WCHAR *file, BOOL delete, struct list
  static void delay_copy_files( struct list *delay_copy )
  {
      struct delay_copy *copy, *next;
@@ -374,7 +373,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
          HeapFree( GetProcessHeap(), 0, copy );
      }
  }
-@@ -1051,11 +1073,9 @@ static BOOL create_wildcard_dlls( const WCHAR *dirname, const WCHAR *wildcard, B
+@@ -1041,11 +1063,9 @@ static BOOL create_wildcard_dlls( const WCHAR *dirname, const WCHAR *wildcard, B
  BOOL create_fake_dll( const WCHAR *name, const WCHAR *source )
  {
      struct list delay_copy = LIST_INIT( delay_copy );
@@ -387,7 +386,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
      BOOL delete = !wcscmp( source, L"-" );  /* '-' source means delete the file */
  
      if (!(filename = wcsrchr( name, '\\' ))) filename = name;
-@@ -1074,12 +1094,10 @@ BOOL create_fake_dll( const WCHAR *name, const WCHAR *source )
+@@ -1064,12 +1084,10 @@ BOOL create_fake_dll( const WCHAR *name, const WCHAR *source )
      if (!(h = create_dest_file( name, delete ))) return TRUE;  /* not a fake dll */
      if (h == INVALID_HANDLE_VALUE) return FALSE;
  
@@ -403,7 +402,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
          else ERR( "failed to write to %s (error=%u)\n", debugstr_w(name), GetLastError() );
      }
      else
-@@ -1088,7 +1106,9 @@ BOOL create_fake_dll( const WCHAR *name, const WCHAR *source )
+@@ -1078,7 +1096,9 @@ BOOL create_fake_dll( const WCHAR *name, const WCHAR *source )
          ret = build_fake_dll( h, name );
      }
  
@@ -413,7 +412,7 @@ index 203d7c393ce..c17a1c7e2c5 100644
      if (!ret) DeleteFileW( name );
  
      delay_copy_files( &delay_copy );
-@@ -1101,8 +1121,6 @@ BOOL create_fake_dll( const WCHAR *name, const WCHAR *source )
+@@ -1091,8 +1111,6 @@ BOOL create_fake_dll( const WCHAR *name, const WCHAR *source )
   */
  void cleanup_fake_dlls(void)
  {
@@ -424,5 +423,5 @@ index 203d7c393ce..c17a1c7e2c5 100644
      handled_count = handled_total = 0;
 
 -- 
-2.33.0
+2.35.0
 

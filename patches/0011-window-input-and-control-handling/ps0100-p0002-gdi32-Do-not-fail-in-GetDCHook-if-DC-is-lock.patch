@@ -1,0 +1,36 @@
+From 9dc3971ed9a045c25d6a18da726b172b60b27bf3 Mon Sep 17 00:00:00 2001
+From: Paul Gofman <gofmanp@gmail.com>
+Date: Thu, 20 Jan 2022 23:07:50 +0300
+Subject: [PATCH 2/2] gdi32: Do not fail in GetDCHook() if DC is locked by
+ another thread.
+
+CW-Bug-Id: #20015
+---
+ dlls/win32u/dc.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/win32u/dc.c b/dlls/win32u/dc.c
+index e8d34d8effa..e942fc0a239 100644
+--- a/dlls/win32u/dc.c
++++ b/dlls/win32u/dc.c
+@@ -1237,13 +1237,18 @@ BOOL WINAPI SetDCHook( HDC hdc, DCHOOKPROC hookProc, DWORD_PTR dwHookData )
+  */
+ DWORD_PTR WINAPI GetDCHook( HDC hdc, DCHOOKPROC *proc )
+ {
+-    DC *dc = get_dc_ptr( hdc );
++    DC *dc = get_dc_obj( hdc );
+     DWORD_PTR ret;
+ 
+     if (!dc) return 0;
++    if (dc->attr->disabled)
++    {
++        GDI_ReleaseObj( hdc );
++        return 0;
++    }
+     if (proc) *proc = dc->hookProc;
+     ret = dc->dwHookData;
+-    release_dc_ptr( dc );
++    GDI_ReleaseObj( hdc );
+     return ret;
+ }
+ 

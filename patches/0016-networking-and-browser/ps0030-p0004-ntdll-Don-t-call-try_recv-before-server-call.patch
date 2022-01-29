@@ -1,0 +1,74 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [RFC PATCH v4 4/5] ntdll: Don't call try_recv before server call in sock_recv.
+Message-Id: <7467edad-8e39-028a-cccb-bb59bed70788@gmail.com>
+Date: Sat, 29 Jan 2022 16:47:18 +0900
+In-Reply-To: <f58594d9-b43b-2c96-802c-1ee275430dd9@gmail.com>
+References: <f58594d9-b43b-2c96-802c-1ee275430dd9@gmail.com>
+
+Otherwise, try_recv() call from sock_recv() may race against try_recv()
+call from async_recv_proc(), shuffling the packet order.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52401
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+
+Notes:
+    v3 -> v4: unchanged
+
+ dlls/ntdll/unix/socket.c | 12 ++----------
+ dlls/ws2_32/tests/sock.c |  8 ++++----
+ 2 files changed, 6 insertions(+), 14 deletions(-)
+
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index 1c1ae25ab18..86f5d0d29a2 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -737,16 +737,8 @@ static NTSTATUS sock_recv( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
+         }
+     }
+ 
+-    status = try_recv( fd, async, &information );
+-
+-    if (status != STATUS_SUCCESS && status != STATUS_BUFFER_OVERFLOW && status != STATUS_DEVICE_NOT_READY)
+-    {
+-        release_fileio( &async->io );
+-        return status;
+-    }
+-
+-    if (status == STATUS_DEVICE_NOT_READY && force_async)
+-        status = STATUS_PENDING;
++    status = force_async ? STATUS_PENDING : STATUS_DEVICE_NOT_READY;
++    information = 0;
+ 
+     SERVER_START_REQ( recv_socket )
+     {
+diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
+index 054e597b719..4199676f460 100644
+--- a/dlls/ws2_32/tests/sock.c
++++ b/dlls/ws2_32/tests/sock.c
+@@ -7750,8 +7750,8 @@ static void test_shutdown(void)
+ 
+     WSASetLastError(0xdeadbeef);
+     ret = recv(server, buffer, sizeof(buffer), 0);
+-    todo_wine ok(ret == -1, "got %d\n", ret);
+-    todo_wine ok(WSAGetLastError() == WSAESHUTDOWN, "got error %u\n", WSAGetLastError());
++    ok(ret == -1, "got %d\n", ret);
++    ok(WSAGetLastError() == WSAESHUTDOWN, "got error %u\n", WSAGetLastError());
+ 
+     ret = send(server, "test", 5, 0);
+     ok(ret == 5, "got %d\n", ret);
+@@ -7845,8 +7845,8 @@ static void test_shutdown(void)
+ 
+     WSASetLastError(0xdeadbeef);
+     ret = recv(server, buffer, sizeof(buffer), 0);
+-    todo_wine ok(ret == -1, "got %d\n", ret);
+-    todo_wine ok(WSAGetLastError() == WSAESHUTDOWN, "got error %u\n", WSAGetLastError());
++    ok(ret == -1, "got %d\n", ret);
++    ok(WSAGetLastError() == WSAESHUTDOWN, "got error %u\n", WSAGetLastError());
+ 
+     WSASetLastError(0xdeadbeef);
+     ret = send(server, "test", 5, 0);
+
+-- 
+2.34.1
+

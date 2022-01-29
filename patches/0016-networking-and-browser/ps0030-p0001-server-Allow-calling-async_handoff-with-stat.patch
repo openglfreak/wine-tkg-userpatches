@@ -1,0 +1,70 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [RFC PATCH v4 1/5] server: Allow calling async_handoff() with status code STATUS_ALERTED.
+Message-Id: <d69d52a3-cd76-ffa6-bc1c-35d3f91c2dac@gmail.com>
+Date: Sat, 29 Jan 2022 16:47:04 +0900
+In-Reply-To: <f58594d9-b43b-2c96-802c-1ee275430dd9@gmail.com>
+References: <f58594d9-b43b-2c96-802c-1ee275430dd9@gmail.com>
+
+If the server detects that an I/O request could be completed immediately
+(e.g. the socket to read from already has incoming data), it can now
+return STATUS_ALERTED to allow opportunistic synchronous I/O.
+The Unix side will then attempt to perform I/O in nonblocking mode and
+report back the I/O status to the server with signal_wait_async().
+If the operation returns e.g. EAGAIN or EWOULDBLOCK, the client can opt
+to either abandon the request (by specifying an error status) or poll
+for it in the server as usual (by waiting on the wait handle).
+
+Without such mechanism in place, the client cannot safely perform
+immediately satiable I/O operations synchronously, since it can
+potentially conflict with other pending I/O operations that have already
+been queued.
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+
+Notes:
+    v2 -> v3: set async->alerted = 1
+    v3 -> v4: unchanged
+
+ server/async.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/server/async.c b/server/async.c
+index 7aef28355f0..e169bb23225 100644
+--- a/server/async.c
++++ b/server/async.c
+@@ -338,6 +338,30 @@ obj_handle_t async_handoff( struct async *async, data_size_t *result, int force_
+         return async->wait_handle;
+     }
+ 
++    if (!async->pending && get_error() == STATUS_ALERTED)
++    {
++        /* Give the client opportunity to complete synchronously.
++         * If it turns out that the I/O request is not actually immediately satiable,
++         * the client may then choose to re-queue the async (with STATUS_PENDING).
++         */
++        async->unknown_status = 1;
++
++        /* Deactivate async so that it can be safely queued.
++         * Otherwise, the async will be erroneously alerted the next time
++         * someone calls async_wake_up() on the queue.
++         *
++         * Don't use async_terminate() here since we'd like to leave the IOSB
++         * status as STATUS_PENDING.  Also we certainly don't want APC_ASYNC_IO
++         * to fire in any circumstances.
++         */
++        async->terminated = 1;
++        async->alerted = 1;
++
++        async_reselect( async );
++
++        return async->wait_handle;
++    }
++
+     async->initial_status = get_error();
+ 
+     if (!async->pending && NT_ERROR( get_error() ))
+
+-- 
+2.34.1
+

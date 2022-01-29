@@ -1,0 +1,120 @@
+From: Bastien Orivel <eijebong@bananium.fr>
+Subject: [PATCH resend] ws2_32: Fix setsockopt(TCP_NODELAY) when optlen is less than 4.
+Message-Id: <20220122151635.1112374-1-eijebong@bananium.fr>
+Date: Sat, 22 Jan 2022 16:16:35 +0100
+
+According to MSDN [1], the `TCP_NODELAY` parameter should be of type
+`BOOL` which is 4 bytes. Due to a bug [2] in rustc passing a byte
+instead of an int, any program written in rust that tries to set that
+option on a socket will fail with a "Invalid parameter supplied" error.
+
+Turns out that setsockopt on linux does not want optlen to be less than
+4 bytes [3].
+
+Windows' behavior is the following:
+- For optlen <= 0, return SOCKET_ERROR and set last error to WSAEFAULT
+- For optlen > 0, ignore the optlen value and set the TCP_NODELAY value
+  to one if the first byte of the given optvalue is not 0.
+
+This will fix any rust program using the hyper library to do HTTP
+requests.
+
+[1]: https://docs.microsoft.com/en-us/windows/win32/winsock/ipproto-tcp-socket-options
+[2]: https://github.com/rust-lang/rust/blob/44593aeb1387b1be355aeaf0040d5927bd80f060/library/std/src/sys/windows/net.rs#L470
+[3]: https://github.com/torvalds/linux/blob/d58071a8a76d779eedab38033ae4c821c30295a5/net/ipv4/tcp.c#L3419-L3420
+
+Signed-off-by: Bastien Orivel <eijebong@bananium.fr>
+---
+ dlls/ws2_32/socket.c     | 10 ++++++--
+ dlls/ws2_32/tests/sock.c | 53 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 61 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ws2_32/socket.c b/dlls/ws2_32/socket.c
+index fe7e4fb3464..e43d6c5d671 100644
+--- a/dlls/ws2_32/socket.c
++++ b/dlls/ws2_32/socket.c
+@@ -2900,8 +2900,14 @@ int WINAPI setsockopt( SOCKET s, int level, int optname, const char *optval, int
+         switch(optname)
+         {
+         case TCP_NODELAY:
+-            return server_setsockopt( s, IOCTL_AFD_WINE_SET_TCP_NODELAY, optval, optlen );
+-
++        {
++            INT nodelay = *optval;
++            if (optlen <= 0) {
++                SetLastError(WSAEFAULT);
++                return SOCKET_ERROR;
++            }
++            return server_setsockopt( s, IOCTL_AFD_WINE_SET_TCP_NODELAY, (char*)&nodelay, sizeof(nodelay) );
++        }
+         default:
+             FIXME("Unknown IPPROTO_TCP optname 0x%08x\n", optname);
+             SetLastError(WSAENOPROTOOPT);
+diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
+index 054e597b719..042c743f95e 100644
+--- a/dlls/ws2_32/tests/sock.c
++++ b/dlls/ws2_32/tests/sock.c
+@@ -1259,6 +1259,59 @@ static void test_set_getsockopt(void)
+     ok(err == SOCKET_ERROR && WSAGetLastError() == WSAEFAULT,
+        "got %d with %d (expected SOCKET_ERROR with WSAEFAULT)\n", err, WSAGetLastError());
+ 
++    /* TCP_NODELAY: optlen doesn't matter on windows, it should work with any positive value */
++    size = sizeof(value);
++
++    value = 1;
++    err = setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*)&value, 1);
++    ok (!err, "setsockopt TCP_NODELAY failed with optlen == 1\n");
++    value = 0xff;
++    err = getsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*)&value, &size);
++    ok(!err, "getsockopt TCP_NODELAY failed\n");
++    ok(value == 1, "TCP_NODELAY should be 1\n");
++    value = 0;
++    err = setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*)&value, sizeof(value));
++    ok(!err, "Failed to reset TCP_NODELAY to 0\n");
++
++    value = 1;
++    err = setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*)&value, 4);
++    ok (!err, "setsockopt TCP_NODELAY failed with optlen == 4\n");
++    value = 0xff;
++    err = getsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*)&value, &size);
++    ok(!err, "getsockopt TCP_NODELAY failed\n");
++    ok(value == 1, "TCP_NODELAY should be 1\n");
++    value = 0;
++    err = setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*)&value, sizeof(value));
++    ok(!err, "Failed to reset TCP_NODELAY to 0\n");
++
++    value = 1;
++    err = setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*)&value, 42);
++    ok (!err, "setsockopt TCP_NODELAY failed with optlen == 42\n");
++    value = 0xff;
++    err = getsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*)&value, &size);
++    ok(!err, "getsockopt TCP_NODELAY failed\n");
++    ok(value == 1, "TCP_NODELAY should be 1\n");
++    value = 0;
++    err = setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*)&value, sizeof(value));
++    ok(!err, "Failed to reset TCP_NODELAY to 0\n");
++
++    value = 1;
++    err = setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*)&value, 0);
++    ok(err == SOCKET_ERROR && WSAGetLastError() == WSAEFAULT,
++       "got %d with %d (expected SOCKET_ERROR with WSAEFAULT)\n", err, WSAGetLastError());
++    value = 0xff;
++    err = getsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*)&value, &size);
++    ok(!err, "getsockopt TCP_NODELAY failed\n");
++    ok(!value, "TCP_NODELAY should be 0\n");
++
++    value = 0x100;
++    err = setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*)&value, 4);
++    ok (!err, "setsockopt TCP_NODELAY failed with optlen == 4 and optvalue = 0x100\n");
++    value = 0xff;
++    err = getsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char*)&value, &size);
++    ok(!err, "getsockopt TCP_NODELAY failed\n");
++    ok(!value, "TCP_NODELAY should be 0\n");
++
+     /* Test for erroneously passing a value instead of a pointer as optval */
+     size = sizeof(char);
+     err = setsockopt(s, SOL_SOCKET, SO_DONTROUTE, (char *)1, size);
+
+-- 
+2.34.1
+

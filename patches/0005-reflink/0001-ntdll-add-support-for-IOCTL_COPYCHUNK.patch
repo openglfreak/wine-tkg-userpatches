@@ -1,9 +1,9 @@
 From: "Alex Xu (Hello71)" <alex_y_xu@yahoo.ca>
 Subject: [PATCH v3 1/5] ntdll: add support for IOCTL_COPYCHUNK.
-Message-Id: <20210823155653.228592-2-alex_y_xu@yahoo.ca>
-Date: Mon, 23 Aug 2021 11:56:49 -0400
-In-Reply-To: <20210823155653.228592-1-alex_y_xu@yahoo.ca>
-References: <20210823155653.228592-1-alex_y_xu@yahoo.ca>
+Message-Id: <20220127215056.243525-2-alex_y_xu@yahoo.ca>
+Date: Thu, 27 Jan 2022 16:50:52 -0500
+In-Reply-To: <20220127215056.243525-1-alex_y_xu@yahoo.ca>
+References: <20220127215056.243525-1-alex_y_xu@yahoo.ca>
 
 This API really sucks; it literally just passes through the raw SMB
 request. However, there are some benefits over
@@ -14,45 +14,50 @@ FSCTL_DUPLICATE_EXTENTS_TO_FILE:
 2. on Windows, IOCTL_COPYCHUNK is already called (indirectly) from
    CopyFile on Windows. see e.g.
    https://www.ghisler.ch/board/viewtopic.php?t=43945.
-3. copy_file_range allows kernel acceleration.
+3. copy_file_range allows kernel acceleration if reflink isn't possible.
 4. copy_file_range is supported on FreeBSD.
 ---
-# configure              |   1 +
+# configure              |   6 ++
  configure.ac           |   1 +
  dlls/ntdll/unix/file.c | 121 +++++++++++++++++++++++++++++++++++++++++
  include/config.h.in    |   3 +
  include/winioctl.h     |  34 ++++++++++++
- 5 files changed, 160 insertions(+)
+ 5 files changed, 165 insertions(+)
 
 #diff --git a/configure b/configure
-#index 2e61fcbc685..aa5c1d39bec 100755
+#index 7760e43b8e9..78e502c28d6 100755
 #--- a/configure
 #+++ b/configure
-#@@ -17992,6 +17992,7 @@ for ac_func in \
+#@@ -19717,6 +19717,12 @@ esac
+# 
 # ac_save_CFLAGS="$CFLAGS"
 # CFLAGS="$CFLAGS $BUILTINFLAG"
-# AC_CHECK_FUNCS(\
-#+	copy_file_range \
-# 	epoll_create \
-# 	fork \
-# 	fstatfs \
+#+ac_fn_c_check_func "$LINENO" "copy_file_range" "ac_cv_func_copy_file_range"
+#+if test "x$ac_cv_func_copy_file_range" = xyes
+#+then :
+#+  printf "%s\n" "#define HAVE_COPY_FILE_RANGE 1" >>confdefs.h
+#+
+#+fi
+# ac_fn_c_check_func "$LINENO" "epoll_create" "ac_cv_func_epoll_create"
+# if test "x$ac_cv_func_epoll_create" = xyes
+# then :
 diff --git a/configure.ac b/configure.ac
-index a9750330443..e85656045c0 100644
+index 181047ef0d8..de2f810b4ac 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -2168,6 +2168,7 @@ AC_CHECK_FUNCS(\
+@@ -1957,6 +1957,7 @@ dnl **** Check for functions ****
  ac_save_CFLAGS="$CFLAGS"
  CFLAGS="$CFLAGS $BUILTINFLAG"
  AC_CHECK_FUNCS(\
 +	copy_file_range \
  	epoll_create \
- 	fork \
  	fstatfs \
+ 	futimens \
 diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
-index 712f94ec43f..cc820e341fd 100644
+index a29b5cbb980..cedb57e8f2f 100644
 --- a/dlls/ntdll/unix/file.c
 +++ b/dlls/ntdll/unix/file.c
-@@ -359,6 +359,7 @@ NTSTATUS errno_to_status( int err )
+@@ -347,6 +347,7 @@ NTSTATUS errno_to_status( int err )
  #ifdef ETIME /* Missing on FreeBSD */
      case ETIME:     return STATUS_IO_TIMEOUT;
  #endif
@@ -60,7 +65,7 @@ index 712f94ec43f..cc820e341fd 100644
      case ENOEXEC:   /* ?? */
      case EEXIST:    /* ?? */
      default:
-@@ -5692,6 +5693,122 @@ NTSTATUS WINAPI NtWriteFileGather( HANDLE file, HANDLE event, PIO_APC_ROUTINE ap
+@@ -5694,6 +5695,122 @@ NTSTATUS WINAPI NtWriteFileGather( HANDLE file, HANDLE event, PIO_APC_ROUTINE ap
  }
  
  
@@ -183,7 +188,7 @@ index 712f94ec43f..cc820e341fd 100644
  /******************************************************************************
   *              NtDeviceIoControlFile   (NTDLL.@)
   */
-@@ -5707,6 +5824,10 @@ NTSTATUS WINAPI NtDeviceIoControlFile( HANDLE handle, HANDLE event, PIO_APC_ROUT
+@@ -5709,6 +5826,10 @@ NTSTATUS WINAPI NtDeviceIoControlFile( HANDLE handle, HANDLE event, PIO_APC_ROUT
  
      switch (device)
      {
@@ -195,12 +200,12 @@ index 712f94ec43f..cc820e341fd 100644
      case FILE_DEVICE_NETWORK:
          status = sock_ioctl( handle, event, apc, apc_context, io, code, in_buffer, in_size, out_buffer, out_size );
 diff --git a/include/config.h.in b/include/config.h.in
-index b1918d46ed1..3f7aaed47fa 100644
+index 9717dc17236..9150285b39e 100644
 --- a/include/config.h.in
 +++ b/include/config.h.in
-@@ -46,6 +46,9 @@
- /* Define to 1 if you have the <CommonCrypto/CommonCryptor.h> header file. */
- #undef HAVE_COMMONCRYPTO_COMMONCRYPTOR_H
+@@ -37,6 +37,9 @@
+ /* Define to 1 if you have the <CL/cl.h> header file. */
+ #undef HAVE_CL_CL_H
  
 +/* Define to 1 if you have the `copy_file_range' function. */
 +#undef HAVE_COPY_FILE_RANGE
@@ -262,5 +267,5 @@ index ae04c37a462..fbc0b80e359 100644
  /*
 
 -- 
-2.33.0
+2.35.0
 

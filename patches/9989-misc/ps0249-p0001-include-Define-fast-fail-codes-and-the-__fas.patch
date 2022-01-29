@@ -1,18 +1,28 @@
 From: Jinoh Kang <jinoh.kang.kr@gmail.com>
-Subject: [PATCH v5 resend 1/4] include: Define fast fail codes and the __fastfail() intrinsic.
-Message-Id: <06e66ab0-5c38-a248-f06b-150cd2997f72@gmail.com>
-Date: Thu, 20 Jan 2022 02:06:45 +0900
+Subject: [PATCH v6 1/4] include: Define fast fail codes and the __fastfail() intrinsic.
+Message-Id: <2e8e2961-6f32-4f63-0ab9-2313d32e67bd@gmail.com>
+Date: Sun, 23 Jan 2022 01:50:34 +0900
 
 Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
 ---
- include/winnt.h | 116 ++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 116 insertions(+)
+
+Notes:
+    v5 -> v6:
+    - Replace ULONG/ULONGLONG with ULONG_PTR for cross-architecture consistency.
+    - Use machine-specific machine constraint ("c") for i386 and x86-64.
+    - Merge i386 and x86-64 code.
+    - "Prevent" taking address of __fastfail (just like MSVC exclusive intrinsic).
+    - Remove erroneous preprocessor directive comments.
+    - Don't repeat function declaration and epilogue.
+
+ include/winnt.h | 102 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 102 insertions(+)
 
 diff --git a/include/winnt.h b/include/winnt.h
-index c80efee077d..e80c10bd49c 100644
+index c80efee077d..34406853469 100644
 --- a/include/winnt.h
 +++ b/include/winnt.h
-@@ -915,6 +915,122 @@ NTSYSAPI PSLIST_ENTRY WINAPI RtlInterlockedPushEntrySList(PSLIST_HEADER, PSLIST_
+@@ -915,6 +915,108 @@ NTSYSAPI PSLIST_ENTRY WINAPI RtlInterlockedPushEntrySList(PSLIST_HEADER, PSLIST_
  NTSYSAPI WORD         WINAPI RtlQueryDepthSList(PSLIST_HEADER);
  
  
@@ -89,47 +99,33 @@ index c80efee077d..e80c10bd49c 100644
 +#define FAST_FAIL_INVALID_FAST_FAIL_CODE            0xFFFFFFFF
 +
 +#if defined(__GNUC__)
-+#if defined(__x86_64__)
-+static FORCEINLINE DECLSPEC_NORETURN void __fastfail(unsigned int code)
-+{
-+    register ULONGLONG val __asm__("rcx") = code;
-+    __asm__ __volatile__( "int $0x29" :: "r" (val) : "memory" );
-+#if defined(__GNUC__) && ((__GNUC__ > 4) || ((__GNUC__ == 4) && (__GNUC_MINOR__ >= 5)))
-+    __builtin_unreachable();
++/* __fastfail is intentionally not declared static, so that taking the address
++ * of this function will fail on link due to unresolved symbol (just like MSVC).
++ */
++#ifdef __GNUC_GNU_INLINE__
++extern  /* don't emit definition of this inline function */
 +#endif
-+}
-+#elif defined(__i386__)
-+static FORCEINLINE DECLSPEC_NORETURN void __fastfail(unsigned int code)
++FORCEINLINE DECLSPEC_NORETURN void __fastfail(unsigned int code)
 +{
-+    register ULONG val __asm__("ecx") = code;
-+    __asm__ __volatile__( "int $0x29" :: "r" (val) : "memory" );
-+#if defined(__GNUC__) && ((__GNUC__ > 4) || ((__GNUC__ == 4) && (__GNUC_MINOR__ >= 5)))
-+    __builtin_unreachable();
-+#endif
-+}
++#if defined(__x86_64__) || defined(__i386__)
++    __asm__ __volatile__( "int $0x29" :: "c" ((ULONG_PTR)code) : "memory" );
 +#elif defined(__aarch64__)
-+static FORCEINLINE DECLSPEC_NORETURN void __fastfail(unsigned int code)
-+{
-+    register ULONGLONG val __asm__("x0") = code;
++    register ULONG_PTR val __asm__("x0") = code;
 +    __asm__ __volatile__( "brk #0xf003" :: "r" (val) : "memory" );
-+#if defined(__GNUC__) && ((__GNUC__ > 4) || ((__GNUC__ == 4) && (__GNUC_MINOR__ >= 5)))
-+    __builtin_unreachable();
-+#endif
-+}
 +#elif defined(__arm__)
-+static FORCEINLINE DECLSPEC_NORETURN void __fastfail(unsigned int code)
-+{
-+    register ULONG val __asm__("r0") = code;
++    register ULONG_PTR val __asm__("r0") = code;
 +    __asm__ __volatile__( "udf #0xfb" :: "r" (val) : "memory" );
-+#if defined(__GNUC__) && ((__GNUC__ > 4) || ((__GNUC__ == 4) && (__GNUC_MINOR__ >= 5)))
++#else
++#error __fastfail not defined for this architecture
++#endif
++#if (__GNUC__ > 4) || ((__GNUC__ == 4) && (__GNUC_MINOR__ >= 5))
 +    __builtin_unreachable();
 +#endif
 +}
-+#endif  /* __x86_64__ */
 +#elif defined(_MSC_VER) && (_MSC_VER >= 1610)
 +DECLSPEC_NORETURN void __fastfail(unsigned int);
 +#pragma intrinsic(__fastfail)
-+#endif  /* __GNUC__ */
++#endif
 +
 +
  /* Heap flags */

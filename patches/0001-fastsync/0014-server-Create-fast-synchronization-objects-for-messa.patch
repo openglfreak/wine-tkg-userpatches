@@ -9,10 +9,10 @@ Subject: [PATCH 14/31] server: Create fast synchronization objects for message
  1 file changed, 44 insertions(+), 4 deletions(-)
 
 diff --git a/server/queue.c b/server/queue.c
-index 6aa65f9f5a5..db7b1f62557 100644
+index 595f9cfa3a5..bc25e4b6f04 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -138,6 +138,7 @@ struct msg_queue
+@@ -144,6 +144,7 @@ struct msg_queue
      timeout_t              last_get_msg;    /* time of last get message call */
      int                    keystate_lock;   /* owns an input keystate lock */
      unsigned int           ignore_post_msg; /* ignore post messages newer than this unique id */
@@ -20,15 +20,15 @@ index 6aa65f9f5a5..db7b1f62557 100644
      int                    esync_fd;        /* esync file descriptor (signalled on message) */
      int                    esync_in_msgwait; /* our thread is currently waiting on us */
      unsigned int           fsync_idx;
-@@ -155,6 +156,7 @@ static int msg_queue_add_queue( struct object *obj, struct wait_queue_entry *ent
- static void msg_queue_remove_queue( struct object *obj, struct wait_queue_entry *entry );
- static int msg_queue_signaled( struct object *obj, struct wait_queue_entry *entry );
+@@ -167,6 +168,7 @@ static int msg_queue_signaled( struct object *obj, struct wait_queue_entry *entr
+ static int msg_queue_get_esync_fd( struct object *obj, enum esync_type *type );
+ static unsigned int msg_queue_get_fsync_idx( struct object *obj, enum fsync_type *type );
  static void msg_queue_satisfied( struct object *obj, struct wait_queue_entry *entry );
 +static struct fast_sync *msg_queue_get_fast_sync( struct object *obj );
  static void msg_queue_destroy( struct object *obj );
  static void msg_queue_poll_event( struct fd *fd, int event );
  static void thread_input_dump( struct object *obj, int verbose );
-@@ -181,7 +183,7 @@ static const struct object_ops msg_queue_ops =
+@@ -195,7 +197,7 @@ static const struct object_ops msg_queue_ops =
      NULL,                      /* unlink_name */
      no_open_file,              /* open_file */
      no_kernel_obj_list,        /* get_kernel_obj_list */
@@ -37,7 +37,7 @@ index 6aa65f9f5a5..db7b1f62557 100644
      no_close_handle,           /* close_handle */
      msg_queue_destroy          /* destroy */
  };
-@@ -305,6 +307,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+@@ -325,6 +327,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
          queue->last_get_msg    = current_time;
          queue->keystate_lock   = 0;
          queue->ignore_post_msg = 0;
@@ -45,8 +45,8 @@ index 6aa65f9f5a5..db7b1f62557 100644
          queue->esync_fd        = -1;
          queue->esync_in_msgwait = 0;
          queue->fsync_idx       = 0;
-@@ -480,7 +483,11 @@ static inline void set_queue_bits( struct msg_queue *queue, unsigned int bits )
- {
+@@ -542,7 +545,11 @@ static inline void set_queue_bits( struct msg_queue *queue, unsigned int bits )
+     }
      queue->wake_bits |= bits;
      queue->changed_bits |= bits;
 -    if (is_signaled( queue )) wake_up( &queue->obj, 0 );
@@ -58,7 +58,7 @@ index 6aa65f9f5a5..db7b1f62557 100644
  }
  
  /* clear some queue bits */
-@@ -488,6 +495,8 @@ static inline void clear_queue_bits( struct msg_queue *queue, unsigned int bits
+@@ -555,6 +562,8 @@ static inline void clear_queue_bits( struct msg_queue *queue, unsigned int bits
          if (queue->keystate_lock) unlock_input_keystate( queue->input );
          queue->keystate_lock = 0;
      }
@@ -67,7 +67,7 @@ index 6aa65f9f5a5..db7b1f62557 100644
  
      if (do_fsync() && !is_signaled( queue ))
          fsync_clear( &queue->obj );
-@@ -997,6 +1006,17 @@ static void msg_queue_satisfied( struct object *obj, struct wait_queue_entry *en
+@@ -1100,6 +1109,17 @@ static void msg_queue_satisfied( struct object *obj, struct wait_queue_entry *en
      struct msg_queue *queue = (struct msg_queue *)obj;
      queue->wake_mask = 0;
      queue->changed_mask = 0;
@@ -85,7 +85,7 @@ index 6aa65f9f5a5..db7b1f62557 100644
  }
  
  static void msg_queue_destroy( struct object *obj )
-@@ -1035,6 +1055,7 @@ static void msg_queue_destroy( struct object *obj )
+@@ -1139,6 +1159,7 @@ static void msg_queue_destroy( struct object *obj )
      release_object( queue->input );
      if (queue->hooks) release_object( queue->hooks );
      if (queue->fd) release_object( queue->fd );
@@ -93,7 +93,7 @@ index 6aa65f9f5a5..db7b1f62557 100644
  }
  
  static void msg_queue_poll_event( struct fd *fd, int event )
-@@ -1045,6 +1066,7 @@ static void msg_queue_poll_event( struct fd *fd, int event )
+@@ -1149,6 +1170,7 @@ static void msg_queue_poll_event( struct fd *fd, int event )
      if (event & (POLLERR | POLLHUP)) set_fd_events( fd, -1 );
      else set_fd_events( queue->fd, 0 );
      wake_up( &queue->obj, 0 );
@@ -101,7 +101,7 @@ index 6aa65f9f5a5..db7b1f62557 100644
  }
  
  static void thread_input_dump( struct object *obj, int verbose )
-@@ -2417,8 +2439,20 @@ DECL_HANDLER(set_queue_mask)
+@@ -2533,8 +2555,20 @@ DECL_HANDLER(set_queue_mask)
          if (is_signaled( queue ))
          {
              /* if skip wait is set, do what would have been done in the subsequent wait */
@@ -124,7 +124,7 @@ index 6aa65f9f5a5..db7b1f62557 100644
          }
      }
  }
-@@ -2433,6 +2467,8 @@ DECL_HANDLER(get_queue_status)
+@@ -2549,6 +2583,8 @@ DECL_HANDLER(get_queue_status)
          reply->wake_bits    = queue->wake_bits;
          reply->changed_bits = queue->changed_bits;
          queue->changed_bits &= ~req->clear_bits;
@@ -133,7 +133,7 @@ index 6aa65f9f5a5..db7b1f62557 100644
  
          if (do_fsync() && !is_signaled( queue ))
              fsync_clear( &queue->obj );
-@@ -2616,6 +2652,9 @@ DECL_HANDLER(get_message)
+@@ -2739,6 +2775,9 @@ DECL_HANDLER(get_message)
      if (filter & QS_INPUT) queue->changed_bits &= ~QS_INPUT;
      if (filter & QS_PAINT) queue->changed_bits &= ~QS_PAINT;
  
@@ -142,15 +142,15 @@ index 6aa65f9f5a5..db7b1f62557 100644
 +
      /* then check for posted messages */
      if ((filter & QS_POSTMESSAGE) &&
-         get_posted_message( queue, get_win, req->get_first, req->get_last, req->flags, reply ))
-@@ -2669,6 +2708,7 @@ DECL_HANDLER(get_message)
+         get_posted_message( queue, queue->ignore_post_msg, get_win, req->get_first, req->get_last, req->flags, reply ))
+@@ -2802,6 +2841,7 @@ DECL_HANDLER(get_message)
      if (get_win == -1 && current->process->idle_event) set_event( current->process->idle_event );
      queue->wake_mask = req->wake_mask;
      queue->changed_mask = req->changed_mask;
 +    fast_reset_event( queue->fast_sync );
      set_error( STATUS_PENDING );  /* FIXME */
- }
+     return;
  
 -- 
-2.34.1
+2.35.1
 

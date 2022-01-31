@@ -14,10 +14,10 @@ Supersedes 215952-215974.
  2 files changed, 18 insertions(+), 9 deletions(-)
 
 diff --git a/dlls/ntdll/actctx.c b/dlls/ntdll/actctx.c
-index f9afb655885..bc222dadf27 100644
+index 041690aa283..4760d4df60b 100644
 --- a/dlls/ntdll/actctx.c
 +++ b/dlls/ntdll/actctx.c
-@@ -705,10 +705,8 @@ static inline const char* debugstr_version(const struct assembly_version *ver)
+@@ -707,10 +707,8 @@ static inline const char* debugstr_version(const struct assembly_version *ver)
  static NTSTATUS get_module_filename( HMODULE module, UNICODE_STRING *str, unsigned int extra_len )
  {
      NTSTATUS status;
@@ -28,7 +28,7 @@ index f9afb655885..bc222dadf27 100644
      status = LdrFindEntryForAddress( module, &pldr );
      if (status == STATUS_SUCCESS)
      {
-@@ -721,7 +719,6 @@ static NTSTATUS get_module_filename( HMODULE module, UNICODE_STRING *str, unsign
+@@ -723,7 +721,6 @@ static NTSTATUS get_module_filename( HMODULE module, UNICODE_STRING *str, unsign
          }
          else status = STATUS_NO_MEMORY;
      }
@@ -36,7 +36,7 @@ index f9afb655885..bc222dadf27 100644
      return status;
  }
  
-@@ -3301,12 +3298,10 @@ static NTSTATUS find_query_actctx( HANDLE *handle, DWORD flags, ULONG class )
+@@ -3309,12 +3306,10 @@ static NTSTATUS find_query_actctx( HANDLE *handle, DWORD flags, ULONG class )
      }
      else if (flags & (QUERY_ACTCTX_FLAG_ACTCTX_IS_ADDRESS|QUERY_ACTCTX_FLAG_ACTCTX_IS_HMODULE))
      {
@@ -49,7 +49,7 @@ index f9afb655885..bc222dadf27 100644
          if (!LdrFindEntryForAddress( *handle, &pldr ))
          {
              if ((flags & QUERY_ACTCTX_FLAG_ACTCTX_IS_HMODULE) && *handle != pldr->DllBase)
-@@ -3315,7 +3310,6 @@ static NTSTATUS find_query_actctx( HANDLE *handle, DWORD flags, ULONG class )
+@@ -3323,7 +3318,6 @@ static NTSTATUS find_query_actctx( HANDLE *handle, DWORD flags, ULONG class )
                  *handle = pldr->ActivationContext;
          }
          else status = STATUS_DLL_NOT_FOUND;
@@ -58,10 +58,10 @@ index f9afb655885..bc222dadf27 100644
      else if (!*handle && (class != ActivationContextBasicInformation))
          *handle = process_actctx;
 diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
-index e00c1e0c31d..55a6213d906 100644
+index e7fd3883da6..27ed02bb0a8 100644
 --- a/dlls/ntdll/loader.c
 +++ b/dlls/ntdll/loader.c
-@@ -176,6 +176,10 @@ static PEB_LDR_DATA ldr =
+@@ -183,6 +183,10 @@ static PEB_LDR_DATA ldr =
      { &ldr.InMemoryOrderModuleList, &ldr.InMemoryOrderModuleList },
      { &ldr.InInitializationOrderModuleList, &ldr.InInitializationOrderModuleList }
  };
@@ -72,7 +72,7 @@ index e00c1e0c31d..55a6213d906 100644
  
  static RTL_BITMAP tls_bitmap;
  static RTL_BITMAP tls_expansion_bitmap;
-@@ -1245,12 +1249,14 @@ static WINE_MODREF *alloc_module( HMODULE hModule, const UNICODE_STRING *nt_name
+@@ -1393,12 +1397,14 @@ static WINE_MODREF *alloc_module( HMODULE hModule, const UNICODE_STRING *nt_name
              wm->ldr.EntryPoint = (char *)hModule + nt->OptionalHeader.AddressOfEntryPoint;
      }
  
@@ -87,8 +87,8 @@ index e00c1e0c31d..55a6213d906 100644
  
      /* wait until init is called for inserting into InInitializationOrderModuleList */
      wm->ldr.InInitializationOrderLinks.Flink = NULL;
-@@ -1454,8 +1460,12 @@ static NTSTATUS process_attach( WINE_MODREF *wm, LPVOID lpReserved )
-     }
+@@ -1607,8 +1613,12 @@ static NTSTATUS process_attach( LDR_DDAG_NODE *node, LPVOID lpReserved )
+     status = walk_node_dependencies( node, lpReserved, process_attach );
  
      if (!wm->ldr.InInitializationOrderLinks.Flink)
 +    {
@@ -100,7 +100,7 @@ index e00c1e0c31d..55a6213d906 100644
  
      /* Call DLL entry point */
      if (status == STATUS_SUCCESS)
-@@ -1578,13 +1588,14 @@ NTSTATUS WINAPI LdrDisableThreadCalloutsForDll(HMODULE hModule)
+@@ -1731,13 +1741,14 @@ NTSTATUS WINAPI LdrDisableThreadCalloutsForDll(HMODULE hModule)
  /******************************************************************
   *              LdrFindEntryForAddress (NTDLL.@)
   *
@@ -116,7 +116,7 @@ index e00c1e0c31d..55a6213d906 100644
      mark = &NtCurrentTeb()->Peb->LdrData->InMemoryOrderModuleList;
      for (entry = mark->Flink; entry != mark; entry = entry->Flink)
      {
-@@ -1593,10 +1604,12 @@ NTSTATUS WINAPI LdrFindEntryForAddress( const void *addr, PLDR_DATA_TABLE_ENTRY
+@@ -1746,10 +1757,12 @@ NTSTATUS WINAPI LdrFindEntryForAddress( const void *addr, PLDR_DATA_TABLE_ENTRY
              (const char *)addr < (char*)mod->DllBase + mod->SizeOfImage)
          {
              *pmod = mod;
@@ -131,7 +131,7 @@ index e00c1e0c31d..55a6213d906 100644
  }
  
  /******************************************************************
-@@ -3510,11 +3523,13 @@ void WINAPI LdrShutdownThread(void)
+@@ -3755,11 +3768,13 @@ static void free_modref( WINE_MODREF *wm )
      SINGLE_LIST_ENTRY *entry;
      LDR_DEPENDENCY *dep;
  
@@ -147,5 +147,5 @@ index e00c1e0c31d..55a6213d906 100644
      {
 
 -- 
-2.31.1
+2.35.1
 

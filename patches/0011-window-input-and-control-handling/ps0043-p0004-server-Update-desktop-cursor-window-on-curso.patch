@@ -4,14 +4,14 @@ Date: Mon, 25 Jan 2021 15:16:19 +0100
 Subject: [PATCH 04/14] server: Update desktop cursor window on cursor move.
 
 ---
- server/queue.c | 38 +++++++++++++++++++++++++-------------
- 1 file changed, 25 insertions(+), 13 deletions(-)
+ server/queue.c | 40 ++++++++++++++++++++++++++--------------
+ 1 file changed, 26 insertions(+), 14 deletions(-)
 
 diff --git a/server/queue.c b/server/queue.c
-index f7bc28f39e9..242f47b674b 100644
+index 397a85ea18c..e18c2035aaf 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -370,8 +370,10 @@ static struct message *alloc_hardware_message( lparam_t info, struct hw_msg_sour
+@@ -501,8 +501,10 @@ static struct message *alloc_hardware_message( lparam_t info, struct hw_msg_sour
      return msg;
  }
  
@@ -21,11 +21,11 @@ index f7bc28f39e9..242f47b674b 100644
 +    struct thread_input *input;
 +    struct thread *thread;
      int updated;
+     unsigned int time = get_tick_count();
  
-     x = max( min( x, desktop->shared->cursor.clip.right - 1 ), desktop->shared->cursor.clip.left );
-@@ -381,6 +383,21 @@ static int update_desktop_cursor_pos( struct desktop *desktop, int x, int y )
-     desktop->shared->cursor.y = y;
-     desktop->shared->cursor.last_change = get_tick_count();
+@@ -516,6 +518,21 @@ static int update_desktop_cursor_pos( struct desktop *desktop, int x, int y )
+     desktop->shared->cursor.last_change = time;
+     SHARED_WRITE_END( &desktop->shared->seq );
  
 +    if (win && (thread = get_window_thread( win )))
 +    {
@@ -45,7 +45,7 @@ index f7bc28f39e9..242f47b674b 100644
      return updated;
  }
  
-@@ -393,7 +410,7 @@ static void set_cursor_pos( struct desktop *desktop, int x, int y )
+@@ -528,7 +545,7 @@ static void set_cursor_pos( struct desktop *desktop, int x, int y )
  
      if ((device = current->process->rawinput_mouse) && (device->flags & RIDEV_NOLEGACY))
      {
@@ -54,7 +54,7 @@ index f7bc28f39e9..242f47b674b 100644
          return;
      }
  
-@@ -1365,10 +1382,10 @@ static void update_input_key_state( struct desktop *desktop, unsigned char *keys
+@@ -1625,10 +1642,10 @@ static void update_desktop_key_state( struct desktop *desktop, unsigned int msg,
  
  /* update the desktop key state according to a mouse message flags */
  static void update_desktop_mouse_state( struct desktop *desktop, unsigned int flags,
@@ -65,9 +65,9 @@ index f7bc28f39e9..242f47b674b 100644
 -        update_desktop_cursor_pos( desktop, x, y );
 +        update_desktop_cursor_pos( desktop, win, x, y );
      if (flags & MOUSEEVENTF_LEFTDOWN)
-         update_input_key_state( desktop, desktop->keystate, WM_LBUTTONDOWN, wparam );
+         update_desktop_key_state( desktop, WM_LBUTTONDOWN, wparam );
      if (flags & MOUSEEVENTF_LEFTUP)
-@@ -1475,11 +1492,9 @@ static user_handle_t find_hardware_message_window( struct desktop *desktop, stru
+@@ -1736,11 +1753,9 @@ static user_handle_t find_hardware_message_window( struct desktop *desktop, stru
              if (*msg_code < WM_SYSKEYDOWN) *msg_code += WM_SYSKEYDOWN - WM_KEYDOWN;
          }
      }
@@ -81,16 +81,16 @@ index f7bc28f39e9..242f47b674b 100644
          *thread = window_thread_from_point( win, msg->x, msg->y );
      }
  
-@@ -1557,7 +1572,7 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
+@@ -1818,7 +1833,7 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
          if (msg->msg == WM_MOUSEMOVE)
          {
              prepend_cursor_history( msg->x, msg->y, msg->time, msg_data->info );
 -            if (update_desktop_cursor_pos( desktop, msg->x, msg->y )) always_queue = 1;
 +            if (update_desktop_cursor_pos( desktop, msg->win, msg->x, msg->y )) always_queue = 1;
          }
-         if (desktop->keystate[VK_LBUTTON] & 0x80)  msg->wparam |= MK_LBUTTON;
-         if (desktop->keystate[VK_MBUTTON] & 0x80)  msg->wparam |= MK_MBUTTON;
-@@ -1586,9 +1601,6 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
+         if (desktop->shared->keystate[VK_LBUTTON] & 0x80)  msg->wparam |= MK_LBUTTON;
+         if (desktop->shared->keystate[VK_MBUTTON] & 0x80)  msg->wparam |= MK_MBUTTON;
+@@ -1847,9 +1862,6 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
      }
      input = thread->queue->input;
  
@@ -100,7 +100,7 @@ index f7bc28f39e9..242f47b674b 100644
      if (!always_queue || merge_message( input, msg )) free_message( msg );
      else
      {
-@@ -1843,7 +1843,7 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
+@@ -2022,7 +2034,7 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
          WM_MOUSEHWHEEL   /* 0x1000 = MOUSEEVENTF_HWHEEL */
      };
  
@@ -109,7 +109,7 @@ index f7bc28f39e9..242f47b674b 100644
      flags = input->mouse.flags;
      time  = input->mouse.time;
      if (!time) time = desktop->shared->cursor.last_change;
-@@ -1813,7 +1825,7 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
+@@ -2073,7 +2085,7 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
  
      if ((device = current->process->rawinput_mouse) && (device->flags & RIDEV_NOLEGACY))
      {
@@ -119,5 +119,5 @@ index f7bc28f39e9..242f47b674b 100644
      }
  
 -- 
-2.34.1
+2.35.1
 

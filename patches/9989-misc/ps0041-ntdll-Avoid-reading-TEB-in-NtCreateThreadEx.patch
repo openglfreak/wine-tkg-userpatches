@@ -14,18 +14,18 @@ As noted in the bug, some programs hold a breakpoint on memory reads to the TEB,
  3 files changed, 5 insertions(+), 1 deletion(-)
 
 diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
-index 83294dc7d93..5a37bacdc3f 100644
+index 991c78d87ae..4d03320852d 100644
 --- a/dlls/ntdll/unix/thread.c
 +++ b/dlls/ntdll/unix/thread.c
-@@ -147,6 +147,7 @@ NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATT
+@@ -1251,6 +1251,7 @@ NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATT
      data_size_t len;
      struct object_attributes *objattr;
      struct ntdll_thread_data *thread_data;
 +    DWORD pid = 0;
      DWORD tid = 0;
      int request_pipe[2];
-     SIZE_T extra_stack = PTHREAD_STACK_MIN;
-@@ -203,6 +204,7 @@ NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATT
+     TEB *teb;
+@@ -1314,6 +1315,7 @@ NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATT
          if (!(status = wine_server_call( req )))
          {
              *handle = wine_server_ptr_handle( reply->handle );
@@ -33,7 +33,7 @@ index 83294dc7d93..5a37bacdc3f 100644
              tid = reply->tid;
          }
          close( request_pipe[0] );
-@@ -226,7 +228,7 @@ NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATT
+@@ -1337,7 +1339,7 @@ NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATT
          goto done;
      }
  
@@ -43,10 +43,10 @@ index 83294dc7d93..5a37bacdc3f 100644
      thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
      thread_data->request_fd  = request_pipe[1];
 diff --git a/server/protocol.def b/server/protocol.def
-index d79ac409dfe..ed53d9f09b5 100644
+index c66cd6aab18..6afef9eeaeb 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -881,6 +881,7 @@ typedef struct
+@@ -946,6 +946,7 @@ struct input_shared_memory
      int          request_fd;   /* fd for request pipe */
      VARARG(objattr,object_attributes); /* object attributes */
  @REPLY
@@ -55,10 +55,10 @@ index d79ac409dfe..ed53d9f09b5 100644
      obj_handle_t handle;       /* thread handle (in the current process) */
  @END
 diff --git a/server/thread.c b/server/thread.c
-index d2ccdc62d21..0c1f5725cef 100644
+index 8b207227665..e0105d0a128 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -1758,6 +1758,7 @@ DECL_HANDLER(new_thread)
+@@ -1814,6 +1814,7 @@ DECL_HANDLER(new_thread)
          thread->system_regs = current->system_regs;
          if (req->flags & THREAD_CREATE_FLAGS_CREATE_SUSPENDED) thread->suspend++;
          thread->dbg_hidden = !!(req->flags & THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER);

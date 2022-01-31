@@ -4,14 +4,14 @@ Date: Thu, 24 Dec 2020 13:47:44 +0100
 Subject: [PATCH 2/5] msvcrt: Use 0 keyed event handle instead of opening one.
 
 ---
- dlls/msvcrt/concurrency.c | 65 ++++++++++++++--------------------------------
- 1 file changed, 20 insertions(+), 45 deletions(-)
+ dlls/msvcrt/concurrency.c | 62 +++++++++++++--------------------------
+ 1 file changed, 20 insertions(+), 42 deletions(-)
 
-diff --git a/dlls/msvcrt/lock.c b/dlls/msvcrt/lock.c
-index 74156aa7db3..26970af72ca 100644
+diff --git a/dlls/msvcrt/concurrency.c b/dlls/msvcrt/concurrency.c
+index e9047ab41b9..020ca6785d1 100644
 --- a/dlls/msvcrt/concurrency.c
 +++ b/dlls/msvcrt/concurrency.c
-@@ -278,8 +278,6 @@ bool __thiscall SpinWait__SpinOnce(SpinWait *this)
+@@ -358,8 +358,6 @@ static CRITICAL_SECTION default_scheduler_cs = { &default_scheduler_cs_debug, -1
  static SchedulerPolicy default_scheduler_policy;
  static ThreadScheduler *default_scheduler;
  
@@ -20,7 +20,7 @@ index 74156aa7db3..26970af72ca 100644
  static void create_default_scheduler(void);
  
  /* ??0improper_lock@Concurrency@@QAE@PBD@Z */
-@@ -309,15 +307,6 @@ DEFINE_THISCALL_WRAPPER(critical_section_ctor, 4)
+@@ -1709,15 +1707,6 @@ DEFINE_THISCALL_WRAPPER(critical_section_ctor, 4)
  critical_section* __thiscall critical_section_ctor(critical_section *this)
  {
      TRACE("(%p)\n", this);
@@ -36,7 +36,7 @@ index 74156aa7db3..26970af72ca 100644
      this->unk_thread_id = 0;
      this->head = this->tail = NULL;
      return this;
-@@ -367,7 +356,7 @@ static inline void cs_lock(critical_section *cs, cs_queue *q)
+@@ -1770,7 +1759,7 @@ static inline void cs_lock(critical_section *cs, cs_queue *q)
      last = InterlockedExchangePointer(&cs->tail, q);
      if(last) {
          last->next = q;
@@ -45,7 +45,7 @@ index 74156aa7db3..26970af72ca 100644
      }
  
      cs_set_head(cs, q);
-@@ -444,7 +433,7 @@ void __thiscall critical_section_unlock(critical_section *this)
+@@ -1847,7 +1836,7 @@ void __thiscall critical_section_unlock(critical_section *this)
      }
  #endif
  
@@ -54,7 +54,7 @@ index 74156aa7db3..26970af72ca 100644
  }
  
  /* ?native_handle@critical_section@Concurrency@@QAEAAV12@XZ */
-@@ -483,13 +472,13 @@ bool __thiscall critical_section_try_lock_for(
+@@ -1889,13 +1878,13 @@ bool __thiscall critical_section_try_lock_for(
          GetSystemTimeAsFileTime(&ft);
          to.QuadPart = ((LONGLONG)ft.dwHighDateTime<<32) +
              ft.dwLowDateTime + (LONGLONG)timeout*10000;
@@ -70,7 +70,7 @@ index 74156aa7db3..26970af72ca 100644
          }
      }
  
-@@ -808,10 +797,10 @@ static size_t evt_wait(thread_wait *wait, event **events, int count, bool wait_a
+@@ -2141,10 +2130,10 @@ static size_t evt_wait(thread_wait *wait, event **events, int count, bool wait_a
      if(!evt_transition(&wait->signaled, EVT_RUNNING, EVT_WAITING))
          return evt_end_wait(wait, events, count);
  
@@ -83,7 +83,7 @@ index 74156aa7db3..26970af72ca 100644
  
      return evt_end_wait(wait, events, count);
  }
-@@ -887,7 +876,7 @@ void __thiscall event_set(event *this)
+@@ -2220,7 +2209,7 @@ void __thiscall event_set(event *this)
      for(entry=wakeup; entry; entry=next) {
          next = entry->next;
          entry->next = entry->prev = NULL;
@@ -92,7 +92,7 @@ index 74156aa7db3..26970af72ca 100644
      }
  }
  
-@@ -988,7 +977,7 @@ void __thiscall _Condition_variable_wait(_Condition_variable *this, critical_sec
+@@ -2308,7 +2297,7 @@ void __thiscall _Condition_variable_wait(_Condition_variable *this, critical_sec
      critical_section_unlock(&this->lock);
  
      critical_section_unlock(cs);
@@ -101,7 +101,7 @@ index 74156aa7db3..26970af72ca 100644
      critical_section_lock(cs);
  }
  
-@@ -1020,14 +1009,14 @@ bool __thiscall _Condition_variable_wait_for(_Condition_variable *this,
+@@ -2337,14 +2326,14 @@ bool __thiscall _Condition_variable_wait_for(_Condition_variable *this,
      GetSystemTimeAsFileTime(&ft);
      to.QuadPart = ((LONGLONG)ft.dwHighDateTime << 32) +
          ft.dwLowDateTime + (LONGLONG)timeout * 10000;
@@ -117,8 +117,8 @@ index 74156aa7db3..26970af72ca 100644
 +            NtWaitForKeyedEvent(0, q, 0, 0);
      }
  
-     HeapFree(GetProcessHeap(), 0, q);
-@@ -1058,7 +1047,7 @@ void __thiscall _Condition_variable_notify_one(_Condition_variable *this)
+     operator_delete(q);
+@@ -2375,7 +2364,7 @@ void __thiscall _Condition_variable_notify_one(_Condition_variable *this)
          critical_section_unlock(&this->lock);
  
          if(!InterlockedExchange(&node->expired, TRUE)) {
@@ -127,7 +127,7 @@ index 74156aa7db3..26970af72ca 100644
              return;
          } else {
              HeapFree(GetProcessHeap(), 0, node);
-@@ -1087,7 +1076,7 @@ void __thiscall _Condition_variable_notify_all(_Condition_variable *this)
+@@ -2404,7 +2393,7 @@ void __thiscall _Condition_variable_notify_all(_Condition_variable *this)
          cv_queue *next = ptr->next;
  
          if(!InterlockedExchange(&ptr->expired, TRUE))
@@ -136,7 +136,7 @@ index 74156aa7db3..26970af72ca 100644
          else
              HeapFree(GetProcessHeap(), 0, ptr);
          ptr = next;
-@@ -1120,15 +1109,6 @@ DEFINE_THISCALL_WRAPPER(reader_writer_lock_ctor, 4)
+@@ -2418,15 +2407,6 @@ DEFINE_THISCALL_WRAPPER(reader_writer_lock_ctor, 4)
  reader_writer_lock* __thiscall reader_writer_lock_ctor(reader_writer_lock *this)
  {
      TRACE("(%p)\n", this);
@@ -152,7 +152,7 @@ index 74156aa7db3..26970af72ca 100644
      memset(this, 0, sizeof(*this));
      return this;
  }
-@@ -1172,11 +1152,11 @@ void __thiscall reader_writer_lock_lock(reader_writer_lock *this)
+@@ -2473,11 +2453,11 @@ void __thiscall reader_writer_lock_lock(reader_writer_lock *this)
      last = InterlockedExchangePointer((void**)&this->writer_tail, &q);
      if (last) {
          last->next = &q;
@@ -166,7 +166,7 @@ index 74156aa7db3..26970af72ca 100644
      }
  
      this->thread_id = GetCurrentThreadId();
-@@ -1212,17 +1192,17 @@ void __thiscall reader_writer_lock_lock_read(reader_writer_lock *this)
+@@ -2516,17 +2496,17 @@ void __thiscall reader_writer_lock_lock_read(reader_writer_lock *this)
              if (InterlockedCompareExchange(&this->count, count+1, count) == count) break;
  
          if (count & WRITER_WAITING)
@@ -187,7 +187,7 @@ index 74156aa7db3..26970af72ca 100644
      }
  }
  
-@@ -1293,14 +1273,14 @@ void __thiscall reader_writer_lock_unlock(reader_writer_lock *this)
+@@ -2597,14 +2577,14 @@ void __thiscall reader_writer_lock_unlock(reader_writer_lock *this)
          count = InterlockedDecrement(&this->count);
          if (count != WRITER_WAITING)
              return;
@@ -204,7 +204,7 @@ index 74156aa7db3..26970af72ca 100644
          return;
      }
      InterlockedAnd(&this->count, ~WRITER_WAITING);
-@@ -1308,7 +1288,7 @@ void __thiscall reader_writer_lock_unlock(reader_writer_lock *this)
+@@ -2612,7 +2592,7 @@ void __thiscall reader_writer_lock_unlock(reader_writer_lock *this)
      while (head) {
          next = head->next;
          InterlockedIncrement(&this->count);
@@ -213,7 +213,7 @@ index 74156aa7db3..26970af72ca 100644
          head = next;
      }
  
-@@ -1472,8 +1452,6 @@ void msvcrt_free_concurrency(void)
+@@ -2938,8 +2918,6 @@ void msvcrt_free_concurrency(void)
          operator_delete(default_scheduler);
      }
  
@@ -223,5 +223,5 @@ index 74156aa7db3..26970af72ca 100644
  
  void msvcrt_free_scheduler_thread(void)
 -- 
-2.32.0
+2.35.1
 

@@ -9,10 +9,10 @@ Subject: [PATCH 25/44] server: Move active window to input shared memory.
  2 files changed, 29 insertions(+), 16 deletions(-)
 
 diff --git a/server/protocol.def b/server/protocol.def
-index d37a662e97a..a2fdc3ad3ce 100644
+index 9d5bad9554a..e2d1e3a12ef 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -862,6 +862,7 @@ struct input_shared_memory
+@@ -884,6 +884,7 @@ struct input_shared_memory
      unsigned int         seq;              /* sequence number - server updating if (seq_no & SEQUENCE_MASK) != 0 */
      int                  created;
      thread_id_t          tid;
@@ -21,10 +21,10 @@ index d37a662e97a..a2fdc3ad3ce 100644
  
  /* Bits that must be clear for client to read */
 diff --git a/server/queue.c b/server/queue.c
-index 2a0341d4aba..e45210104bc 100644
+index 93113dcdb0a..9025d4cd9e7 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -102,7 +102,6 @@ struct thread_input
+@@ -103,7 +103,6 @@ struct thread_input
      struct desktop        *desktop;       /* desktop that this thread input belongs to */
      user_handle_t          focus;         /* focus window */
      user_handle_t          capture;       /* capture window */
@@ -32,7 +32,7 @@ index 2a0341d4aba..e45210104bc 100644
      user_handle_t          menu_owner;    /* current menu owner window */
      user_handle_t          move_size;     /* current moving/resizing window */
      user_handle_t          caret;         /* caret window */
-@@ -308,13 +307,15 @@ static struct thread_input *create_thread_input( struct thread *thread )
+@@ -319,13 +318,15 @@ static struct thread_input *create_thread_input( struct thread *thread )
      {
          input->shared_mapping = grab_object( thread->input_shared_mapping );
          input->shared = thread->input_shared;
@@ -49,7 +49,7 @@ index 2a0341d4aba..e45210104bc 100644
          list_init( &input->msg_list );
          set_caret_window( input, 0 );
          memset( input->keystate, 0, sizeof(input->keystate) );
-@@ -1216,7 +1217,7 @@ static void thread_input_dump( struct object *obj, int verbose )
+@@ -1269,7 +1270,7 @@ static void thread_input_dump( struct object *obj, int verbose )
  {
      struct thread_input *input = (struct thread_input *)obj;
      fprintf( stderr, "Thread input focus=%08x capture=%08x active=%08x\n",
@@ -58,7 +58,7 @@ index 2a0341d4aba..e45210104bc 100644
  }
  
  static void thread_input_destroy( struct object *obj )
-@@ -1237,12 +1238,14 @@ static inline void thread_input_cleanup_window( struct msg_queue *queue, user_ha
+@@ -1290,12 +1291,14 @@ static inline void thread_input_cleanup_window( struct msg_queue *queue, user_ha
  {
      struct thread_input *input = queue->input;
  
@@ -74,7 +74,7 @@ index 2a0341d4aba..e45210104bc 100644
  }
  
  /* check if the specified window can be set in the input data of a given queue */
-@@ -1275,7 +1278,7 @@ int init_thread_queue( struct thread *thread )
+@@ -1328,7 +1331,7 @@ int init_thread_queue( struct thread *thread )
  int attach_thread_input( struct thread *thread_from, struct thread *thread_to )
  {
      struct desktop *desktop;
@@ -83,7 +83,7 @@ index 2a0341d4aba..e45210104bc 100644
      int ret;
  
      if (!thread_to->queue && !(thread_to->queue = create_msg_queue( thread_to, NULL ))) return 0;
-@@ -1292,8 +1295,11 @@ int attach_thread_input( struct thread *thread_from, struct thread *thread_to )
+@@ -1345,8 +1348,11 @@ int attach_thread_input( struct thread *thread_from, struct thread *thread_to )
  
      if (thread_from->queue)
      {
@@ -97,7 +97,7 @@ index 2a0341d4aba..e45210104bc 100644
      }
  
      ret = assign_thread_input( thread_from, input );
-@@ -1319,12 +1325,16 @@ void detach_thread_input( struct thread *thread_from )
+@@ -1372,12 +1378,16 @@ void detach_thread_input( struct thread *thread_from )
              }
              release_object( thread );
          }
@@ -117,7 +117,7 @@ index 2a0341d4aba..e45210104bc 100644
              }
              release_object( thread );
          }
-@@ -1651,7 +1661,7 @@ static user_handle_t find_hardware_message_window( struct desktop *desktop, stru
+@@ -1704,7 +1714,7 @@ static user_handle_t find_hardware_message_window( struct desktop *desktop, stru
      {
          if (input && !(win = input->focus))
          {
@@ -126,7 +126,7 @@ index 2a0341d4aba..e45210104bc 100644
              if (*msg_code < WM_SYSKEYDOWN) *msg_code += WM_SYSKEYDOWN - WM_KEYDOWN;
          }
      }
-@@ -3243,7 +3253,7 @@ DECL_HANDLER(get_thread_input)
+@@ -3321,7 +3331,7 @@ DECL_HANDLER(get_thread_input)
      {
          reply->focus      = input->focus;
          reply->capture    = input->capture;
@@ -135,7 +135,7 @@ index 2a0341d4aba..e45210104bc 100644
          reply->menu_owner = input->menu_owner;
          reply->move_size  = input->move_size;
          reply->caret      = input->caret;
-@@ -3253,7 +3263,7 @@ DECL_HANDLER(get_thread_input)
+@@ -3331,7 +3341,7 @@ DECL_HANDLER(get_thread_input)
      }
  
      /* foreground window is active window of foreground thread */
@@ -144,7 +144,7 @@ index 2a0341d4aba..e45210104bc 100644
      if (thread) release_object( thread );
      release_object( desktop );
  }
-@@ -3320,7 +3330,7 @@ DECL_HANDLER(set_foreground_window)
+@@ -3398,7 +3408,7 @@ DECL_HANDLER(set_foreground_window)
      struct msg_queue *queue = get_current_queue();
  
      if (!(desktop = get_thread_desktop( current, 0 ))) return;
@@ -153,7 +153,7 @@ index 2a0341d4aba..e45210104bc 100644
      reply->send_msg_old = (reply->previous && desktop->foreground_input != queue->input);
      reply->send_msg_new = FALSE;
  
-@@ -3362,8 +3372,10 @@ DECL_HANDLER(set_active_window)
+@@ -3440,8 +3450,10 @@ DECL_HANDLER(set_active_window)
      {
          if (!req->handle || make_window_active( req->handle ))
          {
@@ -167,5 +167,5 @@ index 2a0341d4aba..e45210104bc 100644
          else set_error( STATUS_INVALID_HANDLE );
      }
 -- 
-2.34.1
+2.35.1
 

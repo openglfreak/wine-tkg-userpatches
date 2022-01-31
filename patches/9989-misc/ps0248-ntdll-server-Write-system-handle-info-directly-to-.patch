@@ -12,10 +12,10 @@ Subject: [PATCH] ntdll, server: Write system handle info directly to user
  4 files changed, 164 insertions(+), 81 deletions(-)
 
 diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
-index 941c69190fb..ef81ad6e359 100644
+index 5d6c8b73d30..8da41cbac78 100644
 --- a/dlls/ntdll/unix/system.c
 +++ b/dlls/ntdll/unix/system.c
-@@ -2763,8 +2763,7 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+@@ -2958,8 +2958,7 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
  
      case SystemHandleInformation:  /* 16 */
      {
@@ -25,7 +25,7 @@ index 941c69190fb..ef81ad6e359 100644
  
          if (size < sizeof(SYSTEM_HANDLE_INFORMATION))
          {
-@@ -2779,26 +2778,16 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+@@ -2974,26 +2973,16 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
          }
  
          num_handles = (size - FIELD_OFFSET( SYSTEM_HANDLE_INFORMATION, Handle )) / sizeof(SYSTEM_HANDLE_ENTRY);
@@ -56,7 +56,7 @@ index 941c69190fb..ef81ad6e359 100644
              }
              else if (ret == STATUS_BUFFER_TOO_SMALL)
              {
-@@ -2807,8 +2796,6 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+@@ -3002,8 +2991,6 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
              }
          }
          SERVER_END_REQ;
@@ -65,7 +65,7 @@ index 941c69190fb..ef81ad6e359 100644
          break;
      }
  
-@@ -2981,8 +2968,7 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+@@ -3176,8 +3163,7 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
  
      case SystemExtendedHandleInformation:  /* 64 */
      {
@@ -75,7 +75,7 @@ index 941c69190fb..ef81ad6e359 100644
  
          if (size < sizeof(SYSTEM_HANDLE_INFORMATION_EX))
          {
-@@ -2998,26 +2984,16 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+@@ -3193,26 +3179,16 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
  
          num_handles = (size - FIELD_OFFSET( SYSTEM_HANDLE_INFORMATION_EX, Handles ))
                        / sizeof(SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX);
@@ -106,7 +106,7 @@ index 941c69190fb..ef81ad6e359 100644
              }
              else if (ret == STATUS_BUFFER_TOO_SMALL)
              {
-@@ -3026,8 +3002,6 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+@@ -3221,8 +3197,6 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
              }
          }
          SERVER_END_REQ;
@@ -116,10 +116,10 @@ index 941c69190fb..ef81ad6e359 100644
      }
  
 diff --git a/server/handle.c b/server/handle.c
-index bc692b8ebeb..750580071a5 100644
+index fffb4504bc0..6ccf322a498 100644
 --- a/server/handle.c
 +++ b/server/handle.c
-@@ -806,18 +806,142 @@ done:
+@@ -820,18 +820,142 @@ done:
      free( label_acl );
  }
  
@@ -264,7 +264,7 @@ index bc692b8ebeb..750580071a5 100644
      unsigned int i;
  
      if (!table)
-@@ -826,20 +950,21 @@ static int enum_handles( struct process *process, void *user )
+@@ -840,20 +964,21 @@ static int enum_handles( struct process *process, void *user )
      for (i = 0, entry = table->entries; i <= table->last; i++, entry++)
      {
          if (!entry->ptr) continue;
@@ -298,7 +298,7 @@ index bc692b8ebeb..750580071a5 100644
          info->count--;
      }
  
-@@ -849,21 +974,25 @@ static int enum_handles( struct process *process, void *user )
+@@ -863,21 +988,25 @@ static int enum_handles( struct process *process, void *user )
  DECL_HANDLER(get_system_handles)
  {
      struct enum_handle_info info;
@@ -333,10 +333,10 @@ index bc692b8ebeb..750580071a5 100644
  
  DECL_HANDLER(make_temporary)
 diff --git a/server/protocol.def b/server/protocol.def
-index efe0d22cbc4..55979652343 100644
+index c9e386035a0..497a8b9a066 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -3207,20 +3207,12 @@ enum caret_state
+@@ -3313,20 +3313,12 @@ enum caret_state
  @END
  
  
@@ -360,10 +360,10 @@ index efe0d22cbc4..55979652343 100644
  
  
 diff --git a/server/trace.c b/server/trace.c
-index f7c9cbd975e..2b075da7311 100644
+index 68bd75a6bcb..d5e00c09d62 100644
 --- a/server/trace.c
 +++ b/server/trace.c
-@@ -1379,19 +1379,7 @@ static void dump_varargs_rawinput_devices(const char *prefix, data_size_t size )
+@@ -1334,19 +1334,7 @@ static void dump_varargs_rawinput_devices(const char *prefix, data_size_t size )
  
  static void dump_varargs_handle_infos( const char *prefix, data_size_t size )
  {
@@ -383,7 +383,7 @@ index f7c9cbd975e..2b075da7311 100644
 +    fprintf( stderr, "%s", prefix );
  }
  
- static void dump_varargs_poll_socket_input( const char *prefix, data_size_t size )
+ static void dump_varargs_cpu_topology_override( const char *prefix, data_size_t size )
 -- 
-2.34.1
+2.35.1
 

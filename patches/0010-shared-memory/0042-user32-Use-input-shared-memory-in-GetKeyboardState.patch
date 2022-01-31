@@ -20,10 +20,10 @@ Subject: [PATCH 42/44] user32: Use input shared memory in GetKeyboardState.
  13 files changed, 209 insertions(+), 141 deletions(-)
 
 diff --git a/dlls/user32/cursoricon.c b/dlls/user32/cursoricon.c
-index 967118d7cc6..95dcccb9d63 100644
+index b72f15308c1..bcf91bd1a0f 100644
 --- a/dlls/user32/cursoricon.c
 +++ b/dlls/user32/cursoricon.c
-@@ -1993,7 +1993,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH ClipCursor( const RECT *rect )
+@@ -2001,7 +2001,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH ClipCursor( const RECT *rect )
   */
  BOOL WINAPI DECLSPEC_HOTPATCH GetClipCursor( RECT *rect )
  {
@@ -33,10 +33,10 @@ index 967118d7cc6..95dcccb9d63 100644
      UINT dpi;
  
 diff --git a/dlls/user32/focus.c b/dlls/user32/focus.c
-index 5c5c52cd287..711e8af33a5 100644
+index 90ca162b4d6..f7ecf652e7b 100644
 --- a/dlls/user32/focus.c
 +++ b/dlls/user32/focus.c
-@@ -356,7 +356,7 @@ BOOL WINAPI SetForegroundWindow( HWND hwnd )
+@@ -359,7 +359,7 @@ BOOL WINAPI SetForegroundWindow( HWND hwnd )
   */
  HWND WINAPI GetActiveWindow(void)
  {
@@ -45,7 +45,7 @@ index 5c5c52cd287..711e8af33a5 100644
      HWND ret = 0;
  
      if (!shared) return 0;
-@@ -374,7 +374,7 @@ HWND WINAPI GetActiveWindow(void)
+@@ -377,7 +377,7 @@ HWND WINAPI GetActiveWindow(void)
   */
  HWND WINAPI GetFocus(void)
  {
@@ -54,7 +54,7 @@ index 5c5c52cd287..711e8af33a5 100644
      HWND ret = 0;
  
      if (!shared) return 0;
-@@ -392,7 +392,7 @@ HWND WINAPI GetFocus(void)
+@@ -395,7 +395,7 @@ HWND WINAPI GetFocus(void)
   */
  HWND WINAPI GetForegroundWindow(void)
  {
@@ -64,7 +64,7 @@ index 5c5c52cd287..711e8af33a5 100644
  
      if (!shared) return 0;
 diff --git a/dlls/user32/input.c b/dlls/user32/input.c
-index 6b25b8ab5a4..af522bbb134 100644
+index 49db713dabd..ea2f69c44a5 100644
 --- a/dlls/user32/input.c
 +++ b/dlls/user32/input.c
 @@ -307,7 +307,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetCursorPos( POINT *pt )
@@ -104,10 +104,10 @@ index 6b25b8ab5a4..af522bbb134 100644
  
      if (key < 0 || key >= 256 || !shared) return 0;
 diff --git a/dlls/user32/message.c b/dlls/user32/message.c
-index a972eca5498..75c88f1fd72 100644
+index 01f4987fbdb..02359889cf5 100644
 --- a/dlls/user32/message.c
 +++ b/dlls/user32/message.c
-@@ -2658,7 +2658,7 @@ static inline void call_sendmsg_callback( SENDASYNCPROC callback, HWND hwnd, UIN
+@@ -2692,7 +2692,7 @@ static inline void call_sendmsg_callback( SENDASYNCPROC callback, HWND hwnd, UIN
  static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags, UINT changed_mask, BOOL waited )
  {
      LRESULT result;
@@ -116,7 +116,7 @@ index a972eca5498..75c88f1fd72 100644
      struct user_thread_info *thread_info = get_user_thread_info();
      INPUT_MESSAGE_SOURCE prev_source = thread_info->msg_source;
      struct received_message_info info, *old_info;
-@@ -4625,8 +4625,8 @@ BOOL WINAPI GetGUIThreadInfo( DWORD id, GUITHREADINFO *info )
+@@ -4659,8 +4659,8 @@ BOOL WINAPI GetGUIThreadInfo( DWORD id, GUITHREADINFO *info )
          return FALSE;
      }
  
@@ -128,10 +128,10 @@ index a972eca5498..75c88f1fd72 100644
  
      if (shared)
 diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
-index 3f8f36079d5..7974d580306 100644
+index 048ec34b368..27220d4cca7 100644
 --- a/dlls/user32/user_private.h
 +++ b/dlls/user32/user_private.h
-@@ -207,10 +207,6 @@ extern BOOL WINPROC_call_window( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
+@@ -209,10 +209,6 @@ extern BOOL WINPROC_call_window( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
  
  extern const WCHAR *CLASS_GetVersionedName(const WCHAR *classname, UINT *basename_offset,
          WCHAR *combined, BOOL register_class) DECLSPEC_HIDDEN;
@@ -279,11 +279,11 @@ index e77692f6bff..30b18e3bd11 100644
   *              CreateWindowStationA  (USER32.@)
   */
 diff --git a/dlls/win32u/gdiobj.c b/dlls/win32u/gdiobj.c
-index 796ae460a17..a23af101eb9 100644
+index 002c7539498..a201713cccb 100644
 --- a/dlls/win32u/gdiobj.c
 +++ b/dlls/win32u/gdiobj.c
-@@ -1202,6 +1202,10 @@ static struct unix_funcs unix_funcs =
-     __wine_make_gdi_object_system,
+@@ -1185,6 +1185,10 @@ static struct unix_funcs unix_funcs =
+     __wine_get_wgl_driver,
      __wine_set_display_driver,
      __wine_set_visible_region,
 +    __wine_get_desktop_shared_memory,
@@ -322,10 +322,10 @@ index 1fe2fb88911..54835b9a815 100644
      SERVER_START_REQ( get_key_state )
      {
 diff --git a/dlls/win32u/win32u.spec b/dlls/win32u/win32u.spec
-index 786d2c47b28..6d006f8159a 100644
+index 5ea2d3afc84..e1ec2506a88 100644
 --- a/dlls/win32u/win32u.spec
 +++ b/dlls/win32u/win32u.spec
-@@ -1342,3 +1342,9 @@
+@@ -1340,3 +1340,9 @@
  @ cdecl __wine_get_brush_bitmap_info(long ptr ptr ptr)
  @ cdecl __wine_get_icm_profile(long long ptr ptr)
  @ cdecl __wine_get_file_outline_text_metric(wstr ptr)
@@ -336,10 +336,10 @@ index 786d2c47b28..6d006f8159a 100644
 +@ cdecl __wine_get_input_shared_memory()
 +@ cdecl __wine_get_foreground_shared_memory()
 diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
-index 648d8cc003a..298e2171212 100644
+index 9bce2b7207b..a2052eaed0b 100644
 --- a/dlls/win32u/win32u_private.h
 +++ b/dlls/win32u/win32u_private.h
-@@ -239,6 +239,10 @@ struct unix_funcs
+@@ -238,6 +238,10 @@ struct unix_funcs
      void (CDECL *set_display_driver)( struct user_driver_funcs *funcs, UINT version );
      void (CDECL *set_visible_region)( HDC hdc, HRGN hrgn, const RECT *vis_rect, const RECT *device_rect,
                                        struct window_surface *surface );
@@ -349,7 +349,7 @@ index 648d8cc003a..298e2171212 100644
 +    volatile struct input_shared_memory *(CDECL *get_foreground_shared_memory)( void );
  };
  
- extern RECT get_virtual_screen_rect(void) DECLSPEC_HIDDEN;
+ extern RECT get_display_rect( const WCHAR *display ) DECLSPEC_HIDDEN;
 diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
 index c0fb0155f24..219f9e91496 100644
 --- a/dlls/win32u/winstation.c
@@ -496,10 +496,10 @@ index c0fb0155f24..219f9e91496 100644
   *           get_default_desktop
   *
 diff --git a/dlls/win32u/wrappers.c b/dlls/win32u/wrappers.c
-index 5eefd48a635..63432f13ca7 100644
+index fe56f5e0e3c..a94924d2093 100644
 --- a/dlls/win32u/wrappers.c
 +++ b/dlls/win32u/wrappers.c
-@@ -778,6 +778,26 @@ void CDECL __wine_set_display_driver( struct user_driver_funcs *funcs, UINT vers
+@@ -917,6 +917,26 @@ void CDECL __wine_set_display_driver( struct user_driver_funcs *funcs, UINT vers
      return unix_funcs->set_display_driver( funcs, version );
  }
  
@@ -527,10 +527,10 @@ index 5eefd48a635..63432f13ca7 100644
  {
      ANSI_STRING name_str;
 diff --git a/include/ntuser.h b/include/ntuser.h
-index c70f876a91b..1d1bcf5d088 100644
+index 89267ebd7ec..a13846a3a09 100644
 --- a/include/ntuser.h
 +++ b/include/ntuser.h
-@@ -155,4 +155,29 @@ INT     WINAPI NtUserToUnicodeEx( UINT virt, UINT scan, const BYTE *state,
+@@ -186,4 +186,29 @@ INT     WINAPI NtUserToUnicodeEx( UINT virt, UINT scan, const BYTE *state,
  BOOL    WINAPI NtUserUnregisterHotKey( HWND hwnd, INT id );
  WORD    WINAPI NtUserVkKeyScanEx( WCHAR chr, HKL layout );
  
@@ -561,5 +561,5 @@ index c70f876a91b..1d1bcf5d088 100644
 +
  #endif /* _NTUSER_ */
 -- 
-2.34.1
+2.35.1
 

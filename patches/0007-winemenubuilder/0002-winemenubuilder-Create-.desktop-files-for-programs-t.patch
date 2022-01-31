@@ -9,14 +9,14 @@ Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=22904
 Signed-off-by: Alex Henrie <alexhenrie24@gmail.com>
 ---
  loader/wine.inf.in                         |   4 +
- programs/winemenubuilder/winemenubuilder.c | 228 ++++++++++++++++-------------
- 2 files changed, 131 insertions(+), 101 deletions(-)
+ programs/winemenubuilder/winemenubuilder.c | 156 ++++++++++++---------
+ 2 files changed, 94 insertions(+), 66 deletions(-)
 
 diff --git a/loader/wine.inf.in b/loader/wine.inf.in
-index 19b7e5e3529..f14264a86da 100644
+index 55b548eed23..de01744bbfb 100644
 --- a/loader/wine.inf.in
 +++ b/loader/wine.inf.in
-@@ -523,6 +523,10 @@ HKCU,Software\Wine\FileOpenNoIntegration\.txt,"notepad",,"%11%\notepad.exe %1"
+@@ -526,6 +526,10 @@ HKCU,Software\Wine\FileOpenNoIntegration\.txt,"notepad",,"%11%\notepad.exe %1"
  HKCU,Software\Wine\FileOpenNoIntegration\.url,"ieframe",,"rundll32.exe ieframe.dll,OpenURL %l"
  HKCU,Software\Wine\FileOpenNoIntegration\.wri,"wordpad",,"""%16422%\Windows NT\Accessories\wordpad.exe"" %1"
  HKCU,Software\Wine\FileOpenNoIntegration\.xml,"winebrowser",,"""%11%\winebrowser.exe"" -nohome"
@@ -28,10 +28,10 @@ index 19b7e5e3529..f14264a86da 100644
  [ContentIndex]
  HKLM,System\CurrentControlSet\Control\ContentIndex\Language\Neutral,"WBreakerClass",,"{369647e0-17b0-11ce-9950-00aa004bbb1f}"
 diff --git a/programs/winemenubuilder/winemenubuilder.c b/programs/winemenubuilder/winemenubuilder.c
-index 90b23a14934..c6bc8511056 100644
+index fcdaef184b5..f63396841c8 100644
 --- a/programs/winemenubuilder/winemenubuilder.c
 +++ b/programs/winemenubuilder/winemenubuilder.c
-@@ -2267,10 +2267,13 @@ static BOOL has_association_changed(LPCWSTR extensionW, LPCSTR mimeType, LPCWSTR
+@@ -1823,10 +1823,13 @@ static BOOL has_association_changed(LPCWSTR extensionW, const WCHAR *mimeType, c
              ret = TRUE;
          heap_free(value);
  
@@ -49,7 +49,7 @@ index 90b23a14934..c6bc8511056 100644
  
          value = reg_get_valW(assocKey, extensionW, L"AppName");
          if (!value || wcscmp(value, appName))
-@@ -2354,7 +2357,7 @@ static void update_association(LPCWSTR extension, LPCSTR mimeType, LPCWSTR progI
+@@ -1870,7 +1873,7 @@ static void update_association(LPCWSTR extension, const WCHAR *mimeType, const W
      }
  
      RegSetValueExW(subkey, L"MimeType", 0, REG_SZ, (const BYTE*) mimeType, (lstrlenW(mimeType) + 1) * sizeof(WCHAR));
@@ -58,7 +58,7 @@ index 90b23a14934..c6bc8511056 100644
      RegSetValueExW(subkey, L"AppName", 0, REG_SZ, (const BYTE*) appName, (lstrlenW(appName) + 1) * sizeof(WCHAR));
      RegSetValueExW(subkey, L"DesktopFile", 0, REG_SZ, (const BYTE*) desktopFile, (lstrlenW(desktopFile) + 1) * sizeof(WCHAR));
      if (openWithIcon)
-@@ -2493,7 +2496,7 @@ static BOOL is_extension_banned(LPCWSTR extension)
+@@ -1964,7 +1967,7 @@ static BOOL is_extension_banned(LPCWSTR extension)
      return FALSE;
  }
  
@@ -67,7 +67,7 @@ index 90b23a14934..c6bc8511056 100644
  {
      static const WCHAR FileOpenNoIntegrationW[] = {
          'S','o','f','t','w','a','r','e','\\',
-@@ -2506,11 +2509,11 @@ static BOOL on_exclude_list(const WCHAR *extension, const WCHAR *command)
+@@ -1977,11 +1980,11 @@ static BOOL on_exclude_list(const WCHAR *extension, const WCHAR *command)
      DWORD len = ARRAY_SIZE(program_name);
      DWORD i = 0;
  
@@ -81,7 +81,7 @@ index 90b23a14934..c6bc8511056 100644
  
      if (RegOpenKeyExW(HKEY_CURRENT_USER, key_path, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
          return FALSE;
-@@ -2560,11 +2563,15 @@ static BOOL write_freedesktop_association_entry(const char *desktopPath, const c
+@@ -2031,11 +2034,15 @@ static BOOL write_freedesktop_association_entry(const WCHAR *desktopPath, const
          if (prefix)
          {
              char *path = wine_get_unix_file_name( prefix );
@@ -99,7 +99,7 @@ index 90b23a14934..c6bc8511056 100644
          fprintf(desktop, "NoDisplay=true\n");
          fprintf(desktop, "StartupNotify=true\n");
          if (openWithIcon)
-@@ -2594,12 +2602,19 @@ static BOOL generate_associations(const char *xdg_data_home, const char *package
+@@ -2063,12 +2070,19 @@ static BOOL generate_associations(const WCHAR *packages_dir, const WCHAR *applic
  
      for (i = 0; ; i++)
      {
@@ -122,7 +122,7 @@ index 90b23a14934..c6bc8511056 100644
          {
              WCHAR *commandW = NULL;
              WCHAR *executableW = NULL;
-@@ -2241,88 +2241,98 @@ static BOOL generate_associations(const WCHAR *packages_dir, const WCHAR *applic
+@@ -2082,88 +2096,98 @@ static BOOL generate_associations(const WCHAR *packages_dir, const WCHAR *applic
              WCHAR *mimeProgId = NULL;
              struct rb_string_entry *entry;
  
@@ -243,7 +243,8 @@ index 90b23a14934..c6bc8511056 100644
 -            /* Do not allow duplicate ProgIDs for a MIME type, it causes unnecessary duplication in Open dialogs */
 -            mimeProgId = heap_wprintf(L"%s=>%s", mimeType, progIdW);
 -            if (wine_rb_get(&mimeProgidTree, mimeProgId))
--            {
++            if (has_association_changed(winTypeW, mimeType, progIdW, friendlyAppName, openWithIcon))
+             {
 -                heap_free(mimeProgId);
 -                goto end;
 -            }
@@ -256,8 +257,7 @@ index 90b23a14934..c6bc8511056 100644
 -            }
 -
 -            if (has_association_changed(extensionW, mimeType, progIdW, friendlyAppName, openWithIcon))
-+            if (has_association_changed(winTypeW, mimeType, progIdW, friendlyAppName, openWithIcon))
-             {
+-            {
 -                WCHAR *desktopPath = heap_wprintf(L"%s\\wine-extension-%s.desktop",
 -                                                  applications_dir, extensionW + 1 );
 +                WCHAR *desktopPath;
@@ -273,7 +273,7 @@ index 90b23a14934..c6bc8511056 100644
                  }
                  heap_free(desktopPath);
              }
-@@ -2340,7 +2350,7 @@ static BOOL generate_associations(const WCHAR *packages_dir, const WCHAR *applic
+@@ -2180,7 +2204,7 @@ static BOOL generate_associations(const WCHAR *packages_dir, const WCHAR *applic
              heap_free(mimeType);
              heap_free(progIdW);
          }

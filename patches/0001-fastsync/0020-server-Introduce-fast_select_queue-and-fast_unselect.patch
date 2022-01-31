@@ -6,14 +6,14 @@ Subject: [PATCH 20/31] server: Introduce fast_select_queue and
 
 ---
  server/protocol.def | 13 ++++++++++
- server/queue.c      | 59 +++++++++++++++++++++++++++++++++++++++++++++
- 2 files changed, 72 insertions(+)
+ server/queue.c      | 58 +++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 71 insertions(+)
 
 diff --git a/server/protocol.def b/server/protocol.def
-index 9b209dad69d..6e923fe7041 100644
+index 78fdbb7c021..a0d9b705943 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -3772,3 +3772,16 @@ enum fast_sync_type
+@@ -3888,3 +3888,16 @@ enum fast_sync_type
      int          type;            /* object type */
      unsigned int access;          /* handle access rights */
  @END
@@ -31,10 +31,10 @@ index 9b209dad69d..6e923fe7041 100644
 +    int          signaled;        /* was the queue signaled? */
 +@END
 diff --git a/server/queue.c b/server/queue.c
-index db7b1f62557..01a04ff7d7e 100644
+index bc25e4b6f04..8fcdd3841ca 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -139,6 +139,7 @@ struct msg_queue
+@@ -145,6 +145,7 @@ struct msg_queue
      int                    keystate_lock;   /* owns an input keystate lock */
      unsigned int           ignore_post_msg; /* ignore post messages newer than this unique id */
      struct fast_sync      *fast_sync;       /* fast synchronization object */
@@ -42,7 +42,7 @@ index db7b1f62557..01a04ff7d7e 100644
      int                    esync_fd;        /* esync file descriptor (signalled on message) */
      int                    esync_in_msgwait; /* our thread is currently waiting on us */
      unsigned int           fsync_idx;
-@@ -308,6 +309,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+@@ -328,6 +329,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
          queue->keystate_lock   = 0;
          queue->ignore_post_msg = 0;
          queue->fast_sync       = NULL;
@@ -50,7 +50,7 @@ index db7b1f62557..01a04ff7d7e 100644
          queue->esync_fd        = -1;
          queue->esync_in_msgwait = 0;
          queue->fsync_idx       = 0;
-@@ -946,6 +948,9 @@ static int is_queue_hung( struct msg_queue *queue )
+@@ -1029,6 +1031,9 @@ static int is_queue_hung( struct msg_queue *queue )
              return 0;  /* thread is waiting on queue -> not hung */
      }
  
@@ -60,9 +60,9 @@ index db7b1f62557..01a04ff7d7e 100644
      if (do_fsync() && queue->fsync_in_msgwait)
          return 0;   /* thread is waiting on queue in absentia -> not hung */
  
-@@ -3430,3 +3436,56 @@ DECL_HANDLER(get_rawinput_devices)
-             devices[i++] = e->device;
-     }
+@@ -3597,3 +3602,56 @@ DECL_HANDLER(fsync_msgwait)
+     if (queue->fd)
+         set_fd_events( queue->fd, req->in_msgwait ? POLLIN : 0 );
  }
 +
 +DECL_HANDLER(fast_select_queue)
@@ -118,5 +118,5 @@ index db7b1f62557..01a04ff7d7e 100644
 +    release_object( queue );
 +}
 -- 
-2.34.1
+2.35.1
 

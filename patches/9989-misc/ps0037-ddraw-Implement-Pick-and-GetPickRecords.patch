@@ -64,16 +64,16 @@ inputted count variable is ignored by GetPickRecords.
 
 
  dlls/ddraw/ddraw_private.h |   7 +-
- dlls/ddraw/device.c        |  65 +++++++++++++--
- dlls/ddraw/executebuffer.c | 194 ++++++++++++++++++++++++++++++++++++++++++---
- dlls/ddraw/tests/ddraw1.c  | 131 ++++++++++++++++++++++++++++++
- 4 files changed, 381 insertions(+), 16 deletions(-)
+ dlls/ddraw/device.c        |  65 ++++++++++--
+ dlls/ddraw/executebuffer.c | 196 +++++++++++++++++++++++++++++++++++--
+ dlls/ddraw/tests/ddraw1.c  | 131 +++++++++++++++++++++++++
+ 4 files changed, 382 insertions(+), 17 deletions(-)
 
 diff --git a/dlls/ddraw/ddraw_private.h b/dlls/ddraw/ddraw_private.h
-index aaca49e8aaa..9ec46cd0746 100644
+index 7929e9e1795..02ce04c0ca0 100644
 --- a/dlls/ddraw/ddraw_private.h
 +++ b/dlls/ddraw/ddraw_private.h
-@@ -337,6 +337,11 @@ struct d3d_device
+@@ -344,6 +344,11 @@ struct d3d_device
      struct d3d_viewport *current_viewport;
      D3DVIEWPORT7 active_viewport;
  
@@ -85,7 +85,7 @@ index aaca49e8aaa..9ec46cd0746 100644
      /* Required to keep track which of two available texture blending modes in d3ddevice3 is used */
      BOOL legacyTextureBlending;
      D3DTEXTUREBLEND texture_map_blend;
-@@ -570,7 +575,7 @@ struct d3d_execute_buffer *unsafe_impl_from_IDirect3DExecuteBuffer(IDirect3DExec
+@@ -577,7 +582,7 @@ struct d3d_execute_buffer *unsafe_impl_from_IDirect3DExecuteBuffer(IDirect3DExec
  
  /* The execute function */
  HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *execute_buffer,
@@ -95,10 +95,10 @@ index aaca49e8aaa..9ec46cd0746 100644
  /*****************************************************************************
   * IDirect3DVertexBuffer
 diff --git a/dlls/ddraw/device.c b/dlls/ddraw/device.c
-index 010fed30396..4dd8a01d9cc 100644
+index 6e8f109173b..5e09bd1004e 100644
 --- a/dlls/ddraw/device.c
 +++ b/dlls/ddraw/device.c
-@@ -350,6 +350,9 @@ static ULONG WINAPI d3d_device_inner_Release(IUnknown *iface)
+@@ -351,6 +351,9 @@ static ULONG WINAPI d3d_device_inner_Release(IUnknown *iface)
              IDirect3DDevice3_DeleteViewport(&This->IDirect3DDevice3_iface, &vp->IDirect3DViewport3_iface);
          }
  
@@ -108,7 +108,7 @@ index 010fed30396..4dd8a01d9cc 100644
          TRACE("Releasing render target %p.\n", This->rt_iface);
          rt_iface = This->rt_iface;
          This->rt_iface = NULL;
-@@ -759,7 +762,7 @@ static HRESULT WINAPI d3d_device1_Execute(IDirect3DDevice *iface,
+@@ -760,7 +763,7 @@ static HRESULT WINAPI d3d_device1_Execute(IDirect3DDevice *iface,
  
      /* Execute... */
      wined3d_mutex_lock();
@@ -117,7 +117,7 @@ index 010fed30396..4dd8a01d9cc 100644
      wined3d_mutex_unlock();
  
      return hr;
-@@ -1026,16 +1029,44 @@ static HRESULT WINAPI d3d_device1_NextViewport(IDirect3DDevice *iface,
+@@ -1027,16 +1030,44 @@ static HRESULT WINAPI d3d_device1_NextViewport(IDirect3DDevice *iface,
   *        x2 and y2 are ignored.
   *
   * Returns:
@@ -165,7 +165,7 @@ index 010fed30396..4dd8a01d9cc 100644
  }
  
  /*****************************************************************************
-@@ -1051,13 +1082,35 @@ static HRESULT WINAPI d3d_device1_Pick(IDirect3DDevice *iface, IDirect3DExecuteB
+@@ -1052,13 +1083,35 @@ static HRESULT WINAPI d3d_device1_Pick(IDirect3DDevice *iface, IDirect3DExecuteB
   *  D3DPickRec: Address to store the resulting D3DPICKRECORD array.
   *
   * Returns:
@@ -204,7 +204,7 @@ index 010fed30396..4dd8a01d9cc 100644
      return D3D_OK;
  }
 diff --git a/dlls/ddraw/executebuffer.c b/dlls/ddraw/executebuffer.c
-index 983ea8e05c0..435b8c27e7b 100644
+index 0b18a75da91..b4e8c2bc65b 100644
 --- a/dlls/ddraw/executebuffer.c
 +++ b/dlls/ddraw/executebuffer.c
 @@ -45,15 +45,106 @@ static void _dump_D3DEXECUTEBUFFERDESC(const D3DEXECUTEBUFFERDESC *lpDesc) {
@@ -343,7 +343,7 @@ index 983ea8e05c0..435b8c27e7b 100644
          switch (current->bOpcode)
          {
              case D3DOP_POINT:
-@@ -173,6 +284,66 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
+@@ -174,6 +285,66 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
                      {
                          case 3:
                              indices[(i * primitive_size) + 2] = ci->u3.v3;
@@ -410,7 +410,7 @@ index 983ea8e05c0..435b8c27e7b 100644
                              /* Drop through. */
                          case 2:
                              indices[(i * primitive_size) + 1] = ci->u2.v2;
-@@ -354,14 +525,18 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
+@@ -184,14 +355,18 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
  
                  wined3d_resource_unmap(wined3d_buffer_get_resource(buffer->index_buffer), 0);
  
@@ -437,7 +437,7 @@ index 983ea8e05c0..435b8c27e7b 100644
  
                  buffer->index_pos = index_pos + index_count;
                  break;
-@@ -426,6 +601,7 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
+@@ -429,6 +604,7 @@ HRESULT d3d_execute_buffer_execute(struct d3d_execute_buffer *buffer, struct d3d
  end_of_buffer:
      return D3D_OK;
  }
@@ -446,11 +446,11 @@ index 983ea8e05c0..435b8c27e7b 100644
  static inline struct d3d_execute_buffer *impl_from_IDirect3DExecuteBuffer(IDirect3DExecuteBuffer *iface)
  {
 diff --git a/dlls/ddraw/tests/ddraw1.c b/dlls/ddraw/tests/ddraw1.c
-index 63791c5b606..7f3d2349b9e 100644
+index c5afeff2343..222b2b1ac4a 100644
 --- a/dlls/ddraw/tests/ddraw1.c
 +++ b/dlls/ddraw/tests/ddraw1.c
-@@ -13880,6 +13880,136 @@ static void test_get_display_mode(void)
-     IDirectDraw_Release(ddraw);
+@@ -15057,6 +15057,136 @@ static void test_filling_convention(void)
+     DestroyWindow(window);
  }
  
 +static void test_pick(void)
@@ -586,7 +586,7 @@ index 63791c5b606..7f3d2349b9e 100644
  START_TEST(ddraw1)
  {
      DDDEVICEIDENTIFIER identifier;
-@@ -13996,4 +14126,5 @@ START_TEST(ddraw1)
+@@ -15175,4 +15305,5 @@ START_TEST(ddraw1)
      test_get_display_mode();
      run_for_each_device_type(test_texture_wrong_caps);
      test_filling_convention();

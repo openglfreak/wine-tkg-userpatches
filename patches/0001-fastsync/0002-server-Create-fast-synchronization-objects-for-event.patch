@@ -6,17 +6,17 @@ Subject: [PATCH 02/31] server: Create fast synchronization objects for events.
 ---
  configure.ac       |   1 +
  server/Makefile.in |   1 +
- server/event.c     |  30 ++++-
- server/fast_sync.c | 294 +++++++++++++++++++++++++++++++++++++++++++++
+ server/event.c     |  22 +++-
+ server/fast_sync.c | 296 +++++++++++++++++++++++++++++++++++++++++++++
  server/object.h    |   4 +
- 5 files changed, 328 insertions(+), 2 deletions(-)
+ 5 files changed, 323 insertions(+), 1 deletion(-)
  create mode 100644 server/fast_sync.c
 
 diff --git a/configure.ac b/configure.ac
-index 2fe4b186fd6..763538be9db 100644
+index 10e702e3a0d..943f47b38fc 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -453,6 +453,7 @@ AC_CHECK_HEADERS(\
+@@ -459,6 +459,7 @@ AC_CHECK_HEADERS(\
  	linux/serial.h \
  	linux/types.h \
  	linux/ucdrom.h \
@@ -25,22 +25,22 @@ index 2fe4b186fd6..763538be9db 100644
  	mach-o/loader.h \
  	mach/mach.h \
 diff --git a/server/Makefile.in b/server/Makefile.in
-index 739d0517339..919e652eceb 100644
+index 2c7bc53cc03..70ba19a12f9 100644
 --- a/server/Makefile.in
 +++ b/server/Makefile.in
-@@ -12,6 +12,7 @@ C_SRCS = \
- 	device.c \
+@@ -13,6 +13,7 @@ C_SRCS = \
  	directory.c \
+ 	esync.c \
  	event.c \
 +	fast_sync.c \
  	fd.c \
  	file.c \
- 	handle.c \
+ 	fsync.c \
 diff --git a/server/event.c b/server/event.c
-index d2ed6ae3df7..8c82f8445c4 100644
+index 8d48094b9c4..3e246354a41 100644
 --- a/server/event.c
 +++ b/server/event.c
-@@ -56,6 +56,7 @@ struct event
+@@ -59,6 +59,7 @@ struct event
      struct list    kernel_object;   /* list of kernel object pointers */
      int            manual_reset;    /* is it a manual reset event? */
      int            signaled;        /* event has been signaled */
@@ -48,7 +48,7 @@ index d2ed6ae3df7..8c82f8445c4 100644
      int            esync_fd;        /* esync file descriptor */
      unsigned int   fsync_idx;
  };
-@@ -63,6 +64,7 @@ static int event_signaled( struct object *obj, struct wait_queue_entry *entry );
+@@ -70,6 +71,7 @@ static int event_get_esync_fd( struct object *obj, enum esync_type *type );
  static unsigned int event_get_fsync_idx( struct object *obj, enum fsync_type *type );
  static int event_signal( struct object *obj, unsigned int access);
  static struct list *event_get_kernel_obj_list( struct object *obj );
@@ -56,7 +56,7 @@ index d2ed6ae3df7..8c82f8445c4 100644
  static void event_destroy( struct object *obj );
  
  static const struct object_ops event_ops =
-@@ -84,7 +87,7 @@ static const struct object_ops event_ops =
+@@ -94,7 +96,7 @@ static const struct object_ops event_ops =
      default_unlink_name,       /* unlink_name */
      no_open_file,              /* open_file */
      event_get_kernel_obj_list, /* get_kernel_obj_list */
@@ -65,7 +65,7 @@ index d2ed6ae3df7..8c82f8445c4 100644
      no_close_handle,           /* close_handle */
      event_destroy              /* destroy */
  };
-@@ -152,6 +155,7 @@ struct event *create_event( struct object *root, const struct unicode_str *name,
+@@ -164,6 +166,7 @@ struct event *create_event( struct object *root, const struct unicode_str *name,
              list_init( &event->kernel_object );
              event->manual_reset = manual_reset;
              event->signaled     = initial_state;
@@ -73,7 +73,7 @@ index d2ed6ae3df7..8c82f8445c4 100644
  
              if (do_fsync())
                  event->fsync_idx = fsync_alloc_shm( initial_state, 0 );
-@@ -175,6 +179,7 @@ void set_event( struct event *event )
+@@ -216,6 +219,7 @@ void set_event( struct event *event )
      event->signaled = 1;
      /* wake up all waiters if manual reset, a single one otherwise */
      wake_up( &event->obj, !event->manual_reset );
@@ -81,7 +81,7 @@ index d2ed6ae3df7..8c82f8445c4 100644
  }
  
  void reset_event( struct event *event )
-@@ -231,6 +231,7 @@ void reset_event( struct event *event )
+@@ -232,6 +236,7 @@ void reset_event( struct event *event )
          return;
      }
      event->signaled = 0;
@@ -89,7 +89,7 @@ index d2ed6ae3df7..8c82f8445c4 100644
  
      if (do_fsync())
          fsync_clear( &event->obj );
-@@ -225,10 +231,25 @@ static struct list *event_get_kernel_obj_list( struct object *obj )
+@@ -297,10 +302,25 @@ static struct list *event_get_kernel_obj_list( struct object *obj )
      return &event->kernel_object;
  }
  
@@ -117,7 +117,7 @@ index d2ed6ae3df7..8c82f8445c4 100644
  }
 diff --git a/server/fast_sync.c b/server/fast_sync.c
 new file mode 100644
-index 00000000000..8125eb516e7
+index 00000000000..466f0b4ce73
 --- /dev/null
 +++ b/server/fast_sync.c
 @@ -0,0 +1,296 @@
@@ -418,10 +418,10 @@ index 00000000000..8125eb516e7
 +
 +#endif
 diff --git a/server/object.h b/server/object.h
-index 89ca434bd62..eac36a346d3 100644
+index 3307c241413..004be5eda2a 100644
 --- a/server/object.h
 +++ b/server/object.h
-@@ -224,6 +224,10 @@ extern void abandon_mutexes( struct thread *thread );
+@@ -231,6 +231,10 @@ extern void abandon_mutexes( struct thread *thread );
  
  /* fast-synchronization functions */
  
@@ -433,5 +433,5 @@ index 89ca434bd62..eac36a346d3 100644
  
  /* serial functions */
 -- 
-2.34.1
+2.35.1
 

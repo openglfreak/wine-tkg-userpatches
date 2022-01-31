@@ -12,10 +12,10 @@ Supersedes 192452.
  1 file changed, 16 insertions(+), 10 deletions(-)
 
 diff --git a/server/process.c b/server/process.c
-index 8158fcd4c0b..57295af67b2 100644
+index 3dde37ec8eb..1a153533af2 100644
 --- a/server/process.c
 +++ b/server/process.c
-@@ -72,7 +72,7 @@ static struct list *process_get_kernel_obj_list( struct object *obj );
+@@ -100,7 +100,7 @@ static struct fast_sync *process_get_fast_sync( struct object *obj );
  static void process_destroy( struct object *obj );
  static int process_get_esync_fd( struct object *obj, enum esync_type *type );
  static unsigned int process_get_fsync_idx( struct object *obj, enum fsync_type *type );
@@ -24,7 +24,7 @@ index 8158fcd4c0b..57295af67b2 100644
  static void set_process_affinity( struct process *process, affinity_t affinity );
  
  static const struct object_ops process_ops =
-@@ -293,7 +293,7 @@ static void terminate_job( struct job *job, int exit_code )
+@@ -422,7 +422,7 @@ static void terminate_job( struct job *job, int exit_code )
      LIST_FOR_EACH_ENTRY_SAFE( process, next_process, &job->process_list, struct process, job_entry )
      {
          assert( process->job == job );
@@ -33,7 +33,7 @@ index 8158fcd4c0b..57295af67b2 100644
      }
      job->terminating = 0;
      job->signaled = 1;
-@@ -876,7 +876,7 @@ static void process_unload_dll( struct process *process, mod_handle_t base )
+@@ -975,7 +975,7 @@ struct process *get_process_from_handle( obj_handle_t handle, unsigned int acces
  }
  
  /* terminate a process with the given exit code */
@@ -42,7 +42,7 @@ index 8158fcd4c0b..57295af67b2 100644
  {
      struct thread *thread;
  
-@@ -889,7 +889,7 @@ restart:
+@@ -988,7 +988,7 @@ restart:
          if (exit_code) thread->exit_code = exit_code;
          if (thread == skip) continue;
          if (thread->state == TERMINATED) continue;
@@ -51,7 +51,7 @@ index 8158fcd4c0b..57295af67b2 100644
          goto restart;
      }
      release_object( process );
-@@ -907,7 +907,7 @@ static void kill_all_processes(void)
+@@ -1002,7 +1002,7 @@ static void kill_all_processes(void)
      while ((ptr = list_head( &process_list )))
      {
          struct process *process = LIST_ENTRY( ptr, struct process, entry );
@@ -60,7 +60,7 @@ index 8158fcd4c0b..57295af67b2 100644
      }
  }
  
-@@ -926,7 +926,7 @@ void kill_console_processes( struct thread *renderer, int exit_code )
+@@ -1020,7 +1020,7 @@ void kill_console_processes( struct thread *renderer, int exit_code )
              if (process->console && console_get_renderer( process->console ) == renderer) break;
          }
          if (&process->entry == &process_list) break;  /* no process found */
@@ -69,16 +69,16 @@ index 8158fcd4c0b..57295af67b2 100644
      }
  }
  
-@@ -1060,7 +1060,7 @@ void kill_process( struct process *process, int violent_death )
-         return;
-     }
+@@ -1140,7 +1140,7 @@ void kill_process( struct process *process, int violent_death )
+ 
+     if (process->sigkill_timeout) return;  /* already waiting for it to die */
  
 -    if (violent_death) terminate_process( process, NULL, 1 );
 +    if (violent_death) terminate_process( process, NULL, 1, 1 );
      else
      {
          struct list *ptr;
-@@ -1088,7 +1088,7 @@ void detach_debugged_processes( struct debug_obj *debug_obj, int exit_code )
+@@ -1170,7 +1170,7 @@ void detach_debugged_processes( struct debug_obj *debug_obj, int exit_code )
          if (exit_code)
          {
              process->debug_obj = NULL;
@@ -87,7 +87,7 @@ index 8158fcd4c0b..57295af67b2 100644
          }
          else debugger_detach( process, debug_obj );
      }
-@@ -1451,16 +1451,22 @@ DECL_HANDLER(open_process)
+@@ -1538,16 +1538,22 @@ DECL_HANDLER(open_process)
  DECL_HANDLER(terminate_process)
  {
      struct process *process;

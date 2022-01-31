@@ -4,15 +4,15 @@ Date: Wed, 20 Jan 2021 11:28:46 -0600
 Subject: [PATCH] ntdll: Use clock_gettime64 if supported.
 
 ---
- dlls/ntdll/unix/sync.c | 50 +++++++++++++++++++++++++++++++++++++-----
- server/request.c       | 50 +++++++++++++++++++++++++++++++++++++-----
- 2 files changed, 90 insertions(+), 10 deletions(-)
+ dlls/ntdll/unix/sync.c | 61 ++++++++++++++++++++++++++++++++++--------
+ server/request.c       | 54 +++++++++++++++++++++++++++++++++----
+ 2 files changed, 99 insertions(+), 16 deletions(-)
 
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
-index 5d70ef577ad..f665f91342d 100644
+index 2e9282f5216..1ea86affdb7 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
-@@ -30,6 +30,9 @@
+@@ -31,6 +31,9 @@
  #include <errno.h>
  #include <fcntl.h>
  #include <inttypes.h>
@@ -22,7 +22,7 @@ index 5d70ef577ad..f665f91342d 100644
  #include <limits.h>
  #include <signal.h>
  #include <sys/types.h>
-@@ -82,6 +82,48 @@ static const LARGE_INTEGER zero_timeout;
+@@ -135,6 +138,48 @@ static const char *debugstr_timeout( const LARGE_INTEGER *timeout )
      return wine_dbgstr_longlong( timeout->QuadPart );
  }
  
@@ -71,7 +71,7 @@ index 5d70ef577ad..f665f91342d 100644
  /* return a monotonic time counter, in Win32 ticks */
  static inline ULONGLONG monotonic_counter(void)
  {
-@@ -96,13 +136,13 @@ static inline ULONGLONG monotonic_counter(void)
+@@ -149,13 +194,13 @@ static inline ULONGLONG monotonic_counter(void)
  #endif
      return mach_absolute_time() * timebase.numer / timebase.denom / 100;
  #elif defined(HAVE_CLOCK_GETTIME)
@@ -89,8 +89,8 @@ index 5d70ef577ad..f665f91342d 100644
 +        return ticks;
  #endif
      gettimeofday( &now, 0 );
-     return now.tv_sec * (ULONGLONG)TICKSPERSEC + now.tv_usec * 10 + TICKS_1601_TO_1970 - server_start_time;
-@@ -377,12 +417,6 @@ static NTSTATUS validate_open_object_attributes( const OBJECT_ATTRIBUTES *attr )
+     return ticks_from_time_t( now.tv_sec ) + now.tv_usec * 10 - server_start_time;
+@@ -331,12 +376,6 @@ static NTSTATUS validate_open_object_attributes( const OBJECT_ATTRIBUTES *attr )
   * sigset_t to be larger. Manually define the kernel sigset size here. */
  #define KERNEL_SIGSET_SIZE (64 / 8) /* 64 signals / 8 bits per byte */
  
@@ -104,10 +104,10 @@ index 5d70ef577ad..f665f91342d 100644
  {
      static int fast_sync_fd = -2;
 diff --git a/server/request.c b/server/request.c
-index f8aa63b03d1..e0c30c906dc 100644
+index 2f672b0d3be..f0a1f4b4042 100644
 --- a/server/request.c
 +++ b/server/request.c
-@@ -38,6 +38,9 @@
+@@ -35,6 +35,9 @@
  #include <sys/time.h>
  #include <sys/types.h>
  #include <sys/socket.h>
@@ -117,7 +117,7 @@ index f8aa63b03d1..e0c30c906dc 100644
  #include <sys/wait.h>
  #ifdef HAVE_SYS_UIO_H
  #include <sys/uio.h>
-@@ -56,6 +59,9 @@
+@@ -47,6 +50,9 @@
  #ifdef __APPLE__
  # include <mach/mach_time.h>
  #endif
@@ -127,7 +127,7 @@ index f8aa63b03d1..e0c30c906dc 100644
  
  #include "ntstatus.h"
  #define WIN32_NO_STATUS
-@@ -524,6 +527,44 @@ int send_client_fd( struct process *process, int fd, obj_handle_t handle )
+@@ -520,6 +526,44 @@ int send_client_fd( struct process *process, int fd, obj_handle_t handle )
      return -1;
  }
  
@@ -172,7 +172,7 @@ index f8aa63b03d1..e0c30c906dc 100644
  /* return a monotonic time counter */
  timeout_t monotonic_counter(void)
  {
-@@ -537,13 +580,13 @@ timeout_t monotonic_counter(void)
+@@ -533,13 +577,13 @@ timeout_t monotonic_counter(void)
  #endif
      return mach_absolute_time() * timebase.numer / timebase.denom / 100;
  #elif defined(HAVE_CLOCK_GETTIME)

@@ -11,10 +11,10 @@ Subject: [PATCH 24/44] server: Create a thread input shared mapping.
  4 files changed, 70 insertions(+), 2 deletions(-)
 
 diff --git a/server/protocol.def b/server/protocol.def
-index 3f8dd1aa5af..d37a662e97a 100644
+index e7d4373bf17..9d5bad9554a 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -854,6 +854,14 @@ struct queue_shared_memory
+@@ -876,6 +876,14 @@ struct queue_shared_memory
      unsigned int         changed_bits;
      unsigned int         wake_mask;
      unsigned int         changed_mask;
@@ -30,10 +30,10 @@ index 3f8dd1aa5af..d37a662e97a 100644
  
  /* Bits that must be clear for client to read */
 diff --git a/server/queue.c b/server/queue.c
-index 4cc34e4fdde..2a0341d4aba 100644
+index 79e42bfa54c..93113dcdb0a 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -115,6 +115,8 @@ struct thread_input
+@@ -116,6 +116,8 @@ struct thread_input
      unsigned char          keystate[256]; /* state of each key */
      unsigned char          desktop_keystate[256]; /* desktop keystate when keystate was synced */
      int                    keystate_lock; /* keystate is locked */
@@ -42,7 +42,7 @@ index 4cc34e4fdde..2a0341d4aba 100644
  };
  
  struct msg_queue
-@@ -304,6 +306,8 @@ static struct thread_input *create_thread_input( struct thread *thread )
+@@ -315,6 +317,8 @@ static struct thread_input *create_thread_input( struct thread *thread )
  
      if ((input = alloc_object( &thread_input_ops )))
      {
@@ -51,7 +51,7 @@ index 4cc34e4fdde..2a0341d4aba 100644
          input->focus        = 0;
          input->capture      = 0;
          input->active       = 0;
-@@ -323,6 +327,10 @@ static struct thread_input *create_thread_input( struct thread *thread )
+@@ -334,6 +338,10 @@ static struct thread_input *create_thread_input( struct thread *thread )
          }
          memcpy( input->desktop_keystate, (void *)input->desktop->shared->keystate,
                  sizeof(input->desktop_keystate) );
@@ -62,7 +62,7 @@ index 4cc34e4fdde..2a0341d4aba 100644
      }
      return input;
  }
-@@ -376,7 +384,13 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+@@ -394,7 +402,13 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
          SHARED_WRITE_END( &queue->shared->seq );
          thread->queue = queue;
      }
@@ -77,7 +77,7 @@ index 4cc34e4fdde..2a0341d4aba 100644
      return queue;
  }
  
-@@ -433,6 +447,10 @@ static int assign_thread_input( struct thread *thread, struct thread_input *new_
+@@ -451,6 +465,10 @@ static int assign_thread_input( struct thread *thread, struct thread_input *new_
      queue->input = (struct thread_input *)grab_object( new_input );
      if (queue->keystate_lock) lock_input_keystate( queue->input );
      new_input->cursor_count += queue->cursor_count;
@@ -88,7 +88,7 @@ index 4cc34e4fdde..2a0341d4aba 100644
      return 1;
  }
  
-@@ -1211,6 +1229,7 @@ static void thread_input_destroy( struct object *obj )
+@@ -1264,6 +1282,7 @@ static void thread_input_destroy( struct object *obj )
          if (input->desktop->foreground_input == input) set_foreground_input( input->desktop, NULL );
          release_object( input->desktop );
      }
@@ -97,11 +97,11 @@ index 4cc34e4fdde..2a0341d4aba 100644
  
  /* fix the thread input data when a window is destroyed */
 diff --git a/server/thread.c b/server/thread.c
-index f6fc85fe2d0..80496446d7c 100644
+index 82622916ab1..85650858e0e 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -258,6 +258,8 @@ static inline void init_thread_structure( struct thread *thread )
-     thread->exit_poll       = NULL;
+@@ -349,6 +349,8 @@ static inline void init_thread_structure( struct thread *thread )
+     thread->fast_sync       = NULL;
      thread->queue_shared_mapping = NULL;
      thread->queue_shared         = NULL;
 +    thread->input_shared_mapping = NULL;
@@ -109,7 +109,7 @@ index f6fc85fe2d0..80496446d7c 100644
  
      thread->creation_time = current_time;
      thread->exit_time     = 0;
-@@ -323,13 +325,43 @@ static volatile void *init_queue_mapping( struct thread *thread )
+@@ -414,13 +416,43 @@ static volatile void *init_queue_mapping( struct thread *thread )
      thread->queue_shared_mapping = create_shared_mapping( dir, &name, sizeof(struct queue_shared_memory),
                                                            NULL, (void **)&thread->queue_shared );
      release_object( dir );
@@ -154,7 +154,7 @@ index f6fc85fe2d0..80496446d7c 100644
  /* create a new thread */
  struct thread *create_thread( int fd, struct process *process, const struct security_descriptor *sd )
  {
-@@ -417,6 +449,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+@@ -514,6 +546,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
          release_object( thread );
          return NULL;
      }
@@ -166,7 +166,7 @@ index f6fc85fe2d0..80496446d7c 100644
  
      set_fd_events( thread->request_fd, POLLIN );  /* start listening to events */
      add_process_thread( thread->process, thread );
-@@ -477,6 +514,8 @@ static void cleanup_thread( struct thread *thread )
+@@ -584,6 +621,8 @@ static void cleanup_thread( struct thread *thread )
      free( thread->desc );
      if (thread->queue_shared_mapping) release_object( thread->queue_shared_mapping );
      thread->queue_shared_mapping = NULL;
@@ -176,11 +176,11 @@ index f6fc85fe2d0..80496446d7c 100644
      thread->reply_data = NULL;
      thread->request_fd = NULL;
 diff --git a/server/thread.h b/server/thread.h
-index 329c8f255c4..6812c278aaa 100644
+index 8090e8191df..ed2afdfd38f 100644
 --- a/server/thread.h
 +++ b/server/thread.h
-@@ -95,6 +95,8 @@ struct thread
-     struct timeout_user   *exit_poll;     /* poll if the thread/process has exited already */
+@@ -99,6 +99,8 @@ struct thread
+     struct fast_sync      *fast_sync;     /* fast synchronization object */
      struct object         *queue_shared_mapping; /* thread queue shared memory mapping */
      volatile struct queue_shared_memory *queue_shared;  /* thread queue shared memory ptr */
 +    struct object         *input_shared_mapping; /* thread input shared memory mapping */
@@ -189,5 +189,5 @@ index 329c8f255c4..6812c278aaa 100644
  
  extern struct thread *current;
 -- 
-2.34.1
+2.35.1
 

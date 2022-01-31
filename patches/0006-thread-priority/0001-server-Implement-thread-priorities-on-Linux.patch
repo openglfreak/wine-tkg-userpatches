@@ -10,10 +10,10 @@ errors.
 Only call setpriority on Linux, as unix_tid is a Mach port on Mac OS.
 
 diff --git a/configure.ac b/configure.ac
-index 020fd19256f..59a8668b609 100644
+index 0d37f0df915..34455f9393d 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -2269,6 +2269,25 @@ then
+@@ -2103,6 +2103,25 @@ then
    AC_DEFINE(HAVE_SCHED_SETAFFINITY, 1, [Define to 1 if you have the `sched_setaffinity' function.])
  fi
  
@@ -40,10 +40,10 @@ index 020fd19256f..59a8668b609 100644
  
  AC_C_INLINE
 diff --git a/server/process.c b/server/process.c
-index 4a366b4d3b0..e3a905f38e6 100644
+index 09df4872ee1..3dde37ec8eb 100644
 --- a/server/process.c
 +++ b/server/process.c
-@@ -1495,6 +1495,24 @@ DECL_HANDLER(get_process_vm_counters)
+@@ -1679,6 +1679,24 @@ DECL_HANDLER(get_process_vm_counters)
      release_object( process );
  }
  
@@ -68,7 +68,7 @@ index 4a366b4d3b0..e3a905f38e6 100644
  static void set_process_affinity( struct process *process, affinity_t affinity )
  {
      struct thread *thread;
-@@ -1520,7 +1538,7 @@ DECL_HANDLER(set_process_info)
+@@ -1704,7 +1722,7 @@ DECL_HANDLER(set_process_info)
  
      if ((process = get_process_from_handle( req->handle, PROCESS_SET_INFORMATION )))
      {
@@ -78,11 +78,11 @@ index 4a366b4d3b0..e3a905f38e6 100644
          release_object( process );
      }
 diff --git a/server/thread.c b/server/thread.c
-index 942a8ff8389..6b53b518d98 100644
+index 5121a03a7b8..d8b7697e4d1 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -38,6 +38,12 @@
- #ifdef HAVE_SCHED_H
+@@ -37,6 +37,12 @@
+ #define _WITH_CPU_SET_T
  #include <sched.h>
  #endif
 +#ifdef HAVE_SYS_TIME_H
@@ -94,7 +94,7 @@ index 942a8ff8389..6b53b518d98 100644
  
  #include "ntstatus.h"
  #define WIN32_NO_STATUS
-@@ -332,6 +338,7 @@ static inline void init_thread_structure( struct thread *thread )
+@@ -260,6 +266,7 @@ static inline void init_thread_structure( struct thread *thread )
      thread->state           = RUNNING;
      thread->exit_code       = 0;
      thread->priority        = 0;
@@ -102,7 +102,7 @@ index 942a8ff8389..6b53b518d98 100644
      thread->suspend         = 0;
      thread->dbg_hidden      = 0;
      thread->desktop_users   = 0;
-@@ -592,31 +599,151 @@ affinity_t get_thread_affinity( struct thread *thread )
+@@ -678,31 +685,151 @@ affinity_t get_thread_affinity( struct thread *thread )
      return mask;
  }
  
@@ -270,7 +270,7 @@ index 942a8ff8389..6b53b518d98 100644
      }
      if (req->mask & SET_THREAD_INFO_AFFINITY)
      {
-@@ -1450,6 +1584,7 @@ DECL_HANDLER(init_thread)
+@@ -1575,6 +1702,7 @@ DECL_HANDLER(init_thread)
  
      init_thread_context( current );
      generate_debug_event( current, DbgCreateThreadStateChange, &req->entry );
@@ -279,10 +279,10 @@ index 942a8ff8389..6b53b518d98 100644
          set_thread_affinity( current, current->affinity );
  
 diff --git a/server/thread.h b/server/thread.h
-index 650bc44628d..4eb94b4d03b 100644
+index 9bd8d852c4c..842f9a839b5 100644
 --- a/server/thread.h
 +++ b/server/thread.h
-@@ -89,6 +89,7 @@ struct thread
+@@ -84,6 +84,7 @@ struct thread
      client_ptr_t           entry_point;   /* entry point (in client address space) */
      affinity_t             affinity;      /* affinity mask */
      int                    priority;      /* priority level */
@@ -290,11 +290,11 @@ index 650bc44628d..4eb94b4d03b 100644
      int                    suspend;       /* suspend count */
      int                    dbg_hidden;    /* hidden from debugger */
      obj_handle_t           desktop;       /* desktop handle */
-@@ -119,6 +120,7 @@ extern void thread_cancel_apc( struct thread *thread, struct object *owner, enum
+@@ -125,6 +126,7 @@ extern void thread_cancel_apc( struct thread *thread, struct object *owner, enum
  extern int thread_add_inflight_fd( struct thread *thread, int client, int server );
  extern int thread_get_inflight_fd( struct thread *thread, int client );
  extern struct token *thread_get_impersonation_token( struct thread *thread );
 +extern int set_thread_priority( struct thread *thread, int priority_class, int priority );
  extern int set_thread_affinity( struct thread *thread, affinity_t affinity );
- extern int is_cpu_supported( enum cpu_type cpu );
- extern unsigned int get_supported_cpu_mask(void);
+ extern int suspend_thread( struct thread *thread );
+ extern int resume_thread( struct thread *thread );

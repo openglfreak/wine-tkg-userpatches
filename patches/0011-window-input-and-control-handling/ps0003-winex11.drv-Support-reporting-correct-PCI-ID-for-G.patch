@@ -5,16 +5,16 @@ Date: Fri, 21 Feb 2020 17:02:52 +0800
 
 Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
 ---
- configure.ac                 |  48 +++++++
+ configure.ac                 |  48 ++++++
  dlls/winex11.drv/Makefile.in |   2 +-
- dlls/winex11.drv/xrandr.c    | 300 ++++++++++++++++++++++++++++++++++++++-----
- 3 files changed, 316 insertions(+), 34 deletions(-)
+ dlls/winex11.drv/xrandr.c    | 305 +++++++++++++++++++++++++++++++----
+ 3 files changed, 320 insertions(+), 35 deletions(-)
 
 diff --git a/configure.ac b/configure.ac
-index d530fb453dc..fea716a4962 100644
+index 7a72c691793..c1991e0d92b 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -41,6 +41,7 @@ AC_ARG_WITH(coreaudio, AS_HELP_STRING([--without-coreaudio],[do not use the Core
+@@ -29,6 +29,7 @@ AC_ARG_WITH(coreaudio, AS_HELP_STRING([--without-coreaudio],[do not use the Core
              [if test "x$withval" = "xno"; then ac_cv_header_CoreAudio_CoreAudio_h=no; fi])
  AC_ARG_WITH(cups,      AS_HELP_STRING([--without-cups],[do not use CUPS]))
  AC_ARG_WITH(dbus,      AS_HELP_STRING([--without-dbus],[do not use DBus (dynamic device support)]))
@@ -22,7 +22,7 @@ index d530fb453dc..fea716a4962 100644
  AC_ARG_WITH(float-abi, AS_HELP_STRING([--with-float-abi=abi],[specify the ABI (soft|softfp|hard) for ARM platforms]))
  AC_ARG_WITH(fontconfig,AS_HELP_STRING([--without-fontconfig],[do not use fontconfig]))
  AC_ARG_WITH(freetype,  AS_HELP_STRING([--without-freetype],[do not use the FreeType library]))
-@@ -88,7 +89,11 @@ AC_ARG_WITH(usb,       AS_HELP_STRING([--without-usb],[do not use the libusb lib
+@@ -66,7 +67,11 @@ AC_ARG_WITH(usb,       AS_HELP_STRING([--without-usb],[do not use the libusb lib
  AC_ARG_WITH(v4l2,      AS_HELP_STRING([--without-v4l2],[do not use v4l2 (video capture)]))
  AC_ARG_WITH(vkd3d,     AS_HELP_STRING([--without-vkd3d],[do not use vkd3d (Direct3D 12 support)]))
  AC_ARG_WITH(vulkan,    AS_HELP_STRING([--without-vulkan],[do not use Vulkan]))
@@ -34,7 +34,7 @@ index d530fb453dc..fea716a4962 100644
  AC_ARG_WITH(xcomposite,AS_HELP_STRING([--without-xcomposite],[do not use the Xcomposite extension]),
              [if test "x$withval" = "xno"; then ac_cv_header_X11_extensions_Xcomposite_h=no; fi])
  AC_ARG_WITH(xcursor,   AS_HELP_STRING([--without-xcursor],[do not use the Xcursor extension]),
-@@ -1160,6 +1165,7 @@ then
+@@ -1158,6 +1163,7 @@ then
  
      dnl *** All of the following tests require X11/Xlib.h
      AC_CHECK_HEADERS([X11/Xlib.h \
@@ -42,7 +42,7 @@ index d530fb453dc..fea716a4962 100644
                        X11/XKBlib.h \
                        X11/Xutil.h \
                        X11/Xcursor/Xcursor.h \
-@@ -1267,6 +1273,48 @@ then
+@@ -1265,6 +1271,48 @@ then
          WINE_NOTICE_WITH(xrandr,[test "x$ac_cv_lib_soname_Xrandr" = "x"],
                           [libxrandr ${notice_platform}development files not found, XRandr won't be supported.])
  
@@ -92,24 +92,23 @@ index d530fb453dc..fea716a4962 100644
          if test "$ac_cv_header_X11_extensions_Xfixes_h" = "yes"
          then
 diff --git a/dlls/winex11.drv/Makefile.in b/dlls/winex11.drv/Makefile.in
-index ae950d58c69..45959e33842 100644
+index 64df2075cc4..764d7cd3572 100644
 --- a/dlls/winex11.drv/Makefile.in
 +++ b/dlls/winex11.drv/Makefile.in
-@@ -1,7 +1,7 @@
+@@ -2,7 +2,7 @@ EXTRADEFS = -DWINE_NO_LONG_TYPES
  MODULE    = winex11.drv
- IMPORTS   = uuid setupapi rpcrt4 user32 gdi32 advapi32
+ IMPORTS   = uuid setupapi rpcrt4 user32 gdi32 advapi32 win32u
  DELAYIMPORTS = comctl32 ole32 shell32 imm32
 -EXTRAINCL = $(X_CFLAGS)
 +EXTRAINCL = $(X_CFLAGS) $(DRM_CFLAGS)
  EXTRALIBS = $(X_LIBS) $(X_EXTRA_LIBS)
  
- C_SRCS = \
+ EXTRADLLFLAGS = -mcygwin
 diff --git a/dlls/winex11.drv/xrandr.c b/dlls/winex11.drv/xrandr.c
-index 78ad98acd49..a3e6848e1e1 100644
+index 425ce224207..7956027af0f 100644
 --- a/dlls/winex11.drv/xrandr.c
 +++ b/dlls/winex11.drv/xrandr.c
-@@ -38,9 +38,21 @@ WINE_DECLARE_DEBUG_CHANNEL(winediag);
- 
+@@ -35,8 +35,20 @@ WINE_DECLARE_DEBUG_CHANNEL(winediag);
  #ifdef SONAME_LIBXRANDR
  
  #include <assert.h>
@@ -130,7 +129,7 @@ index 78ad98acd49..a3e6848e1e1 100644
  #include <dlfcn.h>
  #include "x11drv.h"
  
-@@ -81,6 +90,25 @@ MAKE_FUNCPTR(XRRGetProviderInfo)
+@@ -82,6 +94,25 @@ MAKE_FUNCPTR(XRRGetProviderInfo)
  MAKE_FUNCPTR(XRRFreeProviderInfo)
  #endif
  
@@ -156,7 +155,7 @@ index 78ad98acd49..a3e6848e1e1 100644
  #undef MAKE_FUNCPTR
  
  static int load_xrandr(void)
-@@ -91,47 +119,72 @@ static int load_xrandr(void)
+@@ -92,47 +123,72 @@ static int load_xrandr(void)
          (xrandr_handle = dlopen(SONAME_LIBXRANDR, RTLD_NOW)))
      {
  
@@ -241,9 +240,7 @@ index 78ad98acd49..a3e6848e1e1 100644
 +            dri3_loaded = TRUE;
 +        }
 +#endif
- 
--sym_not_found:
--        if (!r)  TRACE("Unable to load function ptrs from XRandR library\n");
++
 +#ifdef SONAME_LIBDRM
 +        if ((drm_handle = dlopen(SONAME_LIBDRM, RTLD_NOW)))
 +        {
@@ -252,7 +249,9 @@ index 78ad98acd49..a3e6848e1e1 100644
 +            drm_loaded = TRUE;
 +        }
 +#endif
-+
+ 
+-sym_not_found:
+-        if (!r)  TRACE("Unable to load function ptrs from XRandR library\n");
 +#undef LOAD_SYMBOL
      }
 +
@@ -262,8 +261,8 @@ index 78ad98acd49..a3e6848e1e1 100644
      return r;
  }
  
-@@ -589,6 +642,181 @@ static BOOL is_crtc_primary( RECT primary, const XRRCrtcInfo *crtc )
-            crtc->y + crtc->height == primary.bottom;
+@@ -743,6 +799,181 @@ done:
+         vulkan_funcs->p_vkDestroyInstance( vk_instance, NULL );
  }
  
 +static int get_drm_device_from_provider( RRProvider provider )
@@ -444,7 +443,7 @@ index 78ad98acd49..a3e6848e1e1 100644
  VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDisplayKHR)
  
  static BOOL get_gpu_properties_from_vulkan( struct gdi_gpu *gpu, const XRRProviderInfo *provider_info )
-@@ -761,11 +989,17 @@ static BOOL xrandr14_get_gpus2( struct gdi_gpu **new_gpus, int *count, BOOL g
+@@ -914,11 +1145,17 @@ static BOOL xrandr14_get_gpus2( struct gdi_gpu **new_gpus, int *count, BOOL get_
          if (get_properties)
          {
              if (!get_gpu_properties_from_vulkan( &gpus[i], provider_info ))

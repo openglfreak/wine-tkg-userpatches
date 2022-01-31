@@ -8,10 +8,10 @@ Subject: [PATCH 16/31] server: Create fast synchronization objects for timers.
  1 file changed, 20 insertions(+), 1 deletion(-)
 
 diff --git a/server/timer.c b/server/timer.c
-index d4a69bf8794..854a8e1f7f2 100644
+index 09bee4f8cf5..cfbc97eb42b 100644
 --- a/server/timer.c
 +++ b/server/timer.c
-@@ -61,15 +61,17 @@ struct timer
+@@ -63,6 +63,7 @@ struct timer
      struct thread       *thread;    /* thread that set the APC function */
      client_ptr_t         callback;  /* callback APC function */
      client_ptr_t         arg;       /* callback argument */
@@ -19,9 +19,7 @@ index d4a69bf8794..854a8e1f7f2 100644
      int                  esync_fd;  /* esync file descriptor */
      unsigned int         fsync_idx; /* fsync shm index */
  };
- 
- static void timer_dump( struct object *obj, int verbose );
- static int timer_signaled( struct object *obj, struct wait_queue_entry *entry );
+@@ -72,6 +73,7 @@ static int timer_signaled( struct object *obj, struct wait_queue_entry *entry );
  static int timer_get_esync_fd( struct object *obj, enum esync_type *type );
  static unsigned int timer_get_fsync_idx( struct object *obj, enum fsync_type *type );
  static void timer_satisfied( struct object *obj, struct wait_queue_entry *entry );
@@ -29,7 +27,7 @@ index d4a69bf8794..854a8e1f7f2 100644
  static void timer_destroy( struct object *obj );
  
  static const struct object_ops timer_ops =
-@@ -88,7 +90,7 @@ static const struct object_ops timer_ops =
+@@ -96,7 +98,7 @@ static const struct object_ops timer_ops =
      default_unlink_name,       /* unlink_name */
      no_open_file,              /* open_file */
      no_kernel_obj_list,        /* get_kernel_obj_list */
@@ -38,7 +36,7 @@ index d4a69bf8794..854a8e1f7f2 100644
      no_close_handle,           /* close_handle */
      timer_destroy              /* destroy */
  };
-@@ -111,6 +113,7 @@ static struct timer *create_timer( struct object *root, const struct unicode_str
+@@ -119,6 +121,7 @@ static struct timer *create_timer( struct object *root, const struct unicode_str
              timer->period   = 0;
              timer->timeout  = NULL;
              timer->thread   = NULL;
@@ -46,7 +44,7 @@ index d4a69bf8794..854a8e1f7f2 100644
              timer->esync_fd = -1;
  
              if (do_fsync())
-@@ -152,6 +155,7 @@ static void timer_callback( void *private )
+@@ -167,6 +170,7 @@ static void timer_callback( void *private )
      /* wake up waiters */
      timer->signaled = 1;
      wake_up( &timer->obj, 0 );
@@ -54,7 +52,7 @@ index d4a69bf8794..854a8e1f7f2 100644
  }
  
  /* cancel a running timer */
-@@ -182,6 +186,7 @@ static int set_timer( struct timer *timer, timeout_t expire, unsigned int period
+@@ -197,6 +201,7 @@ static int set_timer( struct timer *timer, timeout_t expire, unsigned int period
      {
          period = 0;  /* period doesn't make any sense for a manual timer */
          timer->signaled = 0;
@@ -62,7 +60,7 @@ index d4a69bf8794..854a8e1f7f2 100644
  
          if (do_fsync())
              fsync_clear( &timer->obj );
-@@ -216,6 +221,19 @@ static void timer_satisfied( struct object *obj, struct wait_queue_entry *entry
+@@ -251,6 +256,19 @@ static void timer_satisfied( struct object *obj, struct wait_queue_entry *entry
      if (!timer->manual) timer->signaled = 0;
  }
  
@@ -82,7 +80,7 @@ index d4a69bf8794..854a8e1f7f2 100644
  static void timer_destroy( struct object *obj )
  {
      struct timer *timer = (struct timer *)obj;
-@@ -223,6 +241,7 @@ static void timer_destroy( struct object *obj )
+@@ -258,6 +276,7 @@ static void timer_destroy( struct object *obj )
  
      if (timer->timeout) remove_timeout_user( timer->timeout );
      if (timer->thread) release_object( timer->thread );
@@ -91,5 +89,5 @@ index d4a69bf8794..854a8e1f7f2 100644
  
  /* create a timer */
 -- 
-2.34.1
+2.35.1
 

@@ -10,7 +10,7 @@ Subject: [PATCH 12/31] server: Create fast synchronization objects for
  2 files changed, 17 insertions(+), 1 deletion(-)
 
 diff --git a/server/process.c b/server/process.c
-index 52fa3850e18..de3770d1f15 100644
+index 177335aa4fc..27d8fd1b478 100644
 --- a/server/process.c
 +++ b/server/process.c
 @@ -96,6 +96,7 @@ static unsigned int process_map_access( struct object *obj, unsigned int access
@@ -19,9 +19,9 @@ index 52fa3850e18..de3770d1f15 100644
  static struct list *process_get_kernel_obj_list( struct object *obj );
 +static struct fast_sync *process_get_fast_sync( struct object *obj );
  static void process_destroy( struct object *obj );
- static void terminate_process( struct process *process, struct thread *skip, int exit_code );
- 
-@@ -119,7 +120,7 @@ static const struct object_ops process_ops =
+ static int process_get_esync_fd( struct object *obj, enum esync_type *type );
+ static unsigned int process_get_fsync_idx( struct object *obj, enum fsync_type *type );
+@@ -124,7 +125,7 @@ static const struct object_ops process_ops =
      NULL,                        /* unlink_name */
      no_open_file,                /* open_file */
      process_get_kernel_obj_list, /* get_kernel_obj_list */
@@ -30,15 +30,15 @@ index 52fa3850e18..de3770d1f15 100644
      no_close_handle,             /* close_handle */
      process_destroy              /* destroy */
  };
-@@ -685,6 +686,7 @@ struct process *create_process( int fd, struct process *parent, unsigned int fla
+@@ -695,6 +696,7 @@ struct process *create_process( int fd, struct process *parent, unsigned int fla
      process->rawinput_mouse  = NULL;
      process->rawinput_kbd    = NULL;
      memset( &process->image_info, 0, sizeof(process->image_info) );
 +    process->fast_sync       = NULL;
      process->esync_fd        = -1;
      process->fsync_idx       = 0;
-     list_init( &process->kernel_object );
-@@ -788,6 +790,8 @@ static void process_destroy( struct object *obj )
+     process->cpu_override.cpu_count = 0;
+@@ -807,6 +809,8 @@ static void process_destroy( struct object *obj )
      if (process->token) release_object( process->token );
      free( process->dir_cache );
      free( process->image );
@@ -47,7 +47,7 @@ index 52fa3850e18..de3770d1f15 100644
      if (do_esync()) close( process->esync_fd );
  }
  
-@@ -819,6 +823,16 @@ static struct list *process_get_kernel_obj_list( struct object *obj )
+@@ -853,6 +857,16 @@ static struct list *process_get_kernel_obj_list( struct object *obj )
      return &process->kernel_object;
  }
  
@@ -64,7 +64,7 @@ index 52fa3850e18..de3770d1f15 100644
  static struct security_descriptor *process_get_sd( struct object *obj )
  {
      static struct security_descriptor *process_default_sd;
-@@ -999,6 +1013,7 @@ static void process_killed( struct process *process )
+@@ -1025,6 +1039,7 @@ static void process_killed( struct process *process )
      release_job_process( process );
      start_sigkill_timer( process );
      wake_up( &process->obj, 0 );
@@ -73,17 +73,17 @@ index 52fa3850e18..de3770d1f15 100644
  
  /* add a thread to a process running threads list */
 diff --git a/server/process.h b/server/process.h
-index 22ee8178368..8f580600e2b 100644
+index b865e5586c6..9629dd26fa4 100644
 --- a/server/process.h
 +++ b/server/process.h
-@@ -89,6 +89,7 @@ struct process
+@@ -90,6 +90,7 @@ struct process
      const struct rawinput_device *rawinput_kbd;   /* rawinput keyboard device, if any */
      struct list          kernel_object;   /* list of kernel object pointers */
      pe_image_info_t      image_info;      /* main exe image info */
 +    struct fast_sync    *fast_sync;       /* fast synchronization object */
      int                  esync_fd;        /* esync file descriptor (signaled on exit) */
      unsigned int         fsync_idx;
- };
+     struct cpu_topology_override cpu_override; /* Overridden CPUs to host CPUs mapping. */
 -- 
-2.34.1
+2.35.1
 

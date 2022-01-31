@@ -10,19 +10,19 @@ Subject: [PATCH 11/13] user32: Send WM_*FOCUS messages even if already
  2 files changed, 25 insertions(+), 26 deletions(-)
 
 diff --git a/dlls/user32/focus.c b/dlls/user32/focus.c
-index e04deaab2c3..1a97c2f61bb 100644
+index 51fa545944f..2e63a1fcdf9 100644
 --- a/dlls/user32/focus.c
 +++ b/dlls/user32/focus.c
-@@ -39,7 +39,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(win);
+@@ -40,7 +40,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(win);
   *
   * Change the focus window, sending the WM_SETFOCUS and WM_KILLFOCUS messages
   */
 -static HWND set_focus_window( HWND hwnd )
 +static HWND set_focus_window( HWND hwnd, BOOL force )
  {
-     HWND previous = 0;
+     HWND previous = 0, ime_default;
      BOOL ret;
-@@ -52,7 +52,7 @@ static HWND set_focus_window( HWND hwnd )
+@@ -53,7 +53,7 @@ static HWND set_focus_window( HWND hwnd )
      }
      SERVER_END_REQ;
      if (!ret) return 0;
@@ -31,7 +31,7 @@ index e04deaab2c3..1a97c2f61bb 100644
  
      if (previous)
      {
-@@ -171,7 +171,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+@@ -195,7 +195,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
          if (hwnd == info.hwndActive)
          {
              if (!info.hwndFocus || !hwnd || GetAncestor( info.hwndFocus, GA_ROOT ) != hwnd)
@@ -40,7 +40,7 @@ index e04deaab2c3..1a97c2f61bb 100644
          }
      }
  
-@@ -318,7 +318,7 @@ HWND WINAPI SetFocus( HWND hwnd )
+@@ -342,7 +342,7 @@ HWND WINAPI SetFocus( HWND hwnd )
      }
  
      /* change focus and send messages */
@@ -50,10 +50,10 @@ index e04deaab2c3..1a97c2f61bb 100644
  
  
 diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
-index d6f0e09c2de..ba7c95f55ee 100644
+index 83f575fe591..0728416da79 100644
 --- a/dlls/user32/tests/msg.c
 +++ b/dlls/user32/tests/msg.c
-@@ -14621,7 +14621,6 @@ struct test_set_foreground_window_desc
+@@ -14977,7 +14977,6 @@ struct test_set_foreground_window_desc
      BOOL call_set_active_window;
      BOOL call_set_focus;
  
@@ -61,7 +61,7 @@ index d6f0e09c2de..ba7c95f55ee 100644
      const struct message *seq_before_set_foreground;
      const struct message *seq_after_set_foreground;
      BOOL todo_seq_after_peek_message;
-@@ -14710,26 +14709,26 @@ static void test_interthread_set_foreground_window(struct test_set_foreground_wi
+@@ -15066,26 +15065,26 @@ static void test_interthread_set_foreground_window(struct test_set_foreground_wi
      };
      const struct test_set_foreground_window_desc test_sfw_tests[] =
      {
@@ -108,7 +108,7 @@ index d6f0e09c2de..ba7c95f55ee 100644
      };
  
      DWORD i, res;
-@@ -14772,7 +14771,7 @@ static void test_interthread_set_foreground_window(struct test_set_foreground_wi
+@@ -15128,7 +15127,7 @@ static void test_interthread_set_foreground_window(struct test_set_foreground_wi
          flush_sequence();
          if (test->call_set_active_window) SetActiveWindow( hwnd1 );
          if (test->call_set_focus) SetFocus( hwnd1 );

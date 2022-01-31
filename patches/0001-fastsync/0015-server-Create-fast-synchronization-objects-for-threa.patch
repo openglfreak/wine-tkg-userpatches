@@ -10,10 +10,10 @@ Subject: [PATCH 15/31] server: Create fast synchronization objects for
  2 files changed, 16 insertions(+), 1 deletion(-)
 
 diff --git a/server/thread.c b/server/thread.c
-index f8d5e5644b8..67a3dc897ed 100644
+index 06754587c2b..225b9bd668e 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -180,6 +180,7 @@ static int thread_signaled( struct object *obj, struct wait_queue_entry *entry )
+@@ -190,6 +190,7 @@ static unsigned int thread_get_fsync_idx( struct object *obj, enum fsync_type *t
  static unsigned int thread_map_access( struct object *obj, unsigned int access );
  static void thread_poll_event( struct fd *fd, int event );
  static struct list *thread_get_kernel_obj_list( struct object *obj );
@@ -21,7 +21,7 @@ index f8d5e5644b8..67a3dc897ed 100644
  static void destroy_thread( struct object *obj );
  
  static const struct object_ops thread_ops =
-@@ -202,7 +203,7 @@ static const struct object_ops thread_ops =
+@@ -214,7 +215,7 @@ static const struct object_ops thread_ops =
      NULL,                       /* unlink_name */
      no_open_file,               /* open_file */
      thread_get_kernel_obj_list, /* get_kernel_obj_list */
@@ -30,7 +30,7 @@ index f8d5e5644b8..67a3dc897ed 100644
      no_close_handle,            /* close_handle */
      destroy_thread              /* destroy */
  };
-@@ -250,6 +251,7 @@ static inline void init_thread_structure( struct thread *thread )
+@@ -266,6 +267,7 @@ static inline void init_thread_structure( struct thread *thread )
      thread->desc            = NULL;
      thread->desc_len        = 0;
      thread->exit_poll       = NULL;
@@ -38,7 +38,7 @@ index f8d5e5644b8..67a3dc897ed 100644
  
      thread->creation_time = current_time;
      thread->exit_time     = 0;
-@@ -401,6 +403,16 @@ static struct list *thread_get_kernel_obj_list( struct object *obj )
+@@ -429,6 +431,16 @@ static struct list *thread_get_kernel_obj_list( struct object *obj )
      return &thread->kernel_object;
  }
  
@@ -55,15 +55,15 @@ index f8d5e5644b8..67a3dc897ed 100644
  /* cleanup everything that is no longer needed by a dead thread */
  /* used by destroy_thread and kill_thread */
  static void cleanup_thread( struct thread *thread )
-@@ -455,6 +467,7 @@ static void destroy_thread( struct object *obj )
-     release_object( thread->process );
+@@ -484,6 +496,7 @@ static void destroy_thread( struct object *obj )
+     if (thread->exit_poll) remove_timeout_user( thread->exit_poll );
      if (thread->id) free_ptid( thread->id );
      if (thread->token) release_object( thread->token );
 +    if (thread->fast_sync) release_object( thread->fast_sync );
  
      if (do_esync())
          close( thread->esync_fd );
-@@ -1291,6 +1304,7 @@ void kill_thread( struct thread *thread, int violent_death )
+@@ -1402,6 +1415,7 @@ void kill_thread( struct thread *thread, int violent_death )
          check_terminated( thread );
      }
      else wake_up( &thread->obj, 0 );
@@ -72,10 +72,10 @@ index f8d5e5644b8..67a3dc897ed 100644
      remove_process_thread( thread->process, thread );
      release_object( thread );
 diff --git a/server/thread.h b/server/thread.h
-index 8dcf966a90a..caabbe5bfd6 100644
+index 8873d8224d4..9bd8d852c4c 100644
 --- a/server/thread.h
 +++ b/server/thread.h
-@@ -90,6 +90,7 @@ struct thread
+@@ -95,6 +95,7 @@ struct thread
      data_size_t            desc_len;      /* thread description length in bytes */
      WCHAR                 *desc;          /* thread description string */
      struct timeout_user   *exit_poll;     /* poll if the thread/process has exited already */
@@ -84,5 +84,5 @@ index 8dcf966a90a..caabbe5bfd6 100644
  
  extern struct thread *current;
 -- 
-2.34.1
+2.35.1
 

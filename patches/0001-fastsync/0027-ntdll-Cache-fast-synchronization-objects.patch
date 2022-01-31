@@ -4,13 +4,13 @@ Date: Fri, 12 Mar 2021 15:04:17 -0600
 Subject: [PATCH 27/31] ntdll: Cache fast synchronization objects.
 
 ---
- dlls/ntdll/unix/server.c       |  11 +-
- dlls/ntdll/unix/sync.c         | 203 +++++++++++++++++++++++++++++++--
+ dlls/ntdll/unix/server.c       |   9 ++
+ dlls/ntdll/unix/sync.c         | 200 +++++++++++++++++++++++++++++++--
  dlls/ntdll/unix/unix_private.h |   4 +
- 3 files changed, 205 insertions(+), 13 deletions(-)
+ 3 files changed, 201 insertions(+), 12 deletions(-)
 
 diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
-index 2e3eae6d0ae..88dc13a5a8e 100644
+index 92ede77901e..392af516e3d 100644
 --- a/dlls/ntdll/unix/server.c
 +++ b/dlls/ntdll/unix/server.c
 #@@ -110,7 +110,7 @@ timeout_t server_start_time = 0;  /* time of server startup */
@@ -22,7 +22,7 @@ index 2e3eae6d0ae..88dc13a5a8e 100644
 # 
 # /* atomically exchange a 64-bit value */
 # static inline LONG64 interlocked_xchg64( LONG64 *dest, LONG64 val )
-@@ -1670,12 +1670,17 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE
+@@ -1718,12 +1718,17 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE
          return result.dup_handle.status;
      }
  
@@ -40,7 +40,7 @@ index 2e3eae6d0ae..88dc13a5a8e 100644
  
      SERVER_START_REQ( dup_handle )
      {
-@@ -1728,12 +1733,16 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
+@@ -1776,12 +1781,16 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
      NTSTATUS ret;
      int fd;
  
@@ -58,10 +58,10 @@ index 2e3eae6d0ae..88dc13a5a8e 100644
          fsync_close( handle );
  
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
-index a13c63431b9..8b05024c066 100644
+index 776c9045e98..cbfee7fcfaa 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
-@@ -326,6 +329,12 @@ static int get_fast_sync_device(void)
+@@ -322,6 +322,12 @@ static int get_fast_sync_device(void)
   * it closes the handle; when all handles are closed, the server deletes the
   * fast synchronization object.
   *
@@ -74,7 +74,7 @@ index a13c63431b9..8b05024c066 100644
   * We want lookup of objects from the cache to be very fast; ideally, it should
   * be lock-free. We achieve this by using atomic modifications to "refcount",
   * and guaranteeing that all other fields are valid and correct *as long as*
-@@ -368,12 +377,139 @@ static void release_fast_sync_obj( struct fast_sync_cache_entry *cache )
+@@ -364,12 +370,139 @@ static void release_fast_sync_obj( struct fast_sync_cache_entry *cache )
  
      if (!refcount)
      {
@@ -215,7 +215,7 @@ index a13c63431b9..8b05024c066 100644
  static BOOL fast_sync_types_match( enum fast_sync_type a, enum fast_sync_type b )
  {
      if (a == b) return TRUE;
-@@ -389,39 +525,78 @@ static NTSTATUS get_fast_sync_obj( HANDLE handle, enum fast_sync_type desired_ty
+@@ -385,39 +518,78 @@ static NTSTATUS get_fast_sync_obj( HANDLE handle, enum fast_sync_type desired_ty
                                     struct fast_sync_cache_entry *stack_cache,
                                     struct fast_sync_cache_entry **ret_cache )
  {
@@ -305,7 +305,7 @@ index a13c63431b9..8b05024c066 100644
  }
  
  
-@@ -1065,6 +1240,10 @@ static NTSTATUS fast_signal_and_wait( HANDLE signal, HANDLE wait,
+@@ -1061,6 +1233,10 @@ static NTSTATUS fast_signal_and_wait( HANDLE signal, HANDLE wait,
  
  #else
  
@@ -317,10 +317,10 @@ index a13c63431b9..8b05024c066 100644
  {
      return STATUS_NOT_IMPLEMENTED;
 diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
-index 5bf1633d6be..7054955586f 100644
+index 7a4d564ada3..9cdd2a5fe4f 100644
 --- a/dlls/ntdll/unix/unix_private.h
 +++ b/dlls/ntdll/unix/unix_private.h
-@@ -154,6 +154,8 @@ extern NTSTATUS load_main_exe( const WCHAR *name, const char *unix_name, const W
+@@ -164,6 +164,8 @@ extern NTSTATUS load_main_exe( const WCHAR *name, const char *unix_name, const W
  extern NTSTATUS load_start_exe( WCHAR **image, void **module ) DECLSPEC_HIDDEN;
  extern void start_server( BOOL debug ) DECLSPEC_HIDDEN;
  
@@ -329,7 +329,7 @@ index 5bf1633d6be..7054955586f 100644
  extern unsigned int server_call_unlocked( void *req_ptr ) DECLSPEC_HIDDEN;
  extern void server_enter_uninterrupted_section( pthread_mutex_t *mutex, sigset_t *sigset ) DECLSPEC_HIDDEN;
  extern void server_leave_uninterrupted_section( pthread_mutex_t *mutex, sigset_t *sigset ) DECLSPEC_HIDDEN;
-@@ -277,6 +279,8 @@ extern void add_completion( HANDLE handle, ULONG_PTR value, NTSTATUS status, ULO
+@@ -289,6 +291,8 @@ extern void add_completion( HANDLE handle, ULONG_PTR value, NTSTATUS status, ULO
  
  extern void dbg_init(void) DECLSPEC_HIDDEN;
  
@@ -339,5 +339,5 @@ index 5bf1633d6be..7054955586f 100644
                                            PNTAPCFUNC func, NTSTATUS status ) DECLSPEC_HIDDEN;
  extern NTSTATUS call_user_exception_dispatcher( EXCEPTION_RECORD *rec, CONTEXT *context ) DECLSPEC_HIDDEN;
 -- 
-2.34.1
+2.35.1
 

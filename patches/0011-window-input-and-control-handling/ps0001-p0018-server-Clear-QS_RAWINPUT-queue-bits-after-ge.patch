@@ -10,10 +10,10 @@ Subject: [PATCH 18/18] server: Clear QS_RAWINPUT queue bits after
  2 files changed, 12 insertions(+), 2 deletions(-)
 
 diff --git a/dlls/user32/tests/input.c b/dlls/user32/tests/input.c
-index 654cabb76d9..7b500b4c8d4 100644
+index 0265695de21..2d416283f05 100644
 --- a/dlls/user32/tests/input.c
 +++ b/dlls/user32/tests/input.c
-@@ -2138,7 +2138,7 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
+@@ -2141,7 +2141,7 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
  {
      RAWINPUT ri;
      char buffer[16 * sizeof(RAWINPUT64)];
@@ -22,7 +22,7 @@ index 654cabb76d9..7b500b4c8d4 100644
      MSG message;
  
      if (is_wow64) rawinput_size = sizeof(RAWINPUT64);
-@@ -2154,6 +2154,9 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
+@@ -2157,6 +2157,9 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
          ok(count == 0, "GetRawInputBuffer returned %u\n", count);
          ok(size == rawinput_size, "GetRawInputBuffer returned unexpected size: %u\n", size);
  
@@ -32,7 +32,7 @@ index 654cabb76d9..7b500b4c8d4 100644
          size = sizeof(buffer);
          memset(buffer, 0, sizeof(buffer));
          count = GetRawInputBuffer((RAWINPUT*)buffer, &size, sizeof(RAWINPUTHEADER));
-@@ -2163,6 +2166,9 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
+@@ -2166,6 +2169,9 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
          ok(rawinput_buffer_mouse_x(buffer, 1) == 3, "Unexpected rawinput data: %d\n", rawinput_buffer_mouse_x(buffer, 1));
          ok(rawinput_buffer_mouse_x(buffer, 2) == 4, "Unexpected rawinput data: %d\n", rawinput_buffer_mouse_x(buffer, 2));
  
@@ -43,10 +43,10 @@ index 654cabb76d9..7b500b4c8d4 100644
           * and the others should do another round through the message loop but not more */
          if (iteration == 0)
 diff --git a/server/queue.c b/server/queue.c
-index 9c8813fa1ad..1fa0fb20b1a 100644
+index 965bcd6c3ab..397a85ea18c 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -3303,7 +3303,7 @@ DECL_HANDLER(get_rawinput_buffer)
+@@ -3651,7 +3651,7 @@ DECL_HANDLER(get_rawinput_buffer)
      struct thread_input *input = current->queue->input;
      data_size_t size = 0, next_size = 0;
      char *buf, *cur, *tmp;
@@ -55,15 +55,15 @@ index 9c8813fa1ad..1fa0fb20b1a 100644
      struct message *msg, *next;
  
      if (!req->buffer_size) buf = NULL;
-@@ -3315,6 +3315,7 @@ DECL_HANDLER(get_rawinput_buffer)
+@@ -3663,6 +3663,7 @@ DECL_HANDLER(get_rawinput_buffer)
          struct hardware_msg_data *data = msg->data;
-         data_size_t hid_size = data->rawinput.type != RIM_TYPEHID ? 0 : msg->data_size - sizeof(*data);
+         data_size_t extra_size = data->size - sizeof(*data);
          if (msg->msg != WM_INPUT) continue;
 +        pending++;
  
-         next_size = req->rawinput_size + hid_size;
+         next_size = req->rawinput_size + extra_size;
          if (size + next_size > req->buffer_size) break;
-@@ -3338,8 +3339,11 @@ DECL_HANDLER(get_rawinput_buffer)
+@@ -3686,8 +3687,11 @@ DECL_HANDLER(get_rawinput_buffer)
          size += next_size;
          cur += sizeof(*data);
          count++;

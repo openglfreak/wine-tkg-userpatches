@@ -4,14 +4,14 @@ Date: Fri, 15 Oct 2021 11:37:02 +0200
 Subject: [PATCH 6/7] server: Factor sent or posted message receive helpers.
 
 ---
- server/queue.c | 72 +++++++++++++++++---------------------------------
- 1 file changed, 24 insertions(+), 48 deletions(-)
+ server/queue.c | 76 +++++++++++++++++---------------------------------
+ 1 file changed, 26 insertions(+), 50 deletions(-)
 
 diff --git a/server/queue.c b/server/queue.c
-index cd311379fa1..15f3d9a45b6 100644
+index 21a6fecede8..b3284a56dd4 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -816,16 +816,14 @@ static struct message_result *alloc_message_result( struct msg_queue *send_queue
+@@ -966,16 +966,14 @@ static struct message_result *alloc_message_result( struct msg_queue *send_queue
  }
  
  /* receive a message, removing it from the sent queue */
@@ -31,7 +31,7 @@ index cd311379fa1..15f3d9a45b6 100644
      }
      reply->type   = msg->type;
      reply->win    = msg->win;
-@@ -837,17 +835,7 @@ static void receive_message( struct msg_queue *queue, struct message *msg,
+@@ -987,17 +985,7 @@ static void receive_message( struct msg_queue *queue, struct message *msg,
      reply->time   = msg->time;
  
      if (msg->data) set_reply_data_ptr( msg->data, msg->data_size );
@@ -50,7 +50,7 @@ index cd311379fa1..15f3d9a45b6 100644
  }
  
  /* set the result of the current received message */
-@@ -881,17 +869,18 @@ static int match_window( user_handle_t win, user_handle_t msg_win )
+@@ -1031,17 +1019,18 @@ static int match_window( user_handle_t win, user_handle_t msg_win )
      return is_child_window( win, msg_win );
  }
  
@@ -71,9 +71,9 @@ index cd311379fa1..15f3d9a45b6 100644
 -        if (!match_window( win, msg->win )) continue;
 +        if (kind != SEND_MESSAGE && !match_window( win, msg->win )) continue;
          if (!check_msg_filter( msg->msg, first, last )) continue;
+         if (ignore_msg && (int)(msg->unique_id - ignore_msg) >= 0) continue;
          goto found; /* found one */
-     }
-@@ -899,32 +888,24 @@ static int get_posted_message( struct msg_queue *queue, user_handle_t win,
+@@ -1050,32 +1039,24 @@ static int get_posted_message( struct msg_queue *queue, unsigned int ignore_msg,
  
      /* return it to the app */
  found:
@@ -118,7 +118,7 @@ index cd311379fa1..15f3d9a45b6 100644
  
      return 1;
  }
-@@ -2644,7 +2625,6 @@ DECL_HANDLER(post_quit_message)
+@@ -2912,7 +2893,6 @@ DECL_HANDLER(post_quit_message)
  DECL_HANDLER(get_message)
  {
      struct timer *timer;
@@ -126,7 +126,7 @@ index cd311379fa1..15f3d9a45b6 100644
      struct msg_queue *queue = get_current_queue();
      user_handle_t get_win = get_user_full_handle( req->get_win );
      unsigned int filter = req->flags >> 16;
-@@ -2662,12 +2642,8 @@ DECL_HANDLER(get_message)
+@@ -2928,12 +2908,8 @@ DECL_HANDLER(get_message)
      if (!filter) filter = QS_ALLINPUT;
  
      /* first check for sent messages */
@@ -140,7 +140,7 @@ index cd311379fa1..15f3d9a45b6 100644
  
      /* clear changed bits so we can wait on them if we don't find a message */
      if (filter & QS_POSTMESSAGE)
-@@ -2680,12 +2656,12 @@ DECL_HANDLER(get_message)
+@@ -2953,12 +2929,12 @@ DECL_HANDLER(get_message)
  
      /* then check for posted messages */
      if ((filter & QS_POSTMESSAGE) &&
@@ -155,7 +155,7 @@ index cd311379fa1..15f3d9a45b6 100644
          return;
  
      /* only check for quit messages if not posted messages pending */
-@@ -2985,12 +2961,12 @@ DECL_HANDLER(get_message)
+@@ -3003,12 +2979,12 @@ DECL_HANDLER(get_message)
  
      /* if we previously skipped posted messages then check again */
      if (queue->ignore_post_msg && (filter & QS_POSTMESSAGE) &&
@@ -171,5 +171,5 @@ index cd311379fa1..15f3d9a45b6 100644
  
      if (get_win == -1 && current->process->idle_event) set_event( current->process->idle_event );
 -- 
-2.34.1
+2.35.1
 

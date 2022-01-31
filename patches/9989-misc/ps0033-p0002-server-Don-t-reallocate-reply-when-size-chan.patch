@@ -10,10 +10,10 @@ Subject: [PATCH 2/4] server: Don't reallocate reply when size changes.
  3 files changed, 15 insertions(+), 4 deletions(-)
 
 diff --git a/server/request.c b/server/request.c
-index acda6d9d8d2..7d76feff2b3 100644
+index c29d13f5e68..b75e39f0a2a 100644
 --- a/server/request.c
 +++ b/server/request.c
-@@ -165,7 +165,12 @@ void fatal_error( const char *err, ... )
+@@ -160,7 +160,12 @@ void fatal_error( const char *err, ... )
  void *set_reply_data_size( data_size_t size )
  {
      assert( size <= get_reply_max_size() );
@@ -27,7 +27,7 @@ index acda6d9d8d2..7d76feff2b3 100644
      current->reply_size = size;
      return current->reply_data;
  }
-@@ -240,7 +245,7 @@ void write_reply( struct thread *thread )
+@@ -235,7 +240,7 @@ void write_reply( struct thread *thread )
      {
          if (!(thread->reply_towrite -= ret))
          {
@@ -36,7 +36,7 @@ index acda6d9d8d2..7d76feff2b3 100644
              thread->reply_data = NULL;
              /* sent everything, can go back to waiting for requests */
              set_fd_events( thread->request_fd, POLLIN );
-@@ -283,7 +288,7 @@ static void send_reply( union generic_reply *reply )
+@@ -278,7 +283,7 @@ static void send_reply( union generic_reply *reply )
              return;
          }
      }
@@ -46,10 +46,10 @@ index acda6d9d8d2..7d76feff2b3 100644
      return;
  
 diff --git a/server/thread.c b/server/thread.c
-index 69ac688435b..8ab03734a7e 100644
+index 427de183820..d71642c14d2 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -321,6 +321,8 @@ static inline void init_thread_structure( struct thread *thread )
+@@ -331,6 +331,8 @@ static inline void init_thread_structure( struct thread *thread )
      thread->req_data        = NULL;
      thread->req_data_size   = 0;
      thread->req_toread      = 0;
@@ -58,8 +58,8 @@ index 69ac688435b..8ab03734a7e 100644
      thread->reply_data      = NULL;
      thread->reply_towrite   = 0;
      thread->request_fd      = NULL;
-@@ -504,7 +506,8 @@ static void cleanup_thread( struct thread *thread )
-     clear_apc_queue( &thread->kernel_apc );
+@@ -603,7 +605,8 @@ static void cleanup_thread( struct thread *thread )
+     clear_apc_queue( &thread->system_apc );
      clear_apc_queue( &thread->user_apc );
      free( thread->req_data );
 -    free( thread->reply_data );
@@ -68,19 +68,19 @@ index 69ac688435b..8ab03734a7e 100644
      if (thread->request_fd) release_object( thread->request_fd );
      if (thread->reply_fd) release_object( thread->reply_fd );
      if (thread->wait_fd) release_object( thread->wait_fd );
-@@ -522,6 +525,7 @@ static void cleanup_thread( struct thread *thread )
-     }
-     free( thread->desc );
+@@ -625,6 +628,7 @@ static void cleanup_thread( struct thread *thread )
+     if (thread->input_shared_mapping) release_object( thread->input_shared_mapping );
+     thread->input_shared_mapping = NULL;
      thread->req_data = NULL;
 +    thread->rep_data = NULL;
      thread->reply_data = NULL;
      thread->request_fd = NULL;
      thread->reply_fd = NULL;
 diff --git a/server/thread.h b/server/thread.h
-index 169f30205ca..e11bd3ac702 100644
+index cd7863ca77c..ea8cba4d0ad 100644
 --- a/server/thread.h
 +++ b/server/thread.h
-@@ -71,6 +71,8 @@ struct thread
+@@ -69,6 +69,8 @@ struct thread
      void                  *req_data;      /* variable-size data for request */
      unsigned int           req_data_size;
      unsigned int           req_toread;    /* amount of data still to read in request */

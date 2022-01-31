@@ -6,14 +6,14 @@ Subject: [PATCH 5/5] winex11.drv: Use window surface for GL presentation for
 
 CW-Bug-ID: #19216
 ---
- dlls/winex11.drv/opengl.c | 87 ++++++++++++++++++++++++++++++++++++---
- 1 file changed, 81 insertions(+), 6 deletions(-)
+ dlls/winex11.drv/opengl.c | 85 +++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 81 insertions(+), 4 deletions(-)
 
 diff --git a/dlls/winex11.drv/opengl.c b/dlls/winex11.drv/opengl.c
-index 3d58253977b..e0236c4b602 100644
+index 1b2ba2dc28e..017b261b0ea 100644
 --- a/dlls/winex11.drv/opengl.c
 +++ b/dlls/winex11.drv/opengl.c
-@@ -255,6 +255,7 @@ enum dc_gl_layered_type
+@@ -239,6 +239,7 @@ enum dc_gl_layered_type
  {
      DC_GL_LAYERED_NONE,
      DC_GL_LAYERED_UPDATES,
@@ -21,7 +21,7 @@ index 3d58253977b..e0236c4b602 100644
  };
  
  struct gl_drawable
-@@ -1464,7 +1465,8 @@ static enum dc_gl_layered_type get_gl_layered_type( HWND hwnd )
+@@ -1331,7 +1332,8 @@ static enum dc_gl_layered_type get_gl_layered_type( HWND hwnd )
      enum dc_gl_layered_type ret;
  
      if (!(data = get_win_data( hwnd ))) return DC_GL_LAYERED_NONE;
@@ -31,7 +31,7 @@ index 3d58253977b..e0236c4b602 100644
      release_win_data( data );
  
      return ret;
-@@ -3023,25 +3025,96 @@ static void fs_hack_blit_framebuffer( struct gl_drawable *gl, GLenum draw_buffer
+@@ -1990,17 +1992,87 @@ static BOOL WINAPI glxdrv_wglShareLists(struct wgl_context *org, struct wgl_cont
      return FALSE;
  }
  
@@ -120,8 +120,7 @@ index 3d58253977b..e0236c4b602 100644
      {
          switch (gl->type)
          {
-         case DC_GL_PIXMAP_WIN: if (!gl->layered_type) escape.gl_drawable = gl->pixmap; break;
-         case DC_GL_CHILD_WIN:  escape.gl_drawable = gl->window; break;
+@@ -2009,6 +2081,7 @@ static void wglFinish(void)
          default: break;
          }
          sync_context(ctx);
@@ -129,7 +128,7 @@ index 3d58253977b..e0236c4b602 100644
          release_gl_drawable( gl );
      }
  
-@@ -3068,12 +3140,13 @@ static void wglFlush(void)
+@@ -2021,12 +2094,13 @@ static void wglFlush(void)
      struct x11drv_escape_flush_gl_drawable escape;
      struct gl_drawable *gl;
      struct wgl_context *ctx = NtCurrentTeb()->glContext;
@@ -144,7 +143,7 @@ index 3d58253977b..e0236c4b602 100644
      {
          switch (gl->type)
          {
-@@ -3095,6 +3168,7 @@ static void wglFlush(void)
+@@ -2035,6 +2109,7 @@ static void wglFlush(void)
          default: break;
          }
          sync_context(ctx);
@@ -152,7 +151,7 @@ index 3d58253977b..e0236c4b602 100644
          release_gl_drawable( gl );
      }
  
-@@ -4419,6 +4492,7 @@ static BOOL WINAPI glxdrv_wglSwapBuffers( HDC hdc )
+@@ -3358,6 +3433,7 @@ static BOOL WINAPI glxdrv_wglSwapBuffers( HDC hdc )
      struct gl_drawable *gl;
      struct wgl_context *ctx = NtCurrentTeb()->glContext;
      INT64 ust, msc, sbc, target_sbc = 0;
@@ -160,8 +159,8 @@ index 3d58253977b..e0236c4b602 100644
  
      TRACE("(%p)\n", hdc);
  
-@@ -4426,7 +4500,7 @@ static BOOL WINAPI glxdrv_wglSwapBuffers( HDC hdc )
-     escape.drawable = 0;
+@@ -3365,7 +3441,7 @@ static BOOL WINAPI glxdrv_wglSwapBuffers( HDC hdc )
+     escape.gl_drawable = 0;
      escape.flush = !pglXWaitForSbcOML;
  
 -    if (!(gl = get_gl_drawable( WindowFromDC( hdc ), hdc )))
@@ -169,11 +168,11 @@ index 3d58253977b..e0236c4b602 100644
      {
          SetLastError( ERROR_INVALID_HANDLE );
          return FALSE;
-@@ -4491,6 +4565,7 @@ static BOOL WINAPI glxdrv_wglSwapBuffers( HDC hdc )
-     if (escape.drawable && pglXWaitForSbcOML)
+@@ -3420,6 +3496,7 @@ static BOOL WINAPI glxdrv_wglSwapBuffers( HDC hdc )
+     if (escape.gl_drawable && pglXWaitForSbcOML)
          pglXWaitForSbcOML( gdi_display, gl->drawable, target_sbc, &ust, &msc, &sbc );
  
 +    update_window_surface( gl, hwnd );
      release_gl_drawable( gl );
  
-     if (escape.drawable) ExtEscape( ctx->hdc, X11DRV_ESCAPE, sizeof(escape), (LPSTR)&escape, 0, NULL );
+     if (escape.gl_drawable) ExtEscape( ctx->hdc, X11DRV_ESCAPE, sizeof(escape), (LPSTR)&escape, 0, NULL );

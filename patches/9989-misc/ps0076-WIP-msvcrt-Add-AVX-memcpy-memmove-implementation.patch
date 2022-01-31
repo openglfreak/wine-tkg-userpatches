@@ -10,7 +10,7 @@ Subject: [PATCH] WIP: msvcrt: Add AVX memcpy/memmove implementation.
  3 files changed, 378 insertions(+), 359 deletions(-)
 
 diff --git a/dlls/msvcrt/math.c b/dlls/msvcrt/math.c
-index 9974e72d78f..be72a8b6886 100644
+index c720f6a95dc..751a1c05431 100644
 --- a/dlls/msvcrt/math.c
 +++ b/dlls/msvcrt/math.c
 @@ -51,6 +51,8 @@
@@ -68,7 +68,7 @@ index 9974e72d78f..be72a8b6886 100644
  /* Copied from musl: src/internal/libm.h */
  static inline float fp_barrierf(float x)
 diff --git a/dlls/msvcrt/string.c b/dlls/msvcrt/string.c
-index 41a3b289c70..af4c5f7d243 100644
+index 3155e2cffad..5b8f1b2133b 100644
 --- a/dlls/msvcrt/string.c
 +++ b/dlls/msvcrt/string.c
 @@ -34,6 +34,8 @@
@@ -80,7 +80,7 @@ index 41a3b289c70..af4c5f7d243 100644
  WINE_DEFAULT_DEBUG_CHANNEL(msvcrt);
  
  /*********************************************************************
-@@ -2481,385 +2483,372 @@ int __cdecl memcmp(const void *ptr1, const void *ptr2, size_t n)
+@@ -2690,385 +2692,372 @@ int __cdecl memcmp(const void *ptr1, const void *ptr2, size_t n)
      return 0;
  }
  
@@ -425,11 +425,7 @@ index 41a3b289c70..af4c5f7d243 100644
 +#ifdef __clang__
 +#pragma clang attribute pop
  #else
-+#pragma GCC pop_options
-+#endif
-+#undef __DISABLE_SSE2__
-+#endif /* __DISABLE_SSE2__ */
- 
+-
 -#define DEST_REG "%rdi"
 -#define SRC_REG "%rsi"
 -#define LEN_REG "%r8"
@@ -449,15 +445,10 @@ index 41a3b289c70..af4c5f7d243 100644
 -    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t") \
 -    "popq " SRC_REG "\n\t" \
 -    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
-+#ifndef __AVX__
-+#ifdef __clang__
-+#pragma clang attribute push (__attribute__((target("avx"))), apply_to=function)
-+#else
-+#pragma GCC push_options
-+#pragma GCC target("avx")
++#pragma GCC pop_options
  #endif
-+#define __DISABLE_AVX__
-+#endif /* __AVX__ */
++#undef __DISABLE_SSE2__
++#endif /* __DISABLE_SSE2__ */
  
 -void * __cdecl sse2_memmove(void *dst, const void *src, size_t n);
 -__ASM_GLOBAL_FUNC( sse2_memmove,
@@ -661,7 +652,16 @@ index 41a3b289c70..af4c5f7d243 100644
 -        "1:\n\t"
 -        MEMMOVE_CLEANUP
 -        "ret" )
--
++#ifndef __AVX__
++#ifdef __clang__
++#pragma clang attribute push (__attribute__((target("avx"))), apply_to=function)
++#else
++#pragma GCC push_options
++#pragma GCC target("avx")
++#endif
++#define __DISABLE_AVX__
++#endif /* __AVX__ */
+ 
 -#undef MEMMOVE_INIT
 -#undef MEMMOVE_CLEANUP
 -#undef DEST_REG
@@ -811,8 +811,8 @@ index 41a3b289c70..af4c5f7d243 100644
 +    return memmove_c(dst, src, n);
  }
  
- #if defined(__i386__) || defined(__x86_64__)
-@@ -3020,6 +3009,11 @@ void *__cdecl memset(void *dst, int c, size_t n)
+ /*********************************************************************
+@@ -3244,6 +3233,11 @@ void *__cdecl memset(void *dst, int c, size_t n)
      return dst;
  }
  
@@ -825,10 +825,10 @@ index 41a3b289c70..af4c5f7d243 100644
   *		    strchr (MSVCRT.@)
   */
 diff --git a/tools/makedep.c b/tools/makedep.c
-index c7d08dc21e6..9f1650e162f 100644
+index 167d52b1f5b..8a121561e97 100644
 --- a/tools/makedep.c
 +++ b/tools/makedep.c
-@@ -1405,6 +1405,7 @@ static struct file *open_include_file( const struct makefile *make, struct incl_
+@@ -1456,6 +1456,7 @@ static struct file *open_include_file( const struct makefile *make, struct incl_
      {
          if (!strcmp( pFile->name, "stdarg.h" )) return NULL;
          if (!strcmp( pFile->name, "x86intrin.h" )) return NULL;
@@ -837,5 +837,5 @@ index c7d08dc21e6..9f1650e162f 100644
          fprintf( stderr, "%s:%d: error: system header %s cannot be used with msvcrt\n",
                   pFile->included_by->file->name, pFile->included_line, pFile->name );
 -- 
-2.33.0
+2.35.1
 

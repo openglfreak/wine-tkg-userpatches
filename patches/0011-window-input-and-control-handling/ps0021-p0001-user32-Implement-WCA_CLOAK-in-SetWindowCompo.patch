@@ -25,20 +25,22 @@ It uses the undocumented user32 API SetWindowCompositionAttribute to do
 so. Of course, the documented DwmSetWindowAttribute will just be a wrapper
 around this one.
 
- dlls/user32/driver.c       |   9 +++
+ dlls/user32/driver.c       |   6 ++
  dlls/user32/message.c      |   2 +
- dlls/user32/user_private.h |  41 +++++++++++++
+ dlls/user32/user_private.h |  40 ++++++++++++
  dlls/user32/win.c          | 121 ++++++++++++++++++++++++++++++++++---
+ dlls/win32u/driver.c       |   7 +++
+ include/wine/gdi_driver.h  |   1 +
  server/protocol.def        |  13 ++++
  server/window.c            |  80 +++++++++++++++++++++---
- 6 files changed, 250 insertions(+), 16 deletions(-)
+ 8 files changed, 254 insertions(+), 16 deletions(-)
 
 diff --git a/dlls/user32/driver.c b/dlls/user32/driver.c
-index 7ac7714..6dad5dc 100644
+index 86444d8a831..ac8f4ec1238 100644
 --- a/dlls/user32/driver.c
 +++ b/dlls/user32/driver.c
-@@ -934,6 +935,11 @@ static void CDECL loaderdrv_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BY
-     load_driver()->pGetDC( hdc, hwnd, top_win, win_rect, top_rect, flags );
+@@ -357,6 +357,11 @@ static void CDECL loaderdrv_SetLayeredWindowAttributes( HWND hwnd, COLORREF key,
+     load_driver()->pSetLayeredWindowAttributes( hwnd, key, alpha, flags );
  }
  
 +static DWORD CDECL loaderdrv_SetWindowCompositionAttribute( HWND hwnd, DWORD attribute, void *data )
@@ -49,7 +51,7 @@ index 7ac7714..6dad5dc 100644
  static void CDECL loaderdrv_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
  {
      load_driver()->pSetWindowRgn( hwnd, hrgn, redraw );
-@@ -1070,6 +1070,7 @@ void CDECL __wine_set_display_driver( struct user_driver_funcs *driver, UINT versi
+@@ -412,6 +417,7 @@ static struct user_driver_funcs lazy_load_driver =
      nulldrv_SetFocus,
      loaderdrv_SetLayeredWindowAttributes,
      nulldrv_SetParent,
@@ -58,10 +60,10 @@ index 7ac7714..6dad5dc 100644
      nulldrv_SetWindowIcon,
      nulldrv_SetWindowStyle,
 diff --git a/dlls/user32/message.c b/dlls/user32/message.c
-index 4434f4b..67f89bb 100644
+index 02359889cf5..d1085f60f8f 100644
 --- a/dlls/user32/message.c
 +++ b/dlls/user32/message.c
-@@ -1887,6 +1887,8 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
+@@ -1896,6 +1896,8 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
      case WM_WINE_UPDATEWINDOWSTATE:
          update_window_state( hwnd );
          return 0;
@@ -70,23 +72,11 @@ index 4434f4b..67f89bb 100644
      default:
          if (msg >= WM_WINE_FIRST_DRIVER_MSG && msg <= WM_WINE_LAST_DRIVER_MSG)
              return USER_Driver->pWindowMessage( hwnd, msg, wparam, lparam );
-diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
-index 7761a1c..3baf39c 100644
---- a/include/wine/gdi_driver.h
-+++ b/include/wine/gdi_driver.h
-@@ -101,6 +102,7 @@ typedef struct tagUSER_DRIVER {
-     void    (CDECL *pSetFocus)(HWND);
-     void    (CDECL *pSetLayeredWindowAttributes)(HWND,COLORREF,BYTE,DWORD);
-     void    (CDECL *pSetParent)(HWND,HWND,HWND);
-+    DWORD   (CDECL *pSetWindowCompositionAttribute)(HWND,DWORD,void*);
-     void    (CDECL *pSetWindowRgn)(HWND,HRGN,BOOL);
-     void    (CDECL *pSetWindowIcon)(HWND,UINT,HICON);
-     void    (CDECL *pSetWindowStyle)(HWND,INT,STYLESTRUCT*);
 diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
-index 7761a1c..3baf39c 100644
+index 27220d4cca7..af4cc66dd1f 100644
 --- a/dlls/user32/user_private.h
 +++ b/dlls/user32/user_private.h
-@@ -56,6 +56,7 @@ enum wine_internal_message
+@@ -58,6 +58,7 @@ enum wine_internal_message
      WM_WINE_MOUSE_LL_HOOK,
      WM_WINE_CLIPCURSOR,
      WM_WINE_UPDATEWINDOWSTATE,
@@ -94,7 +84,7 @@ index 7761a1c..3baf39c 100644
      WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
      WM_WINE_LAST_DRIVER_MSG = 0x80001fff
  };
-@@ -366,6 +368,45 @@ typedef struct
+@@ -286,6 +287,45 @@ typedef struct
  
  #include "poppack.h"
  
@@ -141,18 +131,18 @@ index 7761a1c..3baf39c 100644
  extern BOOL get_icon_size( HICON handle, SIZE *size ) DECLSPEC_HIDDEN;
  
 diff --git a/dlls/user32/win.c b/dlls/user32/win.c
-index 680defc..9840a76 100644
+index d58f2ba22a0..b2d42b777e2 100644
 --- a/dlls/user32/win.c
 +++ b/dlls/user32/win.c
-@@ -27,6 +27,7 @@
- #include "winbase.h"
+@@ -26,6 +26,7 @@
+ #include "user_private.h"
  #include "winnls.h"
  #include "winver.h"
 +#include "dwmapi.h"
  #include "wine/server.h"
  #include "wine/asm.h"
  #include "win.h"
-@@ -54,6 +55,8 @@ static CRITICAL_SECTION_DEBUG critsect_debug =
+@@ -52,6 +53,8 @@ static CRITICAL_SECTION_DEBUG critsect_debug =
  };
  static CRITICAL_SECTION surfaces_section = { &critsect_debug, -1, 0, 0, 0, 0 };
  
@@ -161,7 +151,7 @@ index 680defc..9840a76 100644
  /**********************************************************************/
  
  /* helper for Get/SetWindowLong */
-@@ -191,7 +194,7 @@ void *free_user_handle( HANDLE handle, enum user_obj_type type )
+@@ -190,7 +193,7 @@ void *free_user_handle( HANDLE handle, enum user_obj_type type )
   */
  static WND *create_window_handle( HWND parent, HWND owner, LPCWSTR name,
                                    HINSTANCE instance, BOOL unicode,
@@ -170,7 +160,7 @@ index 680defc..9840a76 100644
  {
      WORD index;
      WND *win;
-@@ -219,6 +222,7 @@ static WND *create_window_handle( HWND parent, HWND owner, LPCWSTR name,
+@@ -220,6 +223,7 @@ static WND *create_window_handle( HWND parent, HWND owner, LPCWSTR name,
              dpi         = reply->dpi;
              awareness   = reply->awareness;
              class       = wine_server_get_ptr( reply->class_ptr );
@@ -178,7 +168,7 @@ index 680defc..9840a76 100644
          }
      }
      SERVER_END_REQ;
-@@ -749,6 +753,7 @@ HWND WIN_GetFullHandle( HWND hwnd )
+@@ -881,6 +885,7 @@ HWND WIN_GetFullHandle( HWND hwnd )
  static HWND WIN_SetOwner( HWND hwnd, HWND owner )
  {
      WND *win = WIN_GetPtr( hwnd );
@@ -186,7 +176,7 @@ index 680defc..9840a76 100644
      HWND ret = 0;
  
      if (!win || win == WND_DESKTOP) return 0;
-@@ -765,10 +770,19 @@ static HWND WIN_SetOwner( HWND hwnd, HWND owner )
+@@ -897,10 +902,19 @@ static HWND WIN_SetOwner( HWND hwnd, HWND owner )
          {
              win->owner = wine_server_ptr_handle( reply->full_owner );
              ret = wine_server_ptr_handle( reply->prev_owner );
@@ -206,7 +196,7 @@ index 680defc..9840a76 100644
      return ret;
  }
  
-@@ -1349,6 +1363,7 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
+@@ -1494,6 +1508,7 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
      MDICREATESTRUCTW mdi_cs;
      CBT_CREATEWNDW cbtc;
      CREATESTRUCTW cbcs;
@@ -214,7 +204,7 @@ index 680defc..9840a76 100644
  
      className = CLASS_GetVersionedName(className, NULL, NULL, TRUE);
  
-@@ -1476,14 +1491,14 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
+@@ -1618,14 +1633,14 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
      style = cs->style & ~WS_VISIBLE;
      ex_style = cs->dwExStyle & ~WS_EX_LAYERED;
      if (!(wndPtr = create_window_handle( parent, owner, className, module,
@@ -231,7 +221,7 @@ index 680defc..9840a76 100644
              return 0;
      }
      hwnd = wndPtr->obj.handle;
-@@ -1663,6 +1678,8 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
+@@ -1800,6 +1815,8 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
      /* call the driver */
  
      if (!USER_Driver->pCreateWindow( hwnd )) goto failed;
@@ -240,7 +230,7 @@ index 680defc..9840a76 100644
  
      NotifyWinEvent(EVENT_OBJECT_CREATE, hwnd, OBJID_WINDOW, 0);
  
-@@ -4233,9 +4250,99 @@ BOOL WINAPI SetWindowDisplayAffinity(HWND hwnd, DWORD affinity)
+@@ -4373,11 +4390,101 @@ BOOL WINAPI SetWindowDisplayAffinity(HWND hwnd, DWORD affinity)
  /**********************************************************************
   *              SetWindowCompositionAttribute (USER32.@)
   */
@@ -344,11 +334,13 @@ index 680defc..9840a76 100644
 +    }
 +    return TRUE;
  }
+ 
+ /***********************************************************************
 diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
-index 4434f4b..67f89bb 100644
+index 645f63e3365..b53b9037a41 100644
 --- a/dlls/win32u/driver.c
 +++ b/dlls/win32u/driver.c
-@@ -934,6 +934,12 @@ static void CDECL nulldrv_SetParent( HWND hwnd, HWND parent, HWND old_parent )
+@@ -879,6 +879,12 @@ static void CDECL nulldrv_SetParent( HWND hwnd, HWND parent, HWND old_parent )
  {
  }
  
@@ -361,7 +353,7 @@ index 4434f4b..67f89bb 100644
  static void CDECL nulldrv_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
  {
  }
-@@ -1070,6 +1070,7 @@ void CDECL __wine_set_display_driver( struct user_driver_funcs *driver, UINT ver
+@@ -1098,6 +1104,7 @@ void CDECL __wine_set_display_driver( struct user_driver_funcs *driver, UINT ver
      SET_USER_FUNC(SetFocus);
      SET_USER_FUNC(SetLayeredWindowAttributes);
      SET_USER_FUNC(SetParent);
@@ -369,11 +361,23 @@ index 4434f4b..67f89bb 100644
      SET_USER_FUNC(SetWindowRgn);
      SET_USER_FUNC(SetWindowIcon);
      SET_USER_FUNC(SetWindowStyle);
+diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
+index 17ba60e0307..a525e12a371 100644
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -306,6 +306,7 @@ struct user_driver_funcs
+     void    (CDECL *pSetFocus)(HWND);
+     void    (CDECL *pSetLayeredWindowAttributes)(HWND,COLORREF,BYTE,DWORD);
+     void    (CDECL *pSetParent)(HWND,HWND,HWND);
++    DWORD   (CDECL *pSetWindowCompositionAttribute)(HWND,DWORD,void*);
+     void    (CDECL *pSetWindowRgn)(HWND,HRGN,BOOL);
+     void    (CDECL *pSetWindowIcon)(HWND,UINT,HICON);
+     void    (CDECL *pSetWindowStyle)(HWND,INT,STYLESTRUCT*);
 diff --git a/server/protocol.def b/server/protocol.def
-index 846d2e1..d96d2e7 100644
+index 675b010b925..8f2c5b7477b 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -2226,6 +2226,7 @@ enum message_type
+@@ -2310,6 +2310,7 @@ enum message_type
      client_ptr_t   class_ptr;   /* pointer to class in client address space */
      int            dpi;         /* window DPI if not per-monitor aware */
      int            awareness;   /* window DPI awareness */
@@ -381,7 +385,7 @@ index 846d2e1..d96d2e7 100644
  @END
  
  
-@@ -2251,6 +2252,7 @@ enum message_type
+@@ -2335,6 +2336,7 @@ enum message_type
  @REPLY
      user_handle_t  full_owner;  /* full handle of new owner */
      user_handle_t  prev_owner;  /* full handle of previous owner */
@@ -389,7 +393,7 @@ index 846d2e1..d96d2e7 100644
  @END
  
  
-@@ -2299,6 +2301,17 @@ enum message_type
+@@ -2383,6 +2385,17 @@ enum message_type
  #define SET_WIN_UNICODE   0x40
  
  
@@ -408,7 +412,7 @@ index 846d2e1..d96d2e7 100644
  @REQ(set_parent)
      user_handle_t  handle;      /* handle to the window */
 diff --git a/server/window.c b/server/window.c
-index 3a88b7f..e6fc90c 100644
+index c592f39f4c0..d130c47e0eb 100644
 --- a/server/window.c
 +++ b/server/window.c
 @@ -81,6 +81,7 @@ struct window
@@ -419,7 +423,7 @@ index 3a88b7f..e6fc90c 100644
      unsigned int     color_key;       /* color key for a layered window */
      unsigned int     alpha;           /* alpha value for a layered window */
      unsigned int     layered_flags;   /* flags for a layered window */
-@@ -503,6 +504,7 @@ static struct window *create_window( struct window *parent, struct window *owner
+@@ -535,6 +536,7 @@ static struct window *create_window( struct window *parent, struct window *owner
      win->is_unicode     = 1;
      win->is_linked      = 0;
      win->is_layered     = 0;
@@ -427,7 +431,7 @@ index 3a88b7f..e6fc90c 100644
      win->dpi_awareness  = DPI_AWARENESS_PER_MONITOR_AWARE;
      win->dpi            = 0;
      win->user_data      = 0;
-@@ -784,6 +786,7 @@ static int get_window_children_from_point( struct window *parent, int x, int y,
+@@ -819,6 +821,7 @@ static int get_window_children_from_point( struct window *parent, int x, int y,
      {
          int x_child = x, y_child = y;
  
@@ -435,7 +439,7 @@ index 3a88b7f..e6fc90c 100644
          if (!is_point_in_window( ptr, &x_child, &y_child, parent->dpi )) continue;  /* skip it */
  
          /* if point is in client area, and window is not minimized or disabled, check children */
-@@ -856,6 +859,21 @@ static int all_windows_from_point( struct window *top, int x, int y, unsigned in
+@@ -891,6 +894,21 @@ static int all_windows_from_point( struct window *top, int x, int y, unsigned in
      return 1;
  }
  
@@ -457,7 +461,7 @@ index 3a88b7f..e6fc90c 100644
  
  /* return the thread owning a window */
  struct thread *get_window_thread( user_handle_t handle )
-@@ -1965,14 +1983,16 @@ DECL_HANDLER(create_window)
+@@ -2011,14 +2029,16 @@ DECL_HANDLER(create_window)
      }
      win->style = req->style;
      win->ex_style = req->ex_style;
@@ -481,7 +485,7 @@ index 3a88b7f..e6fc90c 100644
  }
  
  
-@@ -2072,8 +2092,9 @@ DECL_HANDLER(set_window_owner)
+@@ -2118,8 +2138,9 @@ DECL_HANDLER(set_window_owner)
          }
      }
  
@@ -493,7 +497,7 @@ index 3a88b7f..e6fc90c 100644
  }
  
  
-@@ -2151,6 +2172,47 @@ DECL_HANDLER(set_window_info)
+@@ -2197,6 +2218,47 @@ DECL_HANDLER(set_window_info)
  }
  
  
@@ -543,5 +547,5 @@ index 3a88b7f..e6fc90c 100644
  {
 
 -- 
-2.21.0
+2.35.1
 

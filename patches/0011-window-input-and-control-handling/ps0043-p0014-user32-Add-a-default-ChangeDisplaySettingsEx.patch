@@ -11,10 +11,10 @@ Subject: [PATCH 14/14] user32: Add a default ChangeDisplaySettingsEx driver
  3 files changed, 71 insertions(+), 6 deletions(-)
 
 diff --git a/dlls/user32/sysparams.c b/dlls/user32/sysparams.c
-index 6a50619b509..094a88ab2cb 100644
+index da35532cc07..681e5fd7de6 100644
 --- a/dlls/user32/sysparams.c
 +++ b/dlls/user32/sysparams.c
-@@ -3015,8 +3015,21 @@ LONG WINAPI ChangeDisplaySettingsExW( LPCWSTR devname, LPDEVMODEW devmode, HWND
+@@ -590,8 +590,21 @@ LONG WINAPI ChangeDisplaySettingsExW( LPCWSTR devname, LPDEVMODEW devmode, HWND
                                        DWORD flags, LPVOID lparam )
  {
      UNICODE_STRING str;
@@ -38,10 +38,10 @@ index 6a50619b509..094a88ab2cb 100644
  
  
 diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
-index 96a4a749375..23d6d2ff2e6 100644
+index 8e0b57f8a49..b6be00abf1d 100644
 --- a/dlls/win32u/driver.c
 +++ b/dlls/win32u/driver.c
-@@ -801,7 +801,7 @@ static void CDECL nulldrv_UpdateClipboard(void)
+@@ -763,7 +763,7 @@ static void CDECL nulldrv_UpdateClipboard(void)
  static LONG CDECL nulldrv_ChangeDisplaySettingsEx( LPCWSTR name, LPDEVMODEW mode, HWND hwnd,
                                                     DWORD flags, LPVOID lparam )
  {
@@ -51,12 +51,12 @@ index 96a4a749375..23d6d2ff2e6 100644
  
  static INT CDECL nulldrv_EnumDisplaySettingsEx( LPCWSTR name, DWORD num, LPDEVMODEW mode, DWORD flags )
 diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
-index 0cbb9746c11..0eaf1e7543b 100644
+index ad98bbdabb6..abb52376b52 100644
 --- a/dlls/win32u/sysparams.c
 +++ b/dlls/win32u/sysparams.c
-@@ -327,6 +327,23 @@ static struct monitor virtual_monitor =
-     .dev.state_flags = DISPLAY_DEVICE_ACTIVE | DISPLAY_DEVICE_ATTACHED,
- };
+@@ -451,6 +451,23 @@ static RECT work_area;
+ static HDC display_dc;
+ static pthread_mutex_t display_dc_lock = PTHREAD_MUTEX_INITIALIZER;
  
 +static const DEVMODEW default_display_modes[] =
 +{
@@ -78,7 +78,7 @@ index 0cbb9746c11..0eaf1e7543b 100644
  static HANDLE get_display_device_init_mutex( void )
  {
      static const WCHAR display_device_initW[] =
-@@ -1725,6 +1742,7 @@ LONG WINAPI NtUserChangeDisplaySettings( UNICODE_STRING *devname, DEVMODEW *devm
+@@ -1976,6 +1993,7 @@ LONG WINAPI NtUserChangeDisplaySettings( UNICODE_STRING *devname, DEVMODEW *devm
  {
      WCHAR device_name[CCHDEVICENAME];
      WCHAR registry_path[MAX_PATH];
@@ -86,7 +86,7 @@ index 0cbb9746c11..0eaf1e7543b 100644
      struct adapter *adapter;
      BOOL def_mode = TRUE;
      DEVMODEW dm;
-@@ -1736,12 +1754,12 @@ LONG WINAPI NtUserChangeDisplaySettings( UNICODE_STRING *devname, DEVMODEW *devm
+@@ -1987,12 +2005,12 @@ LONG WINAPI NtUserChangeDisplaySettings( UNICODE_STRING *devname, DEVMODEW *devm
      if ((!devname || !devname->Length) && !devmode)
      {
          ret = user_driver->pChangeDisplaySettingsEx( NULL, NULL, hwnd, flags, lparam );
@@ -100,8 +100,8 @@ index 0cbb9746c11..0eaf1e7543b 100644
 +        if (ret != E_NOTIMPL) goto done;
      }
  
-     if (!lock_display_devices()) return FALSE;
-@@ -1815,16 +1833,40 @@ LONG WINAPI NtUserChangeDisplaySettings( UNICODE_STRING *devname, DEVMODEW *devm
+     if (!lock_display_devices()) return DISP_CHANGE_FAILED;
+@@ -2066,16 +2084,40 @@ LONG WINAPI NtUserChangeDisplaySettings( UNICODE_STRING *devname, DEVMODEW *devm
      }
  
      ret = user_driver->pChangeDisplaySettingsEx( device_name, devmode, hwnd, flags, lparam );
@@ -143,7 +143,7 @@ index 0cbb9746c11..0eaf1e7543b 100644
      return DISP_CHANGE_SUCCESSFUL;
  }
  
-@@ -1868,7 +1910,17 @@ BOOL WINAPI NtUserEnumDisplaySettings( UNICODE_STRING *device, DWORD mode,
+@@ -2119,7 +2161,17 @@ BOOL WINAPI NtUserEnumDisplaySettings( UNICODE_STRING *device, DWORD mode,
      {
          if (mode == ENUM_REGISTRY_SETTINGS) ret = read_registry_settings( registry_path, FALSE, dev_mode );
          else if (mode == ENUM_CURRENT_SETTINGS) ret = read_registry_settings( registry_path, TRUE, dev_mode );
@@ -163,5 +163,5 @@ index 0cbb9746c11..0eaf1e7543b 100644
  
      if (ret)
 -- 
-2.34.1
+2.35.1
 

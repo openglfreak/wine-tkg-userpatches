@@ -26,10 +26,10 @@ Signed-off-by: Erich E. Hoover <erich.e.hoover@gmail.com>
  4 files changed, 83 insertions(+), 28 deletions(-)
 
 diff --git a/dlls/mountmgr.sys/device.c b/dlls/mountmgr.sys/device.c
-index 04e8fe3c0f5..7d6487ccc6a 100644
+index 1e50767bafc..74d766c8886 100644
 --- a/dlls/mountmgr.sys/device.c
 +++ b/dlls/mountmgr.sys/device.c
-@@ -1902,32 +1902,18 @@ static NTSTATUS query_property( struct disk_device *device, IRP *irp )
+@@ -1642,32 +1642,18 @@ static NTSTATUS query_property( struct disk_device *device, IRP *irp )
      return status;
  }
  
@@ -66,7 +66,7 @@ index 04e8fe3c0f5..7d6487ccc6a 100644
  
          if (length < sizeof(FILE_FS_VOLUME_INFORMATION))
          {
-@@ -1936,13 +1922,13 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
+@@ -1676,20 +1662,20 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
          }
  
          info->VolumeCreationTime.QuadPart = 0; /* FIXME */
@@ -85,8 +85,6 @@ index 04e8fe3c0f5..7d6487ccc6a 100644
          status = STATUS_SUCCESS;
          break;
      }
-@@ -1954,8 +1940,8 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
-     }
      case FileFsAttributeInformation:
      {
 -        FILE_FS_ATTRIBUTE_INFORMATION *info = irp->AssociatedIrp.SystemBuffer;
@@ -96,7 +94,7 @@ index 04e8fe3c0f5..7d6487ccc6a 100644
          const WCHAR *fsname;
  
          if (length < sizeof(FILE_FS_ATTRIBUTE_INFORMATION))
-@@ -1997,17 +1983,64 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
+@@ -1729,17 +1715,64 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
          }
          info->FileSystemNameLength = min( wcslen(fsname) * sizeof(WCHAR), length - offsetof( FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName ) );
          memcpy(info->FileSystemName, fsname, info->FileSystemNameLength);
@@ -165,12 +163,12 @@ index 04e8fe3c0f5..7d6487ccc6a 100644
      LeaveCriticalSection( &device_section );
      IoCompleteRequest( irp, IO_NO_INCREMENT );
 diff --git a/dlls/mountmgr.sys/mountmgr.c b/dlls/mountmgr.sys/mountmgr.c
-index 61d51d8e61d..6ad29562d59 100644
+index 1b79890240a..ce670a41dfc 100644
 --- a/dlls/mountmgr.sys/mountmgr.c
 +++ b/dlls/mountmgr.sys/mountmgr.c
-@@ -923,6 +923,17 @@ static NTSTATUS WINAPI mountmgr_ioctl( DEVICE_OBJECT *device, IRP *irp )
-                                    irpsp->Parameters.DeviceIoControl.OutputBufferLength,
-                                    &irp->IoStatus );
+@@ -529,6 +529,17 @@ static NTSTATUS WINAPI mountmgr_ioctl( DEVICE_OBJECT *device, IRP *irp )
+                                      irpsp->Parameters.DeviceIoControl.OutputBufferLength,
+                                      &irp->IoStatus );
          break;
 +    case IOCTL_MOUNTMGR_QUERY_VOLUME:
 +        if (irpsp->Parameters.DeviceIoControl.InputBufferLength < sizeof(struct mountmgr_volume))
@@ -187,10 +185,10 @@ index 61d51d8e61d..6ad29562d59 100644
          if (irpsp->Parameters.DeviceIoControl.InputBufferLength < sizeof(struct mountmgr_dhcp_request_params))
          {
 diff --git a/dlls/mountmgr.sys/mountmgr.h b/dlls/mountmgr.sys/mountmgr.h
-index 13be732e337..df2c8d4e048 100644
+index bad875dd9bc..52fcb9358e4 100644
 --- a/dlls/mountmgr.sys/mountmgr.h
 +++ b/dlls/mountmgr.sys/mountmgr.h
-@@ -61,6 +61,7 @@ extern NTSTATUS add_dos_device( int letter, const char *udi, const char *device,
+@@ -50,6 +50,7 @@ enum device_type
      DEVICE_RAMDISK
  };
  
@@ -199,19 +197,19 @@ index 13be732e337..df2c8d4e048 100644
  extern NTSTATUS WINAPI serial_driver_entry( DRIVER_OBJECT *driver, UNICODE_STRING *path ) DECLSPEC_HIDDEN;
  extern NTSTATUS WINAPI parallel_driver_entry( DRIVER_OBJECT *driver, UNICODE_STRING *path ) DECLSPEC_HIDDEN;
 diff --git a/include/ddk/mountmgr.h b/include/ddk/mountmgr.h
-index 3e4bacbb827..7310adb3fdc 100644
+index 4eda8565eaf..714917ad936 100644
 --- a/include/ddk/mountmgr.h
 +++ b/include/ddk/mountmgr.h
-@@ -21,6 +21,8 @@
- #ifndef _MOUNTMGR_
- #define _MOUNTMGR_
+@@ -23,6 +23,8 @@
+ 
+ #include "ifdef.h"
  
 +#include "winternl.h"
 +
  #define MOUNTMGRCONTROLTYPE  ((ULONG)'m')
  #define MOUNTDEVCONTROLTYPE  ((ULONG)'M')
  
-@@ -51,6 +53,7 @@ static const WCHAR MOUNTMGR_DOS_DEVICE_NAME[] = {'\\','\\','.','\\','M','o','u',
+@@ -55,6 +57,7 @@ static const WCHAR MOUNTMGR_DOS_DEVICE_NAME[] = {'\\','\\','.','\\','M','o','u',
  #define IOCTL_MOUNTMGR_QUERY_UNIX_DRIVE    CTL_CODE(MOUNTMGRCONTROLTYPE, 33, METHOD_BUFFERED, FILE_READ_ACCESS)
  #define IOCTL_MOUNTMGR_DEFINE_SHELL_FOLDER CTL_CODE(MOUNTMGRCONTROLTYPE, 34, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
  #define IOCTL_MOUNTMGR_QUERY_SHELL_FOLDER  CTL_CODE(MOUNTMGRCONTROLTYPE, 35, METHOD_BUFFERED, FILE_READ_ACCESS)
@@ -219,8 +217,8 @@ index 3e4bacbb827..7310adb3fdc 100644
  
  enum mountmgr_fs_type
  {
-@@ -74,6 +77,13 @@ struct mountmgr_unix_drive
-     USHORT    label_offset;
+@@ -86,6 +89,13 @@ struct mountmgr_shell_folder
+     ULONG    symlink_offset;
  };
  
 +struct mountmgr_volume
@@ -235,5 +233,5 @@ index 3e4bacbb827..7310adb3fdc 100644
  #define IOCTL_MOUNTMGR_DELETE_CREDENTIAL     CTL_CODE(MOUNTMGRCONTROLTYPE, 50, METHOD_BUFFERED, FILE_WRITE_ACCESS)
 
 -- 
-2.17.1
+2.35.1
 

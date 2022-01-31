@@ -9,10 +9,10 @@ Subject: [PATCH 27/44] server: Move focus window to input shared memory.
  2 files changed, 20 insertions(+), 14 deletions(-)
 
 diff --git a/server/protocol.def b/server/protocol.def
-index a2fdc3ad3ce..b5cdf221141 100644
+index e2d1e3a12ef..49db17cbe5d 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -862,6 +862,7 @@ struct input_shared_memory
+@@ -884,6 +884,7 @@ struct input_shared_memory
      unsigned int         seq;              /* sequence number - server updating if (seq_no & SEQUENCE_MASK) != 0 */
      int                  created;
      thread_id_t          tid;
@@ -21,10 +21,10 @@ index a2fdc3ad3ce..b5cdf221141 100644
  };
  
 diff --git a/server/queue.c b/server/queue.c
-index e45210104bc..75cd4a330d7 100644
+index 9025d4cd9e7..be2b8cca61d 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -100,7 +100,6 @@ struct thread_input
+@@ -101,7 +101,6 @@ struct thread_input
  {
      struct object          obj;           /* object header */
      struct desktop        *desktop;       /* desktop that this thread input belongs to */
@@ -32,7 +32,7 @@ index e45210104bc..75cd4a330d7 100644
      user_handle_t          capture;       /* capture window */
      user_handle_t          menu_owner;    /* current menu owner window */
      user_handle_t          move_size;     /* current moving/resizing window */
-@@ -308,7 +307,7 @@ static struct thread_input *create_thread_input( struct thread *thread )
+@@ -319,7 +318,7 @@ static struct thread_input *create_thread_input( struct thread *thread )
          input->shared_mapping = grab_object( thread->input_shared_mapping );
          input->shared = thread->input_shared;
          SHARED_WRITE_BEGIN( &input->shared->seq );
@@ -41,7 +41,7 @@ index e45210104bc..75cd4a330d7 100644
          input->capture      = 0;
          input->shared->active       = 0;
          input->menu_owner   = 0;
-@@ -1217,7 +1216,7 @@ static void thread_input_dump( struct object *obj, int verbose )
+@@ -1270,7 +1269,7 @@ static void thread_input_dump( struct object *obj, int verbose )
  {
      struct thread_input *input = (struct thread_input *)obj;
      fprintf( stderr, "Thread input focus=%08x capture=%08x active=%08x\n",
@@ -50,7 +50,7 @@ index e45210104bc..75cd4a330d7 100644
  }
  
  static void thread_input_destroy( struct object *obj )
-@@ -1239,7 +1238,7 @@ static inline void thread_input_cleanup_window( struct msg_queue *queue, user_ha
+@@ -1292,7 +1291,7 @@ static inline void thread_input_cleanup_window( struct msg_queue *queue, user_ha
      struct thread_input *input = queue->input;
  
      SHARED_WRITE_BEGIN( &input->shared->seq );
@@ -59,7 +59,7 @@ index e45210104bc..75cd4a330d7 100644
      if (window == input->capture) input->capture = 0;
      if (window == input->shared->active) input->shared->active = 0;
      if (window == input->menu_owner) input->menu_owner = 0;
-@@ -1297,7 +1296,7 @@ int attach_thread_input( struct thread *thread_from, struct thread *thread_to )
+@@ -1350,7 +1349,7 @@ int attach_thread_input( struct thread *thread_from, struct thread *thread_to )
      {
          SHARED_WRITE_BEGIN( &input->shared->seq );
          old_input = thread_from->queue->input;
@@ -68,7 +68,7 @@ index e45210104bc..75cd4a330d7 100644
          if (!input->shared->active) input->shared->active = old_input->shared->active;
          SHARED_WRITE_END( &input->shared->seq );
      }
-@@ -1316,12 +1315,16 @@ void detach_thread_input( struct thread *thread_from )
+@@ -1369,12 +1368,16 @@ void detach_thread_input( struct thread *thread_from )
  
      if ((input = create_thread_input( thread_from )))
      {
@@ -88,7 +88,7 @@ index e45210104bc..75cd4a330d7 100644
              }
              release_object( thread );
          }
-@@ -1655,11 +1658,11 @@ static user_handle_t find_hardware_message_window( struct desktop *desktop, stru
+@@ -1708,11 +1711,11 @@ static user_handle_t find_hardware_message_window( struct desktop *desktop, stru
      *msg_code = msg->msg;
      if (msg->msg == WM_INPUT || msg->msg == WM_INPUT_DEVICE_CHANGE)
      {
@@ -102,7 +102,7 @@ index e45210104bc..75cd4a330d7 100644
          {
              win = input->shared->active;
              if (*msg_code < WM_SYSKEYDOWN) *msg_code += WM_SYSKEYDOWN - WM_KEYDOWN;
-@@ -1840,7 +1843,7 @@ static int send_hook_ll_message( struct desktop *desktop, struct message *hardwa
+@@ -1892,7 +1895,7 @@ static int send_hook_ll_message( struct desktop *desktop, struct message *hardwa
  static struct thread *get_foreground_thread( struct desktop *desktop, user_handle_t window )
  {
      /* if desktop has no foreground process, assume the receiving window is */
@@ -111,7 +111,7 @@ index e45210104bc..75cd4a330d7 100644
      if (window) return get_window_thread( window );
      return NULL;
  }
-@@ -3251,7 +3254,7 @@ DECL_HANDLER(get_thread_input)
+@@ -3329,7 +3332,7 @@ DECL_HANDLER(get_thread_input)
  
      if (input)
      {
@@ -120,7 +120,7 @@ index e45210104bc..75cd4a330d7 100644
          reply->capture    = input->capture;
          reply->active     = input->shared->active;
          reply->menu_owner = input->menu_owner;
-@@ -3356,8 +3359,10 @@ DECL_HANDLER(set_focus_window)
+@@ -3434,8 +3437,10 @@ DECL_HANDLER(set_focus_window)
      reply->previous = 0;
      if (queue && check_queue_input_window( queue, req->handle ))
      {
@@ -134,5 +134,5 @@ index e45210104bc..75cd4a330d7 100644
  }
  
 -- 
-2.34.1
+2.35.1
 

@@ -16,10 +16,10 @@ CW-Bug-Id: 18957
  7 files changed, 57 insertions(+), 4 deletions(-)
 
 diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
-index 385bb930459..3cac3123481 100644
+index 5270e915c75..edfe540abe7 100644
 --- a/dlls/ntdll/unix/server.c
 +++ b/dlls/ntdll/unix/server.c
-@@ -1540,7 +1540,7 @@ size_t server_init_process(void)
+@@ -1544,7 +1544,7 @@ size_t server_init_process(void)
                                 (version > SERVER_PROTOCOL_VERSION) ? "wine" : "wineserver" );
  #if defined(__linux__) && defined(HAVE_PRCTL)
      /* work around Ubuntu's ptrace breakage */
@@ -29,10 +29,10 @@ index 385bb930459..3cac3123481 100644
  
      /* ignore SIGPIPE so that we get an EPIPE error instead  */
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
-index c13625a7564..caa51017b6e 100644
+index 36b0d9eefeb..7d02398e7b0 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -54,6 +54,8 @@
+@@ -64,6 +64,8 @@
  # include <mach/mach_vm.h>
  #endif
  
@@ -41,7 +41,7 @@ index c13625a7564..caa51017b6e 100644
  #include "ntstatus.h"
  #define WIN32_NO_STATUS
  #include "windef.h"
-@@ -4529,7 +4531,50 @@ NTSTATUS WINAPI NtReadVirtualMemory( HANDLE process, const void *addr, void *buf
+@@ -5137,7 +5139,50 @@ NTSTATUS WINAPI NtReadVirtualMemory( HANDLE process, const void *addr, void *buf
                                       SIZE_T size, SIZE_T *bytes_read )
  {
      NTSTATUS status;
@@ -91,8 +91,8 @@ index c13625a7564..caa51017b6e 100644
 +#else
      if (virtual_check_buffer_for_write( buffer, size ))
      {
-         SERVER_START_REQ( read_process_memory )
-@@ -4546,6 +4591,7 @@ NTSTATUS WINAPI NtReadVirtualMemory( HANDLE process, const void *addr, void *buf
+         if (process == GetCurrentProcess())
+@@ -5174,6 +5219,7 @@ NTSTATUS WINAPI NtReadVirtualMemory( HANDLE process, const void *addr, void *buf
          status = STATUS_ACCESS_VIOLATION;
          size = 0;
      }
@@ -101,10 +101,10 @@ index c13625a7564..caa51017b6e 100644
      return status;
  }
 diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
-index 0d418f0b085..7d70b713a0b 100644
+index 4a95bb1fea1..ef0a59a25f3 100644
 --- a/include/wine/server_protocol.h
 +++ b/include/wine/server_protocol.h
-@@ -2202,7 +2202,9 @@ struct read_process_memory_request
+@@ -2180,7 +2180,9 @@ struct read_process_memory_request
  struct read_process_memory_reply
  {
      struct reply_header __header;
@@ -114,7 +114,7 @@ index 0d418f0b085..7d70b713a0b 100644
  };
  
  
-@@ -6472,7 +6474,7 @@ union generic_reply
+@@ -6407,7 +6409,7 @@ union generic_reply
  
  /* ### protocol_version begin ### */
  
@@ -124,10 +124,10 @@ index 0d418f0b085..7d70b713a0b 100644
  /* ### protocol_version end ### */
  
 diff --git a/server/process.c b/server/process.c
-index 92e85b4800e..be5f2c42aea 100644
+index 1a153533af2..63a43dcc245 100644
 --- a/server/process.c
 +++ b/server/process.c
-@@ -1547,6 +1547,8 @@ DECL_HANDLER(read_process_memory)
+@@ -1742,6 +1742,8 @@ DECL_HANDLER(read_process_memory)
  
      if (!(process = get_process_from_handle( req->handle, PROCESS_VM_READ ))) return;
  
@@ -137,10 +137,10 @@ index 92e85b4800e..be5f2c42aea 100644
      {
          char *buffer = mem_alloc( len );
 diff --git a/server/protocol.def b/server/protocol.def
-index 99ae2c26101..812f050d796 100644
+index 9bb555ee98e..c9e386035a0 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -1724,6 +1724,7 @@ struct process_info
+@@ -1766,6 +1766,7 @@ struct process_info
      obj_handle_t handle;       /* process handle */
      client_ptr_t addr;         /* addr to read from */
  @REPLY
@@ -149,10 +149,10 @@ index 99ae2c26101..812f050d796 100644
  @END
  
 diff --git a/server/request.h b/server/request.h
-index 403f2f3f8b2..ecdabea2125 100644
+index 5aaff3fc2a1..6734370cb01 100644
 --- a/server/request.h
 +++ b/server/request.h
-@@ -1199,7 +1199,8 @@ C_ASSERT( sizeof(struct set_debug_obj_info_request) == 24 );
+@@ -1181,7 +1181,8 @@ C_ASSERT( sizeof(struct set_debug_obj_info_request) == 24 );
  C_ASSERT( FIELD_OFFSET(struct read_process_memory_request, handle) == 12 );
  C_ASSERT( FIELD_OFFSET(struct read_process_memory_request, addr) == 16 );
  C_ASSERT( sizeof(struct read_process_memory_request) == 24 );
@@ -163,10 +163,10 @@ index 403f2f3f8b2..ecdabea2125 100644
  C_ASSERT( FIELD_OFFSET(struct write_process_memory_request, addr) == 16 );
  C_ASSERT( sizeof(struct write_process_memory_request) == 24 );
 diff --git a/server/trace.c b/server/trace.c
-index e4fa995a65d..b4f1ba4badc 100644
+index 9969a537349..68bd75a6bcb 100644
 --- a/server/trace.c
 +++ b/server/trace.c
-@@ -2320,7 +2320,8 @@ static void dump_read_process_memory_request( const struct read_process_memory_r
+@@ -2305,7 +2305,8 @@ static void dump_read_process_memory_request( const struct read_process_memory_r
  
  static void dump_read_process_memory_reply( const struct read_process_memory_reply *req )
  {

@@ -9,10 +9,10 @@ Subject: [PATCH 08/31] server: Create fast synchronization objects for console
  1 file changed, 23 insertions(+), 1 deletion(-)
 
 diff --git a/server/console.c b/server/console.c
-index 536f4c5a01a..3660c28d455 100644
+index 0d5f0cc6d48..92c1aaf294e 100644
 --- a/server/console.c
 +++ b/server/console.c
-@@ -140,6 +140,7 @@ struct console_server
+@@ -146,6 +146,7 @@ struct console_server
      unsigned int          once_input : 1; /* flag if input thread has already been requested */
      int                   term_fd;     /* UNIX terminal fd */
      struct termios        termios;     /* original termios */
@@ -20,7 +20,7 @@ index 536f4c5a01a..3660c28d455 100644
      int                   esync_fd;
      unsigned int          fsync_idx;
  };
-@@ -150,6 +151,7 @@ static struct object *console_server_lookup_name( struct object *obj, struct uni
+@@ -160,6 +161,7 @@ static struct object *console_server_lookup_name( struct object *obj, struct uni
                                                  unsigned int attr, struct object *root );
  static struct object *console_server_open_file( struct object *obj, unsigned int access,
                                                  unsigned int sharing, unsigned int options );
@@ -28,7 +28,7 @@ index 536f4c5a01a..3660c28d455 100644
  
  static const struct object_ops console_server_ops =
  {
-@@ -171,7 +173,7 @@ static const struct object_ops console_server_ops =
+@@ -183,7 +185,7 @@ static const struct object_ops console_server_ops =
      NULL,                             /* unlink_name */
      console_server_open_file,         /* open_file */
      no_kernel_obj_list,               /* get_kernel_obj_list */
@@ -37,7 +37,7 @@ index 536f4c5a01a..3660c28d455 100644
      no_close_handle,                  /* close_handle */
      console_server_destroy            /* destroy */
  };
-@@ -572,6 +574,7 @@ static int queue_host_ioctl( struct console_server *server, unsigned int code, u
+@@ -611,6 +613,7 @@ static int queue_host_ioctl( struct console_server *server, unsigned int code, u
      }
      list_add_tail( &server->queue, &ioctl->entry );
      wake_up( &server->obj, 0 );
@@ -45,7 +45,7 @@ index 536f4c5a01a..3660c28d455 100644
      if (async) set_error( STATUS_PENDING );
      return 1;
  }
-@@ -604,6 +607,7 @@ static void disconnect_console_server( struct console_server *server )
+@@ -650,6 +653,7 @@ static void disconnect_console_server( struct console_server *server )
          server->console->server = NULL;
          server->console = NULL;
          wake_up( &server->obj, 0 );
@@ -53,7 +53,7 @@ index 536f4c5a01a..3660c28d455 100644
      }
  }
  
-@@ -866,6 +870,7 @@ static void console_server_destroy( struct object *obj )
+@@ -912,6 +916,7 @@ static void console_server_destroy( struct object *obj )
      assert( obj->ops == &console_server_ops );
      disconnect_console_server( server );
      if (server->fd) release_object( server->fd );
@@ -61,7 +61,7 @@ index 536f4c5a01a..3660c28d455 100644
  }
  
  static struct object *console_server_lookup_name( struct object *obj, struct unicode_str *name,
-@@ -920,6 +925,17 @@ static struct object *console_server_open_file( struct object *obj, unsigned int
+@@ -980,6 +985,17 @@ static struct object *console_server_open_file( struct object *obj, unsigned int
      return grab_object( obj );
  }
  
@@ -79,15 +79,15 @@ index 536f4c5a01a..3660c28d455 100644
  static struct object *create_console_server( void )
  {
      struct console_server *server;
-@@ -930,6 +946,7 @@ static struct object *create_console_server( void )
-     server->term_fd = -1;
+@@ -991,6 +1007,7 @@ static struct object *create_console_server( void )
+     server->term_fd    = -1;
      list_init( &server->queue );
      list_init( &server->read_queue );
 +    server->fast_sync = NULL;
      server->fd = alloc_pseudo_fd( &console_server_fd_ops, &server->obj, FILE_SYNCHRONOUS_IO_NONALERT );
      if (!server->fd)
      {
-@@ -1547,6 +1564,8 @@ DECL_HANDLER(get_next_console_request)
+@@ -1615,6 +1632,8 @@ DECL_HANDLER(get_next_console_request)
          /* set result of previous ioctl */
          ioctl = LIST_ENTRY( list_head( &server->queue ), struct console_host_ioctl, entry );
          list_remove( &ioctl->entry );
@@ -96,9 +96,9 @@ index 536f4c5a01a..3660c28d455 100644
  
          if (do_fsync() && list_empty( &server->queue ))
              fsync_clear_futex( server->fsync_idx );
-@@ -1633,5 +1652,8 @@ DECL_HANDLER(get_next_console_request)
-         set_error( STATUS_PENDING );
-     }
+@@ -1713,5 +1732,8 @@ DECL_HANDLER(get_next_console_request)
+     if (do_esync() && list_empty( &server->queue ))
+         esync_clear( server->esync_fd );
  
 +    if (list_empty( &server->queue ))
 +        fast_reset_event( server->fast_sync );
@@ -106,5 +106,5 @@ index 536f4c5a01a..3660c28d455 100644
      release_object( server );
  }
 -- 
-2.34.1
+2.35.1
 

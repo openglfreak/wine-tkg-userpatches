@@ -4,16 +4,16 @@ Date: Sat, 7 Nov 2020 03:48:02 +0100
 Subject: [PATCH 08/11] win32u: Lazily initialize the font list.
 
 ---
- dlls/win32u/font.c | 40 +++++++++++++++++++++++++++++++++++-----
- 1 file changed, 35 insertions(+), 5 deletions(-)
+ dlls/win32u/font.c | 58 +++++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 52 insertions(+), 6 deletions(-)
 
 diff --git a/dlls/win32u/font.c b/dlls/win32u/font.c
-index 9fa0f45ec4b..d74bf83fe44 100644
+index e7d2c3a13e3..e0bf2506a17 100644
 --- a/dlls/win32u/font.c
 +++ b/dlls/win32u/font.c
-@@ -416,6 +416,10 @@ static CRITICAL_SECTION_DEBUG critsect_debug =
- };
- static CRITICAL_SECTION font_cs = { &critsect_debug, -1, 0, 0, 0, 0 };
+@@ -499,6 +499,10 @@ static inline BOOL is_dbcs_ansi_cp(UINT ansi_cp)
+ 
+ static pthread_mutex_t font_lock = PTHREAD_MUTEX_INITIALIZER;
  
 +pthread_once_t font_list_init_once = PTHREAD_ONCE_INIT;
 +DWORD font_list_init_disposition;
@@ -22,15 +22,15 @@ index 9fa0f45ec4b..d74bf83fe44 100644
  #ifndef WINE_FONT_DIR
  #define WINE_FONT_DIR "fonts"
  #endif
-@@ -2547,6 +2550,7 @@ static BOOL CDECL font_CreateDC( PHYSDEV *dev, LPCWSTR driver, LPCWSTR device,
+@@ -2866,6 +2870,7 @@ static BOOL CDECL font_CreateDC( PHYSDEV *dev, LPCWSTR device, LPCWSTR output,
  {
      struct font_physdev *physdev;
  
 +    pthread_once( &font_list_init_once, font_list_init );
      if (!font_funcs) return TRUE;
-     if (!(physdev = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*physdev) ))) return FALSE;
+     if (!(physdev = calloc( 1, sizeof(*physdev) ))) return FALSE;
      push_dc_driver( dev, &physdev->dev, &font_driver );
-@@ -2825,6 +2829,8 @@ static BOOL CDECL font_EnumFonts( PHYSDEV dev, LOGFONTW *lf, FONTENUMPROCW proc,
+@@ -3155,6 +3160,8 @@ static BOOL CDECL font_EnumFonts( PHYSDEV dev, LOGFONTW *lf, FONTENUMPROCW proc,
      struct enum_charset enum_charsets[32];
      DWORD count, charset;
  
@@ -39,7 +39,7 @@ index 9fa0f45ec4b..d74bf83fe44 100644
      charset = lf ? lf->lfCharSet : DEFAULT_CHARSET;
  
      count = create_enum_charset_list( charset, enum_charsets );
-@@ -3706,6 +3712,7 @@ static HFONT CDECL font_SelectFont( PHYSDEV dev, HFONT hfont, UINT *aa_flags )
+@@ -4182,6 +4189,7 @@ static HFONT CDECL font_SelectFont( PHYSDEV dev, HFONT hfont, UINT *aa_flags )
      struct gdi_font *font = NULL, *prev = physdev->font;
      DC *dc = get_physdev_dc( dev );
  
@@ -47,7 +47,7 @@ index 9fa0f45ec4b..d74bf83fe44 100644
      if (hfont)
      {
          LOGFONTW lf;
-@@ -5815,6 +5815,7 @@ BOOL CDECL get_file_outline_text_metric( const WCHAR *path, OUTLINETEXTMETRICW *
+@@ -5907,6 +5915,7 @@ BOOL CDECL __wine_get_file_outline_text_metric( const WCHAR *path, OUTLINETEXTME
  {
      struct gdi_font *font = NULL;
  
@@ -55,23 +55,22 @@ index 9fa0f45ec4b..d74bf83fe44 100644
      if (!path || !font_funcs) return FALSE;
  
      if (!(font = alloc_gdi_font( path, NULL, 0 ))) goto done;
-@@ -7952,12 +7960,6 @@ void font_init(void)
+@@ -6368,8 +6377,41 @@ UINT font_init(void)
      if (!dpi) return 96;
      update_codepage( dpi );
  
--    if (!(font_funcs = init_freetype_lib()))
--        return dpi;
--
--    load_system_bitmap_fonts();
--    load_file_system_fonts();
--    font_funcs->load_fonts();
- 
-     attr.Attributes = OBJ_OPENIF;
-     attr.ObjectName = &name;
-@@ -7964,6 +7967,42 @@ void font_init(void)
-     wine_fonts_cache_key = reg_create_key( wine_fonts_key, cacheW, sizeof(cacheW),
-                                            REG_OPTION_VOLATILE, &disposition );
- 
++
++    attr.Attributes = OBJ_OPENIF;
++    attr.ObjectName = &name;
++    name.Buffer = wine_font_mutexW;
++    name.Length = name.MaximumLength = sizeof(wine_font_mutexW);
++
++    if (NtCreateMutant( &mutex, MUTEX_ALL_ACCESS, &attr, FALSE ) < 0) return dpi;
++    NtWaitForSingleObject( mutex, FALSE, NULL );
++
++    wine_fonts_cache_key = reg_create_key( wine_fonts_key, cacheW, sizeof(cacheW),
++                                           REG_OPTION_VOLATILE, &disposition );
++
 +    if (disposition == REG_CREATED_NEW_KEY)
 +    {
 +        font_list_init_disposition = disposition;
@@ -93,25 +92,27 @@ index 9fa0f45ec4b..d74bf83fe44 100644
 +        {'\\','B','a','s','e','N','a','m','e','d','O','b','j','e','c','t','s',
 +         '\\','_','_','W','I','N','E','_','F','O','N','T','_','M','U','T','E','X','_','_'};
 +
-+    if (!(font_funcs = init_freetype_lib()))
+     if (!(font_funcs = init_freetype_lib()))
+-        return dpi;
 +        return TRUE;
-+
-+    load_system_bitmap_fonts();
-+    load_file_system_fonts();
-+    font_funcs->load_fonts();
-+
-+    attr.Attributes = OBJ_OPENIF;
-+    attr.ObjectName = &name;
-+    name.Buffer = wine_font_mutexW;
-+    name.Length = name.MaximumLength = sizeof(wine_font_mutexW);
-+
+ 
+     load_system_bitmap_fonts();
+     load_file_system_fonts();
+@@ -6380,12 +6422,9 @@ UINT font_init(void)
+     name.Buffer = wine_font_mutexW;
+     name.Length = name.MaximumLength = sizeof(wine_font_mutexW);
+ 
+-    if (NtCreateMutant( &mutex, MUTEX_ALL_ACCESS, &attr, FALSE ) < 0) return dpi;
 +    if (NtCreateMutant( &mutex, MUTEX_ALL_ACCESS, &attr, FALSE ) < 0) return FALSE;
-+    NtWaitForSingleObject( mutex, FALSE, NULL );
-+
+     NtWaitForSingleObject( mutex, FALSE, NULL );
+ 
+-    wine_fonts_cache_key = reg_create_key( wine_fonts_key, cacheW, sizeof(cacheW),
+-                                           REG_OPTION_VOLATILE, &disposition );
+-
      if (disposition == REG_CREATED_NEW_KEY)
      {
          load_registry_fonts();
-@@ -7984,7 +8007,8 @@ DWORD WINAPI font_list_init( RTL_RUN_ONCE *once, void *param, void **context )
+@@ -6406,7 +6445,8 @@ UINT font_init(void)
      load_system_links();
      dump_gdi_font_list();
      dump_gdi_font_subst();
@@ -121,7 +122,7 @@ index 9fa0f45ec4b..d74bf83fe44 100644
  }
  
  /***********************************************************************
-@@ -6330,6 +6331,7 @@ DWORD WINAPI font_list_init( RTL_RUN_ONCE *once, void *param, void **context )
+@@ -6415,6 +6455,7 @@ UINT font_init(void)
  INT WINAPI NtGdiAddFontResourceW( const WCHAR *str, ULONG size, ULONG files, DWORD flags,
                                    DWORD tid, void *dv )
  {
@@ -129,15 +130,15 @@ index 9fa0f45ec4b..d74bf83fe44 100644
      if (!font_funcs) return 1;
      return add_font_resource( str, flags );
  }
-@@ -8046,6 +8072,7 @@ HANDLE WINAPI AddFontMemResourceEx( PVOID ptr, DWORD size, PVOID pdv, DWORD *pcF
+@@ -6434,6 +6475,7 @@ HANDLE WINAPI NtGdiAddFontMemResourceEx( void *ptr, DWORD size, void *dv, ULONG
          SetLastError(ERROR_INVALID_PARAMETER);
          return NULL;
      }
 +    pthread_once( &font_list_init_once, font_list_init );
      if (!font_funcs) return NULL;
-     if (!(copy = HeapAlloc( GetProcessHeap(), 0, size ))) return NULL;
+     if (!(copy = malloc( size ))) return NULL;
      memcpy( copy, ptr, size );
-@@ -6399,6 +6401,7 @@ BOOL WINAPI NtGdiRemoveFontMemResourceEx( HANDLE handle )
+@@ -6483,6 +6525,7 @@ BOOL WINAPI NtGdiRemoveFontMemResourceEx( HANDLE handle )
  BOOL WINAPI NtGdiRemoveFontResourceW( const WCHAR *str, ULONG size, ULONG files, DWORD flags,
                                        DWORD tid, void *dv )
  {
@@ -145,7 +146,7 @@ index 9fa0f45ec4b..d74bf83fe44 100644
      if (!font_funcs) return TRUE;
      return remove_font_resource( str, flags );
  }
-@@ -6477,6 +6480,7 @@ BOOL WINAPI NtGdiGetRealizationInfo( HDC hdc, struct font_realization_info *info
+@@ -6561,6 +6604,7 @@ BOOL WINAPI NtGdiGetRealizationInfo( HDC hdc, struct font_realization_info *info
   */
  BOOL WINAPI NtGdiGetRasterizerCaps( RASTERIZER_STATUS *status, UINT size )
  {
@@ -153,7 +154,7 @@ index 9fa0f45ec4b..d74bf83fe44 100644
      status->nSize = sizeof(RASTERIZER_STATUS);
      status->wFlags = font_funcs ? (TT_AVAILABLE | TT_ENABLED) : 0;
      status->nLanguageID = 0;
-@@ -8331,6 +8359,7 @@ BOOL WINAPI GetFontFileData( DWORD instance_id, DWORD unknown, UINT64 offset, vo
+@@ -6577,6 +6621,7 @@ BOOL WINAPI NtGdiGetFontFileData( DWORD instance_id, DWORD file_index, UINT64 *o
      DWORD tag = 0, size;
      BOOL ret = FALSE;
  
@@ -161,7 +162,7 @@ index 9fa0f45ec4b..d74bf83fe44 100644
      if (!font_funcs) return FALSE;
      pthread_mutex_lock( &font_lock );
      if ((font = get_font_from_handle( instance_id )))
-@@ -8364,6 +8393,7 @@ BOOL WINAPI GetFontFileInfo( DWORD instance_id, DWORD unknown, struct font_filei
+@@ -6602,6 +6647,7 @@ BOOL WINAPI NtGdiGetFontFileInfo( DWORD instance_id, DWORD file_index, struct fo
      struct gdi_font *font;
      BOOL ret = FALSE;
  
@@ -170,5 +171,5 @@ index 9fa0f45ec4b..d74bf83fe44 100644
  
      if ((font = get_font_from_handle( instance_id )))
 -- 
-2.29.2
+2.35.1
 

@@ -10,10 +10,10 @@ Subject: [PATCH 41/44] server: Expose thread input keystate through shared
  2 files changed, 19 insertions(+), 8 deletions(-)
 
 diff --git a/server/protocol.def b/server/protocol.def
-index 211f38d9c93..83a87cd949a 100644
+index cda26e98b8d..f5df0ceb82f 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -872,6 +872,7 @@ struct input_shared_memory
+@@ -894,6 +894,7 @@ struct input_shared_memory
      user_handle_t        cursor;           /* handle to the cursor */
      rectangle_t          caret_rect;       /* caret rectangle */
      int                  cursor_count;     /* cursor show count */
@@ -22,10 +22,10 @@ index 211f38d9c93..83a87cd949a 100644
  
  /* Bits that must be clear for client to read */
 diff --git a/server/queue.c b/server/queue.c
-index 0d21e41670c..0c132dd1f3b 100644
+index 6556b83edd3..b033fb46ab5 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -103,7 +103,6 @@ struct thread_input
+@@ -104,7 +104,6 @@ struct thread_input
      int                    caret_hide;    /* caret hide count */
      int                    caret_state;   /* caret on/off state */
      struct list            msg_list;      /* list of hardware messages */
@@ -33,7 +33,7 @@ index 0d21e41670c..0c132dd1f3b 100644
      unsigned char          desktop_keystate[256]; /* desktop keystate when keystate was synced */
      int                    keystate_lock; /* keystate is locked */
      struct object         *shared_mapping; /* thread input shared memory mapping */
-@@ -309,10 +308,10 @@ static struct thread_input *create_thread_input( struct thread *thread )
+@@ -320,10 +319,10 @@ static struct thread_input *create_thread_input( struct thread *thread )
          input->shared->move_size    = 0;
          input->shared->cursor       = 0;
          input->shared->cursor_count = 0;
@@ -45,7 +45,7 @@ index 0d21e41670c..0c132dd1f3b 100644
          input->keystate_lock = 0;
  
          if (!(input->desktop = get_thread_desktop( thread, 0 /* FIXME: access rights */ )))
-@@ -403,11 +402,13 @@ static void sync_input_keystate( struct thread_input *input )
+@@ -421,11 +420,13 @@ static void sync_input_keystate( struct thread_input *input )
  {
      int i;
      if (!input->desktop || input->keystate_lock) return;
@@ -61,7 +61,7 @@ index 0d21e41670c..0c132dd1f3b 100644
  }
  
  /* locks thread input keystate to prevent synchronization */
-@@ -1306,7 +1307,12 @@ int attach_thread_input( struct thread *thread_from, struct thread *thread_to )
+@@ -1359,7 +1360,12 @@ int attach_thread_input( struct thread *thread_from, struct thread *thread_to )
      }
  
      ret = assign_thread_input( thread_from, input );
@@ -75,7 +75,7 @@ index 0d21e41670c..0c132dd1f3b 100644
      release_object( input );
      return ret;
  }
-@@ -1549,7 +1555,9 @@ static void update_key_state( volatile unsigned char *keystate, unsigned int msg
+@@ -1602,7 +1608,9 @@ static void update_key_state( volatile unsigned char *keystate, unsigned int msg
  
  static void update_input_key_state( struct thread_input *input, unsigned int msg, lparam_t wparam )
  {
@@ -86,7 +86,7 @@ index 0d21e41670c..0c132dd1f3b 100644
  }
  
  static void update_desktop_key_state( struct desktop *desktop, unsigned int msg, lparam_t wparam )
-@@ -3294,7 +3302,7 @@ DECL_HANDLER(get_key_state)
+@@ -3372,7 +3380,7 @@ DECL_HANDLER(get_key_state)
      else
      {
          struct msg_queue *queue = get_current_queue();
@@ -95,7 +95,7 @@ index 0d21e41670c..0c132dd1f3b 100644
          if (req->key >= 0)
          {
              sync_input_keystate( queue->input );
-@@ -3312,7 +3320,9 @@ DECL_HANDLER(set_key_state)
+@@ -3390,7 +3398,9 @@ DECL_HANDLER(set_key_state)
      struct msg_queue *queue = get_current_queue();
      data_size_t size = min( 256, get_req_data_size() );
  
@@ -107,5 +107,5 @@ index 0d21e41670c..0c132dd1f3b 100644
              sizeof(queue->input->desktop_keystate) );
      if (req->async && (desktop = get_thread_desktop( current, 0 )))
 -- 
-2.34.1
+2.35.1
 

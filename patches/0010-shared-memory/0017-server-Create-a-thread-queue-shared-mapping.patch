@@ -13,10 +13,10 @@ Subject: [PATCH 17/44] server: Create a thread queue shared mapping.
  6 files changed, 101 insertions(+), 40 deletions(-)
 
 diff --git a/server/directory.c b/server/directory.c
-index 455e7323ced..341d855464f 100644
+index 69571820d43..6840e65692e 100644
 --- a/server/directory.c
 +++ b/server/directory.c
-@@ -296,6 +296,21 @@ struct object *create_desktop_map_directory( struct winstation *winstation )
+@@ -300,6 +300,21 @@ struct object *create_desktop_map_directory( struct winstation *winstation )
      return &ret->obj;
  }
  
@@ -39,10 +39,10 @@ index 455e7323ced..341d855464f 100644
  
  static void create_session( unsigned int id )
 diff --git a/server/file.h b/server/file.h
-index 8033bc9cf0f..9414a9c59c0 100644
+index 1a537aac006..d5c7e6649c8 100644
 --- a/server/file.h
 +++ b/server/file.h
-@@ -160,6 +160,7 @@ extern const char *get_timeout_str( timeout_t timeout );
+@@ -170,6 +170,7 @@ extern const char *get_timeout_str( timeout_t timeout );
  /* directory functions */
  
  extern struct object *create_desktop_map_directory( struct winstation *winstation );
@@ -51,10 +51,10 @@ index 8033bc9cf0f..9414a9c59c0 100644
  /* file functions */
  
 diff --git a/server/protocol.def b/server/protocol.def
-index 4b37fb7a73e..7db7aed7d30 100644
+index 0ba11a3a3e2..8144805e2e9 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -846,6 +846,12 @@ struct desktop_shared_memory
+@@ -868,6 +868,12 @@ struct desktop_shared_memory
      unsigned char        keystate[256];    /* asynchronous key state */
  };
  
@@ -68,10 +68,10 @@ index 4b37fb7a73e..7db7aed7d30 100644
  #define SEQUENCE_MASK_BITS  4
  #define SEQUENCE_MASK ((1UL << SEQUENCE_MASK_BITS) - 1)
 diff --git a/server/queue.c b/server/queue.c
-index e883f140dba..20a56c245b4 100644
+index b98c49db2f0..79753c58d96 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -145,6 +145,7 @@ struct msg_queue
+@@ -150,6 +150,7 @@ struct msg_queue
      int                    esync_in_msgwait; /* our thread is currently waiting on us */
      unsigned int           fsync_idx;
      int                    fsync_in_msgwait; /* our thread is currently waiting on us */
@@ -79,7 +79,7 @@ index e883f140dba..20a56c245b4 100644
  };
  
  struct hotkey
-@@ -238,6 +239,46 @@ static unsigned int last_input_time;
+@@ -249,6 +250,46 @@ static unsigned int last_input_time;
  static cursor_pos_t cursor_history[64];
  static unsigned int cursor_history_latest;
  
@@ -126,7 +126,7 @@ index e883f140dba..20a56c245b4 100644
  static void queue_hardware_message( struct desktop *desktop, struct message *msg, int always_queue );
  static void free_message( struct message *msg );
  
-@@ -320,6 +361,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+@@ -335,6 +376,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
          queue->esync_in_msgwait = 0;
          queue->fsync_idx       = 0;
          queue->fsync_in_msgwait = 0;
@@ -134,7 +134,7 @@ index e883f140dba..20a56c245b4 100644
          list_init( &queue->send_result );
          list_init( &queue->callback_result );
          list_init( &queue->pending_timers );
-@@ -329,6 +371,9 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+@@ -347,6 +389,9 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
          if (do_esync())
              queue->esync_fd = esync_create_fd( 0, 0 );
  
@@ -144,7 +144,7 @@ index e883f140dba..20a56c245b4 100644
          thread->queue = queue;
      }
      if (new_input) release_object( new_input );
-@@ -417,46 +462,6 @@ static struct message *alloc_hardware_message( lparam_t info, struct hw_msg_sour
+@@ -435,46 +480,6 @@ static struct message *alloc_hardware_message( lparam_t info, struct hw_msg_sour
      return msg;
  }
  
@@ -192,18 +192,18 @@ index e883f140dba..20a56c245b4 100644
  {
      int updated;
 diff --git a/server/thread.c b/server/thread.c
-index 0ee7196f05b..f6fc85fe2d0 100644
+index bf13bef8359..82622916ab1 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -48,6 +48,7 @@
+@@ -56,6 +56,7 @@
  #include "request.h"
  #include "user.h"
  #include "security.h"
 +#include "unicode.h"
  #include "esync.h"
+ #include "fsync.h"
  
- 
-@@ -255,6 +256,8 @@ static inline void init_thread_structure( struct thread *thread )
+@@ -346,6 +347,8 @@ static inline void init_thread_structure( struct thread *thread )
      thread->desc_len        = 0;
      thread->exit_poll       = NULL;
      thread->fast_sync       = NULL;
@@ -212,7 +212,7 @@ index 0ee7196f05b..f6fc85fe2d0 100644
  
      thread->creation_time = current_time;
      thread->exit_time     = 0;
-@@ -305,6 +308,28 @@ static struct context *create_thread_context( struct thread *thread )
+@@ -396,6 +399,28 @@ static struct context *create_thread_context( struct thread *thread )
  }
  
  
@@ -241,7 +241,7 @@ index 0ee7196f05b..f6fc85fe2d0 100644
  /* create a new thread */
  struct thread *create_thread( int fd, struct process *process, const struct security_descriptor *sd )
  {
-@@ -387,6 +412,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+@@ -484,6 +509,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
          thread->esync_fd = esync_create_fd( 0, 0 );
          thread->esync_apc_fd = esync_create_fd( 0, 0 );
      }
@@ -253,7 +253,7 @@ index 0ee7196f05b..f6fc85fe2d0 100644
  
      set_fd_events( thread->request_fd, POLLIN );  /* start listening to events */
      add_process_thread( thread->process, thread );
-@@ -445,6 +475,8 @@ static void cleanup_thread( struct thread *thread )
+@@ -552,6 +582,8 @@ static void cleanup_thread( struct thread *thread )
          }
      }
      free( thread->desc );
@@ -263,10 +263,10 @@ index 0ee7196f05b..f6fc85fe2d0 100644
      thread->reply_data = NULL;
      thread->request_fd = NULL;
 diff --git a/server/thread.h b/server/thread.h
-index e5145f9eb07..329c8f255c4 100644
+index 842f9a839b5..8090e8191df 100644
 --- a/server/thread.h
 +++ b/server/thread.h
-@@ -93,6 +93,8 @@ struct thread
+@@ -97,6 +97,8 @@ struct thread
      WCHAR                 *desc;          /* thread description string */
      struct timeout_user   *exit_poll;     /* poll if the thread/process has exited already */
      struct fast_sync      *fast_sync;     /* fast synchronization object */
@@ -276,5 +276,5 @@ index e5145f9eb07..329c8f255c4 100644
  
  extern struct thread *current;
 -- 
-2.34.1
+2.35.1
 

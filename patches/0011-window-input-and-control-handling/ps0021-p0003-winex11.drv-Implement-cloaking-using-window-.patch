@@ -25,16 +25,16 @@ windows (last patch in the series). The shell has full control over what
 windows it hides and doesn't abide by that, at least on Wine, because of
 how virtual desktops work.
 
- dlls/winex11.drv/window.c         | 106 ++++++++++++++++++++++++++++--
- dlls/winex11.drv/winex11.drv.spec |   1 +
- dlls/winex11.drv/x11drv.h         |  41 ++++++++++++
+ dlls/winex11.drv/init.c   |   1 +
+ dlls/winex11.drv/window.c | 106 +++++++++++++++++++++++++++++++++++---
+ dlls/winex11.drv/x11drv.h |  41 +++++++++++++++
  3 files changed, 141 insertions(+), 7 deletions(-)
 
 diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
-index 4571739..3e4f9eb 100644
+index 75884022107..90e035306a6 100644
 --- a/dlls/winex11.drv/init.c
 +++ b/dlls/winex11.drv/init.c
-@@ -417,6 +417,7 @@ static const struct user_driver_funcs x11drv_funcs =
+@@ -410,6 +410,7 @@ static const struct user_driver_funcs x11drv_funcs =
      .pSetFocus = X11DRV_SetFocus,
      .pSetLayeredWindowAttributes = X11DRV_SetLayeredWindowAttributes,
      .pSetParent = X11DRV_SetParent,
@@ -43,10 +43,10 @@ index 4571739..3e4f9eb 100644
      .pSetWindowRgn = X11DRV_SetWindowRgn,
      .pSetWindowStyle = X11DRV_SetWindowStyle,
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index 4571739..3e4f9eb 100644
+index 6ba9f3fd114..01ba26b252f 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -44,6 +44,7 @@
+@@ -39,6 +39,7 @@
  
  /* avoid conflict with field names in included win32 headers */
  #undef Status
@@ -54,7 +54,7 @@ index 4571739..3e4f9eb 100644
  #include "windef.h"
  #include "winbase.h"
  #include "wingdi.h"
-@@ -390,7 +391,7 @@ static void sync_window_region( struct x11drv_win_data *data, HRGN win_region )
+@@ -415,7 +416,7 @@ static void sync_window_region( struct x11drv_win_data *data, HRGN win_region )
      if (!data->whole_window) return;
      data->shaped = FALSE;
  
@@ -63,7 +63,7 @@ index 4571739..3e4f9eb 100644
      {
          static XRectangle empty_rect;
          XShapeCombineRectangles( data->display, data->whole_window, ShapeBounding, 0, 0,
-@@ -1581,7 +1582,13 @@ static void create_whole_window( struct x11drv_win_data *data )
+@@ -1650,7 +1651,13 @@ static void create_whole_window( struct x11drv_win_data *data )
      if (win_rgn || IsRectEmpty( &data->window_rect )) sync_window_region( data, win_rgn );
  
      /* set the window opacity */
@@ -78,7 +78,7 @@ index 4571739..3e4f9eb 100644
      set_window_opacity( data->display, data->whole_window, (layered_flags & LWA_ALPHA) ? alpha : 0xff );
  
      XFlush( data->display );  /* make sure the window exists before we start painting to it */
-@@ -1714,7 +1721,7 @@ void CDECL X11DRV_SetWindowStyle( HWND hwnd, INT offset, STYLESTRUCT *style )
+@@ -1814,7 +1821,7 @@ void CDECL X11DRV_SetWindowStyle( HWND hwnd, INT offset, STYLESTRUCT *style )
      {
          data->layered = FALSE;
          set_window_visual( data, &default_visual, FALSE );
@@ -87,7 +87,7 @@ index 4571739..3e4f9eb 100644
          if (data->surface) set_surface_color_key( data->surface, CLR_INVALID );
      }
  done:
-@@ -2572,6 +2579,80 @@ done:
+@@ -2737,6 +2744,80 @@ done:
  }
  
  
@@ -168,7 +168,7 @@ index 4571739..3e4f9eb 100644
  /**********************************************************************
   *		SetWindowIcon (X11DRV.@)
   *
-@@ -2631,7 +2712,7 @@ void CDECL X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alph
+@@ -2796,7 +2877,7 @@ void CDECL X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alph
      {
          set_window_visual( data, &default_visual, FALSE );
  
@@ -177,7 +177,7 @@ index 4571739..3e4f9eb 100644
              set_window_opacity( data->display, data->whole_window, (flags & LWA_ALPHA) ? alpha : 0xff );
          if (data->surface)
              set_surface_color_key( data->surface, (flags & LWA_COLORKEY) ? key : CLR_INVALID );
-@@ -2656,9 +2737,20 @@ void CDECL X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alph
+@@ -2821,9 +2902,20 @@ void CDECL X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alph
          Window win = X11DRV_get_whole_window( hwnd );
          if (win)
          {
@@ -202,10 +202,10 @@ index 4571739..3e4f9eb 100644
      }
  }
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
-index 173d94b..d62fcfd 100644
+index 4b7ae3fccc7..16109ffffc6 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -570,6 +570,7 @@ struct x11drv_win_data
+@@ -636,6 +636,7 @@ struct x11drv_win_data
      BOOL        managed : 1;    /* is window managed? */
      BOOL        mapped : 1;     /* is window mapped? (in either normal or iconic state) */
      BOOL        iconic : 1;     /* is window in iconic state? */
@@ -213,7 +213,7 @@ index 173d94b..d62fcfd 100644
      BOOL        embedded : 1;   /* is window an XEMBED client? */
      BOOL        shaped : 1;     /* is window using a custom region shape? */
      BOOL        layered : 1;    /* is window layered and with valid attributes? */
-@@ -824,4 +825,44 @@ static inline BOOL is_window_rect_mapped( const RECT *rect )
+@@ -859,4 +860,44 @@ static inline BOOL is_window_rect_mapped( const RECT *rect )
              max( rect->bottom, rect->top + 1 ) > virtual_rect.top);
  }
  
@@ -260,4 +260,5 @@ index 173d94b..d62fcfd 100644
  #endif  /* __WINE_X11DRV_H */
 
 -- 
-2.21.0
+2.35.1
+

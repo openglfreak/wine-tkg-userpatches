@@ -30,14 +30,14 @@ Date: Wed, 3 Mar 2021 11:57:39 -0700
 
 Signed-off-by: Erich E. Hoover <erich.e.hoover@gmail.com>
 ---
- dlls/ntdll/unix/file.c | 81 ++++++++++++++++++------------------------
- 1 file changed, 35 insertions(+), 46 deletions(-)
+ dlls/ntdll/unix/file.c | 88 ++++++++++++++++--------------------------
+ 1 file changed, 33 insertions(+), 55 deletions(-)
 
 diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
-index 10d8f3de4a3..a879b5c53de 100644
+index 3469a119f1b..260e72da6bb 100644
 --- a/dlls/ntdll/unix/file.c
 +++ b/dlls/ntdll/unix/file.c
-@@ -1459,39 +1459,25 @@ static inline ULONG get_file_attributes( const struct stat *st )
+@@ -1610,39 +1610,25 @@ static inline ULONG get_file_attributes( const struct stat *st )
  }
  
  
@@ -49,20 +49,12 @@ index 10d8f3de4a3..a879b5c53de 100644
 -    return S_ISDIR( st->st_mode ) && !fstatat( fd, "..", &parent, 0 )
 -            && (parent.st_dev != st->st_dev || parent.st_ino == st->st_ino);
 -}
-+    int ret;
- 
-+    if (!S_ISDIR( st->st_mode )) return FALSE;
- 
+-
+-
 -/* get the stat info and file attributes for a file (by file descriptor) */
 -static int fd_get_file_info( int fd, unsigned int options, struct stat *st, ULONG *attr )
 -{
--    int ret;
-+    if (fd == AT_FDCWD)
-+    {
-+        if (!(parent_path = malloc( strlen(path) + 4 ))) return FALSE;
-+        strcpy( parent_path, path );
-+        strcat( parent_path, "/.." );
-+    }
+     int ret;
  
 -    *attr = 0;
 -    ret = fstat( fd, st );
@@ -73,16 +65,22 @@ index 10d8f3de4a3..a879b5c53de 100644
 -    if (S_ISLNK( st->st_mode ))
 -    {
 -        BOOL is_dir;
--
++    if (!S_ISDIR( st->st_mode )) return FALSE;
+ 
 -        /* symbolic links (either junction points or NT symlinks) are "reparse points" */
 -        *attr |= FILE_ATTRIBUTE_REPARSE_POINT;
 -        /* symbolic links always report size 0 */
 -        st->st_size = 0;
 -        if (get_symlink_properties( fd, "", NULL, NULL, NULL, NULL, &is_dir ) == STATUS_SUCCESS)
 -            st->st_mode = (st->st_mode & ~S_IFMT) | (is_dir ? S_IFDIR : S_IFREG);
--    }
++    if (fd == AT_FDCWD)
++    {
++        if (!(parent_path = malloc( strlen(path) + 4 ))) return FALSE;
++        strcpy( parent_path, path );
++        strcat( parent_path, "/.." );
+     }
 -    *attr |= get_file_attributes( st );
--
+ 
 -    return ret;
 +    ret = fstatat( fd, parent_path ? parent_path : "..", &parent, 0 );
 +    if (parent_path) free( parent_path );
@@ -91,7 +89,7 @@ index 10d8f3de4a3..a879b5c53de 100644
  }
  
  
-@@ -1532,15 +1532,17 @@ static inline ULONG get_file_attributes( const struct stat *st )
+@@ -1679,15 +1665,17 @@ NTSTATUS fd_set_file_info( int fd, ULONG attr )
      return STATUS_SUCCESS;
  }
  
@@ -113,9 +111,9 @@ index 10d8f3de4a3..a879b5c53de 100644
      if (ret == -1) return ret;
      if (S_ISLNK( st->st_mode ))
      {
-@@ -1499,19 +1498,9 @@ static int get_file_info( const char *path, struct stat *st, ULONG *attr )
-         /* is a symbolic link and a directory, consider these "reparse points" */
-         if (S_ISDIR( st->st_mode )) *attr |= FILE_ATTRIBUTE_REPARSE_POINT;
+@@ -1703,19 +1691,9 @@ static int get_file_info( const char *path, struct stat *st, ULONG *attr )
+         if (get_symlink_properties( AT_FDCWD, path, NULL, NULL, NULL, NULL, &is_dir ) == STATUS_SUCCESS)
+             st->st_mode = (st->st_mode & ~S_IFMT) | (is_dir ? S_IFDIR : S_IFREG);
      }
 -    else if (S_ISDIR( st->st_mode ) && (parent_path = malloc( strlen(path) + 4 )))
 -    {
@@ -134,9 +132,9 @@ index 10d8f3de4a3..a879b5c53de 100644
 +    else if ((options & FILE_OPEN_REPARSE_POINT) && is_mount_point( fd, path, st ))
 +        *attr |= FILE_ATTRIBUTE_REPARSE_POINT;
      *attr |= get_file_attributes( st );
-     return ret;
- }
-@@ -2011,7 +2000,7 @@ static NTSTATUS get_dir_data_entry( struct dir_data *dir_data, void *info_ptr, I
+     /* retrieve any stored DOS attributes */
+     len = xattr_get( path, SAMBA_XATTR_DOS_ATTRIB, hexattr, sizeof(hexattr)-1 );
+@@ -2247,7 +2225,7 @@ static NTSTATUS get_dir_data_entry( struct dir_data *dir_data, void *info_ptr, I
      struct stat st;
      ULONG name_len, start, dir_size, attributes;
  
@@ -145,7 +143,7 @@ index 10d8f3de4a3..a879b5c53de 100644
      {
          TRACE( "file no longer exists %s\n", names->unix_name );
          return STATUS_SUCCESS;
-@@ -3963,7 +3952,7 @@ NTSTATUS WINAPI NtQueryFullAttributesFile( const OBJECT_ATTRIBUTES *attr,
+@@ -4287,7 +4265,7 @@ NTSTATUS WINAPI NtQueryFullAttributesFile( const OBJECT_ATTRIBUTES *attr,
          ULONG attributes;
          struct stat st;
  
@@ -154,7 +152,7 @@ index 10d8f3de4a3..a879b5c53de 100644
              status = errno_to_status( errno );
          else if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))
              status = STATUS_INVALID_INFO_CLASS;
-@@ -4008,7 +3997,7 @@ NTSTATUS WINAPI NtQueryAttributesFile( const OBJECT_ATTRIBUTES *attr, FILE_BASIC
+@@ -4331,7 +4309,7 @@ NTSTATUS WINAPI NtQueryAttributesFile( const OBJECT_ATTRIBUTES *attr, FILE_BASIC
          ULONG attributes;
          struct stat st;
  
@@ -163,7 +161,7 @@ index 10d8f3de4a3..a879b5c53de 100644
              status = errno_to_status( errno );
          else if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))
              status = STATUS_INVALID_INFO_CLASS;
-@@ -4125,7 +4114,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4445,7 +4423,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
      switch (class)
      {
      case FileBasicInformation:
@@ -172,7 +170,7 @@ index 10d8f3de4a3..a879b5c53de 100644
              status = errno_to_status( errno );
          else if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))
              status = STATUS_INVALID_INFO_CLASS;
-@@ -4136,7 +4125,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4456,7 +4434,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
          {
              FILE_STANDARD_INFORMATION *info = ptr;
  
@@ -181,7 +179,7 @@ index 10d8f3de4a3..a879b5c53de 100644
              else
              {
                  fill_file_info( &st, attr, info, class );
-@@ -4153,7 +4142,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4473,7 +4451,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
          }
          break;
      case FileInternalInformation:
@@ -190,7 +188,7 @@ index 10d8f3de4a3..a879b5c53de 100644
          else fill_file_info( &st, attr, ptr, class );
          break;
      case FileEaInformation:
-@@ -4163,7 +4152,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4483,7 +4461,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
          }
          break;
      case FileEndOfFileInformation:
@@ -199,7 +197,7 @@ index 10d8f3de4a3..a879b5c53de 100644
          else fill_file_info( &st, attr, ptr, class );
          break;
      case FileAllInformation:
-@@ -4171,7 +4160,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4491,7 +4469,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
              FILE_ALL_INFORMATION *info = ptr;
              char *unix_name;
  
@@ -207,8 +205,8 @@ index 10d8f3de4a3..a879b5c53de 100644
 +            if (get_file_info( fd, "", options, &st, &attr ) == -1) status = errno_to_status( errno );
              else if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))
                  status = STATUS_INVALID_INFO_CLASS;
-             else if (!(status = server_get_unix_name( handle, &unix_name )))
-@@ -4254,7 +4243,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+             else if (!(status = server_get_unix_name( handle, &unix_name, FALSE )))
+@@ -4574,7 +4552,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
                  ULONG attributes;
                  struct stat st;
  
@@ -217,7 +215,7 @@ index 10d8f3de4a3..a879b5c53de 100644
                      status = errno_to_status( errno );
                  else if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))
                      status = STATUS_INVALID_INFO_CLASS;
-@@ -4279,7 +4268,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4599,7 +4577,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
          }
          break;
      case FileIdInformation:
@@ -225,8 +223,8 @@ index 10d8f3de4a3..a879b5c53de 100644
 +        if (get_file_info( fd, "", options, &st, &attr ) == -1) status = errno_to_status( errno );
          else
          {
-             struct mountmgr_unix_drive drive;
-@@ -4293,15 +4282,15 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+             BYTE buf[sizeof(FILE_FS_VOLUME_INFORMATION) + MAX_PATH * sizeof(WCHAR)];
+@@ -4615,7 +4593,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
          }
          break;
      case FileAttributeTagInformation:
@@ -235,7 +233,7 @@ index 10d8f3de4a3..a879b5c53de 100644
          else
          {
              FILE_ATTRIBUTE_TAG_INFORMATION *info = ptr;
-             info->FileAttributes = attr;
+@@ -4623,7 +4601,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
              info->ReparseTag = 0;
              if (attr & FILE_ATTRIBUTE_REPARSE_POINT)
                  get_symlink_properties( fd, "", NULL, NULL, &info->ReparseTag, NULL, NULL );
@@ -246,5 +244,5 @@ index 10d8f3de4a3..a879b5c53de 100644
          break;
 
 -- 
-2.17.1
+2.35.1
 

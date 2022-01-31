@@ -6,18 +6,18 @@ Subject: [PATCH 09/13] winex11.drv: Request clipping through the desktop
 
 Which will forward the requests to the foreground window for now.
 ---
- dlls/winex11.drv/display.c |  7 +---
+ dlls/winex11.drv/display.c |  7 +--
  dlls/winex11.drv/event.c   |  2 +-
- dlls/winex11.drv/mouse.c   | 80 +++++++++++++++++++-------------------
+ dlls/winex11.drv/mouse.c   | 87 +++++++++++++++++---------------------
  dlls/winex11.drv/window.c  |  3 ++
  dlls/winex11.drv/x11drv.h  |  3 +-
- 5 files changed, 47 insertions(+), 48 deletions(-)
+ 5 files changed, 47 insertions(+), 55 deletions(-)
 
 diff --git a/dlls/winex11.drv/display.c b/dlls/winex11.drv/display.c
-index b647455a01f..499e25d915f 100644
+index 04380ff660f..84d5df6e57c 100644
 --- a/dlls/winex11.drv/display.c
 +++ b/dlls/winex11.drv/display.c
-@@ -395,12 +395,9 @@ void X11DRV_DisplayDevices_Update(BOOL send_display_change)
+@@ -334,12 +334,9 @@ void X11DRV_DisplayDevices_Update(BOOL send_display_change)
      X11DRV_resize_desktop(send_display_change);
      EnumWindows(update_windows_on_display_change, (LPARAM)mask);
  
@@ -31,12 +31,12 @@ index b647455a01f..499e25d915f 100644
 +        SendNotifyMessageW( GetDesktopWindow(), WM_X11DRV_DESKTOP_CLIP_CURSOR, TRUE, TRUE );
  }
  
- /* Initialize a GPU instance.
+ static BOOL force_display_devices_refresh;
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
-index bdfc133774a..b1d66d202b7 100644
+index 5480b8383ce..11bbcbfc909 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -812,7 +812,7 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
+@@ -829,7 +829,7 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
      if ((xic = X11DRV_get_ic( hwnd ))) XSetICFocus( xic );
      if (use_take_focus)
      {
@@ -46,10 +46,10 @@ index bdfc133774a..b1d66d202b7 100644
      }
  
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index c9f2fed3e4a..922e61e6d23 100644
+index 710241964fb..569f67f6798 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
-@@ -662,7 +662,7 @@ LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd )
+@@ -661,7 +661,7 @@ LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd )
   *
   * Turn on clipping if the active window is fullscreen.
   */
@@ -58,7 +58,7 @@ index c9f2fed3e4a..922e61e6d23 100644
  {
      struct x11drv_win_data *data;
      struct x11drv_thread_data *thread_data;
-@@ -791,7 +791,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
+@@ -789,7 +789,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
      {
          hwnd = GetAncestor( hwnd, GA_ROOT );
          if ((input->u.mi.dwFlags & (MOUSEEVENTF_LEFTDOWN|MOUSEEVENTF_RIGHTDOWN)) && hwnd == GetForegroundWindow())
@@ -67,7 +67,7 @@ index c9f2fed3e4a..922e61e6d23 100644
      }
  
      /* update the wine server Z-order */
-@@ -1644,51 +1644,20 @@ BOOL CDECL X11DRV_GetCursorPos(LPPOINT pos)
+@@ -1642,51 +1642,20 @@ BOOL CDECL X11DRV_GetCursorPos(LPPOINT pos)
   */
  BOOL CDECL X11DRV_ClipCursor( LPCRECT clip )
  {
@@ -130,7 +130,7 @@ index c9f2fed3e4a..922e61e6d23 100644
  /***********************************************************************
   *             clip_cursor_request
   *
-@@ -1689,18 +1665,40 @@ BOOL CDECL X11DRV_ClipCursor( LPCRECT clip )
+@@ -1694,18 +1663,40 @@ BOOL CDECL X11DRV_ClipCursor( LPCRECT clip )
   */
  LRESULT clip_cursor_request( HWND hwnd, BOOL fullscreen, BOOL reset )
  {
@@ -176,10 +176,10 @@ index c9f2fed3e4a..922e61e6d23 100644
  
      return 0;
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index ce1cdede76d..ed3ef4bdc5d 100644
+index 01773d18110..c88c9ba1473 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -2833,6 +2833,9 @@ LRESULT CDECL X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
+@@ -3132,6 +3132,9 @@ LRESULT CDECL X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
      case WM_X11DRV_DESKTOP_SET_WINDOW_CURSOR:
          SendNotifyMessageW( (HWND)wp, WM_X11DRV_SET_CURSOR, 0, lp );
          return 0;
@@ -190,18 +190,18 @@ index ce1cdede76d..ed3ef4bdc5d 100644
          return clip_cursor_notify( hwnd, (HWND)wp, (HWND)lp );
      case WM_X11DRV_CLIP_CURSOR_REQUEST:
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
-index dee71e5aa9d..9813abefde3 100644
+index c8bad0c9cc3..2530ffc19ba 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -548,6 +548,7 @@ enum x11drv_window_messages
+@@ -604,6 +604,7 @@ enum x11drv_window_messages
      WM_X11DRV_SET_CURSOR,
      WM_X11DRV_DESKTOP_SET_HICON_CURSOR,
      WM_X11DRV_DESKTOP_SET_WINDOW_CURSOR,
 +    WM_X11DRV_DESKTOP_CLIP_CURSOR,
      WM_X11DRV_CLIP_CURSOR_NOTIFY,
-     WM_X11DRV_CLIP_CURSOR_REQUEST
- };
-@@ -639,10 +640,10 @@ extern void CDECL X11DRV_SetFocus( HWND hwnd ) DECLSPEC_HIDDEN;
+     WM_X11DRV_CLIP_CURSOR_REQUEST,
+     WM_X11DRV_DELETE_TAB,
+@@ -707,10 +708,10 @@ extern void CDECL X11DRV_SetFocus( HWND hwnd ) DECLSPEC_HIDDEN;
  extern void set_window_cursor( Window window, HCURSOR handle ) DECLSPEC_HIDDEN;
  extern LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd ) DECLSPEC_HIDDEN;
  extern LRESULT clip_cursor_request( HWND hwnd, BOOL fullscreen, BOOL reset ) DECLSPEC_HIDDEN;

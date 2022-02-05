@@ -1,0 +1,159 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH v2 2/2] win32u: Cache GL driver functions in DC.
+Message-Id: <20220201173230.933529-2-pgofman@codeweavers.com>
+Date: Tue,  1 Feb 2022 20:32:30 +0300
+In-Reply-To: <20220201173230.933529-1-pgofman@codeweavers.com>
+References: <20220201173230.933529-1-pgofman@codeweavers.com>
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+     v2:
+          - call actual driver init function outside of any locks.
+
+ dlls/win32u/dc.c            | 19 -------------
+ dlls/win32u/driver.c        | 55 +++++++++++++++++++++++--------------
+ dlls/win32u/ntgdi_private.h | 21 ++++++++++++++
+ 3 files changed, 56 insertions(+), 39 deletions(-)
+
+diff --git a/dlls/win32u/dc.c b/dlls/win32u/dc.c
+index aed2d3684a7..cb38c4161ee 100644
+--- a/dlls/win32u/dc.c
++++ b/dlls/win32u/dc.c
+@@ -63,25 +63,6 @@ static const struct gdi_obj_funcs dc_funcs =
+ };
+ 
+ 
+-static inline DC *get_dc_obj( HDC hdc )
+-{
+-    DWORD type;
+-    DC *dc = get_any_obj_ptr( hdc, &type );
+-    if (!dc) return NULL;
+-
+-    switch (type)
+-    {
+-    case NTGDI_OBJ_DC:
+-    case NTGDI_OBJ_MEMDC:
+-    case NTGDI_OBJ_ENHMETADC:
+-        return dc;
+-    default:
+-        GDI_ReleaseObj( hdc );
+-        SetLastError( ERROR_INVALID_HANDLE );
+-        return NULL;
+-    }
+-}
+-
+ /* alloc DC_ATTR from a pool of memory accessible from client */
+ static DC_ATTR *alloc_dc_attr(void)
+ {
+diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
+index e1350f29f7d..a5993e6222f 100644
+--- a/dlls/win32u/driver.c
++++ b/dlls/win32u/driver.c
+@@ -1369,29 +1369,44 @@ NTSTATUS WINAPI NtGdiDdDDICheckVidPnExclusiveOwnership( const D3DKMT_CHECKVIDPNE
+ struct opengl_funcs * CDECL __wine_get_wgl_driver( HDC hdc, UINT version )
+ {
+     const struct gdi_dc_funcs *driver_funcs[11], **next_funcs;
+-    struct opengl_funcs *ret = NULL;
+-    DC * dc = get_dc_ptr( hdc );
++    struct opengl_funcs *ret;
+     PHYSDEV physdev;
++    DC * dc;
+ 
+-    if (dc)
++    if (!(dc = get_dc_obj( hdc ))) return NULL;
++    if (dc->attr->disabled)
+     {
+-        next_funcs = driver_funcs;
+-        physdev = GET_DC_PHYSDEV( dc, wine_get_wgl_driver );
+-        while (physdev && next_funcs - driver_funcs < ARRAY_SIZE(driver_funcs) - 1)
+-        {
+-            *next_funcs++ = physdev->funcs;
+-            if (physdev->funcs == &null_driver) break;
+-            physdev = GET_NEXT_PHYSDEV( physdev, wine_get_wgl_driver );
+-        }
+-        *next_funcs = NULL;
+-        next_funcs = driver_funcs;
+-        while (*next_funcs)
+-        {
+-            ret = (*next_funcs)->wine_get_wgl_driver( version, &next_funcs );
+-            if (ret || !next_funcs) break;
+-            ++next_funcs;
+-        }
+-        release_dc_ptr( dc );
++        GDI_ReleaseObj( hdc );
++        return NULL;
++    }
++    if ((ret = dc->gl_funcs))
++    {
++        GDI_ReleaseObj( hdc );
++        return ret;
+     }
++
++    next_funcs = driver_funcs;
++    physdev = GET_DC_PHYSDEV( dc, wine_get_wgl_driver );
++    while (physdev && next_funcs - driver_funcs < ARRAY_SIZE(driver_funcs) - 1)
++    {
++        *next_funcs++ = physdev->funcs;
++        if (physdev->funcs == &null_driver) break;
++        physdev = GET_NEXT_PHYSDEV( physdev, wine_get_wgl_driver );
++    }
++    *next_funcs = NULL;
++    GDI_ReleaseObj( hdc );
++
++    next_funcs = driver_funcs;
++    while (*next_funcs)
++    {
++        ret = (*next_funcs)->wine_get_wgl_driver( version, &next_funcs );
++        if (ret || !next_funcs) break;
++        ++next_funcs;
++    }
++
++    if (!(dc = get_dc_obj( hdc ))) return NULL;
++    if (dc->gl_funcs) ret = dc->gl_funcs;
++    else              dc->gl_funcs = ret;
++    GDI_ReleaseObj( hdc );
+     return ret;
+ }
+diff --git a/dlls/win32u/ntgdi_private.h b/dlls/win32u/ntgdi_private.h
+index c962b47a73f..a484f88f96b 100644
+--- a/dlls/win32u/ntgdi_private.h
++++ b/dlls/win32u/ntgdi_private.h
+@@ -87,6 +87,8 @@ typedef struct tagDC
+     XFORM         xformVport2World;  /* Inverse of the above transformation */
+     BOOL          vport2WorldValid;  /* Is xformVport2World valid? */
+     RECT          bounds;            /* Current bounding rect */
++
++    struct opengl_funcs *gl_funcs;   /* Opengl driver functions */
+ } DC;
+ 
+ /* Certain functions will do no further processing if the driver returns this.
+@@ -664,6 +666,25 @@ static inline void copy_bitmapinfo( BITMAPINFO *dst, const BITMAPINFO *src )
+     memcpy( dst, src, get_dib_info_size( src, DIB_RGB_COLORS ));
+ }
+ 
++static inline DC *get_dc_obj( HDC hdc )
++{
++    DWORD type;
++    DC *dc = get_any_obj_ptr( hdc, &type );
++    if (!dc) return NULL;
++
++    switch (type)
++    {
++    case NTGDI_OBJ_DC:
++    case NTGDI_OBJ_MEMDC:
++    case NTGDI_OBJ_ENHMETADC:
++        return dc;
++    default:
++        GDI_ReleaseObj( hdc );
++        SetLastError( ERROR_INVALID_HANDLE );
++        return NULL;
++    }
++}
++
+ extern void CDECL free_heap_bits( struct gdi_image_bits *bits ) DECLSPEC_HIDDEN;
+ 
+ void set_gdi_client_ptr( HGDIOBJ handle, void *ptr ) DECLSPEC_HIDDEN;
+
+-- 
+2.35.1
+

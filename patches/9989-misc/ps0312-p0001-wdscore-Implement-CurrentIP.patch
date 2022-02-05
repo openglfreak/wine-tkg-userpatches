@@ -1,32 +1,32 @@
 From: Mohamad Al-Jaf <mohamadaljaf@gmail.com>
-Subject: [PATCH v4 1/4] wdscore: Implement CurrentIP.
-Message-Id: <20220127232102.181453-1-mohamadaljaf@gmail.com>
-Date: Thu, 27 Jan 2022 18:20:59 -0500
+Subject: [PATCH v6 1/4] wdscore: Implement CurrentIP.
+Message-Id: <20220131091619.350491-1-mohamadaljaf@gmail.com>
+Date: Mon, 31 Jan 2022 04:16:16 -0500
 
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=51850
 Signed-off-by: Mohamad Al-Jaf <mohamadaljaf@gmail.com>
 ---
-v4: - Remove WINAPI in the function in main.c and tests/main.c.
-
-Since WINAPI cleans the stack, it doesn't make sense to use it in
-this context.
+v6: - Use __ASM_GLOBAL_FUNC instead of __ASM_STDCALL_FUNC.
+    - Use cdecl instead of stdcall in wdscore.spec.
 ---
- configure.ac                   |  1 +
- dlls/wdscore/Makefile.in       |  3 ++
- dlls/wdscore/main.c            | 54 ++++++++++++++++++++++++++++
- dlls/wdscore/tests/Makefile.in |  4 +++
- dlls/wdscore/tests/main.c      | 65 ++++++++++++++++++++++++++++++++++
- dlls/wdscore/wdscore.spec      |  2 +-
- 6 files changed, 128 insertions(+), 1 deletion(-)
+ configure.ac                    |  1 +
+ dlls/wdscore/Makefile.in        |  3 ++
+ dlls/wdscore/main.c             | 56 ++++++++++++++++++++++++++++
+ dlls/wdscore/tests/Makefile.in  |  4 ++
+ dlls/wdscore/tests/main.c       | 65 +++++++++++++++++++++++++++++++++
+ dlls/wdscore/wdscore.spec       |  2 +-
+ dlls/wdscore/wdscore_internal.h | 24 ++++++++++++
+ 7 files changed, 154 insertions(+), 1 deletion(-)
  create mode 100644 dlls/wdscore/main.c
  create mode 100644 dlls/wdscore/tests/Makefile.in
  create mode 100644 dlls/wdscore/tests/main.c
+ create mode 100644 dlls/wdscore/wdscore_internal.h
 
 diff --git a/configure.ac b/configure.ac
-index a636f834866..7c7d96e0bc4 100644
+index 154e410b8ac..24baa69b057 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -3510,6 +3510,7 @@ WINE_CONFIG_MAKEFILE(dlls/wbemprox)
+@@ -3512,6 +3512,7 @@ WINE_CONFIG_MAKEFILE(dlls/wbemprox)
  WINE_CONFIG_MAKEFILE(dlls/wbemprox/tests)
  WINE_CONFIG_MAKEFILE(dlls/wdfldr.sys)
  WINE_CONFIG_MAKEFILE(dlls/wdscore)
@@ -47,10 +47,10 @@ index 20ba1d3b1c9..2020e72c7bb 100644
 +	main.c
 diff --git a/dlls/wdscore/main.c b/dlls/wdscore/main.c
 new file mode 100644
-index 00000000000..9001838431d
+index 00000000000..1ed00206adf
 --- /dev/null
 +++ b/dlls/wdscore/main.c
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,56 @@
 +/*
 + * Copyright 2022 Mohamad Al-Jaf
 + *
@@ -77,25 +77,27 @@ index 00000000000..9001838431d
 +#include "wine/asm.h"
 +#include "wine/debug.h"
 +
++#include "wdscore_internal.h"
++
 +WINE_DEFAULT_DEBUG_CHANNEL(wdscore);
 +
 +/***********************************************************************
 + *           CurrentIP (wdscore.@)
 + */
 +#ifdef __i386__
-+__ASM_STDCALL_FUNC(CurrentIP, 0,
++__ASM_GLOBAL_FUNC(CurrentIP,
 +    "movl (%esp), %eax\n\t"
 +    "ret" )
 +#elif defined(__x86_64__)
-+__ASM_STDCALL_FUNC(CurrentIP, 0,
++__ASM_GLOBAL_FUNC(CurrentIP,
 +    "movq (%rsp), %rax\n\t"
 +    "ret" )
 +#elif defined(__arm__)
-+__ASM_STDCALL_FUNC(CurrentIP, 0,
++__ASM_GLOBAL_FUNC(CurrentIP,
 +    "mov r0, lr\n\t"
 +    "bx lr" )
 +#elif defined(__aarch64__)
-+__ASM_STDCALL_FUNC(CurrentIP, 0,
++__ASM_GLOBAL_FUNC(CurrentIP,
 +    "mov x0, lr\n\t"
 +    "ret" )
 +#else
@@ -187,7 +189,7 @@ index 00000000000..f17abbbdb3f
 +        skip("could not load wdscore.dll\n");
 +}
 diff --git a/dlls/wdscore/wdscore.spec b/dlls/wdscore/wdscore.spec
-index 15958b86aba..8b6febe6b3b 100644
+index 15958b86aba..c292f65505b 100644
 --- a/dlls/wdscore/wdscore.spec
 +++ b/dlls/wdscore/wdscore.spec
 @@ -71,7 +71,7 @@
@@ -195,10 +197,40 @@ index 15958b86aba..8b6febe6b3b 100644
  @ stub ConstructPartialMsgVA
  @ stub ConstructPartialMsgVW
 -@ stub CurrentIP
-+@ stdcall CurrentIP()
++@ cdecl CurrentIP()
  @ stub EndMajorTask
  @ stub EndMinorTask
  @ stub GetMajorTask
+diff --git a/dlls/wdscore/wdscore_internal.h b/dlls/wdscore/wdscore_internal.h
+new file mode 100644
+index 00000000000..595ce93a3e7
+--- /dev/null
++++ b/dlls/wdscore/wdscore_internal.h
+@@ -0,0 +1,24 @@
++/*
++ * Copyright 2022 Mohamad Al-Jaf
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef __WDSCORE_INTERNAL_H
++#define __WDSCORE_INTERNAL_H
++
++void *CurrentIP(void);
++
++#endif /* __WDSCORE_INTERNAL_H */
 
 -- 
 2.35.1

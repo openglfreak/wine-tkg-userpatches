@@ -1,56 +1,50 @@
 From: "Roman Pišl" <rpisl@seznam.cz>
-Subject: [PATCH 4/4] kernel32: Added real GetConsoleProcessList implementation.
-Message-Id: <20200317132854.32299-4-rpisl@seznam.cz>
-Date: Tue, 17 Mar 2020 14:28:54 +0100
-In-Reply-To: <20200317132854.32299-1-rpisl@seznam.cz>
-References: <20200317132854.32299-1-rpisl@seznam.cz>
+Subject: [PATCH 3/3] kernel32: Implement GetConsoleProcessList.
+Message-Id: <20220204180349.152293-3-rpisl@seznam.cz>
+Date: Fri,  4 Feb 2022 19:03:49 +0100
+In-Reply-To: <20220204180349.152293-1-rpisl@seznam.cz>
+References: <20220204180349.152293-1-rpisl@seznam.cz>
 
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=48760
 Signed-off-by: Roman Pišl <rpisl@seznam.cz>
 ---
- dlls/kernel32/console.c       | 17 +++++++++++++++--
+ dlls/kernel32/console.c       | 18 ++++++++++++++++--
  dlls/kernel32/tests/console.c |  5 -----
- 2 files changed, 15 insertions(+), 7 deletions(-)
+ 2 files changed, 16 insertions(+), 7 deletions(-)
 
 diff --git a/dlls/kernel32/console.c b/dlls/kernel32/console.c
-index 80f3419cd7a..587d24f061c 100644
+index 80f3419cd7a..621103978fa 100644
 --- a/dlls/kernel32/console.c
 +++ b/dlls/kernel32/console.c
-@@ -38,6 +38,7 @@
- #include "winerror.h"
- #include "wincon.h"
- #include "wine/condrv.h"
-+#include "wine/server.h"
- #include "wine/debug.h"
- #include "kernel_private.h"
- 
-@@ -252,7 +253,8 @@ DWORD WINAPI GetConsoleAliasW(LPWSTR lpSource, LPWSTR lpTargetBuffer,
+@@ -252,7 +252,10 @@ DWORD WINAPI GetConsoleAliasW(LPWSTR lpSource, LPWSTR lpTargetBuffer,
   */
  DWORD WINAPI GetConsoleProcessList(LPDWORD processlist, DWORD processcount)
  {
 -    FIXME("(%p,%d): stub\n", processlist, processcount);
-+    DWORD ret = 0;
++    NTSTATUS status;
++    IO_STATUS_BLOCK io;
++
 +    TRACE("(%p,%d)\n", processlist, processcount);
  
      if (!processlist || processcount < 1)
      {
-@@ -260,7 +262,18 @@ DWORD WINAPI GetConsoleProcessList(LPDWORD processlist, DWORD processcount)
+@@ -260,7 +263,18 @@ DWORD WINAPI GetConsoleProcessList(LPDWORD processlist, DWORD processcount)
          return 0;
      }
  
 -    return 0;
-+    SERVER_START_REQ(get_console_process_list)
-+    {
-+        req->count = processcount;
-+        wine_server_set_reply( req, processlist, processcount * sizeof(DWORD) );
-+        if (!wine_server_call_err( req ))
-+        {
-+            ret = reply->total;
-+        }
-+    }
-+    SERVER_END_REQ;
++    status = NtDeviceIoControlFile( RtlGetCurrentPeb()->ProcessParameters->ConsoleHandle,
++                                   NULL, NULL, NULL, &io, IOCTL_CONDRV_GET_PROCESS_LIST,
++                                   NULL, 0, processlist, processcount * sizeof(DWORD) );
 +
-+    return ret;
++    if (status == STATUS_BUFFER_TOO_SMALL) return *processlist;
++    if (status)
++    {
++        SetLastError(RtlNtStatusToDosError(status));
++        return 0;
++    }
++
++    return io.Information / sizeof(DWORD);
  }
  
  /* Undocumented, called by native doskey.exe */
@@ -86,3 +80,7 @@ index 94a0a370462..ef28debb6ff 100644
          ok(list[0] == pid || list[1] == pid, "PID not in list\n");
      }
  
+
+-- 
+2.35.1
+

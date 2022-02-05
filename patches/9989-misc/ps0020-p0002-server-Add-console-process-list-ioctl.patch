@@ -1,0 +1,102 @@
+From: "Roman Pišl" <rpisl@seznam.cz>
+Subject: [PATCH 2/3] server: Add console process list ioctl.
+Message-Id: <20220204180349.152293-2-rpisl@seznam.cz>
+Date: Fri,  4 Feb 2022 19:03:48 +0100
+In-Reply-To: <20220204180349.152293-1-rpisl@seznam.cz>
+References: <20220204180349.152293-1-rpisl@seznam.cz>
+
+Signed-off-by: Roman Pišl <rpisl@seznam.cz>
+---
+ include/wine/condrv.h |  1 +
+ server/console.c      | 55 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 56 insertions(+)
+
+diff --git a/include/wine/condrv.h b/include/wine/condrv.h
+index 4d2332a1ee9..13fb2c0b2c8 100644
+--- a/include/wine/condrv.h
++++ b/include/wine/condrv.h
+@@ -43,6 +43,7 @@
+ #define IOCTL_CONDRV_BEEP                  CTL_CODE(FILE_DEVICE_CONSOLE, 20, METHOD_BUFFERED, FILE_ANY_ACCESS)
+ #define IOCTL_CONDRV_FLUSH                 CTL_CODE(FILE_DEVICE_CONSOLE, 21, METHOD_BUFFERED, FILE_ANY_ACCESS)
+ #define IOCTL_CONDRV_GET_WINDOW            CTL_CODE(FILE_DEVICE_CONSOLE, 22, METHOD_BUFFERED, FILE_ANY_ACCESS)
++#define IOCTL_CONDRV_GET_PROCESS_LIST      CTL_CODE(FILE_DEVICE_CONSOLE, 23, METHOD_BUFFERED, FILE_ANY_ACCESS)
+ 
+ /* console output ioctls */
+ #define IOCTL_CONDRV_WRITE_CONSOLE         CTL_CODE(FILE_DEVICE_CONSOLE, 30, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+diff --git a/server/console.c b/server/console.c
+index 92c1aaf294e..85617cebcff 100644
+--- a/server/console.c
++++ b/server/console.c
+@@ -751,6 +751,27 @@ static void propagate_console_signal( struct console *console,
+     enum_processes(propagate_console_signal_cb, &csi);
+ }
+ 
++struct console_process_list
++{
++    DWORD size;
++    DWORD count;
++    DWORD *processes;
++    struct console *console;
++};
++
++static int console_process_list_cb(struct process *process, void *user)
++{
++    struct console_process_list* cpl = (struct console_process_list*)user;
++
++    if (process->console == cpl->console)
++    {
++        if (cpl->count < cpl->size) cpl->processes[cpl->count] = process->id;
++        cpl->count++;
++    }
++
++    return 0;
++}
++
+ /* dumb dump */
+ static void console_dump( struct object *obj, int verbose )
+ {
+@@ -1064,6 +1085,40 @@ static void console_ioctl( struct fd *fd, ioctl_code_t code, struct async *async
+             return;
+         }
+ 
++    case IOCTL_CONDRV_GET_PROCESS_LIST:
++        {
++            struct console_process_list cpl;
++            cpl.count = 0;
++            cpl.size = get_reply_max_size() / sizeof(DWORD);
++
++            if (cpl.size < 1)
++            {
++                set_error( STATUS_INVALID_PARAMETER );
++                return;
++            }
++            if (!console)
++            {
++                set_error( STATUS_INVALID_HANDLE );
++                return;
++            }
++
++            cpl.console = console;
++            cpl.processes = (DWORD *) set_reply_data_size( get_reply_max_size() );
++            enum_processes( console_process_list_cb, &cpl );
++
++            if (cpl.count > cpl.size)
++            {
++                current->reply_size = sizeof(DWORD);
++                *cpl.processes = cpl.count;
++                set_error( STATUS_BUFFER_TOO_SMALL );
++                return;
++            }
++
++            current->reply_size = cpl.count * sizeof(DWORD);
++
++            return;
++        }
++
+     default:
+         if (!console->server || code >> 16 != FILE_DEVICE_CONSOLE)
+         {
+
+-- 
+2.35.1
+

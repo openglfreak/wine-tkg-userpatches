@@ -1,0 +1,232 @@
+From 55efb8b4cea3ccb1d5c7db2c70df5676506e7132 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bernhard=20K=C3=B6lbl?= <besentv@gmail.com>
+Date: Sun, 12 Dec 2021 22:24:44 +0100
+Subject: [PATCH 1/2] gdiplus: Improve performance of alpha_blend_bmp_pixels().
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Bernhard Kölbl <besentv@gmail.com>
+---
+ dlls/gdiplus/gdiplus_private.h |   3 +
+ dlls/gdiplus/graphics.c        |  41 ----------
+ dlls/gdiplus/image.c           | 137 +++++++++++++++++++++++++++++++++
+ 3 files changed, 140 insertions(+), 41 deletions(-)
+
+diff --git a/dlls/gdiplus/gdiplus_private.h b/dlls/gdiplus/gdiplus_private.h
+index 7ae8cc564c9..7fcf3440c6c 100644
+--- a/dlls/gdiplus/gdiplus_private.h
++++ b/dlls/gdiplus/gdiplus_private.h
+@@ -210,6 +210,9 @@ extern GpStatus convert_pixels(INT width, INT height,
+     INT dst_stride, BYTE *dst_bits, PixelFormat dst_format, ColorPalette *dst_palette,
+     INT src_stride, const BYTE *src_bits, PixelFormat src_format, ColorPalette *src_palette) DECLSPEC_HIDDEN;
+ 
++extern GpStatus alpha_blend_bmp_pixels(GpGraphics *graphics, INT dst_x, INT dst_y,
++    const BYTE *src, INT src_width, INT src_height, INT src_stride, const PixelFormat fmt) DECLSPEC_HIDDEN;
++
+ extern PixelFormat apply_image_attributes(const GpImageAttributes *attributes, LPBYTE data,
+     UINT width, UINT height, INT stride, ColorAdjustType type, PixelFormat fmt) DECLSPEC_HIDDEN;
+ 
+diff --git a/dlls/gdiplus/graphics.c b/dlls/gdiplus/graphics.c
+index 18c3ba73768..389d0d6981f 100644
+--- a/dlls/gdiplus/graphics.c
++++ b/dlls/gdiplus/graphics.c
+@@ -412,47 +412,6 @@ static GpStatus get_clip_hrgn(GpGraphics *graphics, HRGN *hrgn)
+     return stat;
+ }
+ 
+-/* Draw ARGB data to the given graphics object */
+-static GpStatus alpha_blend_bmp_pixels(GpGraphics *graphics, INT dst_x, INT dst_y,
+-    const BYTE *src, INT src_width, INT src_height, INT src_stride, const PixelFormat fmt)
+-{
+-    GpBitmap *dst_bitmap = (GpBitmap*)graphics->image;
+-    INT x, y;
+-    CompositingMode comp_mode;
+-
+-    GdipGetCompositingMode(graphics, &comp_mode);
+-
+-    for (y=0; y<src_height; y++)
+-    {
+-        for (x=0; x<src_width; x++)
+-        {
+-            ARGB dst_color, src_color;
+-            src_color = ((ARGB*)(src + src_stride * y))[x];
+-
+-            if (comp_mode == CompositingModeSourceCopy)
+-            {
+-                if (!(src_color & 0xff000000))
+-                    GdipBitmapSetPixel(dst_bitmap, x+dst_x, y+dst_y, 0);
+-                else
+-                    GdipBitmapSetPixel(dst_bitmap, x+dst_x, y+dst_y, src_color);
+-            }
+-            else
+-            {
+-                if (!(src_color & 0xff000000))
+-                    continue;
+-
+-                GdipBitmapGetPixel(dst_bitmap, x+dst_x, y+dst_y, &dst_color);
+-                if (fmt & PixelFormatPAlpha)
+-                    GdipBitmapSetPixel(dst_bitmap, x+dst_x, y+dst_y, color_over_fgpremult(dst_color, src_color));
+-                else
+-                    GdipBitmapSetPixel(dst_bitmap, x+dst_x, y+dst_y, color_over(dst_color, src_color));
+-            }
+-        }
+-    }
+-
+-    return Ok;
+-}
+-
+ static GpStatus alpha_blend_hdc_pixels(GpGraphics *graphics, INT dst_x, INT dst_y,
+     const BYTE *src, INT src_width, INT src_height, INT src_stride, PixelFormat fmt)
+ {
+diff --git a/dlls/gdiplus/image.c b/dlls/gdiplus/image.c
+index 32bb2040303..0acf3c1386f 100644
+--- a/dlls/gdiplus/image.c
++++ b/dlls/gdiplus/image.c
+@@ -1079,6 +1079,143 @@ GpStatus convert_pixels(INT width, INT height,
+     return NotImplemented;
+ }
+ 
++/* Draw ARGB data to the given graphics object */
++GpStatus alpha_blend_bmp_pixels(GpGraphics *graphics, INT dst_x, INT dst_y,
++    const BYTE *src, INT src_width, INT src_height, INT src_stride, const PixelFormat fmt)
++{
++    GpBitmap *dst_bitmap = (GpBitmap*)graphics->image;
++    INT x, y;
++    CompositingMode comp_mode;
++
++#define blend_indexed(getpixel_function, setpixel_function) do { \
++    for (y=0; y<src_height; y++) \
++    { \
++        BYTE *row; \
++        row = dst_bitmap->bits+dst_bitmap->stride*(y+dst_y); \
++        for (x=0; x<src_width; x++) \
++        { \
++            BYTE index; \
++            ARGB dst_color, src_color; \
++            src_color = ((ARGB*)(src + src_stride * y))[x]; \
++            \
++            if (comp_mode == CompositingModeSourceCopy) \
++            { \
++                if (!(src_color & 0xff000000)) \
++                    setpixel_function( 0x00, 0x00, 0x00, 0x00, row , x+dst_x, dst_bitmap->image.palette); \
++                else \
++                    setpixel_function(src_color>>16, src_color>>8, src_color, src_color>>24, row , x+dst_x, dst_bitmap->image.palette); \
++            } \
++            else \
++            { \
++                if (!(src_color & 0xff000000)) \
++                    continue; \
++                \
++                getpixel_function(&index, row, x+dst_x); \
++                dst_color = dst_bitmap->image.palette->Entries[index]; \
++                if (fmt & PixelFormatPAlpha) \
++                    dst_color = color_over_fgpremult(dst_color, src_color); \
++                else \
++                    dst_color = color_over(dst_color, src_color); \
++                setpixel_function(dst_color>>16, dst_color>>8, dst_color, dst_color>>24, row , x+dst_x, dst_bitmap->image.palette); \
++            } \
++        } \
++    } \
++} \
++while(0)\
++
++#define blend_rgb(getpixel_function, setpixel_function) do { \
++    for (y=0; y<src_height; y++) \
++    { \
++        BYTE *row; \
++        row = dst_bitmap->bits+dst_bitmap->stride*(y+dst_y); \
++        for (x=0; x<src_width; x++) \
++        { \
++            BYTE r, g, b, a; \
++            ARGB dst_color, src_color; \
++            src_color = ((ARGB*)(src + src_stride * y))[x]; \
++            \
++            if (comp_mode == CompositingModeSourceCopy) \
++            { \
++                if (!(src_color & 0xff000000)) \
++                    setpixel_function(0x00, 0x00, 0x00, 0x00, row, x+dst_x); \
++                else \
++                    setpixel_function(src_color>>16, src_color>>8, src_color, src_color>>24, row, x+dst_x); \
++            } \
++            else \
++            { \
++                if (!(src_color & 0xff000000)) \
++                    continue; \
++                \
++                getpixel_function(&r, &g, &b, &a, row, x+dst_x); \
++                dst_color = a<<24|r<<16|g<<8|b; \
++                if (fmt & PixelFormatPAlpha) \
++                    dst_color = color_over_fgpremult(dst_color, src_color); \
++                else \
++                    dst_color = color_over(dst_color, src_color); \
++                setpixel_function(dst_color>>16, dst_color>>8, dst_color, dst_color>>24, row, x+dst_x); \
++            } \
++        } \
++    } \
++} \
++while(0)\
++
++    GdipGetCompositingMode(graphics, &comp_mode);
++
++    switch (dst_bitmap->format)
++    {
++        case PixelFormat1bppIndexed:
++            blend_indexed(getpixel_1bppIndexed, setpixel_1bppIndexed);
++            break;
++        case PixelFormat4bppIndexed:
++            blend_indexed(getpixel_1bppIndexed, setpixel_4bppIndexed);
++            break;
++        case PixelFormat8bppIndexed:
++            blend_indexed(getpixel_1bppIndexed, setpixel_8bppIndexed);
++            break;
++        case PixelFormat16bppGrayScale:
++            blend_rgb(getpixel_16bppGrayScale, setpixel_16bppGrayScale);
++            break;
++        case PixelFormat16bppRGB555:
++            blend_rgb(getpixel_16bppRGB555, setpixel_16bppRGB555);
++            break;
++        case PixelFormat16bppRGB565:
++            blend_rgb(getpixel_16bppRGB565, setpixel_16bppRGB565);
++            break;
++        case PixelFormat16bppARGB1555:
++            blend_rgb(getpixel_16bppARGB1555, setpixel_16bppARGB1555);
++            break;
++        case PixelFormat24bppRGB:
++            blend_rgb(getpixel_24bppRGB, setpixel_24bppRGB);
++            break;
++        case PixelFormat32bppRGB:
++            blend_rgb(getpixel_32bppRGB, setpixel_32bppRGB);
++            break;
++        case PixelFormat32bppARGB:
++            blend_rgb(getpixel_32bppARGB, setpixel_32bppARGB);
++            break;
++        case PixelFormat32bppPARGB:
++            blend_rgb(getpixel_32bppPARGB, setpixel_32bppPARGB);
++            break;
++        case PixelFormat48bppRGB:
++            blend_rgb(getpixel_48bppRGB, setpixel_48bppRGB);
++            break;
++        case PixelFormat64bppARGB:
++            blend_rgb(getpixel_64bppARGB, setpixel_64bppARGB);
++            break;
++        case PixelFormat64bppPARGB:
++            blend_rgb(getpixel_64bppPARGB, setpixel_64bppPARGB);
++            break;
++        default:
++            FIXME("not implemented for format 0x%x\n", dst_bitmap->format);
++            return NotImplemented;
++    }
++
++#undef blend_indexed
++#undef blend_rgb
++
++    return Ok;
++}
++
+ /* This function returns a pointer to an array of pixels that represents the
+  * bitmap. The *entire* bitmap is locked according to the lock mode specified by
+  * flags.  It is correct behavior that a user who calls this function with write
+-- 
+2.35.1
+

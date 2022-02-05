@@ -1,0 +1,180 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [RFC PATCH 3/3] iphlpapi: Implement GetBestRoute2.
+Message-Id: <3c090029-f8ea-e8a1-2849-8f36a9a9410f@gmail.com>
+Date: Wed, 2 Feb 2022 03:31:11 +0900
+In-Reply-To: <28a19a9d-4c20-7589-a25f-903c8a806016@gmail.com>
+References: <28a19a9d-4c20-7589-a25f-903c8a806016@gmail.com>
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+
+Notes:
+    A major problem with this patch is that the function is agnostic to the
+    source argument.  Even after some tinkering I still haven't figured out
+    how exactly Windows uses this argument.
+    
+    Also, possibly move GetBestRoute2 implementation to nsiproxy.sys if
+    applicable?
+
+ dlls/iphlpapi/iphlpapi_main.c | 137 +++++++++++++++++++++++++++++++++-
+ 1 file changed, 134 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/iphlpapi/iphlpapi_main.c b/dlls/iphlpapi/iphlpapi_main.c
+index 1b592ea3bb6..f3e17b3bbd3 100644
+--- a/dlls/iphlpapi/iphlpapi_main.c
++++ b/dlls/iphlpapi/iphlpapi_main.c
+@@ -4416,16 +4416,147 @@ DWORD WINAPI GetBestRoute2(NET_LUID *luid, NET_IFINDEX index,
+                            ULONG options, PMIB_IPFORWARD_ROW2 bestroute,
+                            SOCKADDR_INET *bestaddress)
+ {
+-    static int once;
++    MIB_IPFORWARD_TABLE2 *table;
++    MIB_UNICASTIPADDRESS_TABLE *table_ip;
++    const MIB_IPFORWARD_ROW2 *matched;
++    NET_LUID luid_match;
++    DWORD ndx, ndx_ip;
++    SOCKADDR_INET dest, matched_src;
++    UINT addr_bytes;
++    const BYTE *dest_prefix;
++    DWORD ret;
++    static unsigned int once;
+ 
+     if (!once++)
+-        FIXME("(%p, %d, %p, %p, 0x%08x, %p, %p): stub\n", luid, index, source,
++        FIXME("(%p, %d, %p, %p, 0x%08x, %p, %p): partial stub\n", luid, index, source,
+                 destination, options, bestroute, bestaddress);
+ 
+     if (!destination || !bestroute || !bestaddress)
+         return ERROR_INVALID_PARAMETER;
+ 
+-    return ERROR_NOT_SUPPORTED;
++    memcpy( &dest, destination, sizeof(dest) );
++    switch (dest.si_family)
++    {
++    case AF_INET:
++        addr_bytes = sizeof(dest.Ipv4.sin_addr);
++        dest_prefix = (const BYTE *)&dest.Ipv4.sin_addr;
++        break;
++    case AF_INET6:
++        addr_bytes = sizeof(dest.Ipv6.sin6_addr);
++        dest_prefix = (const BYTE *)&dest.Ipv6.sin6_addr;
++        break;
++    default:
++        return ERROR_INVALID_PARAMETER;
++    }
++
++    if (luid)
++    {
++        NET_IFINDEX unused;
++        memcpy( &luid_match, luid, sizeof(luid_match) );
++        if (luid_match.Value)
++        {
++            /* check LUID existence */
++            ret = ConvertInterfaceLuidToIndex( &luid_match, &unused );
++            if (ret)
++            {
++                if (ret == ERROR_FILE_NOT_FOUND) ret = ERROR_NOT_FOUND;
++                goto fail;
++            }
++        }
++    }
++    else if (index)
++    {
++        ret = ConvertInterfaceIndexToLuid( index, &luid_match );
++        if (ret) goto fail;
++    }
++    else
++    {
++        memset( &luid_match, 0, sizeof(luid_match) );
++    }
++
++    ret = GetIpForwardTable2( dest.si_family, &table );
++    if (ret) goto fail;
++
++    ret = GetUnicastIpAddressTable( dest.si_family, &table_ip );
++    if (ret) goto free_ipforwardtable2;
++
++    for (ndx = 0, matched = NULL; ndx < table->NumEntries; ndx++)
++    {
++        const MIB_IPFORWARD_ROW2 *row = &table->Table[ndx];
++        const BYTE *row_prefix;
++        const SOCKADDR_INET *forward_src;
++        UINT prefix_bytes, prefix_lastshr;
++
++        if (luid_match.Value && row->InterfaceLuid.Value != luid_match.Value) continue;
++        if (row->DestinationPrefix.Prefix.si_family != dest.si_family) continue;
++
++        if (row->DestinationPrefix.PrefixLength > addr_bytes * 8) continue;
++        switch (row->DestinationPrefix.Prefix.si_family)
++        {
++        case AF_INET:
++            row_prefix = (const BYTE *)&row->DestinationPrefix.Prefix.Ipv4.sin_addr;
++            break;
++        case AF_INET6:
++            row_prefix = (const BYTE *)&row->DestinationPrefix.Prefix.Ipv6.sin6_addr;
++            break;
++        default:
++            continue;
++        }
++
++        prefix_bytes = row->DestinationPrefix.PrefixLength >> 3;
++        prefix_lastshr = -row->DestinationPrefix.PrefixLength & 7;
++        if (memcmp(dest_prefix, row_prefix, prefix_bytes) != 0 ||
++            (prefix_lastshr && ((dest_prefix[prefix_bytes] ^ row_prefix[prefix_bytes]) >>
++                                 prefix_lastshr) != 0)) continue;
++
++        forward_src = NULL;
++        for (ndx_ip = 0; ndx_ip < table_ip->NumEntries; ndx_ip++)
++        {
++            if (row->InterfaceLuid.Value == table_ip->Table[ndx_ip].InterfaceLuid.Value)
++            {
++                forward_src = &table_ip->Table[ndx_ip].Address;
++                break;
++            }
++        }
++        if (!forward_src) continue;
++
++        if (!matched || row->DestinationPrefix.PrefixLength > matched->DestinationPrefix.PrefixLength ||
++            (row->DestinationPrefix.PrefixLength == matched->DestinationPrefix.PrefixLength &&
++             row->Metric < matched->Metric))
++        {
++            matched = row;
++            memcpy( &matched_src, forward_src, sizeof(matched_src) );
++        }
++    }
++
++    if (matched)
++    {
++        ret = NO_ERROR;
++    }
++    else
++    {
++        /* No route matches, which can happen if there's no default route. */
++        ret = ERROR_HOST_UNREACHABLE;
++    }
++
++    heap_free( table_ip );
++
++free_ipforwardtable2:
++    heap_free( table );
++
++fail:
++    if (ret == NO_ERROR && matched)
++    {
++        memcpy( bestroute, matched, sizeof(*bestroute) );
++        memcpy( bestaddress, &matched_src, sizeof(*bestaddress) );
++    }
++    else
++    {
++        memset( bestroute, 0, sizeof(*bestroute) );
++        memset( bestaddress, 0, sizeof(*bestaddress) );
++    }
++    TRACE("returning %d\n", ret);
++    return ret;
+ }
+ 
+ /******************************************************************
+
+-- 
+2.35.1
+

@@ -10,19 +10,19 @@ Subject: [PATCH 11/12] winex11.drv: Add time parameter to focus events
  2 files changed, 35 insertions(+), 19 deletions(-)
 
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
-index d3bca35b4f7..876aafe0d40 100644
+index b8e21806aaa..54b4c80a39f 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -641,7 +641,7 @@ static void set_focus( XEvent *xev, HWND hwnd, Time time )
-     else
-     {
-         TRACE( "setting foreground window to %p\n", hwnd );
--        __wine_set_foreground_window( hwnd, EVENT_x11_time_to_win32_time( time ) );
-+        __wine_set_foreground_window( hwnd, x11drv_time_to_ticks( time ) );
-     }
+@@ -617,7 +617,7 @@ static void set_focus( XEvent *xev, HWND hwnd, Time time )
+     x11drv_thread_data()->active_window = hwnd;
+ 
+     TRACE( "setting foreground window to %p\n", hwnd );
+-    __wine_set_foreground_window( hwnd, EVENT_x11_time_to_win32_time( time ) );
++    __wine_set_foreground_window( hwnd, x11drv_time_to_ticks( time ) );
  
      /* Some applications expect that a being deactivated topmost window
-@@ -824,10 +824,7 @@ static const char * const focus_modes[] =
+      * receives the WM_WINDOWPOSCHANGING/WM_WINDOWPOSCHANGED messages,
+@@ -799,10 +799,7 @@ static const char * const focus_modes[] =
      "NotifyWhileGrabbed"
  };
  
@@ -34,7 +34,7 @@ index d3bca35b4f7..876aafe0d40 100644
  {
      XFocusChangeEvent *event = &xev->xfocus;
      Time user_time;
-@@ -866,17 +863,25 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
+@@ -845,17 +842,25 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
      /* if the window was shown with SWP_NOACTIVATE and never received user input,
       * it should not activate */
      if (read_user_time( event->display, event->window, &user_time ) && !user_time)
@@ -64,7 +64,7 @@ index d3bca35b4f7..876aafe0d40 100644
   {
      HWND hwnd_tmp;
      Window focus_win;
-@@ -923,17 +928,13 @@ static void focus_out( Display *display , HWND hwnd )
+@@ -902,17 +907,13 @@ static void focus_out( Display *display , HWND hwnd )
          if (hwnd == GetForegroundWindow())
          {
              TRACE( "lost focus, setting fg to desktop\n" );
@@ -85,9 +85,9 @@ index d3bca35b4f7..876aafe0d40 100644
  {
      XFocusChangeEvent *event = &xev->xfocus;
  
-@@ -951,11 +952,22 @@ static BOOL X11DRV_FocusOut( HWND hwnd, XEvent *xev )
-     /* ignore wm specific NotifyUngrab / NotifyGrab events w.r.t focus */
-     if (event->mode == NotifyGrab || event->mode == NotifyUngrab) return FALSE;
+@@ -949,11 +950,22 @@ static BOOL X11DRV_FocusOut( HWND hwnd, XEvent *xev )
+         return TRUE; /* ignore wm specific NotifyUngrab / NotifyGrab events w.r.t focus */
+     }
  
 -    focus_out( event->display, hwnd );
 +    focus_out( event->display, hwnd, time );
@@ -109,7 +109,7 @@ index d3bca35b4f7..876aafe0d40 100644
  /***********************************************************************
   *           X11DRV_Expose
   */
-@@ -1805,6 +1817,7 @@ static void EVENT_DropURLs( HWND hWnd, XClientMessageEvent *event )
+@@ -1803,6 +1815,7 @@ static void EVENT_DropURLs( HWND hWnd, XClientMessageEvent *event )
  static void handle_xembed_protocol( HWND hwnd, XEvent *xev )
  {
      XClientMessageEvent *event = &xev->xclient;
@@ -117,7 +117,7 @@ index d3bca35b4f7..876aafe0d40 100644
  
      switch (event->data.l[1])
      {
-@@ -1831,12 +1844,12 @@ static void handle_xembed_protocol( HWND hwnd, XEvent *xev )
+@@ -1829,12 +1842,12 @@ static void handle_xembed_protocol( HWND hwnd, XEvent *xev )
  
      case XEMBED_WINDOW_DEACTIVATE:
          TRACE( "win %p/%lx XEMBED_WINDOW_DEACTIVATE message\n", hwnd, event->window );
@@ -133,10 +133,10 @@ index d3bca35b4f7..876aafe0d40 100644
  
      case XEMBED_MODALITY_ON:
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
-index 8707338d235..06bc5a2b12f 100644
+index 6c108ef6e42..968043f153f 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -254,6 +254,9 @@ extern void x11drv_xinput_init(void) DECLSPEC_HIDDEN;
+@@ -253,6 +253,9 @@ extern void x11drv_xinput_init(void) DECLSPEC_HIDDEN;
  extern void x11drv_xinput_enable( Display *display, Window window, long event_mask ) DECLSPEC_HIDDEN;
  extern void x11drv_xinput_disable( Display *display, Window window, long event_mask ) DECLSPEC_HIDDEN;
  

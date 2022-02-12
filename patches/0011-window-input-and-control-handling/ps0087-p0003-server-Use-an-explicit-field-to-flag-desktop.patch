@@ -17,14 +17,14 @@ index 11111111111..11111111111 100644
 --- a/server/window.c
 +++ b/server/window.c
 @@ -84,6 +84,7 @@ struct window
-     unsigned int     is_layered : 1;  /* has layered info been set? */
+     unsigned int     is_orphan : 1;   /* is window orphaned */
      unsigned int     is_cloaked : 1;  /* is the window cloaked by the app? */
      unsigned int     is_cloaked_by_shell : 1;
 +    unsigned int     is_desktop : 1;  /* is it a desktop window? */
      unsigned int     color_key;       /* color key for a layered window */
      unsigned int     alpha;           /* alpha value for a layered window */
      unsigned int     layered_flags;   /* flags for a layered window */
-@@ -144,7 +145,7 @@ static inline struct window *get_window( user_handle_t handle )
+@@ -205,7 +206,7 @@ static inline struct window *get_window( user_handle_t handle )
  /* check if window is the desktop */
  static inline int is_desktop_window( const struct window *win )
  {
@@ -32,8 +32,8 @@ index 11111111111..11111111111 100644
 +    return win && !win->parent && win->is_desktop;
  }
  
- /* get next window in Z-order list */
-@@ -187,7 +188,7 @@ static inline void update_pixel_format_flags( struct window *win )
+ /* check if window is orphaned */
+@@ -256,7 +257,7 @@ static inline void update_pixel_format_flags( struct window *win )
  static unsigned int get_monitor_dpi( struct window *win )
  {
      /* FIXME: we return the desktop window DPI for now */
@@ -42,15 +42,15 @@ index 11111111111..11111111111 100644
      return win->dpi ? win->dpi : USER_DEFAULT_SCREEN_DPI;
  }
  
-@@ -540,6 +541,7 @@ static struct window *create_window( struct window *parent, struct window *owner
-     win->is_layered     = 0;
+@@ -610,6 +611,7 @@ static struct window *create_window( struct window *parent, struct window *owner
+     win->is_orphan      = 0;
      win->is_cloaked     = 0;
      win->is_cloaked_by_shell = 0;
 +    win->is_desktop     = parent ? 0 : 1;
      win->dpi_awareness  = DPI_AWARENESS_PER_MONITOR_AWARE;
      win->dpi            = 0;
      win->user_data      = 0;
-@@ -700,7 +702,7 @@ static void map_dpi_region( struct window *win, struct region *region, unsigned
+@@ -782,7 +784,7 @@ static void map_dpi_region( struct window *win, struct region *region, unsigned
  /* convert coordinates from client to screen coords */
  static inline void client_to_screen( struct window *win, int *x, int *y )
  {
@@ -59,7 +59,7 @@ index 11111111111..11111111111 100644
      {
          *x += win->client_rect.left;
          *y += win->client_rect.top;
-@@ -875,7 +877,8 @@ struct thread *window_thread_from_point( user_handle_t scope, int x, int y )
+@@ -957,7 +959,8 @@ struct thread *window_thread_from_point( user_handle_t scope, int x, int y )
  static int all_windows_from_point( struct window *top, int x, int y, unsigned int dpi,
                                     struct user_handle_array *array )
  {
@@ -69,7 +69,7 @@ index 11111111111..11111111111 100644
      {
          screen_to_client( top->parent, &x, &y, dpi );
          dpi = top->parent->dpi;
-@@ -998,13 +1001,14 @@ static struct region *intersect_window_region( struct region *region, struct win
+@@ -1080,13 +1083,14 @@ static struct region *intersect_window_region( struct region *region, struct win
  /* convert coordinates from client to screen coords */
  static inline void client_to_screen_rect( struct window *win, rectangle_t *rect )
  {
@@ -85,7 +85,7 @@ index 11111111111..11111111111 100644
      if (!is_desktop_window(win))
      {
          int x = win->window_rect.left;
-@@ -2431,7 +2435,7 @@ DECL_HANDLER(set_window_pos)
+@@ -2539,7 +2543,7 @@ DECL_HANDLER(set_window_pos)
      unsigned int flags = req->swp_flags;
  
      if (!win) return;

@@ -1,0 +1,79 @@
+From: "Rémi Bernon" <rbernon@codeweavers.com>
+Subject: [PATCH 4/4] ntdll: Stop switching stack to exit_frame on thread exit.
+Message-Id: <20220207190544.1342125-4-rbernon@codeweavers.com>
+Date: Mon,  7 Feb 2022 20:05:44 +0100
+In-Reply-To: <20220207190544.1342125-1-rbernon@codeweavers.com>
+References: <20220207190544.1342125-1-rbernon@codeweavers.com>
+
+Let pthread_exit unwind the syscall and exit frames properly, and call
+its pthread_cleanup handlers.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52213
+Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
+---
+ dlls/ntdll/unix/signal_i386.c   | 19 +------------------
+ dlls/ntdll/unix/signal_x86_64.c | 17 +----------------
+ 2 files changed, 2 insertions(+), 34 deletions(-)
+
+diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_i386.c
++++ b/dlls/ntdll/unix/signal_i386.c
+@@ -2556,24 +2556,7 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
+  */
+ __ASM_GLOBAL_FUNC( signal_exit_thread,
+                    "movl 8(%esp),%ecx\n\t"
+-                   "movl 12(%esp),%esi\n\t"
+-                   "xorl %edx,%edx\n\t"
+-                   /* fetch exit frame */
+-                   "xchgl %edx,0x1f4(%esi)\n\t"    /* x86_thread_data()->exit_frame */
+-                   "testl %edx,%edx\n\t"
+-                   "jnz 1f\n\t"
+-                   "jmp *%ecx\n\t"
+-                   /* switch to exit frame stack */
+-                   "1:\tmovl 4(%esp),%eax\n\t"
+-                   "movl %edx,%ebp\n\t"
+-                   __ASM_CFI(".cfi_def_cfa %ebp,4\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %ebp,0\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %ebx,-4\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %esi,-8\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %edi,-12\n\t")
+-                   "leal -20(%ebp),%esp\n\t"
+-                   "pushl %eax\n\t"
+-                   "call *%ecx" )
++                   "jmp *%ecx\n\t" )
+ 
+ 
+ /***********************************************************************
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -3433,22 +3433,7 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
+  *           signal_exit_thread
+  */
+ __ASM_GLOBAL_FUNC( signal_exit_thread,
+-                   /* fetch exit frame */
+-                   "xorl %ecx,%ecx\n\t"
+-                   "xchgq %rcx,0x320(%rdx)\n\t"      /* amd64_thread_data()->exit_frame */
+-                   "testq %rcx,%rcx\n\t"
+-                   "jnz 1f\n\t"
+-                   "jmp *%rsi\n"
+-                   /* switch to exit frame stack */
+-                   "1:\tmovq %rcx,%rsp\n\t"
+-                   __ASM_CFI(".cfi_adjust_cfa_offset 56\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %rbp,48\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %rbx,40\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %r12,32\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %r13,24\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %r14,16\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %r15,8\n\t")
+-                   "call *%rsi" )
++                   "jmp *%rsi\n" )
+ 
+ /***********************************************************************
+  *           __wine_syscall_dispatcher
+
+-- 
+2.35.1
+

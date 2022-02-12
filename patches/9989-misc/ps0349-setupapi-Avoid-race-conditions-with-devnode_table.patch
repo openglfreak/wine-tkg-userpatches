@@ -1,0 +1,83 @@
+From: Brendan Shanks <bshanks@codeweavers.com>
+Subject: [PATCH] setupapi: Avoid race conditions with devnode_table.
+Message-Id: <20220208193303.63397-1-bshanks@codeweavers.com>
+Date: Tue,  8 Feb 2022 11:33:03 -0800
+
+Signed-off-by: Brendan Shanks <bshanks@codeweavers.com>
+---
+
+Fixes a crash where two threads calling SetupDiGetClassDevs() would end
+up in alloc_devnode() at the same time. One thread would start iterating
+through the table after devnode_table_size was set but before
+devnode_table was allocated, and crash.
+
+ dlls/setupapi/devinst.c | 28 +++++++++++++++++++++++++---
+ 1 file changed, 25 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/setupapi/devinst.c b/dlls/setupapi/devinst.c
+index 11111111111..11111111111 100644
+--- a/dlls/setupapi/devinst.c
++++ b/dlls/setupapi/devinst.c
+@@ -233,11 +233,21 @@ static inline void copy_device_iface_data(SP_DEVICE_INTERFACE_DATA *data,
+ 
+ static struct device **devnode_table;
+ static unsigned int devnode_table_size;
++static CRITICAL_SECTION devnode_table_cs;
++static CRITICAL_SECTION_DEBUG critsect_debug =
++{
++    0, 0, &devnode_table_cs,
++    { &critsect_debug.ProcessLocksList, &critsect_debug.ProcessLocksList },
++    0, 0, { (DWORD_PTR)(__FILE__ ": devnode_table_cs") }
++};
++static CRITICAL_SECTION devnode_table_cs = { &critsect_debug, -1, 0, 0, 0, 0 };
+ 
+ static DEVINST alloc_devnode(struct device *device)
+ {
+     unsigned int i;
+ 
++    EnterCriticalSection(&devnode_table_cs);
++
+     for (i = 0; i < devnode_table_size; ++i)
+     {
+         if (!devnode_table[i])
+@@ -260,21 +270,33 @@ static DEVINST alloc_devnode(struct device *device)
+     }
+ 
+     devnode_table[i] = device;
++
++    LeaveCriticalSection(&devnode_table_cs);
++
+     return i;
+ }
+ 
+ static void free_devnode(DEVINST devnode)
+ {
++    EnterCriticalSection(&devnode_table_cs);
+     devnode_table[devnode] = NULL;
++    LeaveCriticalSection(&devnode_table_cs);
+ }
+ 
+ static struct device *get_devnode_device(DEVINST devnode)
+ {
++    struct device *device = NULL;
++
++    EnterCriticalSection(&devnode_table_cs);
++
+     if (devnode < devnode_table_size)
+-        return devnode_table[devnode];
++        device = devnode_table[devnode];
++    else
++        WARN("device node %u not found\n", devnode);
+ 
+-    WARN("device node %u not found\n", devnode);
+-    return NULL;
++    LeaveCriticalSection(&devnode_table_cs);
++
++    return device;
+ }
+ 
+ static void SETUPDI_GuidToString(const GUID *guid, LPWSTR guidStr)
+
+-- 
+2.35.1
+

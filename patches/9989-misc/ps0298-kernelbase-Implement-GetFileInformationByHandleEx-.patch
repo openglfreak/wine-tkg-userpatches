@@ -1,19 +1,152 @@
-From a54d62b64ee51c08a46bfd831b049dcb4ac67808 Mon Sep 17 00:00:00 2001
 From: Paul Gofman <pgofman@codeweavers.com>
-Date: Tue, 28 Dec 2021 19:55:29 +0300
-Subject: [PATCH] kernelbase: Implement
- GetFileInformationByHandleEx(FileFullDirectoryInfo).
+Subject: [PATCH v2] kernelbase: Implement GetFileInformationByHandleEx(FileFullDirectoryInfo).
+Message-Id: <20220209153313.35011-1-pgofman@codeweavers.com>
+Date: Wed,  9 Feb 2022 18:33:13 +0300
 
-CW-Bug-Id: #19877
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
 ---
- dlls/kernelbase/file.c | 10 ++++++++--
- 1 file changed, 8 insertions(+), 2 deletions(-)
+v2:
+     - fix test failures on Win7.
 
+ dlls/kernel32/tests/file.c | 75 ++++++++++++++++++++++++++++++++++----
+ dlls/kernelbase/file.c     | 12 +++++-
+ include/winbase.h          | 15 ++++++++
+ 3 files changed, 93 insertions(+), 9 deletions(-)
+
+diff --git a/dlls/kernel32/tests/file.c b/dlls/kernel32/tests/file.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernel32/tests/file.c
++++ b/dlls/kernel32/tests/file.c
+@@ -4181,11 +4181,13 @@ todo_wine_if (i == 1)
+ static void test_GetFileInformationByHandleEx(void)
+ {
+     int i;
+-    char tempPath[MAX_PATH], tempFileName[MAX_PATH], buffer[1024], *strPtr;
+-    BOOL ret;
++    char tempPath[MAX_PATH], tempFileName[MAX_PATH], buffer[1024], buffer2[1024], *strPtr;
++    BOOL first, ret;
+     DWORD ret2, written;
++    unsigned int count, count2, size;
+     HANDLE directory, file;
+     FILE_ID_BOTH_DIR_INFO *bothDirInfo;
++    FILE_FULL_DIR_INFO *full_dir_info;
+     FILE_BASIC_INFO *basicInfo;
+     FILE_STANDARD_INFO *standardInfo;
+     FILE_NAME_INFO *nameInfo;
+@@ -4195,17 +4197,26 @@ static void test_GetFileInformationByHandleEx(void)
+     FILE_DISPOSITION_INFO dispinfo;
+     FILE_END_OF_FILE_INFO eofinfo;
+     FILE_RENAME_INFO renameinfo;
++    BOOL full_dir_info_supported;
+ 
+-    struct {
++    struct
++    {
+         FILE_INFO_BY_HANDLE_CLASS handleClass;
+         void *ptr;
+         DWORD size;
+         DWORD errorCode;
+-    } checks[] = {
++        BOOL not_always_supported;
++    }
++    checks[] =
++    {
+         {0xdeadbeef, NULL, 0, ERROR_INVALID_PARAMETER},
+         {FileIdBothDirectoryInfo, NULL, 0, ERROR_BAD_LENGTH},
+         {FileIdBothDirectoryInfo, NULL, sizeof(buffer), ERROR_NOACCESS},
+-        {FileIdBothDirectoryInfo, buffer, 0, ERROR_BAD_LENGTH}};
++        {FileIdBothDirectoryInfo, buffer, 0, ERROR_BAD_LENGTH},
++        {FileFullDirectoryInfo, NULL, 0, ERROR_BAD_LENGTH, TRUE},
++        {FileFullDirectoryInfo, NULL, sizeof(buffer), ERROR_NOACCESS},
++        {FileFullDirectoryInfo, buffer, 0, ERROR_BAD_LENGTH},
++    };
+ 
+     if (!pGetFileInformationByHandleEx)
+     {
+@@ -4232,10 +4243,17 @@ static void test_GetFileInformationByHandleEx(void)
+     {
+         SetLastError(0xdeadbeef);
+         ret = pGetFileInformationByHandleEx(directory, checks[i].handleClass, checks[i].ptr, checks[i].size);
++        if (checks[i].not_always_supported && !ret && GetLastError() == ERROR_INVALID_PARAMETER)
++        {
++            win_skip("class %u is not supported, skipping the rest.\n", checks[i].handleClass);
++            break;
++        }
+         ok(!ret && GetLastError() == checks[i].errorCode, "GetFileInformationByHandleEx: expected error %u, "
+            "got %u.\n", checks[i].errorCode, GetLastError());
+     }
++    full_dir_info_supported = (i == ARRAY_SIZE(checks));
+ 
++    first = TRUE;
+     while (TRUE)
+     {
+         memset(buffer, 0xff, sizeof(buffer));
+@@ -4243,8 +4261,51 @@ static void test_GetFileInformationByHandleEx(void)
+         if (!ret && GetLastError() == ERROR_NO_MORE_FILES)
+             break;
+         ok(ret, "GetFileInformationByHandleEx: failed to query for FileIdBothDirectoryInfo, got error %u.\n", GetLastError());
+-        if (!ret)
+-            break;
++
++        if (full_dir_info_supported && first)
++        {
++            count = 1;
++            bothDirInfo = (FILE_ID_BOTH_DIR_INFO *)buffer;
++            while (bothDirInfo->NextEntryOffset)
++            {
++                ++count;
++                size = offsetof(FILE_ID_BOTH_DIR_INFO, FileName[bothDirInfo->FileNameLength / 2]);
++                size = (size + 7) & ~7;
++                ok(bothDirInfo->NextEntryOffset == size,
++                        "Got unexpected structure size, NextEntryOffset %u (%u).\n", bothDirInfo->NextEntryOffset,
++                        size);
++                bothDirInfo = (FILE_ID_BOTH_DIR_INFO *)(((char *)bothDirInfo) + bothDirInfo->NextEntryOffset);
++            }
++            size = offsetof(FILE_FULL_DIR_INFO, FileName[bothDirInfo->FileNameLength / 2]);
++            ret = pGetFileInformationByHandleEx(directory, FileFullDirectoryRestartInfo, buffer2, sizeof(buffer2));
++            ok(ret, "failed to query for FileFullDirectoryInfo, got error %u.\n", GetLastError());
++
++            count2 = 0;
++            bothDirInfo = (FILE_ID_BOTH_DIR_INFO *)buffer;
++            full_dir_info = (FILE_FULL_DIR_INFO *)buffer2;
++            while (1)
++            {
++                ++count2;
++                ok(bothDirInfo->FileNameLength == full_dir_info->FileNameLength,
++                        "FileNameLength does not match, count2 %u.\n", count2);
++                ok(!memcmp(bothDirInfo->FileName, full_dir_info->FileName, full_dir_info->FileNameLength),
++                        "FileName does not match, count %u.\n", count2);
++
++                if (!full_dir_info->NextEntryOffset || !bothDirInfo->NextEntryOffset)
++                    break;
++
++                size = offsetof(FILE_FULL_DIR_INFO, FileName[full_dir_info->FileNameLength / 2]);
++                size = (size + 7) & ~7;
++                ok(full_dir_info->NextEntryOffset == size,
++                        "Got unexpected structure size, NextEntryOffset %u (%u).\n", bothDirInfo->NextEntryOffset,
++                        size);
++                full_dir_info = (FILE_FULL_DIR_INFO *)(((char *)full_dir_info) + full_dir_info->NextEntryOffset);
++                bothDirInfo = (FILE_ID_BOTH_DIR_INFO *)(((char *)bothDirInfo) + bothDirInfo->NextEntryOffset);
++            }
++            ok(count2 == count, "Got unexpected count2 %u, count %u.\n", count2, count);
++            first = FALSE;
++        }
++
+         bothDirInfo = (FILE_ID_BOTH_DIR_INFO *)buffer;
+         while (TRUE)
+         {
 diff --git a/dlls/kernelbase/file.c b/dlls/kernelbase/file.c
 index 11111111111..11111111111 100644
 --- a/dlls/kernelbase/file.c
 +++ b/dlls/kernelbase/file.c
-@@ -3252,8 +3252,6 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetFileInformationByHandleEx( HANDLE handle, FILE_
+@@ -3247,13 +3247,13 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetFileInformationByHandleEx( HANDLE handle, FILE_
+     NTSTATUS status;
+     IO_STATUS_BLOCK io;
+ 
++    TRACE( "%p, %u, %p, %u.\n", handle, class, info, size );
++
+     switch (class)
+     {
      case FileStreamInfo:
      case FileCompressionInfo:
      case FileRemoteProtocolInfo:
@@ -22,13 +155,12 @@ index 11111111111..11111111111 100644
      case FileStorageInfo:
      case FileAlignmentInfo:
      case FileIdExtdDirectoryInfo:
-@@ -3262,6 +3260,14 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetFileInformationByHandleEx( HANDLE handle, FILE_
+@@ -3262,6 +3262,13 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetFileInformationByHandleEx( HANDLE handle, FILE_
          SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
          return FALSE;
  
 +    case FileFullDirectoryRestartInfo:
 +    case FileFullDirectoryInfo:
-+        TRACE( "%p, FileFullDirectoryInfo, %p, %u.\n", handle, info, size );
 +        status = NtQueryDirectoryFile( handle, NULL, NULL, NULL, &io, info, size,
 +                                       FileFullDirectoryInformation, FALSE, NULL,
 +                                       (class == FileFullDirectoryRestartInfo) );
@@ -37,3 +169,41 @@ index 11111111111..11111111111 100644
      case FileAttributeTagInfo:
          status = NtQueryInformationFile( handle, &io, info, size, FileAttributeTagInformation );
          break;
+@@ -3295,6 +3302,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetFileInformationByHandleEx( HANDLE handle, FILE_
+     case FileIoPriorityHintInfo:
+     case FileEndOfFileInfo:
+     default:
++        WARN( "class %u is not supported.\n", class );
+         SetLastError( ERROR_INVALID_PARAMETER );
+         return FALSE;
+     }
+diff --git a/include/winbase.h b/include/winbase.h
+index 11111111111..11111111111 100644
+--- a/include/winbase.h
++++ b/include/winbase.h
+@@ -823,6 +823,21 @@ typedef struct _FILE_ID_BOTH_DIR_INFO {
+     WCHAR         FileName[1];
+ } FILE_ID_BOTH_DIR_INFO, *PFILE_ID_BOTH_DIR_INFO;
+ 
++typedef struct _FILE_FULL_DIR_INFO {
++    ULONG         NextEntryOffset;
++    ULONG         FileIndex;
++    LARGE_INTEGER CreationTime;
++    LARGE_INTEGER LastAccessTime;
++    LARGE_INTEGER LastWriteTime;
++    LARGE_INTEGER ChangeTime;
++    LARGE_INTEGER EndOfFile;
++    LARGE_INTEGER AllocationSize;
++    ULONG         FileAttributes;
++    ULONG         FileNameLength;
++    ULONG         EaSize;
++    WCHAR         FileName[1];
++} FILE_FULL_DIR_INFO, *PFILE_FULL_DIR_INFO;
++
+ typedef struct _FILE_BASIC_INFO {
+     LARGE_INTEGER CreationTime;
+     LARGE_INTEGER LastAccessTime;
+
+-- 
+2.35.1
+

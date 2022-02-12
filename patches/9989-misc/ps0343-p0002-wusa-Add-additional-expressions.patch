@@ -1,0 +1,83 @@
+From: Mohamad Al-Jaf <mohamadaljaf@gmail.com>
+Subject: [PATCH 2/2] wusa: Add additional expressions.
+Message-Id: <20220211010607.184056-2-mohamadaljaf@gmail.com>
+Date: Thu, 10 Feb 2022 20:06:07 -0500
+In-Reply-To: <20220211010607.184056-1-mohamadaljaf@gmail.com>
+References: <20220211010607.184056-1-mohamadaljaf@gmail.com>
+
+This allows more update packages to install.
+Example: Microsoft-Windows-MediaFeaturePack-OOB-Package_x64.msu.
+
+Signed-off-by: Mohamad Al-Jaf <mohamadaljaf@gmail.com>
+---
+ programs/wusa/main.c | 38 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+diff --git a/programs/wusa/main.c b/programs/wusa/main.c
+index 11111111111..11111111111 100644
+--- a/programs/wusa/main.c
++++ b/programs/wusa/main.c
+@@ -242,6 +242,17 @@ static INT_PTR CDECL cabinet_notify(FDINOTIFICATIONTYPE fdint, PFDINOTIFICATION
+     }
+ }
+ 
++static DWORD copy_filename( const WCHAR *name, WCHAR *buffer, DWORD len )
++{
++    UINT ret = lstrlenW( name ) + 1;
++    if (buffer && len >= ret)
++    {
++        lstrcpyW( buffer, name );
++        ret--;
++    }
++    return ret;
++}
++
+ static BOOL extract_cabinet(const WCHAR *filename, const WCHAR *destination)
+ {
+     char *filenameA = NULL;
+@@ -478,7 +489,18 @@ static BOOL strbuf_append(struct strbuf *buf, const WCHAR *str, DWORD len)
+ 
+ static WCHAR *lookup_expression(struct assembly_entry *assembly, const WCHAR *key)
+ {
++    WCHAR common_dir[] = L"C:\\Program Files\\Common Files";
++    WCHAR common_x86_dir[] = L"C:\\Program Files (x86)\\Common Files";
++    WCHAR data_dir[] = L"C:\\ProgramData";
++    WCHAR drivers_dir[] = L"C:\\windows\\system32\\drivers";
++    WCHAR files_dir[] = L"C:\\Program Files";
++    WCHAR files_x86_dir[] = L"C:\\Program Files (x86)";
++    WCHAR fonts_dir[] = L"C:\\windows\\Fonts";
++    WCHAR inf_dir[] = L"C:\\windows\\inf";
++    WCHAR wbem_dir[] = L"C:\\windows\\system32\\wbem";
++
+     WCHAR path[MAX_PATH];
++    WCHAR *dir = NULL;
+ 
+     if (!wcsicmp(key, L"runtime.system32"))
+     {
+@@ -498,6 +520,22 @@ static WCHAR *lookup_expression(struct assembly_entry *assembly, const WCHAR *ke
+         return strdupW(path);
+     }
+ 
++    if (!wcsicmp(key, L"runtime.commonFiles"))           dir = common_dir;
++    else if (!wcsicmp(key, L"runtime.commonFilesX86"))   dir = common_x86_dir;
++    else if (!wcsicmp(key, L"runtime.programData"))      dir = data_dir;
++    else if (!wcsicmp(key, L"runtime.drivers"))          dir = drivers_dir;
++    else if (!wcsicmp(key, L"runtime.programFiles"))     dir = files_dir;
++    else if (!wcsicmp(key, L"runtime.programFilesX86"))  dir = files_x86_dir;
++    else if (!wcsicmp(key, L"runtime.fonts"))            dir = fonts_dir;
++    else if (!wcsicmp(key, L"runtime.inf"))              dir = inf_dir;
++    else if (!wcsicmp(key, L"runtime.wbem"))             dir = wbem_dir;
++
++    if (dir)
++    {
++        copy_filename(dir, path, ARRAY_SIZE(path));
++        return strdupW(path);
++    }
++
+     FIXME("Unknown expression %s\n", debugstr_w(key));
+     return NULL;
+ }
+
+-- 
+2.35.1
+

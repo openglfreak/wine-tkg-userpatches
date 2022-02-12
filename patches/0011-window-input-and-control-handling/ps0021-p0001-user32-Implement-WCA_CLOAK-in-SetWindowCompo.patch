@@ -27,13 +27,14 @@ around this one.
 
  dlls/user32/driver.c       |   6 ++
  dlls/user32/message.c      |   2 +
- dlls/user32/user_private.h |  40 ++++++++++++
+ dlls/user32/user_private.h |  39 ++++++++++++
  dlls/user32/win.c          | 121 ++++++++++++++++++++++++++++++++++---
  dlls/win32u/driver.c       |   7 +++
+ include/ntuser.h           |   1 +
  include/wine/gdi_driver.h  |   1 +
  server/protocol.def        |  13 ++++
  server/window.c            |  80 +++++++++++++++++++++---
- 8 files changed, 254 insertions(+), 16 deletions(-)
+ 9 files changed, 254 insertions(+), 16 deletions(-)
 
 diff --git a/dlls/user32/driver.c b/dlls/user32/driver.c
 index 11111111111..11111111111 100644
@@ -76,15 +77,7 @@ diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/user32/user_private.h
 +++ b/dlls/user32/user_private.h
-@@ -58,6 +58,7 @@ enum wine_internal_message
-     WM_WINE_MOUSE_LL_HOOK,
-     WM_WINE_CLIPCURSOR,
-     WM_WINE_UPDATEWINDOWSTATE,
-+    WM_WINE_SETWINDOWCLOAKED,
-     WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
-     WM_WINE_LAST_DRIVER_MSG = 0x80001fff
- };
-@@ -286,6 +287,45 @@ typedef struct
+@@ -268,6 +268,45 @@ typedef struct
  
  #include "poppack.h"
  
@@ -196,7 +189,7 @@ index 11111111111..11111111111 100644
      return ret;
  }
  
-@@ -1494,6 +1508,7 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
+@@ -1495,6 +1509,7 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
      MDICREATESTRUCTW mdi_cs;
      CBT_CREATEWNDW cbtc;
      CREATESTRUCTW cbcs;
@@ -204,7 +197,7 @@ index 11111111111..11111111111 100644
  
      className = CLASS_GetVersionedName(className, NULL, NULL, TRUE);
  
-@@ -1618,14 +1633,14 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
+@@ -1619,14 +1634,14 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
      style = cs->style & ~WS_VISIBLE;
      ex_style = cs->dwExStyle & ~WS_EX_LAYERED;
      if (!(wndPtr = create_window_handle( parent, owner, className, module,
@@ -221,7 +214,7 @@ index 11111111111..11111111111 100644
              return 0;
      }
      hwnd = wndPtr->obj.handle;
-@@ -1800,6 +1815,8 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
+@@ -1801,6 +1816,8 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
      /* call the driver */
  
      if (!USER_Driver->pCreateWindow( hwnd )) goto failed;
@@ -230,7 +223,7 @@ index 11111111111..11111111111 100644
  
      NotifyWinEvent(EVENT_OBJECT_CREATE, hwnd, OBJID_WINDOW, 0);
  
-@@ -4374,11 +4391,101 @@ BOOL WINAPI SetWindowDisplayAffinity(HWND hwnd, DWORD affinity)
+@@ -4375,11 +4392,101 @@ BOOL WINAPI SetWindowDisplayAffinity(HWND hwnd, DWORD affinity)
  /**********************************************************************
   *              SetWindowCompositionAttribute (USER32.@)
   */
@@ -361,6 +354,18 @@ index 11111111111..11111111111 100644
      SET_USER_FUNC(SetWindowRgn);
      SET_USER_FUNC(SetWindowIcon);
      SET_USER_FUNC(SetWindowStyle);
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 11111111111..11111111111 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -125,6 +125,7 @@ enum wine_internal_message
+     WM_WINE_MOUSE_LL_HOOK,
+     WM_WINE_CLIPCURSOR,
+     WM_WINE_UPDATEWINDOWSTATE,
++    WM_WINE_SETWINDOWCLOAKED,
+     WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
+     WM_WINE_LAST_DRIVER_MSG = 0x80001fff
+ };
 diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
 index 11111111111..11111111111 100644
 --- a/include/wine/gdi_driver.h
@@ -377,7 +382,7 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -2310,6 +2310,7 @@ enum message_type
+@@ -2320,6 +2320,7 @@ enum message_type
      client_ptr_t   class_ptr;   /* pointer to class in client address space */
      int            dpi;         /* window DPI if not per-monitor aware */
      int            awareness;   /* window DPI awareness */
@@ -385,7 +390,7 @@ index 11111111111..11111111111 100644
  @END
  
  
-@@ -2335,6 +2336,7 @@ enum message_type
+@@ -2345,6 +2346,7 @@ enum message_type
  @REPLY
      user_handle_t  full_owner;  /* full handle of new owner */
      user_handle_t  prev_owner;  /* full handle of previous owner */
@@ -393,7 +398,7 @@ index 11111111111..11111111111 100644
  @END
  
  
-@@ -2383,6 +2385,17 @@ enum message_type
+@@ -2392,6 +2394,17 @@ enum message_type
  #define SET_WIN_UNICODE   0x40
  
  
@@ -416,22 +421,22 @@ index 11111111111..11111111111 100644
 --- a/server/window.c
 +++ b/server/window.c
 @@ -81,6 +81,7 @@ struct window
-     unsigned int     is_unicode : 1;  /* ANSI or unicode */
      unsigned int     is_linked : 1;   /* is it linked into the parent z-order list? */
      unsigned int     is_layered : 1;  /* has layered info been set? */
+     unsigned int     is_orphan : 1;   /* is window orphaned */
 +    unsigned int     is_cloaked : 1;  /* is the window cloaked by the app? */
      unsigned int     color_key;       /* color key for a layered window */
      unsigned int     alpha;           /* alpha value for a layered window */
      unsigned int     layered_flags;   /* flags for a layered window */
-@@ -535,6 +536,7 @@ static struct window *create_window( struct window *parent, struct window *owner
-     win->is_unicode     = 1;
+@@ -605,6 +606,7 @@ static struct window *create_window( struct window *parent, struct window *owner
      win->is_linked      = 0;
      win->is_layered     = 0;
+     win->is_orphan      = 0;
 +    win->is_cloaked     = 0;
      win->dpi_awareness  = DPI_AWARENESS_PER_MONITOR_AWARE;
      win->dpi            = 0;
      win->user_data      = 0;
-@@ -819,6 +821,7 @@ static int get_window_children_from_point( struct window *parent, int x, int y,
+@@ -901,6 +903,7 @@ static int get_window_children_from_point( struct window *parent, int x, int y,
      {
          int x_child = x, y_child = y;
  
@@ -439,7 +444,7 @@ index 11111111111..11111111111 100644
          if (!is_point_in_window( ptr, &x_child, &y_child, parent->dpi )) continue;  /* skip it */
  
          /* if point is in client area, and window is not minimized or disabled, check children */
-@@ -891,6 +894,21 @@ static int all_windows_from_point( struct window *top, int x, int y, unsigned in
+@@ -973,6 +976,21 @@ static int all_windows_from_point( struct window *top, int x, int y, unsigned in
      return 1;
  }
  
@@ -461,7 +466,7 @@ index 11111111111..11111111111 100644
  
  /* return the thread owning a window */
  struct thread *get_window_thread( user_handle_t handle )
-@@ -2011,14 +2029,16 @@ DECL_HANDLER(create_window)
+@@ -2114,14 +2132,16 @@ DECL_HANDLER(create_window)
      }
      win->style = req->style;
      win->ex_style = req->ex_style;
@@ -485,7 +490,7 @@ index 11111111111..11111111111 100644
  }
  
  
-@@ -2118,8 +2138,9 @@ DECL_HANDLER(set_window_owner)
+@@ -2226,8 +2246,9 @@ DECL_HANDLER(set_window_owner)
          }
      }
  
@@ -497,7 +502,7 @@ index 11111111111..11111111111 100644
  }
  
  
-@@ -2197,6 +2218,47 @@ DECL_HANDLER(set_window_info)
+@@ -2305,6 +2326,47 @@ DECL_HANDLER(set_window_info)
  }
  
  

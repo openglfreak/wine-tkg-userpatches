@@ -4,22 +4,23 @@ Date: Fri, 13 Mar 2020 16:32:56 +0100
 Subject: [PATCH 2/4] server: Don't reallocate reply when size changes.
 
 ---
- server/request.c | 11 ++++++++---
+ server/request.c | 12 +++++++++---
  server/thread.c  |  6 +++++-
  server/thread.h  |  2 ++
- 3 files changed, 15 insertions(+), 4 deletions(-)
+ 3 files changed, 16 insertions(+), 4 deletions(-)
 
 diff --git a/server/request.c b/server/request.c
 index 11111111111..11111111111 100644
 --- a/server/request.c
 +++ b/server/request.c
-@@ -160,7 +160,12 @@ void fatal_error( const char *err, ... )
+@@ -160,7 +160,13 @@ void fatal_error( const char *err, ... )
  void *set_reply_data_size( data_size_t size )
  {
      assert( size <= get_reply_max_size() );
 -    if (size && !(current->reply_data = mem_alloc( size ))) size = 0;
 +    if (size > current->rep_data_size)
 +    {
++        if (current->rep_data) free(current->rep_data);
 +        if (!(current->rep_data = mem_alloc( size ))) size = 0;
 +        current->rep_data_size = size;
 +    }
@@ -27,7 +28,7 @@ index 11111111111..11111111111 100644
      current->reply_size = size;
      return current->reply_data;
  }
-@@ -235,7 +240,7 @@ void write_reply( struct thread *thread )
+@@ -235,7 +241,7 @@ void write_reply( struct thread *thread )
      {
          if (!(thread->reply_towrite -= ret))
          {
@@ -36,7 +37,7 @@ index 11111111111..11111111111 100644
              thread->reply_data = NULL;
              /* sent everything, can go back to waiting for requests */
              set_fd_events( thread->request_fd, POLLIN );
-@@ -278,7 +283,7 @@ static void send_reply( union generic_reply *reply )
+@@ -278,7 +284,7 @@ static void send_reply( union generic_reply *reply )
              return;
          }
      }

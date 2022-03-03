@@ -1,9 +1,9 @@
 From: Jinoh Kang <jinoh.kang.kr@gmail.com>
-Subject: [PATCH v4 03/13] loader: Refactor argv/envp/auxv management.
-Message-Id: <d49e07f7-183d-f98e-305f-6263e23326c8@gmail.com>
-Date: Sat, 29 Jan 2022 03:40:17 +0900
-In-Reply-To: <b9568d9a-6539-b275-6bb8-f1441186d0d0@gmail.com>
-References: <b9568d9a-6539-b275-6bb8-f1441186d0d0@gmail.com>
+Subject: [PATCH v5 03/13] loader: Refactor argv/envp/auxv management.
+Message-Id: <13f24c14-b870-d400-a8f6-dcc7eb0df05a@gmail.com>
+Date: Sat, 5 Mar 2022 23:54:25 +0900
+In-Reply-To: <7a3d3b9e-7d1a-9fde-99a7-bd47d51fda35@gmail.com>
+References: <7a3d3b9e-7d1a-9fde-99a7-bd47d51fda35@gmail.com>
 
 Collect scattered variables holding stack addresses (e.g. pargc, argv,
 envp, auxv) in one place.
@@ -25,12 +25,14 @@ Notes:
     
     v3 -> v4:
     - add comments
+    
+    v4 -> v5: no changes
 
  loader/preloader.c | 269 +++++++++++++++++++++++++++++++++------------
  1 file changed, 199 insertions(+), 70 deletions(-)
 
 diff --git a/loader/preloader.c b/loader/preloader.c
-index 11111111111..11111111111 100644
+index 585be50624f..73df8b591f0 100644
 --- a/loader/preloader.c
 +++ b/loader/preloader.c
 @@ -164,6 +164,25 @@ struct wld_auxv
@@ -226,12 +228,12 @@ index 11111111111..11111111111 100644
              delete_count++;
 -            break;
 +            continue;
-+        }
+         }
 +        if (avpd != avps)
 +        {
 +            avpd->a_type = avps->a_type;
 +            avpd->a_un.a_val = avps->a_un.a_val;
-         }
++        }
 +        avpd++;
      }
 +    avpd->a_type = AT_NULL;
@@ -316,10 +318,11 @@ index 11111111111..11111111111 100644
 -    pargc = *stack;
 -    argv = (char **)pargc + 1;
 -    if (*pargc < 2) fatal_error( "Usage: %s wine_binary [args]\n", argv[0] );
--
++    parse_stackargs( &state.s, *stack );
+ 
 -    /* skip over the parameters */
 -    p = argv + *pargc + 1;
-+    parse_stackargs( &state.s, *stack );
++    if (state.s.argc < 2) fatal_error( "Usage: %s wine_binary [args]\n", state.s.argv[0] );
  
 -    /* skip over the environment */
 -    while (*p)
@@ -328,8 +331,7 @@ index 11111111111..11111111111 100644
 -        if (!wld_strncmp( *p, res, sizeof(res)-1 )) reserve = *p + sizeof(res) - 1;
 -        p++;
 -    }
-+    if (state.s.argc < 2) fatal_error( "Usage: %s wine_binary [args]\n", state.s.argv[0] );
- 
+-
 -    av = (struct wld_auxv *)(p+1);
 -    page_size = get_auxiliary( av, AT_PAGESZ, 4096 );
 +    page_size = get_auxiliary( state.s.auxv, AT_PAGESZ, 4096 );
@@ -414,5 +416,5 @@ index 11111111111..11111111111 100644
  
 
 -- 
-2.35.1
+2.34.1
 

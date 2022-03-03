@@ -1,0 +1,96 @@
+From 00d7d82ee91ecdd441227d304dc009b8854b83da Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 10 Jan 2022 13:34:30 +0100
+Subject: [PATCH 1/2] ntdll/tests: Add some GlobalMemoryStatusEx tests.
+
+---
+ dlls/ntdll/tests/info.c | 68 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 68 insertions(+)
+
+diff --git a/dlls/ntdll/tests/info.c b/dlls/ntdll/tests/info.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/tests/info.c
++++ b/dlls/ntdll/tests/info.c
+@@ -3586,6 +3586,73 @@ static void test_debuggee_dbgport(int argc, char **argv)
+     winetest_pop_context();
+ }
+ 
++static void test_GlobalMemoryStatusEx(void)
++{
++    SYSTEM_PERFORMANCE_INFORMATION perf_info;
++    SYSTEM_BASIC_INFORMATION basic_info;
++    MEMORYSTATUSEX memory = {0}, expect;
++    VM_COUNTERS_EX vmc;
++    NTSTATUS status;
++    BOOL ret;
++
++    SetLastError( 0xdeadbeef );
++    ret = GlobalMemoryStatusEx( &memory );
++    ok( !ret, "GlobalMemoryStatusEx succeeded\n" );
++    ok( GetLastError() == ERROR_INVALID_PARAMETER, "got error %u\n", GetLastError() );
++
++    do
++    {
++        status = NtQuerySystemInformation( SystemBasicInformation, &basic_info, sizeof(basic_info), NULL );
++        ok( !status, "NtQuerySystemInformation returned %#x\n", status );
++        status = NtQuerySystemInformation( SystemPerformanceInformation, &perf_info, sizeof(perf_info), NULL );
++        ok( !status, "NtQuerySystemInformation returned %#x\n", status );
++        status = NtQueryInformationProcess( GetCurrentProcess(), ProcessVmCounters, &vmc, sizeof(vmc), NULL );
++        ok( !status, "NtQueryInformationProcess returned %#x\n", status );
++        memory.dwLength = sizeof(MEMORYSTATUSEX);
++        ret = GlobalMemoryStatusEx( &memory );
++        ok( ret, "GlobalMemoryStatusEx succeeded\n" );
++    } while (memory.ullAvailPhys != (ULONGLONG)perf_info.AvailablePages * basic_info.PageSize);
++
++    ok( basic_info.PageSize, "got 0 PageSize\n" );
++    ok( basic_info.MmNumberOfPhysicalPages, "got 0 MmNumberOfPhysicalPages\n" );
++    ok( !!basic_info.HighestUserAddress, "got 0 HighestUserAddress\n" );
++    ok( !!basic_info.LowestUserAddress, "got 0 LowestUserAddress\n" );
++    ok( perf_info.TotalCommittedPages, "got 0 TotalCommittedPages\n" );
++    ok( perf_info.TotalCommitLimit, "got 0 TotalCommitLimit\n" );
++    ok( perf_info.AvailablePages, "got 0 AvailablePages\n" );
++
++    expect.dwMemoryLoad = (memory.ullTotalPhys - memory.ullAvailPhys) / (memory.ullTotalPhys / 100);
++    expect.ullTotalPhys = (ULONGLONG)basic_info.MmNumberOfPhysicalPages * basic_info.PageSize;
++    expect.ullAvailPhys = (ULONGLONG)perf_info.AvailablePages * basic_info.PageSize;
++    expect.ullTotalPageFile = (ULONGLONG)perf_info.TotalCommitLimit * basic_info.PageSize;
++    expect.ullAvailPageFile = (ULONGLONG)(perf_info.TotalCommitLimit - perf_info.TotalCommittedPages) * basic_info.PageSize;
++    expect.ullTotalVirtual = (ULONG_PTR)basic_info.HighestUserAddress - (ULONG_PTR)basic_info.LowestUserAddress + 1;
++    expect.ullAvailVirtual = expect.ullTotalVirtual - (ULONGLONG)vmc.WorkingSetSize * 4 /* approximate */;
++    expect.ullAvailExtendedVirtual = 0;
++
++    ok( memory.dwMemoryLoad == expect.dwMemoryLoad, "got dwMemoryLoad %u\n",
++        memory.dwMemoryLoad );
++    todo_wine
++    ok( memory.ullTotalPhys == expect.ullTotalPhys, "got ullTotalPhys %s\n",
++        wine_dbgstr_longlong( memory.ullTotalPhys ) );
++    ok( memory.ullAvailPhys == expect.ullAvailPhys, "got ullAvailPhys %s\n",
++        wine_dbgstr_longlong( memory.ullAvailPhys ) );
++    todo_wine
++    ok( memory.ullTotalPageFile == expect.ullTotalPageFile, "got ullTotalPageFile %s\n",
++        wine_dbgstr_longlong( memory.ullTotalPageFile ) );
++    todo_wine
++    ok( memory.ullAvailPageFile == expect.ullAvailPageFile, "got ullAvailPageFile %s\n",
++        wine_dbgstr_longlong( memory.ullAvailPageFile ) );
++    todo_wine
++    ok( memory.ullTotalVirtual == expect.ullTotalVirtual, "got ullTotalVirtual %s\n",
++        wine_dbgstr_longlong( memory.ullTotalVirtual ) );
++    todo_wine
++    ok( memory.ullAvailVirtual <= expect.ullAvailVirtual, "got ullAvailVirtual %s\n",
++        wine_dbgstr_longlong( memory.ullAvailVirtual ) );
++    ok( memory.ullAvailExtendedVirtual == 0, "got ullAvailExtendedVirtual %s\n",
++        wine_dbgstr_longlong( memory.ullAvailExtendedVirtual ) );
++}
++
+ START_TEST(info)
+ {
+     char **argv;
+@@ -3660,4 +3727,5 @@ START_TEST(info)
+ 
+     test_ThreadEnableAlignmentFaultFixup();
+     test_process_instrumentation_callback();
++    test_GlobalMemoryStatusEx();
+ }
+-- 
+2.35.1
+

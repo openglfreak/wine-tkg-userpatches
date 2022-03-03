@@ -1,0 +1,81 @@
+From: "Chao Long" <longchao@uniontech.com>
+#Subject: [PATCH] winex11.drv: Make the layered window set transient hint with a new x11 window if the original x11 window has destroyed.
+Message-Id: <202009071003512258011@uniontech.com>
+Date: Mon, 7 Sep 2020 10:03:51 +0800
+
+From f791507007e52028038f048a7c2deac435977f34 Mon Sep 17 00:00:00 2001
+From: Chao Long <longchao@uniontech.com>
+Date: Thu, 3 Sep 2020 09:30:01 +0800
+Subject: [PATCH] winex11.drv: Make the layered window set transient hint with
+ a new x11 window if the original x11 window has destroyed.
+
+Signed-off-by: Chao Long <longchao@uniontech.com>
+---
+ dlls/winex11.drv/window.c | 37 +++++++++++++++++++++++++++++++++++++
+ 1 file changed, 37 insertions(+)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -167,6 +167,12 @@ struct has_popup_result
+     BOOL found;
+ };
+ 
++struct x11hints_from
++{
++    Window old_whole;
++    struct x11drv_win_data *data;
++};
++
+ static BOOL is_managed( HWND hwnd )
+ {
+     struct x11drv_win_data *data = get_win_data( hwnd );
+@@ -1687,6 +1693,35 @@ static void destroy_whole_window( struct x11drv_win_data *data, BOOL already_des
+     RemovePropA( data->hwnd, whole_window_prop );
+ }
+ 
++static BOOL CALLBACK set_from_hints( HWND hwnd, LPARAM lparam )
++{
++    struct x11hints_from *targetxwin = (struct x11hints_from *)lparam;
++    if ( IsWindow( hwnd ) && targetxwin)
++    {
++        Window whole, old_whole = 0;
++        if ( (whole = X11DRV_get_whole_window( hwnd )) &&
++            XGetTransientForHint( targetxwin->data->display, whole, &old_whole ) &&
++            old_whole == targetxwin->old_whole )
++        {
++            XSetTransientForHint( targetxwin->data->display, whole, targetxwin->data->whole_window );
++            XWMHints* hints = NULL;
++            if ( (hints=XGetWMHints( targetxwin->data->display, whole )) )
++            {
++                hints->window_group = targetxwin->data->whole_window;
++                XSetWMHints( targetxwin->data->display, whole, hints );
++            }
++        }
++    }
++    return ( targetxwin != NULL );
++}
++
++static void append_from_hints( Window old_whole, struct x11drv_win_data *data )
++{
++    struct x11hints_from target_xwin;
++    target_xwin.old_whole = old_whole;
++    target_xwin.data = data;
++    EnumWindows( set_from_hints, (LPARAM)&target_xwin );
++}
+ 
+ /**********************************************************************
+  *		set_window_visual
+@@ -1705,9 +1740,11 @@ void set_window_visual( struct x11drv_win_data *data, const XVisualInfo *vis, BO
+ 
+     if (data->vis.visualid == vis->visualid) return;
+     data->client_window = 0;
++    Window old_whole = data->whole_window;
+     destroy_whole_window( data, client_window != 0 /* don't destroy whole_window until reparented */ );
+     data->vis = *vis;
+     create_whole_window( data );
++    append_from_hints( old_whole, data );
+     if (!client_window) return;
+     /* move the client to the new parent */
+     XReparentWindow( data->display, client_window, data->whole_window,

@@ -1,0 +1,38 @@
+From: Ethan Searl <internetethansearl@gmail.com>
+Subject: [PATCH] winex11.drv: Call XRaiseWindow during WM_TAKE_FOCUS handler.
+Message-Id: <20211230194349.137988-1-internetethansearl@gmail.com>
+Date: Thu, 30 Dec 2021 14:43:49 -0500
+
+In the case where the original hwnd rejects the focus and we search for something else, raise the window because it may not be on top. This prevents showing modal windows on top of non-modal.
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=26503
+Signed-off-by: Ethan Searl <internetethansearl@gmail.com>
+---
+ dlls/winex11.drv/event.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -661,7 +661,16 @@ static void try_focus_another_window( XEvent *xev, Time time )
+     if (hwnd) hwnd = GetAncestor( hwnd, GA_ROOT );
+     if (!hwnd) hwnd = GetActiveWindow();
+     if (!hwnd) hwnd = x11drv_thread_data()->last_focus;
+-    if (hwnd && can_activate_window(hwnd)) set_focus( xev, hwnd, time );
++    if (hwnd && can_activate_window(hwnd))
++    {
++        Window win = X11DRV_get_whole_window( hwnd );
++        if (win)
++        {
++            TRACE( "will raise window %p", hwnd );
++            XRaiseWindow( xev->xany.display, win );
++        }
++        set_focus( xev, hwnd, time );
++    }
+ }
+ 
+ 
+
+-- 
+2.35.1
+

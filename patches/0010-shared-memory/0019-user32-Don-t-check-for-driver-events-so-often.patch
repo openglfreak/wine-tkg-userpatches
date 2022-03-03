@@ -1,20 +1,20 @@
-From 7051b8a961371c2501d611144f54cd9ff3c25edc Mon Sep 17 00:00:00 2001
+From 7ea980634b9db3af7b8ac8a1994d6e96ccc3fdfc Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
-Date: Tue, 24 Nov 2020 16:03:15 +0100
+Date: Sun, 12 Dec 2021 13:15:45 +0100
 Subject: [PATCH 19/44] user32: Don't check for driver events so often.
 
 Now that PeekMessage may return quickly we don't want to check for
 driver events on every call.
 ---
- dlls/user32/message.c | 14 ++++++++++----
- include/ntuser.h      |  1 +
+ dlls/user32/message.c        | 14 ++++++++++----
+ dlls/win32u/ntuser_private.h |  1 +
  2 files changed, 11 insertions(+), 4 deletions(-)
 
 diff --git a/dlls/user32/message.c b/dlls/user32/message.c
 index 11111111111..11111111111 100644
 --- a/dlls/user32/message.c
 +++ b/dlls/user32/message.c
-@@ -3787,7 +3787,8 @@ void WINAPI PostQuitMessage( INT exit_code )
+@@ -3776,7 +3776,8 @@ void WINAPI PostQuitMessage( INT exit_code )
  /* check for driver events if we detect that the app is not properly consuming messages */
  static inline void check_for_driver_events( UINT msg )
  {
@@ -24,7 +24,7 @@ index 11111111111..11111111111 100644
      {
          flush_window_surfaces( FALSE );
          USER_Driver->pMsgWaitForMultipleObjectsEx( 0, NULL, 0, QS_ALLINPUT, 0 );
-@@ -3795,9 +3796,9 @@ static inline void check_for_driver_events( UINT msg )
+@@ -3784,9 +3785,9 @@ static inline void check_for_driver_events( UINT msg )
      else if (msg == WM_TIMER || msg == WM_SYSTIMER)
      {
          /* driver events should have priority over timers, so make sure we'll check for them soon */
@@ -36,7 +36,7 @@ index 11111111111..11111111111 100644
  }
  
  /***********************************************************************
-@@ -3805,17 +3806,21 @@ static inline void check_for_driver_events( UINT msg )
+@@ -3794,17 +3795,21 @@ static inline void check_for_driver_events( UINT msg )
   */
  BOOL WINAPI DECLSPEC_HOTPATCH PeekMessageW( MSG *msg_out, HWND hwnd, UINT first, UINT last, UINT flags )
  {
@@ -59,7 +59,7 @@ index 11111111111..11111111111 100644
          flush_window_surfaces( TRUE );
          ret = wow_handlers.wait_message( 0, NULL, 0, QS_ALLINPUT, 0 );
          /* if we received driver events, check again for a pending message */
-@@ -3823,6 +3828,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH PeekMessageW( MSG *msg_out, HWND hwnd, UINT first,
+@@ -3812,6 +3817,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH PeekMessageW( MSG *msg_out, HWND hwnd, UINT first,
      }
  
      check_for_driver_events( msg.message );
@@ -67,11 +67,11 @@ index 11111111111..11111111111 100644
  
      /* copy back our internal safe copy of message data to msg_out.
       * msg_out is a variable from the *program*, so it can't be used
-diff --git a/include/ntuser.h b/include/ntuser.h
+diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
 index 11111111111..11111111111 100644
---- a/include/ntuser.h
-+++ b/include/ntuser.h
-@@ -79,6 +79,7 @@ struct user_thread_info
+--- a/dlls/win32u/ntuser_private.h
++++ b/dlls/win32u/ntuser_private.h
+@@ -99,6 +99,7 @@ struct user_thread_info
      HANDLE                        server_queue;           /* Handle to server-side queue */
      DWORD                         wake_mask;              /* Current queue wake mask */
      DWORD                         changed_mask;           /* Current queue changed mask */
@@ -79,6 +79,4 @@ index 11111111111..11111111111 100644
      WORD                          recursion_count;        /* SendMessage recursion counter */
      WORD                          message_count;          /* Get/PeekMessage loop counter */
      WORD                          hook_call_depth;        /* Number of recursively called hook procs */
--- 
-2.35.1
 

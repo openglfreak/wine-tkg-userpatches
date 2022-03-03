@@ -1,0 +1,134 @@
+From: Haoyang Chen <chenhaoyang@uniontech.com>
+Subject: [PATCH v2] comctl32/listview: Fix the listview sorting error.
+Message-Id: <20210308081145.6775-1-chenhaoyang@uniontech.com>
+Date: Mon,  8 Mar 2021 16:11:45 +0800
+
+The original sequence may be stored in lparam. During the sorting process,
+this sequence is out-of-order, but lparam remains unchanged.
+
+Signed-off-by: Haoyang Chen <chenhaoyang@uniontech.com>
+---
+ dlls/comctl32/dpa.c            | 13 ++++++-
+ dlls/comctl32/tests/listview.c | 67 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 78 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/comctl32/dpa.c b/dlls/comctl32/dpa.c
+index 11111111111..11111111111 100644
+--- a/dlls/comctl32/dpa.c
++++ b/dlls/comctl32/dpa.c
+@@ -817,8 +817,17 @@ BOOL WINAPI DPA_Sort (HDPA hdpa, PFNDPACOMPARE pfnCompare, LPARAM lParam)
+     TRACE("%p, %p, %#Ix\n", hdpa, pfnCompare, lParam);
+ 
+     if ((hdpa->nItemCount > 1) && (hdpa->ptrs))
+-        DPA_QuickSort (hdpa->ptrs, 0, hdpa->nItemCount - 1,
+-                       pfnCompare, lParam);
++    {
++        LPVOID *ptrs = HeapAlloc (hdpa->hHeap, HEAP_ZERO_MEMORY,
++                                             hdpa->nItemCount * sizeof(LPVOID));
++        if (!ptrs)
++                return FALSE;
++        memcpy(ptrs, hdpa->ptrs, hdpa->nItemCount * sizeof(LPVOID));
++        DPA_QuickSort (ptrs, 0, hdpa->nItemCount - 1, pfnCompare, lParam);
++
++        memcpy(hdpa->ptrs, ptrs, hdpa->nItemCount * sizeof(LPVOID));
++        HeapFree (hdpa->hHeap, 0, ptrs);
++    }
+ 
+     return TRUE;
+ }
+diff --git a/dlls/comctl32/tests/listview.c b/dlls/comctl32/tests/listview.c
+index 11111111111..11111111111 100644
+--- a/dlls/comctl32/tests/listview.c
++++ b/dlls/comctl32/tests/listview.c
+@@ -2932,6 +2932,28 @@ static INT WINAPI test_CallBackCompare(LPARAM first, LPARAM second, LPARAM lPara
+     return (first > second ? 1 : -1);
+ }
+ 
++static INT WINAPI test_CallBackCompare1(LPARAM first, LPARAM second, LPARAM lParam)
++{
++    CHAR str1[5];
++    CHAR str2[5];
++    INT  r;
++    HWND hwnd = (HWND)lParam;
++    LV_ITEMA item = {0};
++
++    if (first == second) return 0;
++    item.cchTextMax = 5;
++    item.iSubItem = 0;
++    item.pszText = str1;
++    r = SendMessageA(hwnd, LVM_GETITEMTEXTA, first, (LPARAM)&item);
++    expect(TRUE, r);
++
++    item.pszText = str2;
++    r = SendMessageA(hwnd, LVM_GETITEMTEXTA, second, (LPARAM)&item);
++    expect(TRUE, r);
++
++    return atoi(str1) > atoi(str2) ? 1 : -1;
++}
++
+ static void test_sorting(void)
+ {
+     HWND hwnd;
+@@ -2940,6 +2962,10 @@ static void test_sorting(void)
+     LONG_PTR style;
+     static CHAR names[][5] = {"A", "B", "C", "D", "0"};
+     CHAR buff[10];
++    static CHAR before_sort_array[][5] = {"6","3","1","4","2"};
++    static CHAR after_sort_arary[][5] = {"1","2","3","4","6"};
++    INT i;
++    LVCOLUMNA lvc;
+ 
+     hwnd = create_listview_control(LVS_REPORT);
+     ok(hwnd != NULL, "failed to create a listview window\n");
+@@ -2990,6 +3016,47 @@ static void test_sorting(void)
+ 
+     DestroyWindow(hwnd);
+ 
++    hwnd = create_listview_control(LVS_REPORT);
++    ok(hwnd != NULL, "failed to create a listview window\n");
++
++    lvc.mask = LVCF_TEXT | LVCF_WIDTH;
++    lvc.pszText = names[0];
++    lvc.cx = 50;
++
++    SendMessageA(hwnd, LVM_INSERTCOLUMNA, 0, (LPARAM)&lvc);
++    SendMessageA(hwnd, LVM_INSERTCOLUMNA, 1, (LPARAM)&lvc);
++
++    item.mask = LVIF_PARAM | LVIF_TEXT;
++    item.iSubItem = 0;
++    item.cchTextMax = 5;
++
++    for (i = 0; i < sizeof(before_sort_array)/5; i++)
++    {
++        item.iItem = i;
++        item.lParam = i;
++        item.pszText = &before_sort_array[i][0];
++        r = SendMessageA(hwnd, LVM_INSERTITEMA, 0, (LPARAM)&item);
++        expect(i, r);
++    }
++
++    r = SendMessageA(hwnd, LVM_SORTITEMS, (WPARAM)(LPARAM)hwnd, (LPARAM)test_CallBackCompare1);
++    expect(TRUE, r);
++
++    for (i = 0; i < sizeof(after_sort_arary)/5; i++)
++    {
++        CHAR str[5];
++        item.iItem = i;
++        item.cchTextMax = 5;
++        item.iSubItem = 0;
++        item.pszText = str;
++        r = SendMessageA(hwnd, LVM_GETITEMTEXTA, i, (LPARAM)&item);
++        expect(TRUE, r);
++
++        expect(atoi(after_sort_arary[i]), atoi(str));
++    }
++
++    DestroyWindow(hwnd);
++
+     /* switch to LVS_SORTASCENDING when some items added */
+     hwnd = create_listview_control(LVS_REPORT);
+     ok(hwnd != NULL, "failed to create a listview window\n");
+
+-- 
+2.35.1
+

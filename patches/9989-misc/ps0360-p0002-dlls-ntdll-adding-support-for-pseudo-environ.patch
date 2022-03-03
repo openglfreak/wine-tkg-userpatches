@@ -1,0 +1,237 @@
+From: Eric Pouech <eric.pouech@gmail.com>
+Subject: [PATCH 2/2] dlls/ntdll: adding support for pseudo environment variables
+Message-Id: <164614610240.331279.10976393534889432056.stgit@euterpe>
+Date: Tue,  1 Mar 2022 15:48:22 +0100
+In-Reply-To: <164614609510.331279.3851762463691592643.stgit@euterpe>
+References: <164614609510.331279.3851762463691592643.stgit@euterpe>
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52544
+Signed-off-by: Eric Pouech <eric.pouech@gmail.com>
+
+---
+ dlls/ntdll/env.c       | 109 +++++++++++++++++++++++++++++++++--------
+ dlls/ntdll/tests/env.c |  12 -----
+ 2 files changed, 89 insertions(+), 32 deletions(-)
+
+diff --git a/dlls/ntdll/env.c b/dlls/ntdll/env.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/env.c
++++ b/dlls/ntdll/env.c
+@@ -154,6 +154,58 @@ static LPCWSTR ENV_FindVariable(PCWSTR var, PCWSTR name, unsigned namelen)
+     return NULL;
+ }
+ 
++static BOOL ENV_get_pseudo_variable(const WCHAR* name, SIZE_T len, WCHAR* value, SIZE_T value_len, SIZE_T* ret_len)
++{
++    static WCHAR appdir[] = {'_','_','A','P','P','D','I','R','_','_'};
++    static WCHAR cd[] = {'_','_','C','D','_','_'};
++
++    if (!RtlCompareUnicodeStrings( name, len, appdir, ARRAY_SIZE(appdir), FALSE ))
++    {
++        ULONG_PTR magic;
++        LDR_DATA_TABLE_ENTRY *pldr;
++        NTSTATUS status;
++
++        LdrLockLoaderLock( 0, NULL, &magic );
++        status = LdrFindEntryForAddress( NtCurrentTeb()->Peb->ImageBaseAddress, &pldr );
++        if (!status)
++        {
++            WCHAR* ptr = wcsrchr(pldr->FullDllName.Buffer, L'\\');
++            if (ptr)
++            {
++                SIZE_T len = ++ptr - pldr->FullDllName.Buffer;
++                *ret_len = len * sizeof(WCHAR);
++                if ((len + 1) * sizeof(WCHAR) <= value_len)
++                {
++                    memcpy( value, pldr->FullDllName.Buffer, *ret_len );
++                    value[len] = L'\0';
++                }
++                else if (value_len >= sizeof(WCHAR))
++                    value[0] = L'\0';
++            }
++            else status = STATUS_INVALID_PARAMETER;
++        }
++        LdrUnlockLoaderLock( 0, magic );
++        return !status;
++    }
++    else if (!RtlCompareUnicodeStrings( name, len, cd, ARRAY_SIZE(cd), FALSE ))
++    {
++        unsigned actual = RtlGetCurrentDirectory_U( value_len >= sizeof(WCHAR) ? value_len - sizeof(WCHAR) : 0, value );
++        if (actual + sizeof(WCHAR) <= value_len)
++        {
++            value[actual / sizeof(WCHAR)] = L'\\';
++            value[actual / sizeof(WCHAR) + 1] = L'\0';
++            *ret_len = actual + sizeof(WCHAR);
++        }
++        else
++        {
++            *ret_len = actual;
++            if (value_len >= sizeof(WCHAR)) value[0] = L'\0';
++        }
++        return TRUE;
++    }
++    return FALSE;
++}
++
+ /******************************************************************
+  *		RtlQueryEnvironmentVariable_U   [NTDLL.@]
+  *
+@@ -169,6 +221,7 @@ NTSTATUS WINAPI RtlQueryEnvironmentVariable_U(PWSTR env,
+     NTSTATUS    nts = STATUS_VARIABLE_NOT_FOUND;
+     PCWSTR      var;
+     unsigned    namelen;
++    SIZE_T      ret_len;
+ 
+     TRACE("%p %s %p\n", env, debugstr_us(name), value);
+ 
+@@ -183,17 +236,25 @@ NTSTATUS WINAPI RtlQueryEnvironmentVariable_U(PWSTR env,
+     }
+     else var = env;
+ 
+-    var = ENV_FindVariable(var, name->Buffer, namelen);
+-    if (var != NULL)
++    if (ENV_get_pseudo_variable(name->Buffer, namelen, value->Buffer, value->MaximumLength, &ret_len))
+     {
+-        value->Length = wcslen(var) * sizeof(WCHAR);
+-
+-        if (value->Length <= value->MaximumLength)
++        value->Length = ret_len;
++        nts = (value->Length >= value->MaximumLength) ? STATUS_BUFFER_TOO_SMALL : STATUS_SUCCESS;
++    }
++    else
++    {
++        var = ENV_FindVariable(var, name->Buffer, namelen);
++        if (var != NULL)
+         {
+-            memmove(value->Buffer, var, min(value->Length + sizeof(WCHAR), value->MaximumLength));
+-            nts = STATUS_SUCCESS;
++            value->Length = wcslen(var) * sizeof(WCHAR);
++
++            if (value->Length <= value->MaximumLength)
++            {
++                memmove(value->Buffer, var, min(value->Length + sizeof(WCHAR), value->MaximumLength));
++                nts = STATUS_SUCCESS;
++            }
++            else nts = STATUS_BUFFER_TOO_SMALL;
+         }
+-        else nts = STATUS_BUFFER_TOO_SMALL;
+     }
+ 
+     if (!env) RtlReleasePebLock();
+@@ -221,22 +282,30 @@ NTSTATUS WINAPI RtlQueryEnvironmentVariable( WCHAR *env, const WCHAR *name, SIZE
+     }
+     else var = env;
+ 
+-    var = ENV_FindVariable(var, name, namelen);
+-    if (var != NULL)
++    if (ENV_get_pseudo_variable(name, namelen, value, value_length * sizeof(WCHAR), return_length))
+     {
+-        len = wcslen(var);
+-        if (len <= value_length)
+-        {
+-            memcpy(value, var, min(len + 1, value_length) * sizeof(WCHAR));
+-            nts = STATUS_SUCCESS;
+-        }
+-        else
++        *return_length /= sizeof(WCHAR);
++        nts = (*return_length > value_length) ? STATUS_BUFFER_TOO_SMALL : STATUS_SUCCESS;
++    }
++    else
++    {
++        var = ENV_FindVariable(var, name, namelen);
++        if (var != NULL)
+         {
+-            len++;
+-            nts = STATUS_BUFFER_TOO_SMALL;
++            len = wcslen(var);
++            if (len <= value_length)
++            {
++                memcpy(value, var, min(len + 1, value_length) * sizeof(WCHAR));
++                nts = STATUS_SUCCESS;
++            }
++            else
++            {
++                len++;
++                nts = STATUS_BUFFER_TOO_SMALL;
++            }
+         }
++        *return_length = len;
+     }
+-    *return_length = len;
+ 
+     if (!env) RtlReleasePebLock();
+ 
+diff --git a/dlls/ntdll/tests/env.c b/dlls/ntdll/tests/env.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/tests/env.c
++++ b/dlls/ntdll/tests/env.c
+@@ -695,11 +695,9 @@ static DWORD test_one_pseudo_variable(const WCHAR* pseudo, WCHAR* value, UINT va
+     value_string.MaximumLength = value_len * sizeof(WCHAR);
+ 
+     status = RtlQueryEnvironmentVariable_U(small_env, &var_string, &value_string);
+-    todo_wine
+     ok(!status, "Should have found %ls env var in small_env (%x)\n", pseudo, status);
+ 
+     status = RtlQueryEnvironmentVariable_U(NULL, &var_string, &value_string);
+-    todo_wine
+     ok(!status && value_string.Length >= sizeof(WCHAR), "Couldn't find %ls env var\n", pseudo);
+     ok(value_string.Length == wcslen(value_string.Buffer) * sizeof(WCHAR),
+        "Expecting length of %u but got %u\n",
+@@ -710,7 +708,6 @@ static DWORD test_one_pseudo_variable(const WCHAR* pseudo, WCHAR* value, UINT va
+         SIZE_T zzlen;
+         status = pRtlQueryEnvironmentVariable(NULL, (WCHAR*)pseudo, wcslen(pseudo),
+                                               value, value_len / sizeof(WCHAR), &zzlen);
+-        todo_wine
+         ok(!status && zzlen >= sizeof(WCHAR), "Couldn't find %ls env var\n", pseudo);
+     }
+     ret = check_pseudo_in_peb(pseudo, NULL);
+@@ -724,7 +721,6 @@ static DWORD test_one_pseudo_variable(const WCHAR* pseudo, WCHAR* value, UINT va
+ 
+     status = RtlQueryEnvironmentVariable_U(NULL, &var_string, &value2_string);
+     ok(!status && value2_string.Length >= sizeof(WCHAR), "Couldn't find %ls env var\n", pseudo);
+-    todo_wine
+     ok(!wcscmp(value2_string.Buffer, value_string.Buffer),
+        "Expecting %ls but got %ls for env variable %ls\n",
+        value_string.Buffer, value2_string.Buffer, pseudo);
+@@ -736,9 +732,7 @@ static DWORD test_one_pseudo_variable(const WCHAR* pseudo, WCHAR* value, UINT va
+     ok(!status, "Should be able to remove value for set %ls\n", pseudo);
+ 
+     status = RtlQueryEnvironmentVariable_U(NULL, &var_string, &value2_string);
+-    todo_wine
+     ok(!status && value2_string.Length >= sizeof(WCHAR), "Couldn't find %ls env var\n", pseudo);
+-    todo_wine
+     ok(!wcscmp(value, value2_string.Buffer), "Should get back pseudo value for %ls\n", pseudo);
+ 
+     ret = check_pseudo_in_peb(pseudo, NULL);
+@@ -749,10 +743,8 @@ static DWORD test_one_pseudo_variable(const WCHAR* pseudo, WCHAR* value, UINT va
+     memset(value2_buffer, 0xa5, sizeof(value2_buffer));
+ 
+     status = RtlQueryEnvironmentVariable_U(NULL, &var_string, &value2_string);
+-    todo_wine
+     ok(status == STATUS_BUFFER_TOO_SMALL && value2_string.Length >= sizeof(WCHAR),
+        "Couldn't find %ls env var\n", pseudo);
+-    todo_wine
+     ok(!value2_string.Buffer[0], "Expecting empty buffer for env variable %ls\n", pseudo);
+     ok(value2_string.Length == value_string.Length, "Expecting length of %u but got %u\n",
+        value_string.Length, value2_string.Length);
+@@ -770,19 +762,15 @@ static void test_pseudo_env_variables(void)
+     size2 = GetModuleFileNameW(NULL, value2, ARRAY_SIZE(value2));
+     ok(size2 && size2 + 1 < ARRAY_SIZE(value2), "couldn't get app module filename\n");
+     ok(size + 1 < size2, "Mismatch in sizes (%u / %u)\n", size, size2);
+-    todo_wine
+     ok(size && !memcmp(value, value2, size * sizeof(WCHAR)) && value[size - 1] == L'\\',
+        "__APPDIR__: got %ls while expecting %ls\\\n", value, value2);
+-    todo_wine
+     ok(!wcschr(&value2[size], L'/') && !wcschr(&value2[size], L'\\'),
+        "expecting %ls not to include directories\n", &value2[size]);
+ 
+     size = test_one_pseudo_variable(L"__CD__", value, ARRAY_SIZE(value));
+     size2 = GetCurrentDirectoryW(ARRAY_SIZE(value2), value2);
+     ok(size2 && size2 + 1 < ARRAY_SIZE(value2), "couldn't get current directory\n");
+-    todo_wine
+     ok(size2 + 1 == size, "Mismatch in sizes (%u / %u)\n", size, size2);
+-    todo_wine
+     ok(!memcmp(value, value2, size2 * sizeof(WCHAR)) && value[size2] == L'\\',
+        "__CD__: got %ls while expecting %ls\\\n", value, value2);
+     /* FIXME could check changing directories
+

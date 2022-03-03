@@ -1,0 +1,49 @@
+From: Eric Pouech <eric.pouech@gmail.com>
+Subject: [PATCH 1/3] server: fix some error detection
+Message-Id: <164675782433.1136992.1010538149260424037.stgit@euterpe>
+Date: Tue,  8 Mar 2022 17:43:44 +0100
+In-Reply-To: <164675757803.1136992.17034050630333482579.stgit@euterpe>
+References: <164675757803.1136992.17034050630333482579.stgit@euterpe>
+
+Signed-off-by: Eric Pouech <eric.pouech@gmail.com>
+
+---
+ server/mapping.c |    4 ++--
+ server/request.c |    3 ++-
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/server/mapping.c b/server/mapping.c
+index 8d4332d240f..6b0785c1c0c 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -691,13 +691,13 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
+ 
+     if (!file_size) return STATUS_INVALID_FILE_FOR_SECTION;
+     size = pread( unix_fd, &mz, sizeof(mz), 0 );
+-    if (size < sizeof(mz.dos)) return STATUS_INVALID_IMAGE_NOT_MZ;
++    if (size < 0 || size < sizeof(mz.dos)) return STATUS_INVALID_IMAGE_NOT_MZ;
+     if (mz.dos.e_magic != IMAGE_DOS_SIGNATURE) return STATUS_INVALID_IMAGE_NOT_MZ;
+     mz_size = size;
+     pos = mz.dos.e_lfanew;
+ 
+     size = pread( unix_fd, &nt, sizeof(nt), pos );
+-    if (size < sizeof(nt.Signature) + sizeof(nt.FileHeader)) return STATUS_INVALID_IMAGE_PROTECT;
++    if (size < 0 || size < sizeof(nt.Signature) + sizeof(nt.FileHeader)) return STATUS_INVALID_IMAGE_PROTECT;
+     /* zero out Optional header in the case it's not present or partial */
+     opt_size = max( nt.FileHeader.SizeOfOptionalHeader, offsetof( IMAGE_OPTIONAL_HEADER32, CheckSum ));
+     size = min( size, sizeof(nt.Signature) + sizeof(nt.FileHeader) + opt_size );
+diff --git a/server/request.c b/server/request.c
+index 7021741c765..1bc92d479ae 100644
+--- a/server/request.c
++++ b/server/request.c
+@@ -265,7 +265,8 @@ static void send_reply( union generic_reply *reply )
+     vec[1].iov_base = current->reply_data;
+     vec[1].iov_len  = current->reply_size;
+ 
+-    if ((ret = writev( get_unix_fd( current->reply_fd ), vec, 2 )) < sizeof(*reply)) goto error;
++    ret = writev( get_unix_fd( current->reply_fd ), vec, 2 );
++    if (ret < 0 || ret < sizeof(*reply)) goto error;
+ 
+     if ((current->reply_towrite = current->reply_size - (ret - sizeof(*reply))))
+     {
+

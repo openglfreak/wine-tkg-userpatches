@@ -1,0 +1,54 @@
+From 963642fc76d386f2a500491d7eb6746ade651152 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 20 May 2021 00:22:28 +0200
+Subject: [PATCH 2/6] user32: Use PostMessageW in set_foreground_window.
+
+Instead of SendNotifyMessageW for WM_WINE_SETACTIVEWINDOW.
+---
+ dlls/win32u/input.c     | 4 ++--
+ dlls/user32/tests/msg.c | 6 +++---
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -228,14 +228,12 @@ static BOOL set_foreground_window( HWND hwnd, BOOL mouse )
+     if (ret && previous != hwnd)
+     {
+         if (send_msg_old)  /* old window belongs to other thread */
+-            NtUserMessageCall( previous, WM_WINE_SETACTIVEWINDOW, 0, 0,
+-                               0, FNID_SENDNOTIFYMESSAGE, FALSE );
++            post_message( previous, WM_WINE_SETACTIVEWINDOW, 0, 0 );
+         else if (send_msg_new)  /* old window belongs to us but new one to other thread */
+             ret = set_active_window( 0, NULL, mouse, TRUE );
+ 
+         if (send_msg_new)  /* new window belongs to other thread */
+-            NtUserMessageCall( hwnd, WM_WINE_SETACTIVEWINDOW, (WPARAM)hwnd, 0,
+-                               0, FNID_SENDNOTIFYMESSAGE, FALSE );
++            post_message( hwnd, WM_WINE_SETACTIVEWINDOW, (WPARAM)hwnd, 0 );
+         else  /* new window belongs to us */
+             ret = set_active_window( hwnd, NULL, mouse, TRUE );
+     }
+diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/tests/msg.c
++++ b/dlls/user32/tests/msg.c
+@@ -15017,11 +15017,11 @@ static void test_interthread_set_foreground_window(struct test_set_foreground_wi
+     };
+     const struct test_set_foreground_window_desc test_sfw_tests[] =
+     {
+-        { hwnd1, FALSE, FALSE, FALSE,  FALSE, WmEmptySeq, FALSE, WmEmptySeq,  TRUE, sequence_2, FALSE, hwnd0 },
++        { hwnd1, FALSE, FALSE, FALSE,  FALSE, WmEmptySeq, FALSE, WmEmptySeq, FALSE, sequence_2, FALSE, hwnd0 },
+         { hwnd1, TRUE, FALSE, FALSE,   FALSE, WmEmptySeq,  TRUE, sequence_1,  TRUE, sequence_2,  TRUE, hwnd0 },
+-        { hwnd1, FALSE, TRUE, FALSE,   FALSE, WmEmptySeq, FALSE, WmEmptySeq,  TRUE, sequence_2, FALSE, hwnd0 },
++        { hwnd1, FALSE, TRUE, FALSE,   FALSE, WmEmptySeq, FALSE, WmEmptySeq, FALSE, sequence_2, FALSE, hwnd0 },
+         { hwnd1, TRUE, TRUE, FALSE,    FALSE, WmEmptySeq,  TRUE, sequence_1,  TRUE, sequence_2,  TRUE, hwnd0 },
+-        { hwnd1, FALSE, FALSE, TRUE,   FALSE, WmEmptySeq, FALSE, WmEmptySeq,  TRUE, sequence_2, FALSE, hwnd0 },
++        { hwnd1, FALSE, FALSE, TRUE,   FALSE, WmEmptySeq, FALSE, WmEmptySeq, FALSE, sequence_2, FALSE, hwnd0 },
+         { hwnd1, TRUE, FALSE, TRUE,    FALSE, WmEmptySeq,  TRUE, sequence_1,  TRUE, sequence_2,  TRUE, hwnd0 },
+ 
+         { hwnd2, FALSE, FALSE, FALSE,  FALSE, WmEmptySeq, FALSE, sequence_3,  TRUE, sequence_0,  TRUE, hwnd1 },
+-- 
+2.35.1
+

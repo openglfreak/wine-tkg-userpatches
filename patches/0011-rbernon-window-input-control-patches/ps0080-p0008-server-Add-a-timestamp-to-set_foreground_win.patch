@@ -1,0 +1,136 @@
+From 070b2341c5e514bab3c6d724eb24e935e63c76f5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sat, 17 Apr 2021 19:57:30 +0200
+Subject: [PATCH 08/12] server: Add a timestamp to set_foreground_window
+ requests.
+
+We call SetForegroundWindow in event handlers and sometimes overwrite
+the foreground window with an older event. Having a timestamp will help
+discarding old events.
+---
+ dlls/win32u/input.c |  7 ++++---
+ server/protocol.def |  1 +
+ server/queue.c      | 10 ++++++++--
+ server/user.h       |  1 +
+ server/winstation.c |  1 +
+ 5 files changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -209,7 +209,7 @@ clear_flags:
+ /*******************************************************************
+  *		set_foreground_window
+  */
+-BOOL set_foreground_window( HWND hwnd, BOOL mouse )
++BOOL set_foreground_window( HWND hwnd, BOOL mouse, DWORD time )
+ {
+     BOOL ret, send_msg_old = FALSE, send_msg_new = FALSE;
+     HWND previous = 0;
+@@ -217,6 +217,7 @@ static BOOL set_foreground_window( HWND hwnd, BOOL mouse )
+     SERVER_START_REQ( set_foreground_window )
+     {
+         req->handle = wine_server_user_handle( hwnd );
++        req->time = time;
+         if ((ret = !wine_server_call_err( req )))
+         {
+             previous = wine_server_ptr_handle( reply->previous );
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 412c354400d..8b896d62fa1 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -291,7 +291,7 @@ extern BOOL get_cursor_pos( POINT *pt ) DECLSPEC_HIDDEN;
+ extern DWORD get_input_state(void) DECLSPEC_HIDDEN;
+ extern BOOL WINAPI release_capture(void) DECLSPEC_HIDDEN;
+ extern BOOL set_capture_window( HWND hwnd, UINT gui_flags, HWND *prev_ret ) DECLSPEC_HIDDEN;
+-extern BOOL set_foreground_window( HWND hwnd, BOOL mouse ) DECLSPEC_HIDDEN;
++extern BOOL set_foreground_window( HWND hwnd, BOOL mouse, DWORD time ) DECLSPEC_HIDDEN;
+ 
+ /* message.c */
+ extern LRESULT post_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam ) DECLSPEC_HIDDEN;
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 3fe0b21e1a7..cda8a91df96 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -1947,7 +1947,7 @@ ULONG_PTR WINAPI NtUserCallHwndParam( HWND hwnd, DWORD_PTR param, DWORD code )
+     case NtUserSetCaptureWindow:
+         return set_capture_window( hwnd, param, NULL );
+     case NtUserSetForegroundWindow:
+-        return set_foreground_window( hwnd, param );
++        return set_foreground_window( hwnd, param, NtGetTickCount() );
+     /* temporary exports */
+     case NtUserIsWindowDrawable:
+         return is_window_drawable( hwnd, param );
+diff --git a/server/protocol.def b/server/protocol.def
+index 11111111111..11111111111 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -2837,6 +2837,7 @@ enum coords_relative
+ /* Set the system foreground window */
+ @REQ(set_foreground_window)
+     user_handle_t  handle;        /* handle to the foreground window */
++    unsigned int   time;          /* time of the event that triggered the request */
+ @REPLY
+     user_handle_t  previous;      /* handle to the previous foreground window */
+     int            send_msg_old;  /* whether we have to send a msg to the old window */
+diff --git a/server/queue.c b/server/queue.c
+index 11111111111..11111111111 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -3457,20 +3457,26 @@ DECL_HANDLER(set_foreground_window)
+     struct thread *thread = NULL;
+     struct desktop *desktop;
+     struct msg_queue *queue = get_current_queue();
++    int time_diff;
+ 
+     if (!(desktop = get_thread_desktop( current, 0 ))) return;
+     reply->previous = desktop->foreground_input ? desktop->foreground_input->shared->active : 0;
+     reply->send_msg_old = (reply->previous && desktop->foreground_input != queue->input);
+     reply->send_msg_new = FALSE;
+ 
+-    if (is_valid_foreground_window( req->handle ) &&
++    time_diff = req->time - desktop->foreground_time;
++    if (time_diff >= 0 && is_valid_foreground_window( req->handle ) &&
+         (thread = get_window_thread( req->handle )) &&
+         thread->queue->input->desktop == desktop)
+     {
++        desktop->foreground_time = req->time;
+         set_foreground_input( desktop, thread->queue->input );
+         reply->send_msg_new = (desktop->foreground_input != queue->input);
+     }
+-    else set_win32_error( ERROR_INVALID_WINDOW_HANDLE );
++    else if (time_diff < 0)
++        set_win32_error( ERROR_INVALID_TIME );
++    else
++        set_win32_error( ERROR_INVALID_WINDOW_HANDLE );
+ 
+     if (thread) release_object( thread );
+     release_object( desktop );
+diff --git a/server/user.h b/server/user.h
+index 11111111111..11111111111 100644
+--- a/server/user.h
++++ b/server/user.h
+@@ -64,6 +64,7 @@ struct desktop
+     struct list                            hotkeys;          /* list of registered hotkeys */
+     struct timeout_user                   *close_timeout;    /* timeout before closing the desktop */
+     struct thread_input                   *foreground_input; /* thread input of foreground thread */
++    unsigned int                           foreground_time;  /* time of last foreground input change */
+     unsigned int                           users;            /* processes and threads using this desktop */
+     unsigned int                           cursor_clip_msg;  /* message to post for cursor clip changes */
+     unsigned int                           cursor_change_msg;/* message to post for cursor win / handle changes */
+diff --git a/server/winstation.c b/server/winstation.c
+index 11111111111..11111111111 100644
+--- a/server/winstation.c
++++ b/server/winstation.c
+@@ -256,6 +256,7 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned
+             desktop->global_hooks = NULL;
+             desktop->close_timeout = NULL;
+             desktop->foreground_input = NULL;
++            desktop->foreground_time = 0;
+             desktop->users = 0;
+             desktop->cursor_clip_msg = 0;
+             desktop->cursor_win = 0;
+-- 
+2.35.1
+

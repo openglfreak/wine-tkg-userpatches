@@ -1,4 +1,4 @@
-From 6b95380b7a7a8089b625c48ffe53ac1efcf5b7ea Mon Sep 17 00:00:00 2001
+From 5a7ff5331e0c29110417c02f2e494aaecf8b5794 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Thu, 29 Apr 2021 11:36:15 +0200
 Subject: [PATCH 22/44] user32: Allocate heap in peek_message only when
@@ -12,12 +12,12 @@ diff --git a/dlls/user32/message.c b/dlls/user32/message.c
 index 11111111111..11111111111 100644
 --- a/dlls/user32/message.c
 +++ b/dlls/user32/message.c
-@@ -2697,12 +2697,11 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -2686,12 +2686,11 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
      INPUT_MESSAGE_SOURCE prev_source = thread_info->msg_source;
      struct received_message_info info, *old_info;
      unsigned int hw_id = 0;  /* id of previous hardware message */
 -    void *buffer;
-+    char buffer_init[256];
++    char buffer_init[1024];
      size_t buffer_size = 1024;
 +    void *buffer = buffer_init;
      BOOL skip = FALSE;
@@ -27,7 +27,7 @@ index 11111111111..11111111111 100644
      if (!first && !last) last = ~0;
      if (hwnd == HWND_BROADCAST) hwnd = HWND_TOPMOST;
  
-@@ -2776,19 +2775,22 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -2765,19 +2764,22 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
  
          if (res)
          {
@@ -52,7 +52,7 @@ index 11111111111..11111111111 100644
              continue;
          }
  
-@@ -2805,6 +2807,12 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -2794,6 +2796,12 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
              break;
          case MSG_NOTIFY:
              info.flags = ISMEX_NOTIFY;
@@ -65,7 +65,7 @@ index 11111111111..11111111111 100644
              if (!unpack_message( info.msg.hwnd, info.msg.message, &info.msg.wParam,
                                   &info.msg.lParam, &buffer, size ))
                  continue;
-@@ -2888,6 +2896,12 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -2877,6 +2885,12 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
              continue;
          case MSG_OTHER_PROCESS:
              info.flags = ISMEX_SEND;
@@ -78,7 +78,7 @@ index 11111111111..11111111111 100644
              if (!unpack_message( info.msg.hwnd, info.msg.message, &info.msg.wParam,
                                   &info.msg.lParam, &buffer, size ))
              {
-@@ -2910,7 +2924,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -2899,7 +2913,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
                  thread_info->GetMessagePosVal = MAKELONG( info.msg.pt.x, info.msg.pt.y );
                  thread_info->GetMessageTimeVal = info.msg.time;
                  thread_info->GetMessageExtraInfoVal = msg_data->hardware.info;
@@ -87,7 +87,7 @@ index 11111111111..11111111111 100644
                  HOOK_CallHooks( WH_GETMESSAGE, HC_ACTION, flags & PM_REMOVE, (LPARAM)msg, TRUE );
                  return 1;
              }
-@@ -2925,7 +2939,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -2914,7 +2928,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
                      /* if this is a nested call return right away */
                      if (first == info.msg.message && last == info.msg.message)
                      {
@@ -96,7 +96,7 @@ index 11111111111..11111111111 100644
                          return 0;
                      }
                  }
-@@ -2946,7 +2960,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -2935,7 +2949,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
              thread_info->GetMessageTimeVal = info.msg.time;
              thread_info->GetMessageExtraInfoVal = 0;
              thread_info->msg_source = msg_source_unavailable;
@@ -105,6 +105,4 @@ index 11111111111..11111111111 100644
              HOOK_CallHooks( WH_GETMESSAGE, HC_ACTION, flags & PM_REMOVE, (LPARAM)msg, TRUE );
              return 1;
          }
--- 
-2.35.1
 

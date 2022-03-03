@@ -1,4 +1,4 @@
-From 91703fe43cd55839de37aaedc3d9f6f90928ca43 Mon Sep 17 00:00:00 2001
+From 56cba0a75a2bcfaa7cb10f4d582c05b1eb608cdf Mon Sep 17 00:00:00 2001
 From: Huw Davies <huw@codeweavers.com>
 Date: Wed, 8 Jul 2020 15:45:24 +0100
 Subject: [PATCH 14/44] user32: Use the shared data if possible for
@@ -6,45 +6,79 @@ Subject: [PATCH 14/44] user32: Use the shared data if possible for
 
 Signed-off-by: Huw Davies <huw@codeweavers.com>
 ---
- dlls/user32/hook.c         |  3 ---
- dlls/user32/input.c        | 40 +++++++++-----------------------------
- dlls/user32/message.c      | 16 ++-------------
- dlls/user32/user_main.c    |  1 -
- dlls/user32/user_private.h |  8 --------
- dlls/user32/winstation.c   |  2 --
- include/ntuser.h           |  1 -
- 7 files changed, 11 insertions(+), 60 deletions(-)
+ dlls/user32/message.c        | 16 ++-------------
+ dlls/win32u/hook.c           |  2 --
+ dlls/win32u/input.c          | 38 +++++++++---------------------------
+ dlls/win32u/ntuser_private.h |  1 -
+ dlls/win32u/sysparams.c      |  5 -----
+ dlls/win32u/win32u_private.h |  1 -
+ dlls/win32u/winstation.c     |  2 --
+ include/ntuser.h             |  1 -
+ 8 files changed, 11 insertions(+), 55 deletions(-)
 
-diff --git a/dlls/user32/hook.c b/dlls/user32/hook.c
+diff --git a/dlls/user32/message.c b/dlls/user32/message.c
 index 11111111111..11111111111 100644
---- a/dlls/user32/hook.c
-+++ b/dlls/user32/hook.c
-@@ -459,9 +459,6 @@ static LRESULT call_hook( struct hook_info *info, INT code, WPARAM wparam, LPARA
+--- a/dlls/user32/message.c
++++ b/dlls/user32/message.c
+@@ -3257,10 +3257,8 @@ static BOOL send_message( struct send_message_info *info, DWORD_PTR *res_ptr, BO
+  */
+ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *rawinput, UINT flags )
+ {
+-    struct user_key_state_info *key_state_info = get_user_thread_info()->key_state;
+     struct send_message_info info;
+     int prev_x, prev_y, new_x, new_y;
+-    INT counter = NtUserCallOneParam( 0, NtUserIncrementKeyStateCounter );
+     USAGE hid_usage_page, hid_usage;
+     NTSTATUS ret;
+     BOOL wait;
+@@ -3345,8 +3343,6 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
+             }
+             break;
          }
+-        if (key_state_info) wine_server_set_reply( req, key_state_info->state,
+-                                                   sizeof(key_state_info->state) );
+         ret = wine_server_call( req );
+         wait = reply->wait;
+         prev_x = reply->prev_x;
+@@ -3356,16 +3352,8 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
+     }
+     SERVER_END_REQ;
+ 
+-    if (!ret)
+-    {
+-        if (key_state_info)
+-        {
+-            key_state_info->time    = GetTickCount();
+-            key_state_info->counter = counter;
+-        }
+-        if ((flags & SEND_HWMSG_INJECTED) && (prev_x != new_x || prev_y != new_y))
+-            USER_Driver->pSetCursorPos( new_x, new_y );
+-    }
++    if (!ret && (flags & SEND_HWMSG_INJECTED) && (prev_x != new_x || prev_y != new_y))
++        USER_Driver->pSetCursorPos( new_x, new_y );
+ 
+     if (wait)
+     {
+diff --git a/dlls/win32u/hook.c b/dlls/win32u/hook.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/hook.c
++++ b/dlls/win32u/hook.c
+@@ -256,8 +256,6 @@ static LRESULT call_hook( struct win_hook_params *info )
+         thread_info->hook_call_depth--;
      }
  
 -    if (info->id == WH_KEYBOARD_LL || info->id == WH_MOUSE_LL)
--        InterlockedIncrement( &global_key_state_counter );  /* force refreshing the key state cache */
--
+-        InterlockedIncrement( &global_key_state_counter ); /* force refreshing the key state cache */
      return ret;
  }
  
-diff --git a/dlls/user32/input.c b/dlls/user32/input.c
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
 index 11111111111..11111111111 100644
---- a/dlls/user32/input.c
-+++ b/dlls/user32/input.c
-@@ -49,8 +49,6 @@
- WINE_DEFAULT_DEBUG_CHANNEL(win);
- WINE_DECLARE_DEBUG_CHANNEL(keyboard);
- 
--LONG global_key_state_counter = 0;
--
- /***********************************************************************
-  *           get_key_state
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -163,52 +163,32 @@ static void check_for_events( UINT flags )
   */
-@@ -447,52 +445,32 @@ static void check_for_events( UINT flags )
-  */
- SHORT WINAPI DECLSPEC_HOTPATCH GetAsyncKeyState( INT key )
+ SHORT WINAPI NtUserGetAsyncKeyState( INT key )
  {
 -    struct user_key_state_info *key_state_info = get_user_thread_info()->key_state;
 -    INT counter = global_key_state_counter;
@@ -59,7 +93,7 @@ index 11111111111..11111111111 100644
      check_for_events( QS_INPUT );
  
 -    if (key_state_info && !(key_state_info->state[key] & 0xc0) &&
--        key_state_info->counter == counter && GetTickCount() - key_state_info->time < 50)
+-        key_state_info->counter == counter && NtGetTickCount() - key_state_info->time < 50)
 -    {
 -        /* use cached value */
 -        return 0;
@@ -67,14 +101,14 @@ index 11111111111..11111111111 100644
 -    else if (!key_state_info)
 +    SHARED_READ_BEGIN( &shared->seq )
      {
--        key_state_info = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*key_state_info) );
+-        key_state_info = calloc( 1, sizeof(*key_state_info) );
 -        get_user_thread_info()->key_state = key_state_info;
 +        state = shared->keystate[key];
      }
 +    SHARED_READ_END( &shared->seq );
-+
-+    if (!(state & 0x40)) return (state & 0x80) << 8;
  
++    if (!(state & 0x40)) return (state & 0x80) << 8;
++
 +    /* Need to make a server call to reset the last pressed bit */
      ret = 0;
      SERVER_START_REQ( get_key_state )
@@ -98,97 +132,64 @@ index 11111111111..11111111111 100644
 -                if (prev_key_state != key_state_info->state[key])
 -                    counter = InterlockedIncrement( &global_key_state_counter );
 -
--                key_state_info->time    = GetTickCount();
+-                key_state_info->time    = NtGetTickCount();
 -                key_state_info->counter = counter;
 -            }
          }
      }
      SERVER_END_REQ;
-diff --git a/dlls/user32/message.c b/dlls/user32/message.c
+diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
 index 11111111111..11111111111 100644
---- a/dlls/user32/message.c
-+++ b/dlls/user32/message.c
-@@ -3268,10 +3268,8 @@ static BOOL send_message( struct send_message_info *info, DWORD_PTR *res_ptr, BO
-  */
- NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *rawinput, UINT flags )
- {
--    struct user_key_state_info *key_state_info = get_user_thread_info()->key_state;
-     struct send_message_info info;
-     int prev_x, prev_y, new_x, new_y;
--    INT counter = global_key_state_counter;
-     USAGE hid_usage_page, hid_usage;
-     NTSTATUS ret;
-     BOOL wait;
-@@ -3356,8 +3354,6 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
-             }
-             break;
-         }
--        if (key_state_info) wine_server_set_reply( req, key_state_info->state,
--                                                   sizeof(key_state_info->state) );
-         ret = wine_server_call( req );
-         wait = reply->wait;
-         prev_x = reply->prev_x;
-@@ -3367,16 +3363,8 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
-     }
-     SERVER_END_REQ;
- 
--    if (!ret)
--    {
--        if (key_state_info)
--        {
--            key_state_info->time    = GetTickCount();
--            key_state_info->counter = counter;
--        }
--        if ((flags & SEND_HWMSG_INJECTED) && (prev_x != new_x || prev_y != new_y))
--            USER_Driver->pSetCursorPos( new_x, new_y );
--    }
-+    if (!ret && (flags & SEND_HWMSG_INJECTED) && (prev_x != new_x || prev_y != new_y))
-+        USER_Driver->pSetCursorPos( new_x, new_y );
- 
-     if (wait)
-     {
-diff --git a/dlls/user32/user_main.c b/dlls/user32/user_main.c
+--- a/dlls/win32u/ntuser_private.h
++++ b/dlls/win32u/ntuser_private.h
+@@ -112,7 +112,6 @@ struct user_thread_info
+     DWORD                         GetMessageTimeVal;      /* Value for GetMessageTime */
+     DWORD                         GetMessagePosVal;       /* Value for GetMessagePos */
+     ULONG_PTR                     GetMessageExtraInfoVal; /* Value for GetMessageExtraInfo */
+-    struct user_key_state_info   *key_state;              /* Cache of global key state */
+     HKL                           kbd_layout;             /* Current keyboard layout */
+     DWORD                         kbd_layout_id;          /* Current keyboard layout ID */
+     HWND                          top_window;             /* Desktop window */
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
 index 11111111111..11111111111 100644
---- a/dlls/user32/user_main.c
-+++ b/dlls/user32/user_main.c
-@@ -259,7 +259,6 @@ static void thread_detach(void)
-     destroy_thread_windows();
-     CloseHandle( thread_info->server_queue );
-     HeapFree( GetProcessHeap(), 0, thread_info->wmchar_data );
--    HeapFree( GetProcessHeap(), 0, thread_info->key_state );
-     HeapFree( GetProcessHeap(), 0, thread_info->rawinput );
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -4526,9 +4526,6 @@ static void thread_detach(void)
  
-     if (thread_info->desktop_shared_map)
-diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
-index 11111111111..11111111111 100644
---- a/dlls/user32/user_private.h
-+++ b/dlls/user32/user_private.h
-@@ -102,20 +102,12 @@ struct rawinput_thread_data
-     RAWINPUT buffer[1]; /* rawinput message data buffer */
- };
+     user_driver->pThreadDetach();
  
--extern LONG global_key_state_counter DECLSPEC_HIDDEN;
- extern BOOL (WINAPI *imm_register_window)(HWND) DECLSPEC_HIDDEN;
- extern void (WINAPI *imm_unregister_window)(HWND) DECLSPEC_HIDDEN;
- #define WM_IME_INTERNAL 0x287
- #define IME_INTERNAL_ACTIVATE 0x17
- #define IME_INTERNAL_DEACTIVATE 0x18
- 
--struct user_key_state_info
--{
--    UINT                          time;                   /* Time of last key state refresh */
--    INT                           counter;                /* Counter to invalidate the key state */
--    BYTE                          state[256];             /* State for each key */
--};
+-    free( thread_info->key_state );
+-    thread_info->key_state = 0;
 -
- struct hook_extra_info
- {
-     HHOOK handle;
-diff --git a/dlls/user32/winstation.c b/dlls/user32/winstation.c
+     if (thread_info->desktop_shared_map)
+     {
+         NtClose( thread_info->desktop_shared_map );
+@@ -4606,8 +4603,6 @@ ULONG_PTR WINAPI NtUserCallOneParam( ULONG_PTR arg, ULONG code )
+             MSG *msg = (MSG *)arg;
+             return handle_internal_message( msg->hwnd, msg->message, msg->wParam, msg->lParam );
+         }
+-    case NtUserIncrementKeyStateCounter:
+-        return InterlockedAdd( &global_key_state_counter, arg );
+     case NtUserLock:
+         switch( arg )
+         {
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
 index 11111111111..11111111111 100644
---- a/dlls/user32/winstation.c
-+++ b/dlls/user32/winstation.c
-@@ -380,10 +380,8 @@ BOOL WINAPI SetThreadDesktop( HDESK handle )
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -262,7 +262,6 @@ extern LRESULT call_hooks( INT id, INT code, WPARAM wparam, LPARAM lparam, BOOL
+ extern BOOL unhook_windows_hook( INT id, HOOKPROC proc ) DECLSPEC_HIDDEN;
+ 
+ /* input.c */
+-extern LONG global_key_state_counter DECLSPEC_HIDDEN;
+ extern HWND get_active_window(void) DECLSPEC_HIDDEN;
+ extern BOOL get_cursor_pos( POINT *pt ) DECLSPEC_HIDDEN;
+ extern DWORD get_input_state(void) DECLSPEC_HIDDEN;
+diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/winstation.c
++++ b/dlls/win32u/winstation.c
+@@ -237,10 +237,8 @@ BOOL WINAPI NtUserSetThreadDesktop( HDESK handle )
      if (ret)  /* reset the desktop windows */
      {
          struct user_thread_info *thread_info = get_user_thread_info();
@@ -198,19 +199,18 @@ index 11111111111..11111111111 100644
 -        if (key_state_info) key_state_info->time = 0;
          if (thread_info->desktop_shared_map)
          {
-             CloseHandle( thread_info->desktop_shared_map );
+             NtClose( thread_info->desktop_shared_map );
 diff --git a/include/ntuser.h b/include/ntuser.h
 index 11111111111..11111111111 100644
 --- a/include/ntuser.h
 +++ b/include/ntuser.h
-@@ -92,7 +92,6 @@ struct user_thread_info
-     DWORD                         GetMessageTimeVal;      /* Value for GetMessageTime */
-     DWORD                         GetMessagePosVal;       /* Value for GetMessagePos */
-     ULONG_PTR                     GetMessageExtraInfoVal; /* Value for GetMessageExtraInfo */
--    struct user_key_state_info   *key_state;              /* Cache of global key state */
-     HKL                           kbd_layout;             /* Current keyboard layout */
-     DWORD                         kbd_layout_id;          /* Current keyboard layout ID */
-     HWND                          top_window;             /* Desktop window */
--- 
-2.35.1
+@@ -111,7 +111,6 @@ enum
+     NtUserFlushWindowSurfaces,
+     NtUserGetDeskPattern,
+     NtUserHandleInternalMessage,
+-    NtUserIncrementKeyStateCounter,
+     NtUserLock,
+     NtUserNextThreadWindow,
+     NtUserSetCallbacks,
+
 

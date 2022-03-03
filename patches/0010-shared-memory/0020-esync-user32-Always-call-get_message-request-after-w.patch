@@ -1,4 +1,4 @@
-From fd3b98ac78f6c8a65e57080246d097820c868527 Mon Sep 17 00:00:00 2001
+From 0ec3a8f613f4f90bec735b181712eb0d4f8c8940 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Tue, 24 Nov 2020 19:21:42 +0100
 Subject: [PATCH 20/44] esync: user32: Always call get_message request after
@@ -14,7 +14,7 @@ diff --git a/dlls/user32/message.c b/dlls/user32/message.c
 index 11111111111..11111111111 100644
 --- a/dlls/user32/message.c
 +++ b/dlls/user32/message.c
-@@ -2689,7 +2689,7 @@ static inline void call_sendmsg_callback( SENDASYNCPROC callback, HWND hwnd, UIN
+@@ -2678,7 +2678,7 @@ static inline void call_sendmsg_callback( SENDASYNCPROC callback, HWND hwnd, UIN
   * available; -1 on error.
   * All pending sent messages are processed before returning.
   */
@@ -22,8 +22,8 @@ index 11111111111..11111111111 100644
 +static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags, UINT changed_mask, BOOL waited )
  {
      LRESULT result;
-     volatile struct queue_shared_memory *shared = get_queue_shared_memory();
-@@ -2723,7 +2723,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+     volatile struct queue_shared_memory *shared = (void *)NtUserCallNoParam( NtUserGetQueueSharedMemory );
+@@ -2712,7 +2712,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
  
          thread_info->msg_source = prev_source;
  
@@ -32,7 +32,7 @@ index 11111111111..11111111111 100644
          else SHARED_READ_BEGIN( &shared->seq )
          {
              /* not created yet */
-@@ -2930,7 +2930,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -2919,7 +2919,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
                  }
                  else
                      peek_message( msg, info.msg.hwnd, info.msg.message,
@@ -41,7 +41,7 @@ index 11111111111..11111111111 100644
                  continue;
              }
  	    if (info.msg.message >= WM_DDE_FIRST && info.msg.message <= WM_DDE_LAST)
-@@ -2974,7 +2974,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -2963,7 +2963,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
  static inline void process_sent_messages(void)
  {
      MSG msg;
@@ -50,7 +50,7 @@ index 11111111111..11111111111 100644
  }
  
  
-@@ -3814,7 +3814,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH PeekMessageW( MSG *msg_out, HWND hwnd, UINT first,
+@@ -3803,7 +3803,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH PeekMessageW( MSG *msg_out, HWND hwnd, UINT first,
      if (thread_info->last_driver_time != GetTickCount())
          check_for_driver_events( 0 );
  
@@ -59,7 +59,7 @@ index 11111111111..11111111111 100644
      if (ret < 0) return FALSE;
  
      if (!ret)
-@@ -3824,7 +3824,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH PeekMessageW( MSG *msg_out, HWND hwnd, UINT first,
+@@ -3813,7 +3813,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH PeekMessageW( MSG *msg_out, HWND hwnd, UINT first,
          flush_window_surfaces( TRUE );
          ret = wow_handlers.wait_message( 0, NULL, 0, QS_ALLINPUT, 0 );
          /* if we received driver events, check again for a pending message */
@@ -68,7 +68,7 @@ index 11111111111..11111111111 100644
      }
  
      check_for_driver_events( msg.message );
-@@ -3879,7 +3879,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetMessageW( MSG *msg, HWND hwnd, UINT first, UINT
+@@ -3868,7 +3868,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetMessageW( MSG *msg, HWND hwnd, UINT first, UINT
      }
      else mask = QS_ALLINPUT;
  
@@ -77,6 +77,4 @@ index 11111111111..11111111111 100644
      {
          wait_objects( 1, &server_queue, INFINITE, mask & (QS_SENDMESSAGE | QS_SMRESULT), mask, 0 );
      }
--- 
-2.35.1
 

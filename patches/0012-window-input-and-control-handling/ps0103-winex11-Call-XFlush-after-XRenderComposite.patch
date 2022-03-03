@@ -1,0 +1,41 @@
+From: Connor McAdams <cmcadams@codeweavers.com>
+Subject: [PATCH] winex11: Call XFlush after XRenderComposite.
+Message-Id: <20220311193058.1784912-1-cmcadams@codeweavers.com>
+Date: Fri, 11 Mar 2022 14:30:58 -0500
+
+Make sure to flush the output buffer after drawing. Helps applications
+that draw to HWNDs belonging to another process.
+
+Signed-off-by: Connor McAdams <cmcadams@codeweavers.com>
+---
+
+This fixes an issue with Chromium based applications that draw on HWNDs
+that belong to other processes. Without calling XFlush, we often end up
+one frame behind, with the XFlush call in free_xrender_picture causing
+the update.
+
+This may not be the correct way to solve the issue I'm dealing with, so
+if not, I'd also appreciate feedback/ideas on a proper way to solve the
+problem.
+
+---
+ dlls/winex11.drv/xrender.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/dlls/winex11.drv/xrender.c b/dlls/winex11.drv/xrender.c
+index 5ede97fb026..fce1b231919 100644
+--- a/dlls/winex11.drv/xrender.c
++++ b/dlls/winex11.drv/xrender.c
+@@ -1508,6 +1508,8 @@ static void xrender_blit( int op, Picture src_pict, Picture mask_pict, Picture d
+     }
+     pXRenderComposite( gdi_display, op, src_pict, mask_pict, dst_pict,
+                        x_offset, y_offset, 0, 0, x_dst, y_dst, width_dst, height_dst );
++
++    XFlush( gdi_display );
+ }
+ 
+ /* Helper function for (stretched) mono->color blitting using xrender */
+
+-- 
+2.25.1
+

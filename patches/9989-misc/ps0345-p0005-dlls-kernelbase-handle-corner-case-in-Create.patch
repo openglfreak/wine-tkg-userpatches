@@ -1,0 +1,53 @@
+From: Eric Pouech <eric.pouech@gmail.com>
+Subject: [PATCH v4 5/5] dlls/kernelbase: handle corner case in CreateProcess
+Message-Id: <164542887575.109938.2592119334827573484.stgit@euterpe>
+Date: Mon, 21 Feb 2022 08:34:35 +0100
+In-Reply-To: <164542808466.109938.2111311894986600388.stgit@euterpe>
+References: <164542808466.109938.2111311894986600388.stgit@euterpe>
+
+in CreateProcess, if:
+- parent isn't attached to a console
+- CreateProcess's flag isn't set with DETACHED_PROCESS nor
+  CREATE_NEW_CONSOLE
+- child is a CUI program
+then a console must be allocated for the child
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52048
+Signed-off-by: Eric Pouech <eric.pouech@gmail.com>
+
+---
+ dlls/kernel32/tests/console.c | 2 +-
+ dlls/kernelbase/process.c     | 6 +++++-
+ 2 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/kernel32/tests/console.c b/dlls/kernel32/tests/console.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernel32/tests/console.c
++++ b/dlls/kernel32/tests/console.c
+@@ -4736,7 +4736,7 @@ static void test_CreateProcessCUI(void)
+     res = check_whether_child_attached(cuiexec, DETACHED_PROCESS);
+     ok(!res, "Don't expecting child to be attached to a console\n");
+     res = check_whether_child_attached(cuiexec, 0);
+-    todo_wine ok(res, "Expecting child to be attached to a console\n");
++    ok(res, "Expecting child to be attached to a console\n");
+ 
+     DeleteFileA(guiexec);
+     DeleteFileA(cuiexec);
+diff --git a/dlls/kernelbase/process.c b/dlls/kernelbase/process.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernelbase/process.c
++++ b/dlls/kernelbase/process.c
+@@ -193,7 +193,11 @@ static RTL_USER_PROCESS_PARAMETERS *create_process_params( const WCHAR *filename
+ 
+     if (flags & CREATE_NEW_PROCESS_GROUP) params->ConsoleFlags = 1;
+     if (flags & CREATE_NEW_CONSOLE) params->ConsoleHandle = CONSOLE_HANDLE_ALLOC;
+-    else if (!(flags & DETACHED_PROCESS)) params->ConsoleHandle = NtCurrentTeb()->Peb->ProcessParameters->ConsoleHandle;
++    else if (!(flags & DETACHED_PROCESS))
++    {
++        params->ConsoleHandle = NtCurrentTeb()->Peb->ProcessParameters->ConsoleHandle;
++        if (!params->ConsoleHandle) params->ConsoleHandle = CONSOLE_HANDLE_ALLOC;
++    }
+ 
+     if (startup->dwFlags & STARTF_USESTDHANDLES)
+     {
+

@@ -1,0 +1,71 @@
+From 04dc3292d4c0861ab7127a13342098772731995b Mon Sep 17 00:00:00 2001
+From: David Torok <dt@zeroitlab.com>
+Date: Sun, 4 Oct 2020 18:17:04 +0200
+Subject: [PATCH] user32: send WM_WINDOWPOSCHANGING and WM_WINDOWPOSCHANGED on activation
+
+winex11.drv: now activates windows without simulating a mouse click on HTMENU
+
+---
+ dlls/win32u/input.c      | 22 ++++++++++++++++++++++
+ dlls/winex11.drv/event.c | 12 ++----------
+ 2 files changed, 24 insertions(+), 10 deletions(-)
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 3c79bad..21befa2 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -131,6 +131,28 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+         }
+     }
+ 
++    WINDOWPOS winpos;
++    winpos.hwnd = hwnd;
++    winpos.hwndInsertAfter = previous;
++    winpos.x = 0;
++    winpos.y = 0;
++    winpos.cx = 0;
++    winpos.cy = 0;
++    winpos.flags = SWP_NOMOVE | SWP_NOSIZE;
++    send_message( hwnd, WM_WINDOWPOSCHANGING, 0, (LPARAM)&winpos );
++
++    RECT new_window_rect;
++    get_window_rects( hwnd, COORDS_PARENT, &new_window_rect, NULL, get_thread_dpi() );
++
++    winpos.hwnd = hwnd;
++    winpos.hwndInsertAfter = previous;
++    winpos.x  = new_window_rect.left;
++    winpos.y  = new_window_rect.top;
++    winpos.cx = new_window_rect.right - new_window_rect.left;
++    winpos.cy = new_window_rect.bottom - new_window_rect.top;
++    winpos.flags = SWP_NOCLIENTMOVE | SWP_NOCLIENTSIZE | SWP_NOMOVE | SWP_NOSIZE;
++    send_message( hwnd, WM_WINDOWPOSCHANGED, 0, (LPARAM)&winpos );
++
+     old_thread = previous ? get_window_thread( previous, NULL ) : 0;
+     new_thread = hwnd ? get_window_thread( hwnd, NULL ) : 0;
+ 
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index d056373..1f9986f 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -722,16 +722,8 @@ static void handle_wm_protocols( HWND hwnd, XClientMessageEvent *event )
+ 
+         if (can_activate_window(hwnd))
+         {
+-            /* simulate a mouse click on the menu to find out
+-             * whether the window wants to be activated */
+-            LRESULT ma = SendMessageW( hwnd, WM_MOUSEACTIVATE,
+-                                       (WPARAM)GetAncestor( hwnd, GA_ROOT ),
+-                                       MAKELONG( HTMENU, WM_LBUTTONDOWN ) );
+-            if (ma != MA_NOACTIVATEANDEAT && ma != MA_NOACTIVATE)
+-            {
+-                set_focus( xev, hwnd, event_time );
+-                return;
+-            }
++            set_focus( xev, hwnd, event_time );
++            return;
+         }
+         else if (hwnd == GetDesktopWindow())
+         {
+-- 
+2.28.0
+

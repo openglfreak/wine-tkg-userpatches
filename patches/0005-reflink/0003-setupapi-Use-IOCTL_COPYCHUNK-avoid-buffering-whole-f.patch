@@ -243,7 +243,7 @@ index 11111111111..11111111111 100644
 -        h = CreateFileW( name, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL );
 +        h = CreateFileW( name, GENERIC_READ|GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL );
          if (h == INVALID_HANDLE_VALUE)
-             ERR( "failed to create %s (error=%u)\n", debugstr_w(name), GetLastError() );
+             ERR( "failed to create %s (error=%lu)\n", debugstr_w(name), GetLastError() );
      }
 @@ -838,23 +855,30 @@ static BOOL CALLBACK register_resource( HMODULE module, LPCWSTR type, LPWSTR nam
      return TRUE;
@@ -282,7 +282,7 @@ index 11111111111..11111111111 100644
 @@ -869,7 +893,7 @@ static void register_fake_dll( const WCHAR *name, const void *data, size_t size,
          if (!registrar)
          {
-             ERR( "failed to create IRegistrar: %x\n", hr );
+             ERR( "failed to create IRegistrar: %lx\n", hr );
 -            return;
 +            goto out;
          }
@@ -291,7 +291,7 @@ index 11111111111..11111111111 100644
 @@ -880,22 +904,24 @@ static void register_fake_dll( const WCHAR *name, const void *data, size_t size,
      IRegistrar_AddReplacement( registrar, L"SystemRoot", buffer );
      EnumResourceNamesW( module, L"WINE_REGISTRY", register_resource, (LONG_PTR)&hr );
-     if (FAILED(hr)) ERR( "failed to register %s: %x\n", debugstr_w(name), hr );
+     if (FAILED(hr)) ERR( "failed to register %s: %lx\n", debugstr_w(name), hr );
 +out:
 +    if (module) UnmapViewOfFile(module);
 +    CloseHandle( mapping );
@@ -323,7 +323,7 @@ index 11111111111..11111111111 100644
  
 -            ret = (WriteFile( h, data, size, &written, NULL ) && written == size);
 +            ret = write_fake_dll( file, hsrc, h );
-             if (!ret) ERR( "failed to write to %s (error=%u)\n", debugstr_w(dest), GetLastError() );
+             if (!ret) ERR( "failed to write to %s (error=%lu)\n", debugstr_w(dest), GetLastError() );
 -            CloseHandle( h );
 -            if (ret) register_fake_dll( dest, data, size, delay_copy );
 +            if (ret) register_fake_dll( dest, h, delay_copy );
@@ -363,7 +363,7 @@ index 11111111111..11111111111 100644
          {
 -            ret = (WriteFile( h, data, size, &written, NULL ) && written == size);
 +            ret = write_fake_dll( copy->src, h2, h );
-             if (!ret) ERR( "failed to write to %s (error=%u)\n", debugstr_w(copy->dest), GetLastError() );
+             if (!ret) ERR( "failed to write to %s (error=%lu)\n", debugstr_w(copy->dest), GetLastError() );
              CloseHandle( h );
              if (!ret) DeleteFileW( copy->dest );
          }
@@ -398,7 +398,7 @@ index 11111111111..11111111111 100644
 -        if (ret) register_fake_dll( name, buffer, size, &delay_copy );
 +        ret = write_fake_dll( source, h2, h );
 +        if (ret) register_fake_dll( name, h, &delay_copy );
-         else ERR( "failed to write to %s (error=%u)\n", debugstr_w(name), GetLastError() );
+         else ERR( "failed to write to %s (error=%lu)\n", debugstr_w(name), GetLastError() );
      }
      else
 @@ -1078,7 +1096,9 @@ BOOL create_fake_dll( const WCHAR *name, const WCHAR *source )

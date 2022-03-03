@@ -1,0 +1,194 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH v2] ws2_32: Base inet_addr() implementation on musl.
+Message-Id: <20220302145822.115327-1-pgofman@codeweavers.com>
+Date: Wed,  2 Mar 2022 17:58:22 +0300
+
+The imported algorithm modified to match the tests.
+
+Fixes a regression introduced by commit
+671cf16f773e5dafc7edbf7766aed9e52e4e7b56.
+
+Windows inet_addr() behaves basically the same as Unix
+inet_addr() which is different from inet_pton().
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+     v2:
+          - add TRACE();
+          - formatting.
+
+ dlls/ws2_32/protocol.c       | 51 +++++++++++++++++++++--
+ dlls/ws2_32/tests/protocol.c | 80 ++++++++++++++++++++++++++++++++++++
+ 2 files changed, 127 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ws2_32/protocol.c b/dlls/ws2_32/protocol.c
+index 11111111111..11111111111 100644
+--- a/dlls/ws2_32/protocol.c
++++ b/dlls/ws2_32/protocol.c
+@@ -1841,17 +1841,60 @@ int WINAPI WSAAddressToStringW( struct sockaddr *addr, DWORD addr_len,
+     return 0;
+ }
+ 
+-
+ /***********************************************************************
+  *      inet_addr   (ws2_32.11)
+  */
+ u_long WINAPI inet_addr( const char *str )
+ {
++    unsigned long a[4] = { 0 };
++    const char *s = str;
++    unsigned char *d;
++    unsigned int i;
+     u_long addr;
++    char *z;
++
++    TRACE( "str %s.\n", debugstr_a(str) );
++
++    if (!s)
++    {
++        SetLastError( WSAEFAULT );
++        return INADDR_NONE;
++    }
++
++    d = (unsigned char *)&addr;
++
++    if (s[0] == ' ' && !s[1]) return 0;
+ 
+-    if (inet_pton( AF_INET, str, &addr ) == 1)
+-        return addr;
+-    return INADDR_NONE;
++    for (i = 0; i < 4; ++i)
++    {
++        a[i] = strtoul( s, &z, 0 );
++        if (z == s || !isdigit( *s )) return INADDR_NONE;
++        if (!*z || *z == ' ') break;
++        if (*z != '.') return INADDR_NONE;
++        s = z + 1;
++    }
++
++    if (i == 4) return INADDR_NONE;
++
++    switch (i) {
++        case 0:
++            a[1] = a[0] & 0xffffff;
++            a[0] >>= 24;
++            /* fallthrough */
++        case 1:
++            a[2] = a[1] & 0xffff;
++            a[1] >>= 16;
++            /* fallthrough */
++        case 2:
++            a[3] = a[2] & 0xff;
++            a[2] >>= 8;
++    }
++    for (i = 0; i < 4; ++i)
++    {
++        if (a[i] > 255) return INADDR_NONE;
++        d[i] = a[i];
++    }
++    return addr;
+ }
+ 
+ 
+diff --git a/dlls/ws2_32/tests/protocol.c b/dlls/ws2_32/tests/protocol.c
+index 11111111111..11111111111 100644
+--- a/dlls/ws2_32/tests/protocol.c
++++ b/dlls/ws2_32/tests/protocol.c
+@@ -674,6 +674,85 @@ static void test_inet_ntoa(void)
+     CloseHandle(thread);
+ }
+ 
++static void test_inet_addr(void)
++{
++    static const struct
++    {
++        const char *input;
++        u_long addr;
++    }
++    tests[] =
++    {
++        {"1.2.3.4",                0x04030201},
++        {"1 2 3 4",                0x01000000},
++        {"1.2.3. 4",               0xffffffff},
++        {"1.2.3 .4",               0x03000201},
++        {"1.2.3 \xfe\xff",         0x03000201},
++        {"3.4.5.6.7",              0xffffffff},
++        {"3.4.5.6. 7",             0xffffffff},
++        {"3.4.5.6  7",             0x06050403},
++        {" 3.4.5.6",               0xffffffff},
++        {"\t3.4.5.6",              0xffffffff},
++        {"3.4.5.6 ",               0x06050403},
++        {"3.4.5.6  ",              0x06050403},
++        {"3. 4.5.6",               0xffffffff},
++        {"3 .4.5.6",               0x03000000},
++        {"1.2.3",                  0x03000201},
++        {".1.2.3",                 0xffffffff},
++        {"0.0.0.0",                0x00000000},
++        {"",                       0xffffffff},
++        {" 0",                     0xffffffff},
++        {"0xa1a2b3b4 ",            0xb4b3a2a1},
++        {".",                      0xffffffff},
++        {" ",                      0x00000000},
++        {"\t",                     0xffffffff},
++        {"  ",                     0xffffffff},
++        {"127.127.127.255",        0xff7f7f7f},
++        {"127.127.127.255:123",    0xffffffff},
++        {"127.127.127.256",        0xffffffff},
++        {"a",                      0xffffffff},
++        {"1.2.3.0xaA",             0xaa030201},
++        {"1.1.1.0x",               0xffffffff},
++        {"1.2.3.010",              0x08030201},
++        {"1.2.3.00",               0x00030201},
++        {"1.2.3.0a",               0xffffffff},
++        {"1.1.1.0o10",             0xffffffff},
++        {"1.1.1.0b10",             0xffffffff},
++        {"1.1.1.-2",               0xffffffff},
++        {"1",                      0x01000000},
++        {"1.2",                    0x02000001},
++        {"1.2.3",                  0x03000201},
++        {"203569230",              0x4e38220c},
++        {"[0.1.2.3]",              0xffffffff},
++        {"0x00010203",             0x03020100},
++        {"0x2134",                 0x34210000},
++        {"1234BEEF",               0xffffffff},
++        {"017700000001",           0x0100007f},
++        {"0777",                   0xff010000},
++        {"2607:f0d0:1002:51::4",   0xffffffff},
++        {"::177.32.45.20",         0xffffffff},
++        {"::1/128",                0xffffffff},
++        {"::1",                    0xffffffff},
++        {":1",                     0xffffffff},
++    };
++    unsigned int i;
++    u_long addr;
++
++    WSASetLastError(0xdeadbeef);
++    addr = inet_addr(NULL);
++    ok(WSAGetLastError() == WSAEFAULT, "got error %u\n", WSAGetLastError());
++    ok(addr == 0xffffffff, "got addr %#08x\n", addr);
++    for (i = 0; i < ARRAY_SIZE(tests); ++i)
++    {
++        winetest_push_context( "Address %s, i %u", debugstr_a(tests[i].input), i );
++        WSASetLastError(0xdeadbeef);
++        addr = inet_addr(tests[i].input);
++        ok(WSAGetLastError() == 0xdeadbeef, "got error %u\n", WSAGetLastError());
++        ok(addr == tests[i].addr, "got addr %#08x\n", addr);
++        winetest_pop_context();
++    }
++}
++
+ static void test_inet_pton(void)
+ {
+     static const struct
+@@ -2871,6 +2950,7 @@ START_TEST( protocol )
+     test_WSALookupService();
+ 
+     test_inet_ntoa();
++    test_inet_addr();
+     test_inet_pton();
+     test_addr_to_print();
+     test_WSAAddressToString();
+
+-- 
+2.35.1
+

@@ -1,0 +1,151 @@
+From 05412eaae914c2b9b237185518c2b62bed4c508f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 17 Jan 2020 18:04:35 +0100
+Subject: [PATCH 11/12] winex11.drv: Add time parameter to focus events
+ handlers.
+
+---
+ dlls/winex11.drv/event.c  | 51 ++++++++++++++++++++++++---------------
+ dlls/winex11.drv/x11drv.h |  3 +++
+ 2 files changed, 35 insertions(+), 19 deletions(-)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -604,7 +604,7 @@ static void set_focus( XEvent *xev, HWND hwnd, Time time )
+     x11drv_thread_data()->active_window = hwnd;
+ 
+     TRACE( "setting foreground window to %p\n", hwnd );
+-    __wine_set_foreground_window( hwnd, EVENT_x11_time_to_win32_time( time ) );
++    __wine_set_foreground_window( hwnd, x11drv_time_to_ticks( time ) );
+ 
+     /* Some applications expect that a being deactivated topmost window
+      * receives the WM_WINDOWPOSCHANGING/WM_WINDOWPOSCHANGED messages,
+@@ -786,10 +786,7 @@ static const char * const focus_modes[] =
+     "NotifyWhileGrabbed"
+ };
+ 
+-/**********************************************************************
+- *              X11DRV_FocusIn
+- */
+-static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
++BOOL x11drv_handle_focus_in_event( HWND hwnd, XEvent *xev, Time time )
+ {
+     XFocusChangeEvent *event = &xev->xfocus;
+     Time user_time;
+@@ -830,17 +827,25 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
+     /* if the window was shown with SWP_NOACTIVATE and never received user input,
+      * it should not activate */
+     if (read_user_time( event->display, event->window, &user_time ) && !user_time)
+-        set_focus( xev, GetForegroundWindow(), CurrentTime );
++        set_focus( xev, GetForegroundWindow(), time );
+     else if (!can_activate_window(hwnd))
+-        try_focus_another_window( xev, CurrentTime );
+-    else __wine_set_foreground_window( hwnd, GetTickCount() );
++        try_focus_another_window( xev, time );
++    else __wine_set_foreground_window( hwnd, x11drv_time_to_ticks( time ) );
+     return TRUE;
+ }
+ 
++/**********************************************************************
++ *              X11DRV_FocusIn
++ */
++static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
++{
++    return x11drv_handle_focus_in_event( hwnd, xev, CurrentTime );
++}
++
+ /**********************************************************************
+  *              focus_out
+  */
+-static void focus_out( Display *display , HWND hwnd )
++static void focus_out( Display *display , HWND hwnd, Time time )
+  {
+     HWND hwnd_tmp;
+     Window focus_win;
+@@ -887,17 +892,13 @@ static void focus_out( Display *display , HWND hwnd )
+         if (hwnd == GetForegroundWindow())
+         {
+             TRACE( "lost focus, setting fg to desktop\n" );
+-            __wine_set_foreground_window( GetDesktopWindow(), GetTickCount() );
++            __wine_set_foreground_window( GetDesktopWindow(), x11drv_time_to_ticks( time ) );
+         }
+     }
+  }
+ 
+-/**********************************************************************
+- *              X11DRV_FocusOut
+- *
+- * Note: only top-level windows get FocusOut events.
+- */
+-static BOOL X11DRV_FocusOut( HWND hwnd, XEvent *xev )
++
++BOOL x11drv_handle_focus_out_event( HWND hwnd, XEvent *xev, Time time )
+ {
+     XFocusChangeEvent *event = &xev->xfocus;
+ 
+@@ -934,11 +935,22 @@ static BOOL X11DRV_FocusOut( HWND hwnd, XEvent *xev )
+         return TRUE; /* ignore wm specific NotifyUngrab / NotifyGrab events w.r.t focus */
+     }
+ 
+-    focus_out( event->display, hwnd );
++    focus_out( event->display, hwnd, time );
+     return TRUE;
+ }
+ 
+ 
++/**********************************************************************
++ *              X11DRV_FocusOut
++ *
++ * Note: only top-level windows get FocusOut events.
++ */
++static BOOL X11DRV_FocusOut( HWND hwnd, XEvent *xev )
++{
++    return x11drv_handle_focus_out_event( hwnd, xev, CurrentTime );
++}
++
++
+ /***********************************************************************
+  *           X11DRV_Expose
+  */
+@@ -1737,6 +1749,7 @@ static void EVENT_DropURLs( HWND hWnd, XClientMessageEvent *event )
+ static void handle_xembed_protocol( HWND hwnd, XEvent *xev )
+ {
+     XClientMessageEvent *event = &xev->xclient;
++    Time time = event->data.l[0];
+ 
+     switch (event->data.l[1])
+     {
+@@ -1763,12 +1776,12 @@ static void handle_xembed_protocol( HWND hwnd, XEvent *xev )
+ 
+     case XEMBED_WINDOW_DEACTIVATE:
+         TRACE( "win %p/%lx XEMBED_WINDOW_DEACTIVATE message\n", hwnd, event->window );
+-        focus_out( event->display, GetAncestor( hwnd, GA_ROOT ) );
++        focus_out( event->display, GetAncestor( hwnd, GA_ROOT ), time );
+         break;
+ 
+     case XEMBED_FOCUS_OUT:
+         TRACE( "win %p/%lx XEMBED_FOCUS_OUT message\n", hwnd, event->window );
+-        focus_out( event->display, GetAncestor( hwnd, GA_ROOT ) );
++        focus_out( event->display, GetAncestor( hwnd, GA_ROOT ), time );
+         break;
+ 
+     case XEMBED_MODALITY_ON:
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -253,6 +253,9 @@ extern void x11drv_xinput_init(void) DECLSPEC_HIDDEN;
+ extern void x11drv_xinput_enable( Display *display, Window window, long event_mask ) DECLSPEC_HIDDEN;
+ extern void x11drv_xinput_disable( Display *display, Window window, long event_mask ) DECLSPEC_HIDDEN;
+ 
++BOOL x11drv_handle_focus_in_event( HWND hwnd, XEvent *xev, Time time );
++BOOL x11drv_handle_focus_out_event( HWND hwnd, XEvent *xev, Time time );
++
+ extern DWORD copy_image_bits( BITMAPINFO *info, BOOL is_r8g8b8, XImage *image,
+                               const struct gdi_image_bits *src_bits, struct gdi_image_bits *dst_bits,
+                               struct bitblt_coords *coords, const int *mapping, unsigned int zeropad_mask ) DECLSPEC_HIDDEN;
+-- 
+2.35.1
+

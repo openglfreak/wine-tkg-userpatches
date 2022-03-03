@@ -1,7 +1,7 @@
-From 04ed0de702748265a63a779c516116486d3229b7 Mon Sep 17 00:00:00 2001
+From bf38a2109d498c7f9258d821f5e617a7940ee7ed Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
-Date: Fri, 21 Jan 2022 14:33:39 +0100
-Subject: [PATCH 20/28] winegstreamer: Add H264 encoded format support in
+Date: Wed, 16 Feb 2022 16:14:08 +0100
+Subject: [PATCH 20/35] winegstreamer: Add H264 encoded format support in
  wg_transform.
 
 For: Call of Duty III, Mortal Kombat 11, Shadow Warrior 2,
@@ -15,17 +15,20 @@ CW-Bug-Id: #16839
 CW-Bug-Id: #18678
 CW-Bug-Id: #19362
 ---
- dlls/winegstreamer/h264_decoder.c | 36 +++++++++++++++++-
- dlls/winegstreamer/mfplat.c       | 37 ++++++++++++++++++
- dlls/winegstreamer/unixlib.h      |  8 ++++
- dlls/winegstreamer/wg_transform.c | 63 +++++++++++++++++++++++++++++++
- 4 files changed, 143 insertions(+), 1 deletion(-)
+ dlls/winegstreamer/h264_decoder.c  | 35 ++++++++++++++-
+ dlls/winegstreamer/mfplat.c        | 45 +++++++++++++++++---
+ dlls/winegstreamer/quartz_parser.c | 11 ++---
+ dlls/winegstreamer/unixlib.h       |  8 ++++
+ dlls/winegstreamer/wg_format.c     | 68 ++++++++++++++++++++++++++++--
+ dlls/winegstreamer/wg_transform.c  |  2 +
+ dlls/winegstreamer/wm_reader.c     |  8 +++-
+ 7 files changed, 160 insertions(+), 17 deletions(-)
 
 diff --git a/dlls/winegstreamer/h264_decoder.c b/dlls/winegstreamer/h264_decoder.c
 index 11111111111..11111111111 100644
 --- a/dlls/winegstreamer/h264_decoder.c
 +++ b/dlls/winegstreamer/h264_decoder.c
-@@ -49,6 +49,8 @@ struct h264_decoder
+@@ -48,6 +48,8 @@ struct h264_decoder
      LONG refcount;
      IMFMediaType *input_type;
      IMFMediaType *output_type;
@@ -34,38 +37,37 @@ index 11111111111..11111111111 100644
  };
  
  static struct h264_decoder *impl_from_IMFTransform(IMFTransform *iface)
-@@ -56,6 +58,30 @@ static struct h264_decoder *impl_from_IMFTransform(IMFTransform *iface)
+@@ -55,6 +57,29 @@ static struct h264_decoder *impl_from_IMFTransform(IMFTransform *iface)
      return CONTAINING_RECORD(iface, struct h264_decoder, IMFTransform_iface);
  }
  
 +static HRESULT try_create_wg_transform(struct h264_decoder *decoder)
 +{
-+    struct wg_encoded_format input_format;
++    struct wg_format input_format;
 +    struct wg_format output_format;
 +
 +    if (decoder->wg_transform)
 +        wg_transform_destroy(decoder->wg_transform);
++    decoder->wg_transform = NULL;
 +
-+    mf_media_type_to_wg_encoded_format(decoder->input_type, &input_format);
-+    if (input_format.encoded_type == WG_ENCODED_TYPE_UNKNOWN)
++    mf_media_type_to_wg_format(decoder->input_type, &input_format);
++    if (input_format.major_type == WG_MAJOR_TYPE_UNKNOWN)
 +        return MF_E_INVALIDMEDIATYPE;
 +
 +    mf_media_type_to_wg_format(decoder->output_type, &output_format);
 +    if (output_format.major_type == WG_MAJOR_TYPE_UNKNOWN)
 +        return MF_E_INVALIDMEDIATYPE;
 +
-+    decoder->wg_transform = wg_transform_create(&input_format, &output_format);
-+    if (decoder->wg_transform)
-+        return S_OK;
++    if (!(decoder->wg_transform = wg_transform_create(&input_format, &output_format)))
++        return E_FAIL;
 +
-+    WARN("Failed to create H264 wg_transform.\n");
-+    return E_FAIL;
++    return S_OK;
 +}
 +
  static HRESULT fill_output_media_type(IMFMediaType *media_type, IMFMediaType *default_type)
  {
      UINT32 value, width, height;
-@@ -191,6 +217,8 @@ static ULONG WINAPI h264_decoder_Release(IMFTransform *iface)
+@@ -183,6 +208,8 @@ static ULONG WINAPI transform_Release(IMFTransform *iface)
  
      if (!refcount)
      {
@@ -74,7 +76,7 @@ index 11111111111..11111111111 100644
          if (decoder->input_type)
              IMFMediaType_Release(decoder->input_type);
          if (decoder->output_type)
-@@ -424,7 +452,13 @@ static HRESULT WINAPI h264_decoder_SetOutputType(IMFTransform *iface, DWORD id,
+@@ -417,7 +444,13 @@ static HRESULT WINAPI transform_SetOutputType(IMFTransform *iface, DWORD id, IMF
          IMFMediaType_Release(decoder->output_type);
      IMFMediaType_AddRef((decoder->output_type = type));
  
@@ -88,21 +90,37 @@ index 11111111111..11111111111 100644
 +    return hr;
  }
  
- static HRESULT WINAPI h264_decoder_GetInputCurrentType(IMFTransform *iface, DWORD id, IMFMediaType **type)
+ static HRESULT WINAPI transform_GetInputCurrentType(IMFTransform *iface, DWORD id, IMFMediaType **type)
 diff --git a/dlls/winegstreamer/mfplat.c b/dlls/winegstreamer/mfplat.c
 index 11111111111..11111111111 100644
 --- a/dlls/winegstreamer/mfplat.c
 +++ b/dlls/winegstreamer/mfplat.c
-@@ -838,6 +838,36 @@ static void mf_media_type_to_wg_encoded_format_xwma(IMFMediaType *type, struct w
-     memcpy(format->u.xwma.codec_data, codec_data, codec_data_len);
+@@ -661,11 +661,11 @@ IMFMediaType *mf_media_type_from_wg_format(const struct wg_format *format)
+ {
+     switch (format->major_type)
+     {
+-        case WG_MAJOR_TYPE_UNKNOWN:
+-            return NULL;
+-
++        case WG_MAJOR_TYPE_H264:
+         case WG_MAJOR_TYPE_WMA:
+-            FIXME("WMA format not implemented!\n");
++            FIXME("Format %u not implemented!\n", format->major_type);
++            /* fallthrough */
++        case WG_MAJOR_TYPE_UNKNOWN:
+             return NULL;
+ 
+         case WG_MAJOR_TYPE_AUDIO:
+@@ -831,6 +831,36 @@ static void mf_media_type_to_wg_format_wma(IMFMediaType *type, const GUID *subty
+     format->u.wma.is_xma = is_xma;
  }
  
-+static void mf_media_type_to_wg_encoded_format_h264(IMFMediaType *type, struct wg_encoded_format *format)
++static void mf_media_type_to_wg_format_h264(IMFMediaType *type, struct wg_format *format)
 +{
 +    UINT64 frame_rate, frame_size;
 +    UINT32 profile, level;
 +
-+    format->encoded_type = WG_ENCODED_TYPE_H264;
++    format->major_type = WG_MAJOR_TYPE_H264;
 +    format->u.h264.width = 0;
 +    format->u.h264.height = 0;
 +    format->u.h264.fps_n = 1;
@@ -127,39 +145,70 @@ index 11111111111..11111111111 100644
 +        format->u.h264.level = level;
 +}
 +
- void mf_media_type_to_wg_encoded_format(IMFMediaType *type, struct wg_encoded_format *format)
+ void mf_media_type_to_wg_format(IMFMediaType *type, struct wg_format *format)
  {
      GUID major_type, subtype;
-@@ -870,6 +900,13 @@ void mf_media_type_to_wg_encoded_format(IMFMediaType *type, struct wg_encoded_fo
-         else
-             FIXME("Unimplemented audio subtype %s.\n", debugstr_guid(&subtype));
+@@ -860,7 +890,12 @@ void mf_media_type_to_wg_format(IMFMediaType *type, struct wg_format *format)
+             mf_media_type_to_wg_format_audio(type, &subtype, format);
      }
-+    else if (IsEqualGUID(&major_type, &MFMediaType_Video))
+     else if (IsEqualGUID(&major_type, &MFMediaType_Video))
+-        mf_media_type_to_wg_format_video(type, &subtype, format);
 +    {
 +        if (IsEqualGUID(&subtype, &MFVideoFormat_H264))
-+            mf_media_type_to_wg_encoded_format_h264(type, format);
++            mf_media_type_to_wg_format_h264(type, format);
 +        else
-+            FIXME("Unimplemented audio subtype %s.\n", debugstr_guid(&subtype));
++            mf_media_type_to_wg_format_video(type, &subtype, format);
 +    }
      else
+         FIXME("Unrecognized major type %s.\n", debugstr_guid(&major_type));
+ }
+diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/quartz_parser.c
++++ b/dlls/winegstreamer/quartz_parser.c
+@@ -328,8 +328,9 @@ unsigned int wg_format_get_max_size(const struct wg_format *format)
+             break;
+         }
+ 
++        case WG_MAJOR_TYPE_H264:
+         case WG_MAJOR_TYPE_WMA:
+-            FIXME("WMA format not implemented!\n");
++            FIXME("Format %u not implemented!\n", format->major_type);
+             return 0;
+ 
+         case WG_MAJOR_TYPE_UNKNOWN:
+@@ -423,11 +424,11 @@ bool amt_from_wg_format(AM_MEDIA_TYPE *mt, const struct wg_format *format, bool
+ 
+     switch (format->major_type)
      {
-         FIXME("Unimplemented major type %s.\n", debugstr_guid(&major_type));
+-    case WG_MAJOR_TYPE_UNKNOWN:
+-        return false;
+-
++    case WG_MAJOR_TYPE_H264:
+     case WG_MAJOR_TYPE_WMA:
+-        FIXME("WMA format not implemented!\n");
++        FIXME("Format %u not implemented!\n", format->major_type);
++        /* fallthrough */
++    case WG_MAJOR_TYPE_UNKNOWN:
+         return false;
+ 
+     case WG_MAJOR_TYPE_AUDIO:
 diff --git a/dlls/winegstreamer/unixlib.h b/dlls/winegstreamer/unixlib.h
 index 11111111111..11111111111 100644
 --- a/dlls/winegstreamer/unixlib.h
 +++ b/dlls/winegstreamer/unixlib.h
-@@ -98,6 +98,7 @@ struct wg_encoded_format
-         WG_ENCODED_TYPE_UNKNOWN,
-         WG_ENCODED_TYPE_WMA,
-         WG_ENCODED_TYPE_XMA,
-+        WG_ENCODED_TYPE_H264,
-     } encoded_type;
+@@ -38,6 +38,7 @@ struct wg_format
+         WG_MAJOR_TYPE_VIDEO,
+         WG_MAJOR_TYPE_AUDIO,
+         WG_MAJOR_TYPE_WMA,
++        WG_MAJOR_TYPE_H264,
+     } major_type;
  
      union
-@@ -113,6 +114,13 @@ struct wg_encoded_format
-             uint32_t codec_data_len;
+@@ -101,6 +102,13 @@ struct wg_format
              unsigned char codec_data[64];
-         } xwma;
+             bool is_xma;
+         } wma;
 +        struct
 +        {
 +            int32_t width, height;
@@ -170,15 +219,15 @@ index 11111111111..11111111111 100644
      } u;
  };
  
-diff --git a/dlls/winegstreamer/wg_transform.c b/dlls/winegstreamer/wg_transform.c
+diff --git a/dlls/winegstreamer/wg_format.c b/dlls/winegstreamer/wg_format.c
 index 11111111111..11111111111 100644
---- a/dlls/winegstreamer/wg_transform.c
-+++ b/dlls/winegstreamer/wg_transform.c
-@@ -98,6 +98,64 @@ static GstCaps *wg_format_to_caps_xwma(const struct wg_encoded_format *format)
+--- a/dlls/winegstreamer/wg_format.c
++++ b/dlls/winegstreamer/wg_format.c
+@@ -441,6 +441,64 @@ static GstCaps *wg_format_to_caps_xwma(const struct wg_format *format)
      return caps;
  }
  
-+static GstCaps *wg_format_to_caps_h264(const struct wg_encoded_format *format)
++static GstCaps *wg_format_to_caps_h264(const struct wg_format *format)
 +{
 +    const char *profile, *level;
 +    GstCaps *caps;
@@ -236,29 +285,85 @@ index 11111111111..11111111111 100644
 +    return caps;
 +}
 +
- static GstCaps *wg_encoded_format_to_caps(const struct wg_encoded_format *format)
+ GstCaps *wg_format_to_caps(const struct wg_format *format)
  {
-     switch (format->encoded_type)
-@@ -107,6 +165,8 @@ static GstCaps *wg_encoded_format_to_caps(const struct wg_encoded_format *format
-         case WG_ENCODED_TYPE_WMA:
-         case WG_ENCODED_TYPE_XMA:
+     switch (format->major_type)
+@@ -449,6 +507,8 @@ GstCaps *wg_format_to_caps(const struct wg_format *format)
+             return NULL;
+         case WG_MAJOR_TYPE_WMA:
              return wg_format_to_caps_xwma(format);
-+        case WG_ENCODED_TYPE_H264:
++        case WG_MAJOR_TYPE_H264:
 +            return wg_format_to_caps_h264(format);
+         case WG_MAJOR_TYPE_AUDIO:
+             return wg_format_to_caps_audio(format);
+         case WG_MAJOR_TYPE_VIDEO:
+@@ -465,11 +525,11 @@ bool wg_format_compare(const struct wg_format *a, const struct wg_format *b)
+ 
+     switch (a->major_type)
+     {
+-        case WG_MAJOR_TYPE_UNKNOWN:
+-            return false;
+-
+         case WG_MAJOR_TYPE_WMA:
+-            GST_FIXME("WMA format not implemented!\n");
++        case WG_MAJOR_TYPE_H264:
++            GST_FIXME("Format %u not implemented!", a->major_type);
++            /* fallthrough */
++        case WG_MAJOR_TYPE_UNKNOWN:
+             return false;
+ 
+         case WG_MAJOR_TYPE_AUDIO:
+diff --git a/dlls/winegstreamer/wg_transform.c b/dlls/winegstreamer/wg_transform.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wg_transform.c
++++ b/dlls/winegstreamer/wg_transform.c
+@@ -226,6 +226,7 @@ NTSTATUS wg_transform_create(void *args)
+ 
+     switch (input_format.major_type)
+     {
++        case WG_MAJOR_TYPE_H264:
+         case WG_MAJOR_TYPE_WMA:
+             if (!(element = transform_find_element(GST_ELEMENT_FACTORY_TYPE_DECODER, src_caps, raw_caps))
+                     || !transform_append_element(transform, element, &first, &last))
+@@ -266,6 +267,7 @@ NTSTATUS wg_transform_create(void *args)
+             break;
+ 
+         case WG_MAJOR_TYPE_VIDEO:
++        case WG_MAJOR_TYPE_H264:
+         case WG_MAJOR_TYPE_WMA:
+         case WG_MAJOR_TYPE_UNKNOWN:
+             GST_FIXME("Format %u not implemented!", output_format.major_type);
+diff --git a/dlls/winegstreamer/wm_reader.c b/dlls/winegstreamer/wm_reader.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wm_reader.c
++++ b/dlls/winegstreamer/wm_reader.c
+@@ -1687,7 +1687,8 @@ HRESULT wm_reader_get_output_format_count(struct wm_reader *reader, DWORD output
+             break;
+ 
+         case WG_MAJOR_TYPE_WMA:
+-            FIXME("WMA format not implemented!\n");
++        case WG_MAJOR_TYPE_H264:
++            FIXME("Format %u not implemented!\n", format.major_type);
+             /* fallthrough */
+         case WG_MAJOR_TYPE_AUDIO:
+         case WG_MAJOR_TYPE_UNKNOWN:
+@@ -1736,7 +1737,8 @@ HRESULT wm_reader_get_output_format(struct wm_reader *reader, DWORD output,
+             break;
+ 
+         case WG_MAJOR_TYPE_WMA:
+-            FIXME("WMA format not implemented!\n");
++        case WG_MAJOR_TYPE_H264:
++            FIXME("Format %u not implemented!\n", format.major_type);
+             break;
+         case WG_MAJOR_TYPE_UNKNOWN:
+             break;
+@@ -1815,6 +1817,8 @@ static const char *get_major_type_string(enum wg_major_type type)
+             return "unknown";
+         case WG_MAJOR_TYPE_WMA:
+             return "wma";
++        case WG_MAJOR_TYPE_H264:
++            return "h264";
      }
      assert(0);
      return NULL;
-@@ -286,7 +346,10 @@ NTSTATUS wg_transform_create(void *args)
-                 !transform_append_element(transform, element, &first, &last))
-             goto failed;
-         break;
-+    case WG_MAJOR_TYPE_VIDEO:
-+        break;
-     default:
-+        assert(0);
-         break;
-     }
- 
--- 
-2.35.1
 

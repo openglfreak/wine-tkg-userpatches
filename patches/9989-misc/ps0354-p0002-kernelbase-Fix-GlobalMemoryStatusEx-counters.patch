@@ -1,0 +1,91 @@
+From 67398a0605d100ae7f2f139ce53c62a50cf1df42 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 23 Feb 2022 20:16:34 +0100
+Subject: [PATCH 2/2] kernelbase: Fix GlobalMemoryStatusEx counters.
+
+---
+ dlls/kernelbase/memory.c | 13 ++++++++-----
+ dlls/ntdll/tests/info.c  |  5 -----
+ dlls/ntdll/unix/system.c |  4 ++++
+ 3 files changed, 12 insertions(+), 10 deletions(-)
+
+diff --git a/dlls/kernelbase/memory.c b/dlls/kernelbase/memory.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernelbase/memory.c
++++ b/dlls/kernelbase/memory.c
+@@ -1049,6 +1049,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH GlobalMemoryStatusEx( MEMORYSTATUSEX *status )
+     static DWORD last_check;
+     SYSTEM_BASIC_INFORMATION basic_info;
+     SYSTEM_PERFORMANCE_INFORMATION perf_info;
++    VM_COUNTERS_EX vmc;
+ 
+     if (status->dwLength != sizeof(*status))
+     {
+@@ -1065,16 +1066,18 @@ BOOL WINAPI DECLSPEC_HOTPATCH GlobalMemoryStatusEx( MEMORYSTATUSEX *status )
+     if (!set_ntstatus( NtQuerySystemInformation( SystemBasicInformation,
+                                                  &basic_info, sizeof(basic_info), NULL )) ||
+         !set_ntstatus( NtQuerySystemInformation( SystemPerformanceInformation,
+-                                                 &perf_info, sizeof(perf_info), NULL)))
++                                                 &perf_info, sizeof(perf_info), NULL)) ||
++        !set_ntstatus( NtQueryInformationProcess( GetCurrentProcess(), ProcessVmCounters,
++                                                  &vmc, sizeof(vmc), NULL )))
+         return FALSE;
+ 
+     status->dwMemoryLoad     = 0;
+-    status->ullTotalPhys     = perf_info.TotalCommitLimit;
++    status->ullTotalPhys     = basic_info.MmNumberOfPhysicalPages;
+     status->ullAvailPhys     = perf_info.AvailablePages;
+-    status->ullTotalPageFile = perf_info.TotalCommitLimit + 1; /* Titan Quest refuses to run if TotalPageFile <= TotalPhys */
++    status->ullTotalPageFile = perf_info.TotalCommitLimit;
+     status->ullAvailPageFile = status->ullTotalPageFile - perf_info.TotalCommittedPages;
+-    status->ullTotalVirtual  = (ULONG_PTR)basic_info.HighestUserAddress - (ULONG_PTR)basic_info.LowestUserAddress;
+-    status->ullAvailVirtual  = status->ullTotalVirtual - 64 * 1024;  /* FIXME */
++    status->ullTotalVirtual  = (ULONG_PTR)basic_info.HighestUserAddress - (ULONG_PTR)basic_info.LowestUserAddress + 1;
++    status->ullAvailVirtual  = status->ullTotalVirtual - (ULONGLONG)vmc.WorkingSetSize * 4 /* approximate */;
+     status->ullAvailExtendedVirtual = 0;
+ 
+     status->ullTotalPhys     *= basic_info.PageSize;
+diff --git a/dlls/ntdll/tests/info.c b/dlls/ntdll/tests/info.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/tests/info.c
++++ b/dlls/ntdll/tests/info.c
+@@ -3632,21 +3632,16 @@ static void test_GlobalMemoryStatusEx(void)
+ 
+     ok( memory.dwMemoryLoad == expect.dwMemoryLoad, "got dwMemoryLoad %u\n",
+         memory.dwMemoryLoad );
+-    todo_wine
+     ok( memory.ullTotalPhys == expect.ullTotalPhys, "got ullTotalPhys %s\n",
+         wine_dbgstr_longlong( memory.ullTotalPhys ) );
+     ok( memory.ullAvailPhys == expect.ullAvailPhys, "got ullAvailPhys %s\n",
+         wine_dbgstr_longlong( memory.ullAvailPhys ) );
+-    todo_wine
+     ok( memory.ullTotalPageFile == expect.ullTotalPageFile, "got ullTotalPageFile %s\n",
+         wine_dbgstr_longlong( memory.ullTotalPageFile ) );
+-    todo_wine
+     ok( memory.ullAvailPageFile == expect.ullAvailPageFile, "got ullAvailPageFile %s\n",
+         wine_dbgstr_longlong( memory.ullAvailPageFile ) );
+-    todo_wine
+     ok( memory.ullTotalVirtual == expect.ullTotalVirtual, "got ullTotalVirtual %s\n",
+         wine_dbgstr_longlong( memory.ullTotalVirtual ) );
+-    todo_wine
+     ok( memory.ullAvailVirtual <= expect.ullAvailVirtual, "got ullAvailVirtual %s\n",
+         wine_dbgstr_longlong( memory.ullAvailVirtual ) );
+     ok( memory.ullAvailExtendedVirtual == 0, "got ullAvailExtendedVirtual %s\n",
+diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/system.c
++++ b/dlls/ntdll/unix/system.c
+@@ -2179,6 +2179,10 @@ static void get_performance_info( SYSTEM_PERFORMANCE_INFORMATION *info )
+ #endif
+     }
+ #endif
++
++    /* Titan Quest refuses to run if TotalPageFile <= TotalPhys */
++    if (!totalswap) totalswap = page_size;
++
+     info->AvailablePages      = freeram / page_size;
+     info->TotalCommittedPages = (totalram + totalswap - freeram - freeswap) / page_size;
+     info->TotalCommitLimit    = (totalram + totalswap) / page_size;
+-- 
+2.35.1
+

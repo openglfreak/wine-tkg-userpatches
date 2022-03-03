@@ -1,0 +1,42 @@
+From 767573f9d1e60eda9bd96a967087be7833711883 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 18 Jan 2021 19:19:51 +0100
+Subject: [PATCH 36/44] win32u: Use input shared memory for GetCursorInfo.
+
+---
+ dlls/win32u/input.c | 15 +++++++--------
+ 1 file changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -134,20 +134,19 @@ BOOL get_cursor_pos( POINT *pt )
+  */
+ BOOL WINAPI NtUserGetCursorInfo( CURSORINFO *info )
+ {
++    volatile struct input_shared_memory *shared = get_foreground_shared_memory();
+     BOOL ret;
+ 
+     if (!info) return FALSE;
+ 
+-    SERVER_START_REQ( get_thread_input )
++    if (!shared) ret = FALSE;
++    else SHARED_READ_BEGIN( &shared->seq )
+     {
+-        req->tid = 0;
+-        if ((ret = !wine_server_call( req )))
+-        {
+-            info->hCursor = wine_server_ptr_handle( reply->cursor );
+-            info->flags = reply->show_count >= 0 ? CURSOR_SHOWING : 0;
+-        }
++        info->hCursor = wine_server_ptr_handle( shared->cursor );
++        info->flags = (shared->cursor_count >= 0) ? CURSOR_SHOWING : 0;
++        ret = TRUE;
+     }
+-    SERVER_END_REQ;
++    SHARED_READ_END( &shared->seq );
+     get_cursor_pos( &info->ptScreenPos );
+     return ret;
+ }
+

@@ -1,0 +1,122 @@
+From 1e4bf60b5c5d0edb44b8a2cbba7bc6bbdf9f8bcc Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 22 Feb 2022 11:35:48 +0100
+Subject: [PATCH 32/35] winegstreamer: Implement native video frame plane
+ alignment.
+
+To match what native does. Many games that use the H264 decoder directly
+rely on this as they hardcode various aspects of the alignment in their
+logic (and each game a different one).
+
+Note: There may be a way to have it done by GStreamer, as libav natively
+decode H264 into aligned planes, but somehow and somewhere in the chain
+the planes are re-aligned.
+
+Hard Reset Redux crashes if MF_MT_MINIMUM_DISPLAY_APERTURE attribute is
+set (and it doesn't need it as its videos are 720p).
+
+For: Call of Duty III, Shadow Warrior 2.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=45988
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=47084
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=49715
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52183
+CW-Bug-Id: #16839
+CW-Bug-Id: #18678
+CW-Bug-Id: #19362
+---
+ dlls/winegstreamer/h264_decoder.c | 29 +++++++++++++++++++++++++++++
+ dlls/winegstreamer/wg_pool.c      |  9 +++++++++
+ 2 files changed, 38 insertions(+)
+
+diff --git a/dlls/winegstreamer/h264_decoder.c b/dlls/winegstreamer/h264_decoder.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/h264_decoder.c
++++ b/dlls/winegstreamer/h264_decoder.c
+@@ -87,6 +87,7 @@ static HRESULT try_create_wg_transform(struct h264_decoder *decoder)
+ static HRESULT fill_output_media_type(IMFMediaType *media_type, IMFMediaType *default_type)
+ {
+     UINT32 value, width, height;
++    MFVideoArea aperture = {0};
+     UINT64 value64;
+     GUID subtype;
+     HRESULT hr;
+@@ -170,6 +171,17 @@ static HRESULT fill_output_media_type(IMFMediaType *media_type, IMFMediaType *de
+             return hr;
+     }
+ 
++    if (FAILED(hr = IMFMediaType_GetItem(media_type, &MF_MT_MINIMUM_DISPLAY_APERTURE, NULL)))
++    {
++        if (default_type && SUCCEEDED(hr = IMFMediaType_GetBlob(default_type, &MF_MT_MINIMUM_DISPLAY_APERTURE,
++                (BYTE *)&aperture, sizeof(aperture), NULL)))
++        {
++            if (FAILED(hr = IMFMediaType_SetBlob(media_type, &MF_MT_MINIMUM_DISPLAY_APERTURE,
++                    (BYTE *)&aperture, sizeof(aperture))))
++                return hr;
++        }
++    }
++
+     return S_OK;
+ }
+ 
+@@ -536,7 +548,9 @@ static HRESULT WINAPI transform_ProcessOutput(IMFTransform *iface, DWORD flags,
+     struct h264_decoder *decoder = impl_from_IMFTransform(iface);
+     MFT_OUTPUT_STREAM_INFO info;
+     struct wg_sample *wg_sample;
++    MFVideoArea aperture = {0};
+     IMFMediaType *media_type;
++    UINT32 halign, valign;
+     UINT64 frame_rate;
+     HRESULT hr;
+ 
+@@ -582,6 +596,21 @@ static HRESULT WINAPI transform_ProcessOutput(IMFTransform *iface, DWORD flags,
+         media_type = mf_media_type_from_wg_format(&wg_sample->format);
+         IMFMediaType_SetUINT64(media_type, &MF_MT_FRAME_RATE, frame_rate);
+ 
++        valign = decoder->wg_format.u.video.width & 15;
++        halign = decoder->wg_format.u.video.height & 15;
++        if (halign || valign)
++        {
++            aperture.Area.cx = decoder->wg_format.u.video.width;
++            aperture.Area.cy = decoder->wg_format.u.video.height;
++            IMFMediaType_SetBlob(media_type, &MF_MT_MINIMUM_DISPLAY_APERTURE,
++                    (BYTE *)&aperture, sizeof(aperture));
++
++            aperture.Area.cx += (16 - valign) & 15;
++            aperture.Area.cy += (16 - halign) & 15;
++            IMFMediaType_SetUINT64(media_type, &MF_MT_FRAME_SIZE,
++                    (UINT64)aperture.Area.cx << 32 | aperture.Area.cy);
++        }
++
+         IMFMediaType_Release(decoder->output_type);
+         decoder->output_type = media_type;
+ 
+diff --git a/dlls/winegstreamer/wg_pool.c b/dlls/winegstreamer/wg_pool.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wg_pool.c
++++ b/dlls/winegstreamer/wg_pool.c
+@@ -116,6 +116,7 @@ static void wg_pool_class_init(WgBufferPoolClass *klass)
+ GstBufferPool *wg_pool_create(GstCaps *caps, gsize *buffer_size)
+ {
+     const gchar *media_type = gst_structure_get_name(gst_caps_get_structure(caps, 0));
++    GstVideoAlignment align;
+     GstBufferPool *gst_pool;
+     GstStructure *config;
+     WgBufferPool *pool;
+@@ -134,7 +135,15 @@ GstBufferPool *wg_pool_create(GstCaps *caps, gsize *buffer_size)
+     if (!pool->is_video)
+         pool->buffer_size = 1024 * pool->u.audio_info.bpf;
+     else
++    {
++        gst_video_alignment_reset(&align);
++        align.padding_right = (16 - (pool->u.video_info.width & 15)) & 15;
++        align.padding_bottom = (16 - (pool->u.video_info.height & 15)) & 15;
++        align.stride_align[0] = align.stride_align[1] = align.stride_align[2] = align.stride_align[3] = 15;
++        gst_video_info_align(&pool->u.video_info, &align);
++
+         pool->buffer_size = pool->u.video_info.size;
++    }
+ 
+     gst_buffer_pool_config_set_params(config, gst_caps_copy(caps),
+             pool->buffer_size, 0, 0);
+

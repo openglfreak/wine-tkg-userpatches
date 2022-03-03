@@ -1,7 +1,7 @@
-From 0b171e57900efe37ba4160fb42b6adf2b7fbb230 Mon Sep 17 00:00:00 2001
+From 29bc33d62f58e5daa6fab96a661d289ce8156ec1 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
-Date: Thu, 10 Feb 2022 09:56:47 +0100
-Subject: [PATCH 21/28] winegstreamer: Implement H264 decoder ProcessInput.
+Date: Sun, 20 Feb 2022 12:23:59 +0100
+Subject: [PATCH 21/35] winegstreamer: Implement H264 decoder ProcessInput.
 
 For: Call of Duty III, Mortal Kombat 11, Shadow Warrior 2,
 Yakuza 4 Remastered, Hard Reset Redux.
@@ -14,24 +14,22 @@ CW-Bug-Id: #16839
 CW-Bug-Id: #18678
 CW-Bug-Id: #19362
 ---
- dlls/winegstreamer/h264_decoder.c | 30 ++++++++++++++++++++++++++++--
- 1 file changed, 28 insertions(+), 2 deletions(-)
+ dlls/winegstreamer/h264_decoder.c | 22 ++++++++++++++++++++--
+ 1 file changed, 20 insertions(+), 2 deletions(-)
 
 diff --git a/dlls/winegstreamer/h264_decoder.c b/dlls/winegstreamer/h264_decoder.c
 index 11111111111..11111111111 100644
 --- a/dlls/winegstreamer/h264_decoder.c
 +++ b/dlls/winegstreamer/h264_decoder.c
-@@ -506,8 +506,34 @@ static HRESULT WINAPI h264_decoder_ProcessMessage(IMFTransform *iface, MFT_MESSA
+@@ -497,8 +497,26 @@ static HRESULT WINAPI transform_ProcessMessage(IMFTransform *iface, MFT_MESSAGE_
  
- static HRESULT WINAPI h264_decoder_ProcessInput(IMFTransform *iface, DWORD id, IMFSample *sample, DWORD flags)
+ static HRESULT WINAPI transform_ProcessInput(IMFTransform *iface, DWORD id, IMFSample *sample, DWORD flags)
  {
 -    FIXME("iface %p, id %#lx, sample %p, flags %#lx stub!\n", iface, id, sample, flags);
 -    return E_NOTIMPL;
 +    struct h264_decoder *decoder = impl_from_IMFTransform(iface);
-+    IMFMediaBuffer *media_buffer;
++    struct wg_sample *wg_sample;
 +    MFT_INPUT_STREAM_INFO info;
-+    DWORD buffer_size;
-+    BYTE *buffer;
 +    HRESULT hr;
 +
 +    TRACE("iface %p, id %#lx, sample %p, flags %#lx.\n", iface, id, sample, flags);
@@ -42,22 +40,14 @@ index 11111111111..11111111111 100644
 +    if (!decoder->wg_transform)
 +        return MF_E_TRANSFORM_TYPE_NOT_SET;
 +
-+    if (FAILED(hr = IMFSample_ConvertToContiguousBuffer(sample, &media_buffer)))
++    if (FAILED(hr = mf_create_wg_sample(sample, &wg_sample)))
 +        return hr;
 +
-+    if (FAILED(hr = IMFMediaBuffer_Lock(media_buffer, &buffer, NULL, &buffer_size)))
-+        goto done;
++    hr = wg_transform_push_data(decoder->wg_transform, wg_sample);
 +
-+    hr = wg_transform_push_data(decoder->wg_transform, buffer, buffer_size);
-+
-+    IMFMediaBuffer_Unlock(media_buffer);
-+
-+done:
-+    IMFMediaBuffer_Release(media_buffer);
++    mf_destroy_wg_sample(wg_sample);
 +    return hr;
  }
  
- static HRESULT WINAPI h264_decoder_ProcessOutput(IMFTransform *iface, DWORD flags, DWORD count,
--- 
-2.35.1
+ static HRESULT WINAPI transform_ProcessOutput(IMFTransform *iface, DWORD flags, DWORD count,
 

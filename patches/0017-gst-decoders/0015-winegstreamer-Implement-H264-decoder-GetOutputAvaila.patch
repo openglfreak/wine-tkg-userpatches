@@ -1,7 +1,7 @@
-From 910acf51fce5baeb9895c64138fee49230522972 Mon Sep 17 00:00:00 2001
+From f8e95fc85f012022ba415f408bd257cd0a39b481 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
-Date: Thu, 10 Feb 2022 09:55:30 +0100
-Subject: [PATCH 15/28] winegstreamer: Implement H264 decoder
+Date: Wed, 16 Feb 2022 16:24:43 +0100
+Subject: [PATCH 15/35] winegstreamer: Implement H264 decoder
  GetOutputAvailableType.
 
 For: Call of Duty III, Mortal Kombat 11, Shadow Warrior 2,
@@ -15,14 +15,14 @@ CW-Bug-Id: #16839
 CW-Bug-Id: #18678
 CW-Bug-Id: #19362
 ---
- dlls/winegstreamer/h264_decoder.c | 141 +++++++++++++++++++++++++++++-
- 1 file changed, 138 insertions(+), 3 deletions(-)
+ dlls/winegstreamer/h264_decoder.c | 133 +++++++++++++++++++++++++++++-
+ 1 file changed, 130 insertions(+), 3 deletions(-)
 
 diff --git a/dlls/winegstreamer/h264_decoder.c b/dlls/winegstreamer/h264_decoder.c
 index 11111111111..11111111111 100644
 --- a/dlls/winegstreamer/h264_decoder.c
 +++ b/dlls/winegstreamer/h264_decoder.c
-@@ -34,6 +34,14 @@ static const GUID *h264_decoder_input_types[] =
+@@ -33,6 +33,14 @@ static const GUID *h264_decoder_input_types[] =
  {
      &MFVideoFormat_H264,
  };
@@ -37,7 +37,7 @@ index 11111111111..11111111111 100644
  
  struct h264_decoder
  {
-@@ -47,6 +55,103 @@ static struct h264_decoder *impl_from_IMFTransform(IMFTransform *iface)
+@@ -46,6 +54,95 @@ static struct h264_decoder *impl_from_IMFTransform(IMFTransform *iface)
      return CONTAINING_RECORD(iface, struct h264_decoder, IMFTransform_iface);
  }
  
@@ -79,26 +79,18 @@ index 11111111111..11111111111 100644
 +
 +    if (FAILED(hr = IMFMediaType_GetItem(media_type, &MF_MT_SAMPLE_SIZE, NULL)))
 +    {
-+        if (!default_type || FAILED(hr = IMFMediaType_GetUINT32(default_type, &MF_MT_SAMPLE_SIZE, &value)))
-+        {
-+            if (IsEqualGUID(&subtype, &MFVideoFormat_YUY2))
-+                value = width * height * 2;
-+            else
-+                value = width * height * 3 / 2;
-+        }
++        if ((!default_type || FAILED(hr = IMFMediaType_GetUINT32(default_type, &MF_MT_SAMPLE_SIZE, &value))) &&
++                FAILED(hr = MFCalculateImageSize(&subtype, width, height, &value)))
++            return hr;
 +        if (FAILED(hr = IMFMediaType_SetUINT32(media_type, &MF_MT_SAMPLE_SIZE, value)))
 +            return hr;
 +    }
 +
 +    if (FAILED(hr = IMFMediaType_GetItem(media_type, &MF_MT_DEFAULT_STRIDE, NULL)))
 +    {
-+        if (!default_type || FAILED(hr = IMFMediaType_GetUINT32(default_type, &MF_MT_DEFAULT_STRIDE, &value)))
-+        {
-+            if (IsEqualGUID(&subtype, &MFVideoFormat_YUY2))
-+                value = width * 2;
-+            else
-+                value = width;
-+        }
++        if ((!default_type || FAILED(hr = IMFMediaType_GetUINT32(default_type, &MF_MT_DEFAULT_STRIDE, &value))) &&
++                FAILED(hr = MFGetStrideForBitmapInfoHeader(subtype.Data1, width, (LONG *)&value)))
++            return hr;
 +        if (FAILED(hr = IMFMediaType_SetUINT32(media_type, &MF_MT_DEFAULT_STRIDE, value)))
 +            return hr;
 +    }
@@ -138,12 +130,12 @@ index 11111111111..11111111111 100644
 +    return S_OK;
 +}
 +
- static HRESULT WINAPI h264_decoder_QueryInterface(IMFTransform *iface, REFIID iid, void **out)
+ static HRESULT WINAPI transform_QueryInterface(IMFTransform *iface, REFIID iid, void **out)
  {
      struct h264_decoder *decoder = impl_from_IMFTransform(iface);
-@@ -170,8 +275,38 @@ static HRESULT WINAPI h264_decoder_GetInputAvailableType(IMFTransform *iface, DW
- static HRESULT WINAPI h264_decoder_GetOutputAvailableType(IMFTransform *iface, DWORD id, DWORD index,
-         IMFMediaType **type)
+@@ -168,8 +265,38 @@ static HRESULT WINAPI transform_GetInputAvailableType(IMFTransform *iface, DWORD
+ static HRESULT WINAPI transform_GetOutputAvailableType(IMFTransform *iface, DWORD id,
+         DWORD index, IMFMediaType **type)
  {
 -    FIXME("iface %p, id %#lx, index %#lx, type %p stub!\n", iface, id, index, type);
 -    return E_NOTIMPL;
@@ -181,8 +173,8 @@ index 11111111111..11111111111 100644
 +    return hr;
  }
  
- static HRESULT WINAPI h264_decoder_SetInputType(IMFTransform *iface, DWORD id, IMFMediaType *type, DWORD flags)
-@@ -184,7 +319,7 @@ static HRESULT WINAPI h264_decoder_SetInputType(IMFTransform *iface, DWORD id, I
+ static HRESULT WINAPI transform_SetInputType(IMFTransform *iface, DWORD id, IMFMediaType *type, DWORD flags)
+@@ -182,7 +309,7 @@ static HRESULT WINAPI transform_SetInputType(IMFTransform *iface, DWORD id, IMFM
      TRACE("iface %p, id %#lx, type %p, flags %#lx.\n", iface, id, type, flags);
  
      if (FAILED(hr = IMFMediaType_GetGUID(type, &MF_MT_MAJOR_TYPE, &major)) ||
@@ -191,6 +183,4 @@ index 11111111111..11111111111 100644
          return E_INVALIDARG;
  
      if (!IsEqualGUID(&major, &MFMediaType_Video))
--- 
-2.35.1
 

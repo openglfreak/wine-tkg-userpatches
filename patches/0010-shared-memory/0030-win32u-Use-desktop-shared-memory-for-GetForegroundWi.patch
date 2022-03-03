@@ -1,0 +1,151 @@
+From ca77e4d54b94134ede5fd155e8af5eda7ae36a0c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 18 Jan 2021 17:58:36 +0100
+Subject: [PATCH 30/44] win32u: Use desktop shared memory for
+ GetForegroundWindow.
+
+---
+ dlls/win32u/input.c          |  9 +++++----
+ dlls/win32u/ntuser_private.h |  2 ++
+ dlls/win32u/sysparams.c      |  9 +++++++++
+ dlls/win32u/win32u_private.h |  1 +
+ dlls/win32u/winstation.c     | 37 ++++++++++++++++++++++++++++++++++++
+ include/ntuser.h             |  1 +
+ 6 files changed, 55 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -1015,13 +1015,14 @@ int WINAPI NtUserGetMouseMovePointsEx( UINT size, MOUSEMOVEPOINT *ptin, MOUSEMOV
+  */
+ HWND WINAPI NtUserGetForegroundWindow(void)
+ {
++    volatile struct input_shared_memory *shared = (void *)NtUserCallNoParam( NtUserGetForegroundSharedMemory );
+     HWND ret = 0;
+ 
+-    SERVER_START_REQ( get_thread_input )
++    if (!shared) return 0;
++    SHARED_READ_BEGIN( &shared->seq )
+     {
+-        req->tid = 0;
+-        if (!wine_server_call_err( req )) ret = wine_server_ptr_handle( reply->foreground );
++        ret = wine_server_ptr_handle( shared->active );
+     }
+-    SERVER_END_REQ;
++    SHARED_READ_END( &shared->seq );
+     return ret;
+ }
+diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/ntuser_private.h
++++ b/dlls/win32u/ntuser_private.h
+@@ -123,6 +123,8 @@ struct user_thread_info
+     struct desktop_shared_memory *desktop_shared_memory;  /* Ptr to server's desktop shared memory */
+     HANDLE                        queue_shared_map;       /* HANDLE to server's thread queue shared memory */
+     struct queue_shared_memory   *queue_shared_memory;     /* Ptr to server's thread queue shared memory */
++    HANDLE                        foreground_shared_map;    /* HANDLE to server's thread input shared memory */
++    struct input_shared_memory   *foreground_shared_memory; /* Ptr to server's thread input shared memory */
+ };
+ 
+ C_ASSERT( sizeof(struct user_thread_info) <= sizeof(((TEB *)0)->Win32ClientInfo) );
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -4535,6 +4535,13 @@ static void thread_detach(void)
+         thread_info->queue_shared_map = NULL;
+         thread_info->queue_shared_memory = NULL;
+     }
++
++    if (thread_info->foreground_shared_memory)
++    {
++        NtClose( thread_info->foreground_shared_map );
++        thread_info->foreground_shared_map = NULL;
++        thread_info->foreground_shared_memory = NULL;
++    }
+ }
+ 
+ /***********************************************************************
+@@ -4552,6 +4559,8 @@ ULONG_PTR WINAPI NtUserCallNoParam( ULONG code )
+         return 0;
+     case NtUserGetQueueSharedMemory:
+         return get_queue_shared_memory();
++    case NtUserGetForegroundSharedMemory:
++        return get_foreground_shared_memory();
+     default:
+         FIXME( "invalid code %u\n", code );
+         return 0;
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -295,6 +295,7 @@ static inline void release_win_ptr( struct tagWND *ptr )
+ /* winstation.c */
+ extern volatile struct desktop_shared_memory *get_desktop_shared_memory( void ) DECLSPEC_HIDDEN;
+ extern volatile struct queue_shared_memory *get_queue_shared_memory( void ) DECLSPEC_HIDDEN;
++extern volatile struct input_shared_memory *get_foreground_shared_memory( void ) DECLSPEC_HIDDEN;
+ 
+ extern void wrappers_init( unixlib_handle_t handle ) DECLSPEC_HIDDEN;
+ extern NTSTATUS gdi_init(void) DECLSPEC_HIDDEN;
+diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/winstation.c
++++ b/dlls/win32u/winstation.c
+@@ -534,6 +534,43 @@ volatile struct queue_shared_memory *get_queue_shared_memory( void )
+ }
+ 
+ 
++static volatile struct input_shared_memory *get_thread_input_shared_memory( DWORD tid, HANDLE *handle,
++                                                                            struct input_shared_memory **ptr )
++{
++    char bufA[MAX_PATH];
++    WCHAR buf[MAX_PATH];
++    UINT len;
++
++    if (*ptr && (*ptr)->tid == tid) return *ptr;
++    if (*ptr) NtClose( *handle );
++
++    snprintf( bufA, ARRAY_SIZE(buf), "\\KernelObjects\\__wine_thread_mappings\\%08x-input", tid );
++    len = asciiz_to_unicode( buf, bufA ) / sizeof(WCHAR) - 1;
++    map_shared_memory_section( buf, len, sizeof(struct input_shared_memory), NULL,
++                               handle, (void **)ptr );
++    return *ptr;
++}
++
++
++volatile struct input_shared_memory *get_foreground_shared_memory( void )
++{
++    volatile struct desktop_shared_memory *desktop = get_desktop_shared_memory();
++    struct user_thread_info *thread_info = get_user_thread_info();
++    DWORD tid;
++
++    if (!desktop) return NULL;
++    SHARED_READ_BEGIN( &desktop->seq )
++    {
++        tid = desktop->foreground_tid;
++    }
++    SHARED_READ_END( &desktop->seq );
++
++    if (!tid) return NULL;
++    return get_thread_input_shared_memory( tid, &thread_info->foreground_shared_map,
++                                           &thread_info->foreground_shared_memory );
++}
++
++
+ /***********************************************************************
+  *           winstation_init
+  *
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 11111111111..11111111111 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -90,6 +90,7 @@ enum
+     /* temporary exports */
+     NtUserThreadDetach,
+     NtUserGetQueueSharedMemory,
++    NtUserGetForegroundSharedMemory,
+ };
+ 
+ /* NtUserCallOneParam codes, not compatible with Windows */
+

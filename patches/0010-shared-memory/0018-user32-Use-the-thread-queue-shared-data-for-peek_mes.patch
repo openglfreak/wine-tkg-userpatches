@@ -1,28 +1,29 @@
-From 5ac39b687b57a09f28f6d78ae3634585773322f5 Mon Sep 17 00:00:00 2001
+From 6b91d470b98666212f4d486ce6193148a8f2680c Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
-Date: Tue, 17 Aug 2021 17:57:09 +0200
+Date: Sun, 12 Dec 2021 13:15:26 +0100
 Subject: [PATCH 18/44] user32: Use the thread queue shared data for
  peek_message.
 
 ---
- dlls/user32/message.c      | 33 ++++++++++++++++++++++++++++++-
- dlls/user32/user_main.c    |  7 +++++++
- dlls/user32/user_private.h |  1 +
- dlls/user32/winstation.c   | 13 +++++++++++++
- include/ntuser.h           |  2 ++
- server/protocol.def        |  4 ++++
- server/queue.c             | 40 ++++++++++++++++++++++++++++++++++++++
- 7 files changed, 99 insertions(+), 1 deletion(-)
+ dlls/user32/message.c        | 33 ++++++++++++++++++++++++++++-
+ dlls/win32u/ntuser_private.h | 22 ++++++++++++++++++++
+ dlls/win32u/sysparams.c      |  9 ++++++++
+ dlls/win32u/win32u_private.h | 21 +------------------
+ dlls/win32u/winstation.c     | 23 ++++++++++++++++++---
+ include/ntuser.h             |  1 +
+ server/protocol.def          |  4 ++++
+ server/queue.c               | 40 ++++++++++++++++++++++++++++++++++++
+ 8 files changed, 129 insertions(+), 24 deletions(-)
 
 diff --git a/dlls/user32/message.c b/dlls/user32/message.c
 index 11111111111..11111111111 100644
 --- a/dlls/user32/message.c
 +++ b/dlls/user32/message.c
-@@ -2692,12 +2692,14 @@ static inline void call_sendmsg_callback( SENDASYNCPROC callback, HWND hwnd, UIN
+@@ -2681,12 +2681,14 @@ static inline void call_sendmsg_callback( SENDASYNCPROC callback, HWND hwnd, UIN
  static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags, UINT changed_mask )
  {
      LRESULT result;
-+    volatile struct queue_shared_memory *shared = get_queue_shared_memory();
++    volatile struct queue_shared_memory *shared = (void *)NtUserCallNoParam( NtUserGetQueueSharedMemory );
      struct user_thread_info *thread_info = get_user_thread_info();
      INPUT_MESSAGE_SOURCE prev_source = thread_info->msg_source;
      struct received_message_info info, *old_info;
@@ -33,7 +34,7 @@ index 11111111111..11111111111 100644
  
      if (!(buffer = HeapAlloc( GetProcessHeap(), 0, buffer_size ))) return -1;
  
-@@ -2709,10 +2711,39 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -2698,10 +2700,39 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
          NTSTATUS res;
          size_t size = 0;
          const message_data_t *msg_data = buffer;
@@ -74,65 +75,11 @@ index 11111111111..11111111111 100644
          {
              req->flags     = flags;
              req->get_win   = wine_server_user_handle( hwnd );
-diff --git a/dlls/user32/user_main.c b/dlls/user32/user_main.c
+diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
 index 11111111111..11111111111 100644
---- a/dlls/user32/user_main.c
-+++ b/dlls/user32/user_main.c
-@@ -268,6 +268,13 @@ static void thread_detach(void)
-         thread_info->desktop_shared_memory = NULL;
-     }
- 
-+    if (thread_info->queue_shared_map)
-+    {
-+        CloseHandle( thread_info->queue_shared_map );
-+        thread_info->queue_shared_map = NULL;
-+        thread_info->queue_shared_memory = NULL;
-+    }
-+
-     exiting_thread_id = 0;
- }
- 
-diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
-index 11111111111..11111111111 100644
---- a/dlls/user32/user_private.h
-+++ b/dlls/user32/user_private.h
-@@ -192,6 +192,7 @@ extern BOOL WINPROC_call_window( HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
- extern const WCHAR *CLASS_GetVersionedName(const WCHAR *classname, UINT *basename_offset,
-         WCHAR *combined, BOOL register_class) DECLSPEC_HIDDEN;
- extern volatile struct desktop_shared_memory *get_desktop_shared_memory( void ) DECLSPEC_HIDDEN;
-+extern volatile struct queue_shared_memory *get_queue_shared_memory( void ) DECLSPEC_HIDDEN;
- 
- /* kernel callbacks */
- 
-diff --git a/dlls/user32/winstation.c b/dlls/user32/winstation.c
-index 11111111111..11111111111 100644
---- a/dlls/user32/winstation.c
-+++ b/dlls/user32/winstation.c
-@@ -160,6 +160,19 @@ volatile struct desktop_shared_memory *get_desktop_shared_memory( void )
- }
- 
- 
-+volatile struct queue_shared_memory *get_queue_shared_memory( void )
-+{
-+    struct user_thread_info *thread_info = get_user_thread_info();
-+    WCHAR buf[MAX_PATH];
-+
-+    if (thread_info->queue_shared_memory) return thread_info->queue_shared_memory;
-+
-+    swprintf( buf, ARRAY_SIZE(buf), L"\\KernelObjects\\__wine_thread_mappings\\%08x-queue", GetCurrentThreadId() );
-+    map_shared_memory_section( buf, sizeof(struct queue_shared_memory), NULL,
-+                               &thread_info->queue_shared_map, (void **)&thread_info->queue_shared_memory );
-+    return thread_info->queue_shared_memory;
-+}
-+
- 
- /***********************************************************************
-  *              CreateWindowStationA  (USER32.@)
-diff --git a/include/ntuser.h b/include/ntuser.h
-index 11111111111..11111111111 100644
---- a/include/ntuser.h
-+++ b/include/ntuser.h
-@@ -99,6 +99,8 @@ struct user_thread_info
+--- a/dlls/win32u/ntuser_private.h
++++ b/dlls/win32u/ntuser_private.h
+@@ -119,6 +119,8 @@ struct user_thread_info
      struct rawinput_thread_data  *rawinput;               /* RawInput thread local data / buffer */
      HANDLE                        desktop_shared_map;     /* HANDLE to server's desktop shared memory */
      struct desktop_shared_memory *desktop_shared_memory;  /* Ptr to server's desktop shared memory */
@@ -141,6 +88,158 @@ index 11111111111..11111111111 100644
  };
  
  C_ASSERT( sizeof(struct user_thread_info) <= sizeof(((TEB *)0)->Win32ClientInfo) );
+@@ -148,4 +150,24 @@ void *free_user_handle( HANDLE handle, unsigned int type ) DECLSPEC_HIDDEN;
+ void *get_user_handle_ptr( HANDLE handle, unsigned int type ) DECLSPEC_HIDDEN;
+ void release_user_handle_ptr( void *ptr ) DECLSPEC_HIDDEN;
+ 
++#if defined(__i386__) || defined(__x86_64__)
++#define __SHARED_READ_SEQ( x ) (*(x))
++#define __SHARED_READ_FENCE do {} while(0)
++#else
++#define __SHARED_READ_SEQ( x ) __atomic_load_n( x, __ATOMIC_RELAXED )
++#define __SHARED_READ_FENCE __atomic_thread_fence( __ATOMIC_ACQUIRE )
++#endif
++
++#define SHARED_READ_BEGIN( x )                                          \
++    do {                                                                \
++        unsigned int __seq;                                             \
++        do {                                                            \
++            while ((__seq = __SHARED_READ_SEQ( x )) & SEQUENCE_MASK) NtYieldExecution(); \
++            __SHARED_READ_FENCE;
++
++#define SHARED_READ_END( x )                       \
++            __SHARED_READ_FENCE;                   \
++        } while (__SHARED_READ_SEQ( x ) != __seq); \
++    } while(0)
++
+ #endif /* __WINE_NTUSER_PRIVATE_H */
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -4528,6 +4528,13 @@ static void thread_detach(void)
+         thread_info->desktop_shared_map = NULL;
+         thread_info->desktop_shared_memory = NULL;
+     }
++
++    if (thread_info->queue_shared_map)
++    {
++        NtClose( thread_info->queue_shared_map );
++        thread_info->queue_shared_map = NULL;
++        thread_info->queue_shared_memory = NULL;
++    }
+ }
+ 
+ /***********************************************************************
+@@ -4543,6 +4550,8 @@ ULONG_PTR WINAPI NtUserCallNoParam( ULONG code )
+     case NtUserThreadDetach:
+         thread_detach();
+         return 0;
++    case NtUserGetQueueSharedMemory:
++        return get_queue_shared_memory();
+     default:
+         FIXME( "invalid code %u\n", code );
+         return 0;
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -294,6 +294,7 @@ static inline void release_win_ptr( struct tagWND *ptr )
+ 
+ /* winstation.c */
+ extern volatile struct desktop_shared_memory *get_desktop_shared_memory( void ) DECLSPEC_HIDDEN;
++extern volatile struct queue_shared_memory *get_queue_shared_memory( void ) DECLSPEC_HIDDEN;
+ 
+ extern void wrappers_init( unixlib_handle_t handle ) DECLSPEC_HIDDEN;
+ extern NTSTATUS gdi_init(void) DECLSPEC_HIDDEN;
+@@ -474,24 +475,4 @@ static inline const char *debugstr_us( const UNICODE_STRING *us )
+     return debugstr_wn( us->Buffer, us->Length / sizeof(WCHAR) );
+ }
+ 
+-#if defined(__i386__) || defined(__x86_64__)
+-#define __SHARED_READ_SEQ( x ) (*(x))
+-#define __SHARED_READ_FENCE do {} while(0)
+-#else
+-#define __SHARED_READ_SEQ( x ) __atomic_load_n( x, __ATOMIC_RELAXED )
+-#define __SHARED_READ_FENCE __atomic_thread_fence( __ATOMIC_ACQUIRE )
+-#endif
+-
+-#define SHARED_READ_BEGIN( x )                                          \
+-    do {                                                                \
+-        unsigned int __seq;                                             \
+-        do {                                                            \
+-            while ((__seq = __SHARED_READ_SEQ( x )) & SEQUENCE_MASK) NtYieldExecution(); \
+-            __SHARED_READ_FENCE;
+-
+-#define SHARED_READ_END( x )                       \
+-            __SHARED_READ_FENCE;                   \
+-        } while (__SHARED_READ_SEQ( x ) != __seq); \
+-    } while(0)
+-
+ #endif /* __WINE_WIN32U_PRIVATE */
+diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/winstation.c
++++ b/dlls/win32u/winstation.c
+@@ -456,13 +456,13 @@ static const WCHAR *get_default_desktop( void *buf, size_t buf_size )
+ }
+ 
+ 
+-static void map_shared_memory_section( const WCHAR *name, SIZE_T size, HANDLE root, HANDLE *handle, void **ptr )
++static void map_shared_memory_section( const WCHAR *name, UINT namelen, SIZE_T size, HANDLE root, HANDLE *handle, void **ptr )
+ {
+     OBJECT_ATTRIBUTES attr;
+     UNICODE_STRING section_str;
+     NTSTATUS status;
+ 
+-    section_str.Length = wcslen(name) * sizeof(WCHAR);
++    section_str.Length = (namelen ? namelen : wcslen(name)) * sizeof(WCHAR);
+     section_str.MaximumLength = section_str.Length + sizeof(WCHAR);
+     section_str.Buffer = (WCHAR *)name;
+     InitializeObjectAttributes( &attr, &section_str, 0, root, NULL );
+@@ -511,12 +511,29 @@ volatile struct desktop_shared_memory *get_desktop_shared_memory( void )
+         if (i == 0) *(ptr - 1) = '\\';
+     }
+ 
+-    map_shared_memory_section( buf, sizeof(struct desktop_shared_memory), root,
++    map_shared_memory_section( buf, ptr - buf - 1, sizeof(struct desktop_shared_memory), root,
+                                &thread_info->desktop_shared_map, (void **)&thread_info->desktop_shared_memory );
+     return thread_info->desktop_shared_memory;
+ }
+ 
+ 
++volatile struct queue_shared_memory *get_queue_shared_memory( void )
++{
++    struct user_thread_info *thread_info = get_user_thread_info();
++    char bufA[MAX_PATH];
++    WCHAR buf[MAX_PATH];
++    UINT len;
++
++    if (thread_info->queue_shared_memory) return thread_info->queue_shared_memory;
++
++    snprintf( bufA, ARRAY_SIZE(buf), "\\KernelObjects\\__wine_thread_mappings\\%08x-queue", GetCurrentThreadId() );
++    len = asciiz_to_unicode( buf, bufA ) / sizeof(WCHAR) - 1;
++    map_shared_memory_section( buf, len, sizeof(struct queue_shared_memory), NULL,
++                               &thread_info->queue_shared_map, (void **)&thread_info->queue_shared_memory );
++    return thread_info->queue_shared_memory;
++}
++
++
+ /***********************************************************************
+  *           winstation_init
+  *
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 11111111111..11111111111 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -89,6 +89,7 @@ enum
+     NtUserGetInputState,
+     /* temporary exports */
+     NtUserThreadDetach,
++    NtUserGetQueueSharedMemory,
+ };
+ 
+ /* NtUserCallOneParam codes, not compatible with Windows */
 diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
@@ -255,6 +354,4 @@ index 11111111111..11111111111 100644
      fast_reset_event( queue->fast_sync );
      set_error( STATUS_PENDING );  /* FIXME */
  
--- 
-2.35.1
 

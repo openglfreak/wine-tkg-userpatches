@@ -1,0 +1,149 @@
+From: Mohamad Al-Jaf <mohamadaljaf@gmail.com>
+Subject: [PATCH v3] wusa: Support additional expressions.
+Message-Id: <20220227065221.23742-1-mohamadaljaf@gmail.com>
+Date: Sun, 27 Feb 2022 01:52:21 -0500
+
+Signed-off-by: Mohamad Al-Jaf <mohamadaljaf@gmail.com>
+---
+v3: - Get path through SHGetSpecialFolderPathW.
+    - Handle x86 path only on 64-bit machines.
+    - Change subject line from "add" to "support".
+
+There doesn't seem to be a WINAPI function to get
+the path for inf, drivers, nor wbem. Appending
+the name relatively to their parent path seems
+like the only way.
+
+The #ifdef and goto statements make the code
+look a bit messy IMO. The differing methods
+of retrieving the path made it difficult to
+organize the code.
+---
+ programs/wusa/Makefile.in |  2 +-
+ programs/wusa/main.c      | 77 +++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 78 insertions(+), 1 deletion(-)
+
+diff --git a/programs/wusa/Makefile.in b/programs/wusa/Makefile.in
+index 11111111111..11111111111 100644
+--- a/programs/wusa/Makefile.in
++++ b/programs/wusa/Makefile.in
+@@ -1,5 +1,5 @@
+ MODULE    = wusa.exe
+-IMPORTS   = cabinet shlwapi ole32 oleaut32 advapi32
++IMPORTS   = cabinet shlwapi ole32 oleaut32 advapi32 shell32 user32
+ 
+ EXTRADLLFLAGS = -mwindows -municode
+ 
+diff --git a/programs/wusa/main.c b/programs/wusa/main.c
+index 11111111111..11111111111 100644
+--- a/programs/wusa/main.c
++++ b/programs/wusa/main.c
+@@ -23,6 +23,7 @@
+ #include <fdi.h>
+ #include <shlwapi.h>
+ 
++#include "shlobj.h"
+ #include "wine/debug.h"
+ #include "wine/list.h"
+ #include "wusa.h"
+@@ -242,6 +243,17 @@ static INT_PTR CDECL cabinet_notify(FDINOTIFICATIONTYPE fdint, PFDINOTIFICATION
+     }
+ }
+ 
++static DWORD copy_filename( const WCHAR *name, WCHAR *buffer, DWORD len )
++{
++    UINT ret = lstrlenW( name ) + 1;
++    if (buffer && len >= ret)
++    {
++        lstrcpyW( buffer, name );
++        ret--;
++    }
++    return ret;
++}
++
+ static BOOL extract_cabinet(const WCHAR *filename, const WCHAR *destination)
+ {
+     char *filenameA = NULL;
+@@ -479,6 +491,9 @@ static BOOL strbuf_append(struct strbuf *buf, const WCHAR *str, DWORD len)
+ static WCHAR *lookup_expression(struct assembly_entry *assembly, const WCHAR *key)
+ {
+     WCHAR path[MAX_PATH];
++    WCHAR dir[MAX_PATH];
++    WCHAR *append = NULL;
++    DWORD csidl = 0;
+ 
+     if (!wcsicmp(key, L"runtime.system32"))
+     {
+@@ -498,6 +513,68 @@ static WCHAR *lookup_expression(struct assembly_entry *assembly, const WCHAR *ke
+         return strdupW(path);
+     }
+ 
++    if (!wcsicmp(key, L"runtime.programFiles"))
++    {
++#ifdef __x86_64__
++        if (!wcsicmp(assembly->identity.architecture, L"x86"))
++        {
++            csidl = CSIDL_PROGRAM_FILESX86;
++            goto done;
++        }
++#endif
++        csidl = CSIDL_PROGRAM_FILES;
++    }
++#ifdef __x86_64__
++    else if (!wcsicmp(key, L"runtime.programFilesX86")) csidl = CSIDL_PROGRAM_FILESX86;
++    else if (!wcsicmp(key, L"runtime.commonFilesX86"))  csidl = CSIDL_PROGRAM_FILES_COMMONX86;
++#endif
++    else if (!wcsicmp(key, L"runtime.commonFiles"))
++    {
++#ifdef __x86_64__
++        if (!wcsicmp(assembly->identity.architecture, L"x86"))
++        {
++            csidl = CSIDL_PROGRAM_FILES_COMMONX86;
++            goto done;
++        }
++#endif
++        csidl = CSIDL_PROGRAM_FILES_COMMON;
++    }
++    else if (!wcsicmp(key, L"runtime.programData"))     csidl = CSIDL_COMMON_APPDATA;
++    else if (!wcsicmp(key, L"runtime.fonts"))           csidl = CSIDL_FONTS;
++    else
++    {
++        if (!wcsicmp(key, L"runtime.inf"))              csidl = CSIDL_WINDOWS;
++        else if (!wcsicmp(key, L"runtime.drivers") || !wcsicmp(key, L"runtime.wbem"))
++        {
++#ifdef __x86_64__
++            if (!wcsicmp(assembly->identity.architecture, L"x86"))
++            {
++                csidl = CSIDL_SYSTEMX86;
++                goto app;
++            }
++#endif
++            csidl = CSIDL_SYSTEM;
++        }
++        else
++            goto error;
++
++app:
++        append = wcstok((WCHAR*)key, L".", NULL);
++        append = wcstok(NULL, L"", NULL);
++        CharLowerW(append);
++    }
++
++done:
++    if (SHGetSpecialFolderPathW( NULL, dir, csidl, TRUE ))
++    {
++        if (append)
++            PathAppendW(dir, append);
++
++        copy_filename(dir, path, ARRAY_SIZE(path));
++        return strdupW(path);
++    }
++
++error:
+     FIXME("Unknown expression %s\n", debugstr_w(key));
+     return NULL;
+ }
+
+-- 
+2.35.1
+

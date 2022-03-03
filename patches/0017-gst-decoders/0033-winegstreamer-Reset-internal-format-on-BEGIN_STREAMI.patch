@@ -1,0 +1,47 @@
+From 1d219c57c9b717ef1644e182f88e39d8cc55c7b5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 8 Feb 2022 11:21:39 +0100
+Subject: [PATCH 33/35] winegstreamer: Reset internal format on BEGIN_STREAMING
+ message.
+
+In order to regenerate a MF_E_TRANSFORM_STREAM_CHANGE status on next
+successful ProcessOutput. CoD: Black Ops 3 depends on this, or crashes
+if MF_E_TRANSFORM_STREAM_CHANGE isn't returned when the campaign intro
+video begins to play.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=45988
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=47084
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=49715
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52183
+CW-Bug-Id: #16839
+CW-Bug-Id: #18678
+CW-Bug-Id: #19362
+---
+ dlls/winegstreamer/h264_decoder.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/dlls/winegstreamer/h264_decoder.c b/dlls/winegstreamer/h264_decoder.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/h264_decoder.c
++++ b/dlls/winegstreamer/h264_decoder.c
+@@ -514,7 +514,19 @@ static HRESULT WINAPI transform_ProcessEvent(IMFTransform *iface, DWORD id, IMFM
+ 
+ static HRESULT WINAPI transform_ProcessMessage(IMFTransform *iface, MFT_MESSAGE_TYPE message, ULONG_PTR param)
+ {
++    struct h264_decoder *decoder = impl_from_IMFTransform(iface);
++
+     FIXME("iface %p, message %#x, param %Ix stub!\n", iface, message, param);
++
++    switch (message)
++    {
++    case MFT_MESSAGE_NOTIFY_BEGIN_STREAMING:
++        memset(&decoder->wg_format, 0, sizeof(decoder->wg_format));
++        break;
++    default:
++        break;
++    }
++
+     return S_OK;
+ }
+ 
+

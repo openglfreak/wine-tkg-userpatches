@@ -1,7 +1,7 @@
-From 0ae53515d76185bc49ac3ab1c66f781dea8894bb Mon Sep 17 00:00:00 2001
+From 454f044c22ea9e8b4746f86cf545a3370db03989 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
-Date: Thu, 10 Feb 2022 09:56:35 +0100
-Subject: [PATCH 19/28] winegstreamer: Implement H264 decoder
+Date: Wed, 16 Feb 2022 16:25:49 +0100
+Subject: [PATCH 19/35] winegstreamer: Implement H264 decoder
  GetOutputStreamInfo.
 
 For: Call of Duty III, Mortal Kombat 11, Shadow Warrior 2,
@@ -15,41 +15,42 @@ CW-Bug-Id: #16839
 CW-Bug-Id: #18678
 CW-Bug-Id: #19362
 ---
- dlls/winegstreamer/h264_decoder.c | 21 +++++++++++++++++++--
- 1 file changed, 19 insertions(+), 2 deletions(-)
+ dlls/winegstreamer/h264_decoder.c | 24 ++++++++++++++++++++++--
+ 1 file changed, 22 insertions(+), 2 deletions(-)
 
 diff --git a/dlls/winegstreamer/h264_decoder.c b/dlls/winegstreamer/h264_decoder.c
 index 11111111111..11111111111 100644
 --- a/dlls/winegstreamer/h264_decoder.c
 +++ b/dlls/winegstreamer/h264_decoder.c
-@@ -243,8 +243,25 @@ static HRESULT WINAPI h264_decoder_GetInputStreamInfo(IMFTransform *iface, DWORD
+@@ -235,8 +235,28 @@ static HRESULT WINAPI transform_GetInputStreamInfo(IMFTransform *iface, DWORD id
  
- static HRESULT WINAPI h264_decoder_GetOutputStreamInfo(IMFTransform *iface, DWORD id, MFT_OUTPUT_STREAM_INFO *info)
+ static HRESULT WINAPI transform_GetOutputStreamInfo(IMFTransform *iface, DWORD id, MFT_OUTPUT_STREAM_INFO *info)
  {
 -    FIXME("iface %p, id %#lx, info %p stub!\n", iface, id, info);
 -    return E_NOTIMPL;
 +    struct h264_decoder *decoder = impl_from_IMFTransform(iface);
-+    IMFMediaType *media_type;
 +    UINT32 sample_size;
++    UINT64 frame_size;
++    GUID subtype;
 +    HRESULT hr;
 +
 +    TRACE("iface %p, id %#lx, info %p.\n", iface, id, info);
 +
-+    if (!decoder->input_type || !decoder->output_type)
-+        return MF_E_TRANSFORM_TYPE_NOT_SET;
-+
-+    media_type = decoder->output_type;
++    if (!decoder->output_type)
++        sample_size = 0x3fc000;
++    else if (FAILED(hr = IMFMediaType_GetUINT32(decoder->output_type, &MF_MT_SAMPLE_SIZE, &sample_size)))
++    {
++        IMFMediaType_GetUINT64(decoder->output_type, &MF_MT_FRAME_SIZE, &frame_size);
++        IMFMediaType_GetGUID(decoder->output_type, &MF_MT_SUBTYPE, &subtype);
++        sample_size = (frame_size >> 32) * (UINT32)frame_size * 2;
++    }
 +
 +    info->dwFlags = MFT_OUTPUT_STREAM_WHOLE_SAMPLES | MFT_OUTPUT_STREAM_SINGLE_SAMPLE_PER_BUFFER | MFT_OUTPUT_STREAM_FIXED_SAMPLE_SIZE;
-+    if (FAILED(hr = IMFMediaType_GetUINT32(media_type, &MF_MT_SAMPLE_SIZE, &sample_size)))
-+        sample_size = 1920 * 1080 * 2;
 +    info->cbSize = sample_size;
 +    info->cbAlignment = 0;
 +
 +    return S_OK;
  }
  
- static HRESULT WINAPI h264_decoder_GetAttributes(IMFTransform *iface, IMFAttributes **attributes)
--- 
-2.35.1
+ static HRESULT WINAPI transform_GetAttributes(IMFTransform *iface, IMFAttributes **attributes)
 

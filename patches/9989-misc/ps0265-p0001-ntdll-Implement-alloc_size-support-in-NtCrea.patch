@@ -1,16 +1,21 @@
 From: Patrick Hibbs <hibbsncc1701@gmail.com>
-Subject: [PATCH 1/2] ntdll: Implement alloc_size support in NtCreateFile.
-Message-Id: <20211211020831.390038-1-hibbsncc1701@gmail.com>
-Date: Fri, 10 Dec 2021 21:08:30 -0500
+Subject: [PATCH v2 resend 1/2] ntdll: Implement alloc_size support in NtCreateFile.
+Message-Id: <20220227121547.226439-1-hibbsncc1701@gmail.com>
+Date: Sun, 27 Feb 2022 07:15:46 -0500
 
 Use posix_fallocate to reserve space for files.
 Function will print a warning at runtime if posix_fallocate isn't supported.
 
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52171
 Signed-off-by: Patrick Hibbs <hibbsncc1701@gmail.com>
+
 ---
- dlls/ntdll/unix/file.c | 73 ++++++++++++++++++++++++++++++++++++++++--
- 1 file changed, 70 insertions(+), 3 deletions(-)
+v2:	- Rebase to current master after codefreeze.
+	- Remove unneeded comment block.
+	- Fix memory leak pointed out by Alex Henrie.
+---
+ dlls/ntdll/unix/file.c | 57 +++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 54 insertions(+), 3 deletions(-)
 
 diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
 index 11111111111..11111111111 100644
@@ -36,27 +41,11 @@ index 11111111111..11111111111 100644
      new_attr = *attr;
      new_attr.Attributes |= OBJ_CASE_INSENSITIVE;
      if (options & FILE_OPEN_BY_FILE_ID)
-@@ -4233,6 +4235,71 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
+@@ -4233,6 +4235,55 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
          status = STATUS_SUCCESS;
      }
  
 +#ifdef HAVE_POSIX_FALLOCATE
-+    /* Windows doesn't care about the requested access permissions
-+     * when performing space reservation. (Windows will trim / grow
-+     * the reserved space even if a caller requests read-only
-+     * access.)
-+     *
-+     * Windows *does* care about the disposition given and whether
-+     * or not an overwrite will actually occur. (Windows will return
-+     * STATUS_OBJECT_NAME_NOT_FOUND if disposition is FILE_OVERWRITE
-+     * and the file doesn't exist.)
-+     *
-+     * POSIX cares about the requested permissions all of the time.
-+     * We need to make sure that we ask for enough permissions to
-+     * perform the disk space reservation. Afterwards reopen the file
-+     * with the desired permissions. As this temporary fd isn't going
-+     * to be kept anyway, avoid the round trips to the server by doing
-+     * the work here. */
 +    if (alloc_size && alloc_size->QuadPart > 0 &&
 +        disposition != FILE_OPEN &&
 +        (created || (disposition != FILE_OVERWRITE ||
@@ -108,7 +97,7 @@ index 11111111111..11111111111 100644
      if (status != STATUS_SUCCESS)
      {
          WARN( "%s not found (%x)\n", debugstr_us(attr->ObjectName), io->u.Status );
-@@ -4240,7 +4307,7 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
+@@ -4240,7 +4291,7 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
      }
  
      status = open_unix_file( handle, unix_name, access, &new_attr, attributes,

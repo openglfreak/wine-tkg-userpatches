@@ -1,0 +1,118 @@
+From 9af1e18d9a2404513e51a6e259007d157cb498d6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 23 Feb 2022 15:39:14 +0100
+Subject: [PATCH 23/35] winegstreamer: Add timestamp and duration to struct
+ wg_sample.
+
+For: Call of Duty III, Mortal Kombat 11, Shadow Warrior 2,
+Yakuza 4 Remastered, Hard Reset Redux.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=45988
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=47084
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=49715
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52183
+CW-Bug-Id: #16839
+CW-Bug-Id: #18678
+CW-Bug-Id: #19362
+---
+ dlls/winegstreamer/mfplat.c       | 10 ++++++++++
+ dlls/winegstreamer/unixlib.h      |  4 ++++
+ dlls/winegstreamer/wg_transform.c | 23 +++++++++++++++++++++++
+ 3 files changed, 37 insertions(+)
+
+diff --git a/dlls/winegstreamer/mfplat.c b/dlls/winegstreamer/mfplat.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/mfplat.c
++++ b/dlls/winegstreamer/mfplat.c
+@@ -921,6 +921,11 @@ HRESULT mf_create_wg_sample(IMFSample *sample, struct wg_sample **out)
+     if (FAILED(hr = IMFMediaBuffer_Lock(mf_sample->media_buffer, &buffer, &max_length, &current_length)))
+         goto out_release_buffer;
+ 
++    if (SUCCEEDED(IMFSample_GetSampleTime(sample, &mf_sample->wg_sample.timestamp)))
++        mf_sample->wg_sample.flags |= WG_SAMPLE_FLAG_HAS_TIMESTAMP;
++    if (SUCCEEDED(IMFSample_GetSampleDuration(sample, &mf_sample->wg_sample.duration)))
++        mf_sample->wg_sample.flags |= WG_SAMPLE_FLAG_HAS_DURATION;
++
+     IMFSample_AddRef((mf_sample->sample = sample));
+     mf_sample->wg_sample.data = buffer;
+     mf_sample->wg_sample.size = current_length;
+@@ -945,6 +950,11 @@ void mf_destroy_wg_sample(struct wg_sample *wg_sample)
+     IMFMediaBuffer_SetCurrentLength(mf_sample->media_buffer, wg_sample->size);
+     IMFMediaBuffer_Release(mf_sample->media_buffer);
+ 
++    if (wg_sample->flags & WG_SAMPLE_FLAG_HAS_TIMESTAMP)
++        IMFSample_SetSampleTime(mf_sample->sample, wg_sample->timestamp);
++    if (wg_sample->flags & WG_SAMPLE_FLAG_HAS_DURATION)
++        IMFSample_SetSampleDuration(mf_sample->sample, wg_sample->duration);
++
+     IMFSample_Release(mf_sample->sample);
+     free(mf_sample);
+ }
+diff --git a/dlls/winegstreamer/unixlib.h b/dlls/winegstreamer/unixlib.h
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/unixlib.h
++++ b/dlls/winegstreamer/unixlib.h
+@@ -115,10 +115,14 @@ struct wg_format
+ enum wg_sample_flag
+ {
+     WG_SAMPLE_FLAG_INCOMPLETE = 1,
++    WG_SAMPLE_FLAG_HAS_TIMESTAMP = 2,
++    WG_SAMPLE_FLAG_HAS_DURATION = 4,
+ };
+ 
+ struct wg_sample
+ {
++    /* timestamp and duration are in 100-nanosecond units. */
++    LONGLONG timestamp, duration;
+     UINT32 flags;
+     UINT32 max_size;
+     UINT32 size;
+diff --git a/dlls/winegstreamer/wg_transform.c b/dlls/winegstreamer/wg_transform.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wg_transform.c
++++ b/dlls/winegstreamer/wg_transform.c
+@@ -361,6 +361,11 @@ NTSTATUS wg_transform_push_data(void *args)
+     if (!buffer)
+         return STATUS_NO_MEMORY;
+ 
++    if (sample->flags & WG_SAMPLE_FLAG_HAS_TIMESTAMP)
++        GST_BUFFER_PTS(buffer) = sample->timestamp * 100;
++    if (sample->flags & WG_SAMPLE_FLAG_HAS_DURATION)
++        GST_BUFFER_DURATION(buffer) = sample->duration * 100;
++
+     gst_buffer_fill(buffer, 0, sample->data, sample->size);
+     if ((ret = gst_pad_push(transform->my_src, buffer)))
+         return STATUS_UNSUCCESSFUL;
+@@ -387,6 +392,22 @@ static void release_sample_entry(struct wg_sample *sample, struct sample_entry *
+     }
+ }
+ 
++static void copy_sample_meta_data(struct wg_sample *sample, struct sample_entry *entry)
++{
++    GstBuffer *buffer = gst_sample_get_buffer(entry->sample);
++
++    if (GST_BUFFER_PTS_IS_VALID(buffer))
++    {
++        sample->flags |= WG_SAMPLE_FLAG_HAS_TIMESTAMP;
++        sample->timestamp = GST_BUFFER_PTS(buffer) / 100;
++    }
++    if (GST_BUFFER_DURATION_IS_VALID(buffer))
++    {
++        sample->flags |= WG_SAMPLE_FLAG_HAS_DURATION;
++        sample->duration = GST_BUFFER_DURATION(buffer) / 100;
++    }
++}
++
+ static NTSTATUS copy_from_sample_entry(struct wg_sample *sample, struct sample_entry *entry)
+ {
+     GstBuffer *buffer = gst_sample_get_buffer(entry->sample);
+@@ -410,6 +431,8 @@ static NTSTATUS copy_from_sample_entry(struct wg_sample *sample, struct sample_e
+     memcpy(sample->data, info.data, sample->size);
+     gst_buffer_unmap(buffer, &info);
+ 
++    copy_sample_meta_data(sample, entry);
++
+     GST_INFO("Copied %u bytes, flags %#x", sample->size, (UINT32)sample->flags);
+     return STATUS_SUCCESS;
+ }
+

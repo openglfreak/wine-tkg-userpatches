@@ -1,25 +1,34 @@
-From 77cf8dcd75bfcff9027d08bb346015b55ef7ad1a Mon Sep 17 00:00:00 2001
+From a7f521cf905de021e1c65fb567e4284c24179cb1 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
-Date: Mon, 1 Mar 2021 20:55:26 +0100
+Date: Sun, 12 Dec 2021 13:20:22 +0100
 Subject: [PATCH 44/44] user32: Use input shared memory for GetKeyState.
 
 ---
- dlls/win32u/input.c | 13 ++++++++++++-
- 1 file changed, 12 insertions(+), 1 deletion(-)
+ dlls/user32/input.c     | 27 +++++++++++++++++++++++++++
+ dlls/user32/user32.spec |  2 +-
+ 2 files changed, 28 insertions(+), 1 deletion(-)
 
-diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+diff --git a/dlls/user32/input.c b/dlls/user32/input.c
 index 11111111111..11111111111 100644
---- a/dlls/win32u/input.c
-+++ b/dlls/win32u/input.c
-@@ -125,9 +125,20 @@ HKL WINAPI NtUserGetKeyboardLayout( DWORD thread_id )
-  */
- SHORT WINAPI NtUserGetKeyState( INT vkey )
- {
-+    volatile struct input_shared_memory *shared = __wine_get_input_shared_memory();
-     SHORT retval = 0;
-+    BOOL skip = TRUE;
+--- a/dlls/user32/input.c
++++ b/dlls/user32/input.c
+@@ -552,6 +552,33 @@ BOOL WINAPI GetKeyboardLayoutNameA(LPSTR pszKLID)
+     return FALSE;
+ }
  
--    SERVER_START_REQ( get_key_state )
++/**********************************************************************
++ *       GetKeyState    (USER32.@)
++ *
++ * An application calls the GetKeyState function in response to a
++ * keyboard-input message.  This function retrieves the state of the key
++ * at the time the input message was generated.
++ */
++SHORT WINAPI GetKeyState( INT vkey )
++{
++    volatile struct input_shared_memory *shared = (void *)NtUserCallNoParam( NtUserGetInputSharedMemory );
++    SHORT retval = 0;
++    BOOL skip = TRUE;
++
 +    if (!shared) skip = FALSE;
 +    else SHARED_READ_BEGIN( &shared->seq )
 +    {
@@ -29,10 +38,24 @@ index 11111111111..11111111111 100644
 +    }
 +    SHARED_READ_END( &shared->seq );
 +
-+    if (!skip) SERVER_START_REQ( get_key_state )
-     {
-         req->key = vkey;
-         if (!wine_server_call( req )) retval = (signed char)(reply->state & 0x81);
--- 
-2.35.1
-
++    if (!skip) retval = NtUserGetKeyState( vkey );
++    TRACE("key (0x%x) -> %x\n", vkey, retval);
++    return retval;
++}
++
+ /**********************************************************************
+  *       GetKeyboardState    (USER32.@)
+  */
+diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+index 11111111111..11111111111 100644
+--- a/dlls/user32/user32.spec
++++ b/dlls/user32/user32.spec
+@@ -316,7 +316,7 @@
+ @ stdcall GetKBCodePage()
+ @ stdcall GetKeyNameTextA(long ptr long)
+ @ stdcall GetKeyNameTextW(long ptr long) NtUserGetKeyNameText
+-@ stdcall -import GetKeyState(long) NtUserGetKeyState
++@ stdcall GetKeyState(long)
+ @ stdcall GetKeyboardLayout(long) NtUserGetKeyboardLayout
+ @ stdcall GetKeyboardLayoutList(long ptr) NtUserGetKeyboardLayoutList
+ @ stdcall GetKeyboardLayoutNameA(ptr)

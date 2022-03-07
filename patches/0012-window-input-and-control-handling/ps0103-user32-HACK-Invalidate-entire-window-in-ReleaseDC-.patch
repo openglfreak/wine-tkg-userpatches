@@ -1,0 +1,37 @@
+From 10da6d78c52fb0d7a90fe39be0c79c244232a11d Mon Sep 17 00:00:00 2001
+From: Connor McAdams <cmcadams@codeweavers.com>
+Date: Fri, 4 Mar 2022 13:46:52 -0500
+Subject: [PATCH] user32: HACK: Invalidate entire window in ReleaseDC for
+ other-process windows.
+
+Wine does not currently have the ability to pass surface update
+information across processes, which causes CEF based applications to
+not update immediately when new data has been drawn. This hack
+invalidates the entire window when releasing a DC for an HWND that
+belongs to another process, to make sure that the window gets repainted
+and updated.
+
+CW-Bug-Id: #19779
+
+Signed-off-by: Connor McAdams <cmcadams@codeweavers.com>
+---
+ dlls/user32/painting.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/dlls/user32/painting.c b/dlls/user32/painting.c
+index 65ac7859fa9..6c07783165b 100644
+--- a/dlls/user32/painting.c
++++ b/dlls/user32/painting.c
+@@ -1143,6 +1143,12 @@ HDC WINAPI GetWindowDC( HWND hwnd )
+  */
+ INT WINAPI ReleaseDC( HWND hwnd, HDC hdc )
+ {
++    /*
++     * HACK: If we're releasing a DC for an HWND that belongs to another
++     * process, invalidate the entire window to force a redraw. This helps CEF
++     * applications.
++     */
++    if (hwnd && !WIN_IsCurrentProcess( hwnd )) redraw_window_rects( hwnd, RDW_INVALIDATE, NULL, 0 );
+     return release_dc( hwnd, hdc, FALSE );
+ }
+ 

@@ -1,0 +1,151 @@
+From: Santino Mazza <mazzasantino1206@gmail.com>
+Subject: [PATCH v2 5/6] ncrypt: Implement NCryptCreatePersistedKey.
+Message-Id: <20220306152301.133934-5-mazzasantino1206@gmail.com>
+Date: Sun,  6 Mar 2022 12:23:00 -0300
+In-Reply-To: <20220306152301.133934-1-mazzasantino1206@gmail.com>
+References: <20220306152301.133934-1-mazzasantino1206@gmail.com>
+
+Signed-off-by: Santino Mazza <mazzasantino1206@gmail.com>
+---
+ dlls/ncrypt/main.c            | 59 ++++++++++++++++++++++++++++++-----
+ dlls/ncrypt/ncrypt_internal.h |  6 ++++
+ dlls/ncrypt/tests/ncrypt.c    |  5 +--
+ 3 files changed, 60 insertions(+), 10 deletions(-)
+
+diff --git a/dlls/ncrypt/main.c b/dlls/ncrypt/main.c
+index e82c76103de..9a4438d7caa 100644
+--- a/dlls/ncrypt/main.c
++++ b/dlls/ncrypt/main.c
+@@ -30,14 +30,6 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(ncrypt);
+ 
+-SECURITY_STATUS WINAPI NCryptCreatePersistedKey(NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE *key,
+-                                                const WCHAR *algid, const WCHAR *name, DWORD keyspec, DWORD flags)
+-{
+-    FIXME("(%#Ix, %p, %s, %s, %#lx, %#lx): stub\n", provider, key, wine_dbgstr_w(algid),
+-          wine_dbgstr_w(name), keyspec, flags);
+-    return NTE_NOT_SUPPORTED;
+-}
+-
+ SECURITY_STATUS WINAPI NCryptDecrypt(NCRYPT_KEY_HANDLE key, BYTE *input, DWORD insize, void *padding,
+                                      BYTE *output, DWORD outsize, DWORD *result, DWORD flags)
+ {
+@@ -354,6 +346,57 @@ SECURITY_STATUS WINAPI NCryptSetProperty(NCRYPT_HANDLE handle, const WCHAR *name
+     return set_object_property(object, name, input, insize);
+ }
+ 
++SECURITY_STATUS WINAPI NCryptCreatePersistedKey(NCRYPT_PROV_HANDLE provider, NCRYPT_KEY_HANDLE *key,
++                                                const WCHAR *algid, const WCHAR *name, DWORD keyspec, DWORD flags)
++{
++    struct object *key_object;
++    TRACE("(%#Ix, %p, %s, %s, %#lx, %#lx)\n", provider, key, wine_dbgstr_w(algid),
++          wine_dbgstr_w(name), keyspec, flags);
++
++    if (!provider) return NTE_INVALID_HANDLE;
++    if (!algid) return HRESULT_FROM_WIN32(RPC_X_NULL_REF_POINTER);
++    if (name) FIXME("Persistant keys not supported\n");
++
++    if (!(key_object = allocate_object(KEY)))
++    {
++        ERR("Error allocating memory\n");
++        return NTE_NO_MEMORY;
++    }
++
++    if (!lstrcmpiW(algid, BCRYPT_RSA_ALGORITHM))
++    {
++        NTSTATUS ret = BCryptOpenAlgorithmProvider(&key_object->key.alg_prov, BCRYPT_RSA_ALGORITHM, NULL, 0);
++        DWORD default_bitlength = 1024;
++
++        if (ret != ERROR_SUCCESS)
++        {
++            ERR("Error opening algorithm provider\n");
++            NCryptFreeObject((NCRYPT_HANDLE)key_object);
++            return NTE_INTERNAL_ERROR;
++        }
++
++        ret = BCryptGenerateKeyPair(key_object->key.alg_prov, &key_object->key.bcrypt_key, 1024, 0);
++        if (ret != ERROR_SUCCESS)
++        {
++            ERR("Error generating key pair\n");
++            return NTE_INTERNAL_ERROR;
++        }
++
++        key_object->key.type = ASYMMETRIC;
++        set_object_property(key_object, NCRYPT_PROVIDER_HANDLE_PROPERTY, (BYTE *)&provider, sizeof(NCRYPT_PROV_HANDLE));
++        set_object_property(key_object, NCRYPT_ALGORITHM_GROUP_PROPERTY, (BYTE *)BCRYPT_RSA_ALGORITHM, sizeof(BCRYPT_RSA_ALGORITHM));
++        set_object_property(key_object, NCRYPT_LENGTH_PROPERTY, (BYTE *)&default_bitlength, sizeof(default_bitlength));
++    }
++    else
++    {
++        FIXME("Algorithm not handled %s\n", wine_dbgstr_w(algid));
++        return NTE_NOT_SUPPORTED;
++    }
++
++    *key = (NCRYPT_KEY_HANDLE)key_object;
++    return ERROR_SUCCESS;
++}
++
+ SECURITY_STATUS WINAPI NCryptVerifySignature(NCRYPT_KEY_HANDLE handle, void *padding, BYTE *hash, DWORD hash_size,
+                                              BYTE *signature, DWORD signature_size, DWORD flags)
+ {
+diff --git a/dlls/ncrypt/ncrypt_internal.h b/dlls/ncrypt/ncrypt_internal.h
+index de5cde5fa8b..7bd7a96bb04 100644
+--- a/dlls/ncrypt/ncrypt_internal.h
++++ b/dlls/ncrypt/ncrypt_internal.h
+@@ -19,8 +19,14 @@
+ #include <ncrypt.h>
+ #include <bcrypt.h>
+ 
++enum key_type {
++    SYMMETRIC,
++    ASYMMETRIC
++};
++
+ struct key
+ {
++    enum key_type type;
+     BCRYPT_ALG_HANDLE alg_prov;
+     BCRYPT_KEY_HANDLE bcrypt_key;
+ };
+diff --git a/dlls/ncrypt/tests/ncrypt.c b/dlls/ncrypt/tests/ncrypt.c
+index f4eb7207d2d..3d0ce329ea0 100644
+--- a/dlls/ncrypt/tests/ncrypt.c
++++ b/dlls/ncrypt/tests/ncrypt.c
+@@ -229,6 +229,7 @@ static void test_set_property(void)
+     {
+     ret = NCryptSetProperty(key, NCRYPT_NAME_PROPERTY, (BYTE *)L"Key name", sizeof(L"Key name"), 0);
+     ok(ret == NTE_NOT_SUPPORTED, "got %#lx\n", ret);
++    }
+     NCryptFreeObject(key);
+ 
+     key = 0;
+@@ -240,6 +241,8 @@ static void test_set_property(void)
+     ret = NCryptSetProperty(key, NCRYPT_LENGTH_PROPERTY, (BYTE *)&keylength, sizeof(keylength), 0);
+     ok(ret == ERROR_SUCCESS, "got %#lx\n", ret);
+ 
++    todo_wine
++    {
+     ret = NCryptSetProperty(key, NCRYPT_NAME_PROPERTY, (BYTE *)L"Key name", sizeof(L"Key name"), 0);
+     ok(ret == NTE_NOT_SUPPORTED, "got %#lx\n", ret);
+ 
+@@ -261,7 +264,6 @@ static void test_create_persisted_key(void)
+     ret = NCryptOpenStorageProvider(&prov, NULL, 0);
+     ok(ret == ERROR_SUCCESS, "got %#lx\n", ret);
+ 
+-    todo_wine {
+     key = 0;
+     ret = NCryptCreatePersistedKey(0, &key, BCRYPT_RSA_ALGORITHM, NULL, 0, 0);
+     ok(ret == NTE_INVALID_HANDLE, "got %#lx\n", ret);
+@@ -304,7 +306,6 @@ static void test_create_persisted_key(void)
+     }
+ 
+     NCryptFreeObject(prov);
+-    }
+ }
+ 
+ START_TEST(ncrypt)
+
+-- 
+2.32.0
+

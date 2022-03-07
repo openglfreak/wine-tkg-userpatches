@@ -1,0 +1,137 @@
+From: Santino Mazza <mazzasantino1206@gmail.com>
+Subject: [PATCH v2 6/6] ncrypt: Implement NCryptFinalizeKey
+Message-Id: <20220306152301.133934-6-mazzasantino1206@gmail.com>
+Date: Sun,  6 Mar 2022 12:23:01 -0300
+In-Reply-To: <20220306152301.133934-1-mazzasantino1206@gmail.com>
+References: <20220306152301.133934-1-mazzasantino1206@gmail.com>
+
+Signed-off-by: Santino Mazza <mazzasantino1206@gmail.com>
+---
+ dlls/ncrypt/main.c            | 48 ++++++++++++++++++++++++++++++-----
+ dlls/ncrypt/ncrypt_internal.h |  1 +
+ dlls/ncrypt/tests/ncrypt.c    | 25 ++++++++++++++++++
+ 3 files changed, 68 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/ncrypt/main.c b/dlls/ncrypt/main.c
+index 9a4438d7caa..2e076fac714 100644
+--- a/dlls/ncrypt/main.c
++++ b/dlls/ncrypt/main.c
+@@ -66,12 +66,6 @@ SECURITY_STATUS WINAPI NCryptEnumKeys(NCRYPT_PROV_HANDLE provider, const WCHAR *
+     return NTE_NOT_SUPPORTED;
+ }
+ 
+-SECURITY_STATUS WINAPI NCryptFinalizeKey(NCRYPT_KEY_HANDLE key, DWORD flags)
+-{
+-    FIXME("(%#Ix, %#lx): stub\n", key, flags);
+-    return NTE_NOT_SUPPORTED;
+-}
+-
+ SECURITY_STATUS WINAPI NCryptFreeBuffer(PVOID buf)
+ {
+     FIXME("(%p): stub\n", buf);
+@@ -397,6 +391,48 @@ SECURITY_STATUS WINAPI NCryptCreatePersistedKey(NCRYPT_PROV_HANDLE provider, NCR
+     return ERROR_SUCCESS;
+ }
+ 
++SECURITY_STATUS WINAPI NCryptFinalizeKey(NCRYPT_KEY_HANDLE key, DWORD flags)
++{
++    struct object *key_object = (struct object*)key;
++    DWORD key_length;
++    struct object_property *prop;
++    NTSTATUS ret;
++
++    TRACE("(%#Ix, %#lx): stub\n", key, flags);
++
++    if (!key) return NTE_INVALID_HANDLE;
++    if (key_object->key.finalized_key) return NTE_INVALID_HANDLE;
++
++    if (key_object->key.type == ASYMMETRIC)
++    {
++        prop = get_object_property(key_object, NCRYPT_LENGTH_PROPERTY);
++        if (!prop) return NTE_INVALID_HANDLE;
++
++        key_length = *(DWORD *)prop->value;
++        BCryptSetProperty(key_object->key.bcrypt_key, BCRYPT_KEY_LENGTH, (UCHAR*)&key_length, sizeof(key_length), 0);
++
++        ret = BCryptFinalizeKeyPair(key_object->key.bcrypt_key, 0);
++        if (ret != ERROR_SUCCESS)
++        {
++            ERR("Error finalizing key pair\n");
++            return NTE_INTERNAL_ERROR;
++        }
++    }
++    else if (key_object->key.type == SYMMETRIC)
++    {
++        FIXME("Symmetric keys not implemented\n");
++        return NTE_NOT_SUPPORTED;
++    }
++    else
++    {
++        ERR("Got handle with invalid key type");
++        return NTE_INVALID_HANDLE;
++    }
++
++    key_object->key.finalized_key = 1;
++    return ERROR_SUCCESS;
++}
++
+ SECURITY_STATUS WINAPI NCryptVerifySignature(NCRYPT_KEY_HANDLE handle, void *padding, BYTE *hash, DWORD hash_size,
+                                              BYTE *signature, DWORD signature_size, DWORD flags)
+ {
+diff --git a/dlls/ncrypt/ncrypt_internal.h b/dlls/ncrypt/ncrypt_internal.h
+index 7bd7a96bb04..510db516955 100644
+--- a/dlls/ncrypt/ncrypt_internal.h
++++ b/dlls/ncrypt/ncrypt_internal.h
+@@ -26,6 +26,7 @@ enum key_type {
+ 
+ struct key
+ {
++    DWORD finalized_key;
+     enum key_type type;
+     BCRYPT_ALG_HANDLE alg_prov;
+     BCRYPT_KEY_HANDLE bcrypt_key;
+diff --git a/dlls/ncrypt/tests/ncrypt.c b/dlls/ncrypt/tests/ncrypt.c
+index 3d0ce329ea0..0e0c8942313 100644
+--- a/dlls/ncrypt/tests/ncrypt.c
++++ b/dlls/ncrypt/tests/ncrypt.c
+@@ -308,6 +308,30 @@ static void test_create_persisted_key(void)
+     NCryptFreeObject(prov);
+ }
+ 
++static void test_finalize_key(void)
++{
++    NCRYPT_PROV_HANDLE prov;
++    NCRYPT_KEY_HANDLE key;
++    SECURITY_STATUS ret;
++
++    ret = NCryptOpenStorageProvider(&prov, NULL, 0);
++    ok(ret == ERROR_SUCCESS, "got %#lx\n", ret);
++
++    ret = NCryptCreatePersistedKey(prov, &key, BCRYPT_RSA_ALGORITHM, NULL, 0, 0);
++    ok(ret == ERROR_SUCCESS, "got %#lx\n", ret);
++
++    ret = NCryptFinalizeKey(key, 0);
++    ok(ret == ERROR_SUCCESS, "got %#lx\n", ret);
++
++    ret = NCryptFinalizeKey(key, 0);
++    ok(ret == NTE_INVALID_HANDLE, "got %#lx\n", ret);
++
++    ret = NCryptFinalizeKey(0, 0);
++    ok(ret == NTE_INVALID_HANDLE, "got %#lx\n", ret);
++
++    NCryptFreeObject(key);
++}
++
+ START_TEST(ncrypt)
+ {
+     test_key_import_rsa();
+@@ -315,4 +339,5 @@ START_TEST(ncrypt)
+     test_get_property();
+     test_set_property();
+     test_create_persisted_key();
++    test_finalize_key();
+ }
+
+-- 
+2.32.0
+

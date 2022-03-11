@@ -1,0 +1,135 @@
+From: Nikolay Sivov <nsivov@codeweavers.com>
+Subject: [v3 PATCH] mfplat: Properly align system memory buffers.
+Message-Id: <20220308130650.8194-1-nsivov@codeweavers.com>
+Date: Tue,  8 Mar 2022 16:06:50 +0300
+
+From: Giovanni Mascellani <gmascellani@codeweavers.com>
+
+Signed-off-by: Nikolay Sivov <nsivov@codeweavers.com>
+---
+
+This covers both 228248 and 228239.
+
+ dlls/mfplat/buffer.c       | 24 +++++++++++++++++++++--
+ dlls/mfplat/tests/mfplat.c | 39 +++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 60 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/mfplat/buffer.c b/dlls/mfplat/buffer.c
+index a912c61a3ac..1cb84cba944 100644
+--- a/dlls/mfplat/buffer.c
++++ b/dlls/mfplat/buffer.c
+@@ -18,6 +18,8 @@
+ 
+ #define COBJMACROS
+ 
++#include <malloc.h>
++
+ #include "mfplat_private.h"
+ #include "rtworkq.h"
+ 
+@@ -171,7 +173,7 @@ static ULONG WINAPI memory_buffer_Release(IMFMediaBuffer *iface)
+         }
+         DeleteCriticalSection(&buffer->cs);
+         free(buffer->_2d.linear_buffer);
+-        free(buffer->data);
++        _aligned_free(buffer->data);
+         free(buffer);
+     }
+ 
+@@ -1254,8 +1256,26 @@ static const IMFDXGIBufferVtbl dxgi_buffer_vtbl =
+ static HRESULT memory_buffer_init(struct buffer *buffer, DWORD max_length, DWORD alignment,
+         const IMFMediaBufferVtbl *vtbl)
+ {
+-    if (!(buffer->data = calloc(1, ALIGN_SIZE(max_length, alignment))))
++    size_t size;
++
++    if (!alignment) alignment = MF_64_BYTE_ALIGNMENT;
++    alignment++;
++
++    if (alignment & (alignment - 1))
++    {
++        alignment--;
++        alignment |= alignment >> 1;
++        alignment |= alignment >> 2;
++        alignment |= alignment >> 4;
++        alignment |= alignment >> 8;
++        alignment |= alignment >> 16;
++        alignment++;
++    }
++
++    size = ALIGN_SIZE(max_length, alignment - 1);
++    if (!(buffer->data = _aligned_malloc(size, alignment)))
+         return E_OUTOFMEMORY;
++    memset(buffer->data, 0, size);
+ 
+     buffer->IMFMediaBuffer_iface.lpVtbl = vtbl;
+     buffer->refcount = 1;
+diff --git a/dlls/mfplat/tests/mfplat.c b/dlls/mfplat/tests/mfplat.c
+index f61dbad7ab9..d9c25edaa72 100644
+--- a/dlls/mfplat/tests/mfplat.c
++++ b/dlls/mfplat/tests/mfplat.c
+@@ -2287,8 +2287,25 @@ static void test_system_memory_buffer(void)
+     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+ 
+     IMFMediaBuffer_Release(buffer);
++}
++
++static void test_system_memory_aligned_buffer(void)
++{
++    static const DWORD alignments[] =
++    {
++        MF_16_BYTE_ALIGNMENT,
++        MF_32_BYTE_ALIGNMENT,
++        MF_64_BYTE_ALIGNMENT,
++        MF_128_BYTE_ALIGNMENT,
++        MF_256_BYTE_ALIGNMENT,
++        MF_512_BYTE_ALIGNMENT,
++    };
++    IMFMediaBuffer *buffer;
++    DWORD length, max;
++    unsigned int i;
++    BYTE *data;
++    HRESULT hr;
+ 
+-    /* Aligned buffer. */
+     hr = MFCreateAlignedMemoryBuffer(16, MF_8_BYTE_ALIGNMENT, NULL);
+     ok(FAILED(hr), "Unexpected hr %#lx.\n", hr);
+ 
+@@ -2324,6 +2341,25 @@ static void test_system_memory_buffer(void)
+     ok(hr == S_OK, "Failed to unlock, hr %#lx.\n", hr);
+ 
+     IMFMediaBuffer_Release(buffer);
++
++    for (i = 0; i < ARRAY_SIZE(alignments); ++i)
++    {
++        hr = MFCreateAlignedMemoryBuffer(200, alignments[i], &buffer);
++        ok(hr == S_OK, "Failed to create memory buffer, hr %#lx.\n", hr);
++
++        hr = IMFMediaBuffer_Lock(buffer, &data, &max, &length);
++        ok(hr == S_OK, "Failed to lock, hr %#lx.\n", hr);
++        ok(max == 200 && !length, "Unexpected length.\n");
++        ok(!((uintptr_t)data & alignments[i]), "Data at %p is misaligned.\n", data);
++        hr = IMFMediaBuffer_Unlock(buffer);
++        ok(hr == S_OK, "Failed to unlock, hr %#lx.\n", hr);
++
++        IMFMediaBuffer_Release(buffer);
++    }
++
++    hr = MFCreateAlignedMemoryBuffer(200, 0, &buffer);
++    ok(hr == S_OK, "Failed to create memory buffer, hr %#lx.\n", hr);
++    IMFMediaBuffer_Release(buffer);
+ }
+ 
+ static void test_sample(void)
+@@ -7980,6 +8016,7 @@ START_TEST(mfplat)
+     test_file_stream();
+     test_MFCreateMFByteStreamOnStream();
+     test_system_memory_buffer();
++    test_system_memory_aligned_buffer();
+     test_source_resolver();
+     test_MFCreateAsyncResult();
+     test_allocate_queue();
+
+-- 
+2.34.1
+

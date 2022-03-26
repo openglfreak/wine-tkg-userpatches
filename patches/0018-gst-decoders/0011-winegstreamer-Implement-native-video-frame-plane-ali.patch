@@ -1,0 +1,257 @@
+From 8661ad0395dfcada424d56628f926ca6fcbb6f37 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 8 Mar 2022 23:32:37 +0100
+Subject: [PATCH 11/20] winegstreamer: Implement native video frame plane
+ alignment.
+
+To match what native does. Many games that use the H264 decoder directly
+rely on this as they hardcode various aspects of the alignment in their
+logic (and each game a different one).
+
+Note: There may be a way to have it done by GStreamer, as libav natively
+decode H264 into aligned planes, but somehow and somewhere in the chain
+the planes are re-aligned.
+
+Hard Reset Redux crashes if MF_MT_MINIMUM_DISPLAY_APERTURE attribute is
+set (and it doesn't need it as its videos are 720p).
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=45988
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=47084
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=49715
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52183
+CW-Bug-Id: #16839
+CW-Bug-Id: #18678
+CW-Bug-Id: #19362
+---
+ dlls/mf/tests/mf.c                | 58 ++++++++++++++-----------------
+ dlls/winegstreamer/h264_decoder.c | 29 ++++++++++++++++
+ dlls/winegstreamer/wg_pool.c      |  9 +++++
+ 3 files changed, 64 insertions(+), 32 deletions(-)
+
+diff --git a/dlls/mf/tests/mf.c b/dlls/mf/tests/mf.c
+index 11111111111..11111111111 100644
+--- a/dlls/mf/tests/mf.c
++++ b/dlls/mf/tests/mf.c
+@@ -6549,70 +6549,70 @@ static void test_h264_decoder(void)
+             ATTR_GUID(MF_MT_SUBTYPE, MFVideoFormat_NV12),
+             ATTR_RATIO(MF_MT_PIXEL_ASPECT_RATIO, 1, 1),
+             ATTR_RATIO(MF_MT_FRAME_RATE, 30000, 1001),
+-            ATTR_RATIO(MF_MT_FRAME_SIZE, 80, 80, .todo_value = TRUE),
+-            ATTR_UINT32(MF_MT_SAMPLE_SIZE, 9600, .todo_value = TRUE),
+-            ATTR_UINT32(MF_MT_DEFAULT_STRIDE, 80, .todo_value = TRUE),
++            ATTR_RATIO(MF_MT_FRAME_SIZE, 80, 80),
++            ATTR_UINT32(MF_MT_SAMPLE_SIZE, 9600),
++            ATTR_UINT32(MF_MT_DEFAULT_STRIDE, 80),
+             /* ATTR_UINT32(MF_MT_VIDEO_ROTATION, 0), missing on Win7 */
+             ATTR_UINT32(MF_MT_INTERLACE_MODE, 7),
+             ATTR_UINT32(MF_MT_FIXED_SIZE_SAMPLES, 1),
+             ATTR_UINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, 1),
+-            ATTR_BLOB(MF_MT_MINIMUM_DISPLAY_APERTURE, &actual_aperture, 16, .todo = TRUE),
++            ATTR_BLOB(MF_MT_MINIMUM_DISPLAY_APERTURE, &actual_aperture, 16),
+         },
+         {
+             ATTR_GUID(MF_MT_MAJOR_TYPE, MFMediaType_Video),
+             ATTR_GUID(MF_MT_SUBTYPE, MFVideoFormat_YV12),
+             ATTR_RATIO(MF_MT_PIXEL_ASPECT_RATIO, 1, 1),
+             ATTR_RATIO(MF_MT_FRAME_RATE, 30000, 1001),
+-            ATTR_RATIO(MF_MT_FRAME_SIZE, 80, 80, .todo_value = TRUE),
+-            ATTR_UINT32(MF_MT_SAMPLE_SIZE, 9600, .todo_value = TRUE),
+-            ATTR_UINT32(MF_MT_DEFAULT_STRIDE, 80, .todo_value = TRUE),
++            ATTR_RATIO(MF_MT_FRAME_SIZE, 80, 80),
++            ATTR_UINT32(MF_MT_SAMPLE_SIZE, 9600),
++            ATTR_UINT32(MF_MT_DEFAULT_STRIDE, 80),
+             /* ATTR_UINT32(MF_MT_VIDEO_ROTATION, 0), missing on Win7 */
+             ATTR_UINT32(MF_MT_INTERLACE_MODE, 7),
+             ATTR_UINT32(MF_MT_FIXED_SIZE_SAMPLES, 1),
+             ATTR_UINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, 1),
+-            ATTR_BLOB(MF_MT_MINIMUM_DISPLAY_APERTURE, &actual_aperture, 16, .todo = TRUE),
++            ATTR_BLOB(MF_MT_MINIMUM_DISPLAY_APERTURE, &actual_aperture, 16),
+         },
+         {
+             ATTR_GUID(MF_MT_MAJOR_TYPE, MFMediaType_Video),
+             ATTR_GUID(MF_MT_SUBTYPE, MFVideoFormat_IYUV),
+             ATTR_RATIO(MF_MT_PIXEL_ASPECT_RATIO, 1, 1),
+             ATTR_RATIO(MF_MT_FRAME_RATE, 30000, 1001),
+-            ATTR_RATIO(MF_MT_FRAME_SIZE, 80, 80, .todo_value = TRUE),
+-            ATTR_UINT32(MF_MT_SAMPLE_SIZE, 9600, .todo_value = TRUE),
+-            ATTR_UINT32(MF_MT_DEFAULT_STRIDE, 80, .todo_value = TRUE),
++            ATTR_RATIO(MF_MT_FRAME_SIZE, 80, 80),
++            ATTR_UINT32(MF_MT_SAMPLE_SIZE, 9600),
++            ATTR_UINT32(MF_MT_DEFAULT_STRIDE, 80),
+             /* ATTR_UINT32(MF_MT_VIDEO_ROTATION, 0), missing on Win7 */
+             ATTR_UINT32(MF_MT_INTERLACE_MODE, 7),
+             ATTR_UINT32(MF_MT_FIXED_SIZE_SAMPLES, 1),
+             ATTR_UINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, 1),
+-            ATTR_BLOB(MF_MT_MINIMUM_DISPLAY_APERTURE, &actual_aperture, 16, .todo = TRUE),
++            ATTR_BLOB(MF_MT_MINIMUM_DISPLAY_APERTURE, &actual_aperture, 16),
+         },
+         {
+             ATTR_GUID(MF_MT_MAJOR_TYPE, MFMediaType_Video),
+             ATTR_GUID(MF_MT_SUBTYPE, MFVideoFormat_I420),
+             ATTR_RATIO(MF_MT_PIXEL_ASPECT_RATIO, 1, 1),
+             ATTR_RATIO(MF_MT_FRAME_RATE, 30000, 1001),
+-            ATTR_RATIO(MF_MT_FRAME_SIZE, 80, 80, .todo_value = TRUE),
+-            ATTR_UINT32(MF_MT_SAMPLE_SIZE, 9600, .todo_value = TRUE),
+-            ATTR_UINT32(MF_MT_DEFAULT_STRIDE, 80, .todo_value = TRUE),
++            ATTR_RATIO(MF_MT_FRAME_SIZE, 80, 80),
++            ATTR_UINT32(MF_MT_SAMPLE_SIZE, 9600),
++            ATTR_UINT32(MF_MT_DEFAULT_STRIDE, 80),
+             /* ATTR_UINT32(MF_MT_VIDEO_ROTATION, 0), missing on Win7 */
+             ATTR_UINT32(MF_MT_INTERLACE_MODE, 7),
+             ATTR_UINT32(MF_MT_FIXED_SIZE_SAMPLES, 1),
+             ATTR_UINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, 1),
+-            ATTR_BLOB(MF_MT_MINIMUM_DISPLAY_APERTURE, &actual_aperture, 16, .todo = TRUE),
++            ATTR_BLOB(MF_MT_MINIMUM_DISPLAY_APERTURE, &actual_aperture, 16),
+         },
+         {
+             ATTR_GUID(MF_MT_MAJOR_TYPE, MFMediaType_Video),
+             ATTR_GUID(MF_MT_SUBTYPE, MFVideoFormat_YUY2),
+             ATTR_RATIO(MF_MT_PIXEL_ASPECT_RATIO, 1, 1),
+             ATTR_RATIO(MF_MT_FRAME_RATE, 30000, 1001),
+-            ATTR_RATIO(MF_MT_FRAME_SIZE, 80, 80, .todo_value = TRUE),
+-            ATTR_UINT32(MF_MT_SAMPLE_SIZE, 12800, .todo_value = TRUE),
+-            ATTR_UINT32(MF_MT_DEFAULT_STRIDE, 160, .todo_value = TRUE),
++            ATTR_RATIO(MF_MT_FRAME_SIZE, 80, 80),
++            ATTR_UINT32(MF_MT_SAMPLE_SIZE, 12800),
++            ATTR_UINT32(MF_MT_DEFAULT_STRIDE, 160),
+             /* ATTR_UINT32(MF_MT_VIDEO_ROTATION, 0), missing on Win7 */
+             ATTR_UINT32(MF_MT_INTERLACE_MODE, 7),
+             ATTR_UINT32(MF_MT_FIXED_SIZE_SAMPLES, 1),
+             ATTR_UINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, 1),
+-            ATTR_BLOB(MF_MT_MINIMUM_DISPLAY_APERTURE, &actual_aperture, 16, .todo = TRUE),
++            ATTR_BLOB(MF_MT_MINIMUM_DISPLAY_APERTURE, &actual_aperture, 16),
+         },
+     };
+ 
+@@ -6885,7 +6885,6 @@ static void test_h264_decoder(void)
+     hr = IMFTransform_GetOutputStreamInfo(transform, 0, &output_info);
+     ok(hr == S_OK, "GetOutputStreamInfo returned %#lx\n", hr);
+     ok(output_info.dwFlags == flags, "got dwFlags %#lx\n", output_info.dwFlags);
+-    todo_wine
+     ok(output_info.cbSize == 0x3200, "got cbSize %#lx\n", output_info.cbSize);
+     ok(output_info.cbAlignment == 0, "got cbAlignment %#lx\n", output_info.cbAlignment);
+ 
+@@ -6932,24 +6931,19 @@ static void test_h264_decoder(void)
+         ok(hr == S_OK, "ConvertToContiguousBuffer returned %#lx\n", hr);
+         hr = IMFMediaBuffer_Lock(media_buffer, &data, NULL, &length);
+         ok(hr == S_OK, "Lock returned %#lx\n", hr);
+-        todo_wine
+         ok(length == nv12_frame_len, "got length %lu\n", length);
+-        if (length == nv12_frame_len)
++        for (i = 0; i < 74; ++i)
+         {
+-            for (i = 0; i < 74; ++i)
+-            {
+-                memset(data + 80 * i + 78, 0xcd, 2);
+-                memset(data + 80 * (80 + i) + 78, 0xcd, 2);
+-            }
+-            memset(data + 80 * 74, 0xcd, 6 * 80);
+-            memset(data + 80 * 117, 0xcd, 3 * 80);
++            memset(data + 80 * i + 78, 0xcd, 2);
++            memset(data + 80 * (80 + i) + 78, 0xcd, 2);
+         }
++        memset(data + 80 * 74, 0xcd, 6 * 80);
++        memset(data + 80 * 117, 0xcd, 3 * 80);
+         hr = IMFMediaBuffer_Unlock(media_buffer);
+         ok(hr == S_OK, "Unlock returned %#lx\n", hr);
+         IMFMediaBuffer_Release(media_buffer);
+ 
+-        if (length == nv12_frame_len)
+-            check_sample(output.pSample, nv12_frame_data, nv12_frame_len, output_file);
++        check_sample(output.pSample, nv12_frame_data, nv12_frame_len, output_file);
+     }
+     ret = IMFSample_Release(output.pSample);
+     ok(ret == 0, "Release returned %lu\n", ret);
+diff --git a/dlls/winegstreamer/h264_decoder.c b/dlls/winegstreamer/h264_decoder.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/h264_decoder.c
++++ b/dlls/winegstreamer/h264_decoder.c
+@@ -85,6 +85,7 @@ static HRESULT try_create_wg_transform(struct h264_decoder *decoder)
+ static HRESULT fill_output_media_type(IMFMediaType *media_type, IMFMediaType *default_type)
+ {
+     UINT32 value, width, height;
++    MFVideoArea aperture = {0};
+     UINT64 ratio;
+     GUID subtype;
+     HRESULT hr;
+@@ -168,6 +169,17 @@ static HRESULT fill_output_media_type(IMFMediaType *media_type, IMFMediaType *de
+             return hr;
+     }
+ 
++    if (FAILED(hr = IMFMediaType_GetItem(media_type, &MF_MT_MINIMUM_DISPLAY_APERTURE, NULL)))
++    {
++        if (default_type && SUCCEEDED(hr = IMFMediaType_GetBlob(default_type, &MF_MT_MINIMUM_DISPLAY_APERTURE,
++                (BYTE *)&aperture, sizeof(aperture), NULL)))
++        {
++            if (FAILED(hr = IMFMediaType_SetBlob(media_type, &MF_MT_MINIMUM_DISPLAY_APERTURE,
++                    (BYTE *)&aperture, sizeof(aperture))))
++                return hr;
++        }
++    }
++
+     return S_OK;
+ }
+ 
+@@ -535,7 +547,9 @@ static HRESULT WINAPI transform_ProcessOutput(IMFTransform *iface, DWORD flags,
+     struct h264_decoder *decoder = impl_from_IMFTransform(iface);
+     MFT_OUTPUT_STREAM_INFO info;
+     struct wg_sample *wg_sample;
++    MFVideoArea aperture = {0};
+     IMFMediaType *media_type;
++    UINT32 halign, valign;
+     UINT64 frame_rate;
+     HRESULT hr;
+ 
+@@ -572,6 +586,21 @@ static HRESULT WINAPI transform_ProcessOutput(IMFTransform *iface, DWORD flags,
+         media_type = mf_media_type_from_wg_format(&wg_sample->format);
+         IMFMediaType_SetUINT64(media_type, &MF_MT_FRAME_RATE, frame_rate);
+ 
++        valign = decoder->wg_format.u.video.width & 15;
++        halign = decoder->wg_format.u.video.height & 15;
++        if (halign || valign)
++        {
++            aperture.Area.cx = decoder->wg_format.u.video.width;
++            aperture.Area.cy = decoder->wg_format.u.video.height;
++            IMFMediaType_SetBlob(media_type, &MF_MT_MINIMUM_DISPLAY_APERTURE,
++                    (BYTE *)&aperture, sizeof(aperture));
++
++            aperture.Area.cx += (16 - valign) & 15;
++            aperture.Area.cy += (16 - halign) & 15;
++            IMFMediaType_SetUINT64(media_type, &MF_MT_FRAME_SIZE,
++                    (UINT64)aperture.Area.cx << 32 | aperture.Area.cy);
++        }
++
+         IMFMediaType_Release(decoder->output_type);
+         decoder->output_type = media_type;
+ 
+diff --git a/dlls/winegstreamer/wg_pool.c b/dlls/winegstreamer/wg_pool.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wg_pool.c
++++ b/dlls/winegstreamer/wg_pool.c
+@@ -135,6 +135,7 @@ void wg_pool_configure(GstBufferPool *gst_pool, GstCaps *caps, gsize *buffer_siz
+ {
+     const gchar *media_type = gst_structure_get_name(gst_caps_get_structure(caps, 0));
+     WgBufferPool *pool = (WgBufferPool *)gst_pool;
++    GstVideoAlignment align;
+     GstStructure *config;
+ 
+     GST_LOG("pool %p, caps %p", pool, caps);
+@@ -148,7 +149,15 @@ void wg_pool_configure(GstBufferPool *gst_pool, GstCaps *caps, gsize *buffer_siz
+     if (!pool->is_video)
+         pool->buffer_size = 65536 * pool->u.audio_info.bpf;
+     else
++    {
++        gst_video_alignment_reset(&align);
++        align.padding_right = (16 - (pool->u.video_info.width & 15)) & 15;
++        align.padding_bottom = (16 - (pool->u.video_info.height & 15)) & 15;
++        align.stride_align[0] = align.stride_align[1] = align.stride_align[2] = align.stride_align[3] = 15;
++        gst_video_info_align(&pool->u.video_info, &align);
++
+         pool->buffer_size = pool->u.video_info.size;
++    }
+     pool->buffer_size = max(pool->buffer_size, *buffer_size);
+ 
+     if ((config = gst_buffer_pool_get_config(gst_pool)))
+-- 
+2.35.1
+

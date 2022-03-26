@@ -1,7 +1,7 @@
-From cb82f5592b80ad5dcccf5e2f87e1197904e35467 Mon Sep 17 00:00:00 2001
 From: Tatsuyuki Ishi <ishitatsuyuki@gmail.com>
-Date: Mon, 7 Mar 2022 11:50:49 +0900
-Subject: [PATCH DRAFT] preloader: Forward PT_DYNAMIC for debugger support
+Subject: [PATCH] preloader: Forward PT_DYNAMIC for debugger support
+Message-Id: <20220321143828.88304-1-ishitatsuyuki@gmail.com>
+Date: Mon, 21 Mar 2022 23:38:28 +0900
 
 In order for a debugger to properly resolve loaded modules and detect
 loading of them, it's necessary that the correct DT_DEBUG entry is visible
@@ -11,14 +11,17 @@ to the debugger. We had two problems with this before:
 2. The ELF header was actually getting overwritten by the reserved region,
    since we only adjusted the placement for the .text section.
 
-It's impossible to solve 1. unless we run the preloader in another way, e.g.
-as an interpreter. This patch simply creates a stub PT_DYNAMIC section in
-the preloader, then during execution patch that to point to the main
-executable's respective section.
+While 1. cannot be solved unless we run the preloader in another way, e.g.
+as an interpreter, we can use some dirty hacks to solve 2.
+This patch simply creates a stub PT_DYNAMIC section in the preloader,
+then during execution patch that to point to the main executable's
+respective section.
 
-This allows GDB to have full shared library support when attaching. It
-still doesn't seem to work when launching from scratch, nor when using
-LLDB. GDB doesn't seem to resolve the symbols of the main executable,
+This allows GDB to have full shared library support when attaching.
+There are numerous limitation due to the nature of the hack: It relies on the
+BFD linker to create a PT_DYNAMIC entry, it doesn't work when the executable
+was launched within the debugger, and it doesn't work with LLDB.
+GDB doesn't seem to resolve the symbols of the main executable,
 but that should not be much of an issue since the loader itself is very
 short.
 
@@ -28,45 +31,101 @@ Some alternative ways to fix this are also possible:
    interpreter can be only specified by absolute path, which is a packaging
    nuisance.
 2. Get rid of the preloader entirely, make the loader static and let it perform
-    the reservation. This should work on glibc, but it's in general not a
-    very well supported use case and feels like a compatibility disaster.
+   the reservation. This should work on glibc, but it's in general not a
+   very well supported use case and feels like a compatibility disaster.
 ---
- configure                  |  2 +-
- configure.ac               |  2 +-
- loader/Makefile.in         |  5 +++--
- loader/preloader.c         | 43 +++++++++++++++++++++++++++++++++++++-
- loader/preloader_dynamic.s |  9 ++++++++
- 5 files changed, 56 insertions(+), 5 deletions(-)
+ configure                  | 17 ++++++----
+ configure.ac               | 17 ++++++----
+ loader/Makefile.in         |  5 +--
+ loader/preloader.c         | 66 ++++++++++++++++++++++++++++++++------
+ loader/preloader_dynamic.s | 11 +++++++
+ 5 files changed, 92 insertions(+), 24 deletions(-)
  create mode 100644 loader/preloader_dynamic.s
 
 diff --git a/configure b/configure
-index 20bcb96a2a6..ec29b0218f8 100755
+index 11111111111..11111111111 100755
 --- a/configure
 +++ b/configure
-@@ -10371,7 +10371,7 @@ if test "x$ac_cv_cflags__Wl___export_dynamic" = xyes
+@@ -10489,7 +10489,7 @@ if test "x$ac_cv_cflags__Wl___export_dynamic" = xyes
  then :
    WINELOADER_LDFLAGS="-Wl,--export-dynamic"
  fi
 -    WINEPRELOADER_LDFLAGS="-static -nostartfiles -nodefaultlibs -Wl,-Ttext=0x7d400000"
-+    WINEPRELOADER_LDFLAGS="-static -nostartfiles -nodefaultlibs -Wl,--Ttext-segment=0x7d400000"
++    WINEPRELOADER_LDFLAGS="-static -nostartfiles -nodefaultlibs"
  
      case $host_cpu in
        *i[3456789]86* | x86_64 | *aarch64* | arm*)
+@@ -10519,10 +10519,13 @@ fi
+ printf "%s\n" "$ac_cv_cflags__Wl__Ttext_segment_0x7bc00000" >&6; }
+ if test "x$ac_cv_cflags__Wl__Ttext_segment_0x7bc00000" = xyes
+ then :
+-  case $host_os in
+-                         freebsd* | kfreebsd*-gnu) WINELOADER_LDFLAGS="$WINELOADER_LDFLAGS -Wl,-Ttext-segment=0x60000000" ;;
+-                         *) WINELOADER_LDFLAGS="$WINELOADER_LDFLAGS -Wl,-Ttext-segment=0x7d000000" ;;
+-                         esac
++
++                          case $host_os in
++                            freebsd* | kfreebsd*-gnu) WINELOADER_LDFLAGS="$WINELOADER_LDFLAGS -Wl,-Ttext-segment=0x60000000" ;;
++                            *) WINELOADER_LDFLAGS="$WINELOADER_LDFLAGS -Wl,-Ttext-segment=0x7d000000" ;;
++                          esac
++                          WINEPRELOADER_LDFLAGS="$WINEPRELOADER_LDFLAGS -Wl,-Ttext-segment=0x7d400000"
++
+ else $as_nop
+   { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking whether the compiler supports -Wl,--section-start,.interp=0x7d000400" >&5
+ printf %s "checking whether the compiler supports -Wl,--section-start,.interp=0x7d000400... " >&6; }
+@@ -10550,11 +10553,13 @@ fi
+ printf "%s\n" "$ac_cv_cflags__Wl___section_start__interp_0x7d000400" >&6; }
+ if test "x$ac_cv_cflags__Wl___section_start__interp_0x7d000400" = xyes
+ then :
+-  case $host_os in
++
++                                          case $host_os in
+                                             freebsd* | kfreebsd*-gnu) WINELOADER_LDFLAGS="$WINELOADER_LDFLAGS -Wl,--section-start,.interp=0x60000400" ;;
+                                             *) WINELOADER_LDFLAGS="$WINELOADER_LDFLAGS -Wl,--section-start,.interp=0x7d000400" ;;
+                                          esac
+ fi
++                         WINEPRELOADER_LDFLAGS="$WINEPRELOADER_LDFLAGS -Wl,-Ttext=0x7d400000"
+                          # Extract the first word of "prelink", so it can be a program name with args.
+ set dummy prelink; ac_word=$2
+ { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
 diff --git a/configure.ac b/configure.ac
-index a1f7a7d5e2c..14cf493a262 100644
+index 11111111111..11111111111 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -826,7 +826,7 @@ case $host_os in
+@@ -859,20 +859,25 @@ case $host_os in
  
      WINE_TRY_CFLAGS([-Wl,-z,defs],[UNIXLDFLAGS="$UNIXLDFLAGS -Wl,-z,defs"])
      WINE_TRY_CFLAGS([-Wl,--export-dynamic],[WINELOADER_LDFLAGS="-Wl,--export-dynamic"])
 -    WINEPRELOADER_LDFLAGS="-static -nostartfiles -nodefaultlibs -Wl,-Ttext=0x7d400000"
-+    WINEPRELOADER_LDFLAGS="-static -nostartfiles -nodefaultlibs -Wl,--Ttext-segment=0x7d400000"
++    WINEPRELOADER_LDFLAGS="-static -nostartfiles -nodefaultlibs"
  
      case $host_cpu in
        *i[[3456789]]86* | x86_64 | *aarch64* | arm*)
+         WINE_TRY_CFLAGS([-Wl,-Ttext-segment=0x7bc00000],
+-                        [case $host_os in
+-                         freebsd* | kfreebsd*-gnu) WINELOADER_LDFLAGS="$WINELOADER_LDFLAGS -Wl,-Ttext-segment=0x60000000" ;;
+-                         *) WINELOADER_LDFLAGS="$WINELOADER_LDFLAGS -Wl,-Ttext-segment=0x7d000000" ;;
+-                         esac],
++                        [
++                          case $host_os in
++                            freebsd* | kfreebsd*-gnu) WINELOADER_LDFLAGS="$WINELOADER_LDFLAGS -Wl,-Ttext-segment=0x60000000" ;;
++                            *) WINELOADER_LDFLAGS="$WINELOADER_LDFLAGS -Wl,-Ttext-segment=0x7d000000" ;;
++                          esac
++                          WINEPRELOADER_LDFLAGS="$WINEPRELOADER_LDFLAGS -Wl,-Ttext-segment=0x7d400000"
++                        ],
+                         [WINE_TRY_CFLAGS([-Wl,--section-start,.interp=0x7d000400],
+-                                         [case $host_os in
++                                         [
++                                          case $host_os in
+                                             freebsd* | kfreebsd*-gnu) WINELOADER_LDFLAGS="$WINELOADER_LDFLAGS -Wl,--section-start,.interp=0x60000400" ;;
+                                             *) WINELOADER_LDFLAGS="$WINELOADER_LDFLAGS -Wl,--section-start,.interp=0x7d000400" ;;
+                                          esac])
++                         WINEPRELOADER_LDFLAGS="$WINEPRELOADER_LDFLAGS -Wl,-Ttext=0x7d400000"
+                          AC_PATH_PROG(PRELINK, prelink, false, [/sbin /usr/sbin $PATH])
+                          if test "x$PRELINK" = xfalse
+                          then
 diff --git a/loader/Makefile.in b/loader/Makefile.in
-index 7302c231915..b5bdf6e1439 100644
+index 11111111111..11111111111 100644
 --- a/loader/Makefile.in
 +++ b/loader/Makefile.in
 @@ -2,6 +2,7 @@ SOURCES = \
@@ -91,73 +150,111 @@ index 7302c231915..b5bdf6e1439 100644
  wine64_preloader_DEPS = $(WINELOADER_DEPENDS)
  wine64_preloader_LDFLAGS = $(WINEPRELOADER_LDFLAGS)
 diff --git a/loader/preloader.c b/loader/preloader.c
-index 585be50624f..f3943bb5c5f 100644
+index 11111111111..11111111111 100644
 --- a/loader/preloader.c
 +++ b/loader/preloader.c
-@@ -1148,6 +1148,23 @@ static unsigned int gnu_hash( const char *name )
+@@ -1701,13 +1701,30 @@ static unsigned int gnu_hash( const char *name )
      return h;
  }
  
-+static void *find_segment(const struct wld_link_map *map, int type,
-+			  ElfW(Half) * size)
++static void *find_segment(const struct wld_link_map *map, int type, ElfW(Half) * size)
 +{
-+	void *ret = NULL;
-+	const ElfW(Phdr) * ph;
-+	/* parse the (already loaded) ELF executable's header */
-+	for (ph = map->l_phdr; ph < &map->l_phdr[map->l_phnum]; ++ph) {
-+		if (type == ph->p_type) {
-+			ret = (void *)(ph->p_vaddr + map->l_addr);
-+			if (size)
-+				*size = ph->p_memsz;
-+			break;
-+		}
-+	}
-+	return ret;
++   void *ret = NULL;
++   const ElfW(Phdr) *ph;
++   /* parse the (already loaded) ELF executable's header */
++   for (ph = map->l_phdr; ph < &map->l_phdr[map->l_phnum]; ++ph)
++   {
++       if (type == ph->p_type)
++       {
++           ret = (void *)(ph->p_vaddr + map->l_addr);
++           if (size)
++               *size = ph->p_memsz;
++           break;
++       }
++   }
++   return ret;
 +}
 +
  /*
   * Find a symbol in the symbol table of the executable loaded
   */
-@@ -1375,6 +1392,12 @@ void* wld_start( void **stack )
+ static void *find_symbol( const struct wld_link_map *map, const char *var, int type )
+ {
+     const ElfW(Dyn) *dyn = NULL;
+-    const ElfW(Phdr) *ph;
+     const ElfW(Sym) *symtab = NULL;
+     const Elf32_Word *hashtab = NULL;
+     const Elf32_Word *gnu_hashtab = NULL;
+@@ -1718,15 +1735,7 @@ static void *find_symbol( const struct wld_link_map *map, const char *var, int t
+ #ifdef DUMP_SYMS
+     wld_printf("%p %x\n", map->l_phdr, map->l_phnum );
+ #endif
+-    /* parse the (already loaded) ELF executable's header */
+-    for (ph = map->l_phdr; ph < &map->l_phdr[map->l_phnum]; ++ph)
+-    {
+-        if( PT_DYNAMIC == ph->p_type )
+-        {
+-            dyn = (void *)(ph->p_vaddr + map->l_addr);
+-            break;
+-        }
+-    }
++    dyn = find_segment( map, PT_DYNAMIC, NULL );
+     if( !dyn ) return NULL;
+ 
+     while( dyn->d_tag )
+@@ -2684,6 +2693,12 @@ void* wld_start( void **stack )
      struct preloader_state state = { 0 };
      struct vma_area_list vma_list = { NULL };
      int remap_done;
 +    void *main_binary_dynamic = NULL;
 +    ElfW(Half) main_binary_dynamic_size = 0;
 +    ElfW(Phdr) *self_phdr;
-+    ElfW(Addr) phdr_offset = 0;
++    unsigned long phdr_offset = 0;
 +    ElfW(Half) self_phnum;
 +    ElfW(Phdr) *ph;
  
-     pargc = *stack;
-     argv = (char **)pargc + 1;
-@@ -1394,6 +1417,8 @@ void* wld_start( void **stack )
-     av = (struct wld_auxv *)(p+1);
-     page_size = get_auxiliary( av, AT_PAGESZ, 4096 );
+     parse_stackargs( &state.s, *stack );
+ 
+@@ -2691,6 +2706,8 @@ void* wld_start( void **stack )
+ 
+     page_size = get_auxiliary( state.s.auxv, AT_PAGESZ, 4096 );
      page_mask = page_size - 1;
-+    self_phdr = (void *) get_auxiliary( state.s.auxv, AT_PHDR, (ElfW(Addr)) NULL );
++    self_phdr = (void *)get_auxiliary( state.s.auxv, AT_PHDR, (unsigned long)NULL );
 +    self_phnum = get_auxiliary( state.s.auxv, AT_PHNUM, 0 );
  
      preloader_start = (char *)_start - ((unsigned long)_start & page_mask);
      preloader_end = (char *)((unsigned long)(_end + page_mask) & ~page_mask);
-@@ -1442,6 +1467,22 @@ void* wld_start( void **stack )
+@@ -2736,6 +2753,35 @@ void* wld_start( void **stack )
      interp = (char *)main_binary_map.l_addr + main_binary_map.l_interp;
      map_so_lib( interp, &ld_so_map );
  
-+    main_binary_dynamic = find_segment(&main_binary_map, PT_DYNAMIC,
-+				       &main_binary_dynamic_size);
-+    for (ph = self_phdr; ph < &self_phdr[self_phnum]; ++ph) {
-+	    if (PT_PHDR == ph->p_type) {
-+            /* Best effort PIE support */
-+		    phdr_offset = (ElfW(Addr))self_phdr -
-+				  (ElfW(Addr))ph->p_vaddr;
-+	    } else if (PT_DYNAMIC == ph->p_type) {
-+		    wld_mprotect((void *)((unsigned long)ph & ~page_mask), page_size,
-+				 PROT_READ | PROT_WRITE);
-+		    ph->p_vaddr = (ElfW(Addr))main_binary_dynamic - phdr_offset;
-+		    ph->p_memsz = main_binary_dynamic_size;
-+		    break;
-+	    }
++    main_binary_dynamic = find_segment(&main_binary_map, PT_DYNAMIC, &main_binary_dynamic_size);
++    for (ph = self_phdr; ph < &self_phdr[self_phnum]; ++ph)
++    {
++       if (find_preload_reserved_area(ph, sizeof(*ph)) >= 0)
++       {
++           wld_printf("preloader: Warning: preloader PHDR is in reserved range, symbols in gdb "
++                  "will be broken! (Make sure the linker used to build Wine supports "
++                  "-Ttext-segment)\n");
++           break;
++       }
++
++       if (PT_PHDR == ph->p_type)
++       {
++           /* Best effort PIE support */
++           phdr_offset = (unsigned long)self_phdr - (unsigned long)ph->p_vaddr;
++       }
++       else if (PT_DYNAMIC == ph->p_type)
++       {
++            /*
++             * Monkey patch our PT_DYNAMIC entry to point it to the real executable's PT_DYNAMIC section.
++             * This is required by debuggers to resolve loaded shared libraries and more.
++             */
++           wld_mprotect((void *)((unsigned long)ph & ~page_mask), page_size, PROT_READ | PROT_WRITE);
++           ph->p_vaddr = (unsigned long)main_binary_dynamic - phdr_offset;
++           ph->p_memsz = main_binary_dynamic_size;
++           break;
++       }
 +    }
 +
      /* store pointer to the preload info into the appropriate main binary variable */
@@ -165,19 +262,22 @@ index 585be50624f..f3943bb5c5f 100644
      if (wine_main_preload_info) *wine_main_preload_info = preload_info;
 diff --git a/loader/preloader_dynamic.s b/loader/preloader_dynamic.s
 new file mode 100644
-index 00000000000..cef05d3fb60
+index 00000000000..11111111111
 --- /dev/null
 +++ b/loader/preloader_dynamic.s
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,11 @@
 +DT_NULL=0
 +# This section is a stub PT_DYNAMIC entry that will be patched over to the real exectuable's
 +# respective section.
++# This only works with ld.bfd. gold and lld (with --image-base) will create their own
++# PT_DYNAMIC entry unless instructed otherwise with a linker script.
 +.section ".dynamic"
 +    _DYNAMIC: .globl _DYNAMIC
 +    # Don't put any "real" entries here: GDB will look at the on-disk image first, and we
 +    # need to make sure that the stub entries doesn't get preferred over the real entries
 +    # that we forward to.
 +    .long DT_NULL,0
+
 -- 
 2.35.1
 

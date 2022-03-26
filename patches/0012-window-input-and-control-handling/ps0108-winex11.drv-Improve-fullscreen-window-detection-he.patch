@@ -1,0 +1,57 @@
+From b8fee592d36281a793e7caa9dac31a1579386db2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 11 Mar 2022 13:08:26 +0100
+Subject: [PATCH] winex11.drv: Improve fullscreen window detection heuristics.
+
+For: Sleeping Dogs: Definitive Edition
+
+CW-Bug-Id: #20283
+---
+ dlls/winex11.drv/window.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1067,15 +1067,28 @@ static void update_net_wm_fullscreen_monitors( struct x11drv_win_data *data )
+ void update_net_wm_states( struct x11drv_win_data *data )
+ {
+     DWORD i, style, ex_style, new_state = 0;
++    RECT window_rect, client_rect;
++    BOOL fullscreen;
+     unsigned long net_wm_bypass_compositor = 0;
+ 
+     if (!data->managed) return;
+     if (data->whole_window == root_window) return;
+ 
+     style = GetWindowLongW( data->hwnd, GWL_STYLE );
++    ex_style = GetWindowLongW( data->hwnd, GWL_EXSTYLE );
++    if (!(fullscreen = is_window_rect_full_screen( &data->whole_rect )))
++    {
++        client_rect = data->client_rect;
++        OffsetRect( &client_rect, -client_rect.left, -client_rect.top );
++        window_rect = client_rect;
++        AdjustWindowRectEx( &window_rect, style, 0, ex_style );
++        OffsetRect( &window_rect, data->window_rect.left - window_rect.left, data->window_rect.top - window_rect.top );
++        fullscreen = EqualRect( &window_rect, &data->window_rect ) && is_window_rect_full_screen( &client_rect );
++    }
++
+     if (style & WS_MINIMIZE)
+         new_state |= data->net_wm_state & ~((1 << NET_WM_STATE_FULLSCREEN)|(1 << NET_WM_STATE_MAXIMIZED));
+-    if (is_window_rect_full_screen( &data->whole_rect ))
++    if (fullscreen)
+     {
+         if ((style & WS_MAXIMIZE) && (style & WS_CAPTION) == WS_CAPTION)
+             new_state |= (1 << NET_WM_STATE_MAXIMIZED);
+@@ -1088,7 +1101,6 @@ void update_net_wm_states( struct x11drv_win_data *data )
+     else if (style & WS_MAXIMIZE)
+         new_state |= (1 << NET_WM_STATE_MAXIMIZED);
+ 
+-    ex_style = GetWindowLongW( data->hwnd, GWL_EXSTYLE );
+     if (ex_style & WS_EX_TOPMOST)
+         new_state |= (1 << NET_WM_STATE_ABOVE);
+     if (!data->add_taskbar)
+-- 
+2.35.1
+

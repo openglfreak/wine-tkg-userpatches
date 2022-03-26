@@ -1,0 +1,96 @@
+From: Alex Kwak <take-me-home@kakao.com>
+Subject: [PATCH] winex11.drv: Fix IME_SetResultString for Korean(hangul) IME.
+Message-Id: <20220320121727.553830-1-take-me-home@kakao.com>
+Date: Sun, 20 Mar 2022 21:17:27 +0900
+
+In a special case for Hangul(Korean), when Composition is completed and
+this function is called, the new Composition disappears. so, calling
+IME_SetCompositionString again for makes composition will be
+starting.
+
+Signed-off-by: Alex Kwak <take-me-home@kakao.com>
+---
+ dlls/winex11.drv/ime.c    |  4 ++--
+ dlls/winex11.drv/x11drv.h | 27 +++++++++++++++++++++++++++
+ dlls/winex11.drv/xim.c    | 13 +++++++++++++
+ 3 files changed, 42 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winex11.drv/ime.c b/dlls/winex11.drv/ime.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/ime.c
++++ b/dlls/winex11.drv/ime.c
+@@ -1050,8 +1050,8 @@ void IME_SetResultString(LPWSTR lpResult, DWORD dwResultLen)
+     GenerateIMEMessage(imc, WM_IME_COMPOSITION, lpResult[0], GCS_RESULTSTR|GCS_RESULTCLAUSE);
+     GenerateIMEMessage(imc, WM_IME_ENDCOMPOSITION, 0, 0);
+ 
+-    if (!inComp)
+-        ImmSetOpenStatus(imc, FALSE);
++    myPrivate->bInComposition = FALSE;
++    ImmSetOpenStatus(imc, FALSE);
+ 
+     ImmUnlockIMC(imc);
+ }
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -884,4 +884,31 @@ static inline BOOL is_window_rect_mapped( const RECT *rect )
+ 
+ extern DWORD CDECL X11DRV_SetWindowCompositionAttribute( HWND hwnd, DWORD attribute, void *attr_data ) DECLSPEC_HIDDEN;
+ 
++#define HANGUL_BASE                 0xac00
++#define HANGUL_LAST                 0xd7a3
++#define HANGUL_JAMO_BASE            0x1100
++#define HANGUL_JAMO_LAST            0x11F9
++#define HANGUL_COMPAT_JAMO_BASE     0x3130
++#define HANGUL_COMPAT_JAMO_LAST     0x318E
++#define HANGUL_LCOUNT 19
++#define HANGUL_VCOUNT 21
++#define HANGUL_TCOUNT 28
++#define HANGUL_NCOUNT (HANGUL_VCOUNT * HANGUL_TCOUNT)
++#define HANGUL_SCOUNT (HANGUL_LCOUNT * HANGUL_NCOUNT)
++
++/*
++ * This method exists to handle special cases related to Korean(Hangul).
++ */
++static inline BOOL IsHangul(WPARAM wParam)
++{
++    if (!wParam)
++    {
++        return FALSE;
++    }
++
++    return (wParam >= HANGUL_BASE && wParam < HANGUL_LAST) ||
++           (wParam >= HANGUL_COMPAT_JAMO_BASE && wParam < HANGUL_COMPAT_JAMO_LAST) ||
++           (wParam >= HANGUL_JAMO_BASE && wParam < HANGUL_JAMO_LAST);
++}
++
+ #endif  /* __WINE_X11DRV_H */
+diff --git a/dlls/winex11.drv/xim.c b/dlls/winex11.drv/xim.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/xim.c
++++ b/dlls/winex11.drv/xim.c
+@@ -118,6 +118,19 @@ void X11DRV_XIMLookupChars( const char *str, DWORD count )
+ 
+     IME_SetResultString(wcOutput, dwOutput);
+     HeapFree(GetProcessHeap(), 0, wcOutput);
++
++    /*
++     * In a special case for Hangul(Korean), when Composition is completed and
++     * this function is called, the new Composition disappears. so, calling
++     * IME_SetCompositionString again for makes composition will be
++     * starting.
++     */
++    if (CompositionString && dwCompStringLength >= sizeof(WCHAR) &&
++        IsHangul(((const WCHAR*) CompositionString)[0]))
++    {
++        IME_SetCompositionString(SCS_SETSTR, CompositionString,
++                                 dwCompStringLength, NULL, 0);
++    }
+ }
+ 
+ static BOOL XIMPreEditStateNotifyCallback(XIC xic, XPointer p, XPointer data)
+
+-- 
+2.35.1
+

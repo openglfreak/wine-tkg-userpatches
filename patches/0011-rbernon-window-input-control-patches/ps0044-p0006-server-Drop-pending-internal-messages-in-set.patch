@@ -6,24 +6,12 @@ Subject: [PATCH 6/6] server: Drop pending internal messages in
 
 When changing the active window in the foreground thread.
 ---
- dlls/win32u/input.c     |  1 +
  dlls/user32/tests/msg.c | 46 ++++++++++++++++++++---------------------
+ dlls/win32u/input.c     |  1 +
  server/protocol.def     |  1 +
  server/queue.c          | 12 +++++++++++
  4 files changed, 36 insertions(+), 24 deletions(-)
 
-diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
-index 11111111111..11111111111 100644
---- a/dlls/win32u/input.c
-+++ b/dlls/win32u/input.c
-@@ -121,6 +121,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
-     SERVER_START_REQ( set_active_window )
-     {
-         req->handle = wine_server_user_handle( hwnd );
-+        req->internal_msg = WM_WINE_SETACTIVEWINDOW;
-         if ((ret = !wine_server_call_err( req )))
-             previous = wine_server_ptr_handle( reply->previous );
-     }
 diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
 index 11111111111..11111111111 100644
 --- a/dlls/user32/tests/msg.c
@@ -96,11 +84,23 @@ index 11111111111..11111111111 100644
  
          res = WaitForSingleObject( args->done, INFINITE );
          ok( res == WAIT_OBJECT_0, "WaitForSingleObject returned %#x, last error %#x.\n", res, GetLastError() );
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -1180,6 +1180,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+     SERVER_START_REQ( set_active_window )
+     {
+         req->handle = wine_server_user_handle( hwnd );
++        req->internal_msg = WM_WINE_SETACTIVEWINDOW;
+         if ((ret = !wine_server_call_err( req )))
+             previous = wine_server_ptr_handle( reply->previous );
+     }
 diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -2853,6 +2853,7 @@ enum coords_relative
+@@ -2854,6 +2854,7 @@ enum coords_relative
  /* Set the current thread active window */
  @REQ(set_active_window)
      user_handle_t  handle;        /* handle to the active window */

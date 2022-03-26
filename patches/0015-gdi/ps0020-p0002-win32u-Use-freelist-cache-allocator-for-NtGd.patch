@@ -1,0 +1,55 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH 2/4] win32u: Use freelist cache allocator for NtGdiCreateBitmap.
+Message-Id: <37e70aa4-109f-b223-b650-aa6f18a3eb43@gmail.com>
+Date: Mon, 21 Mar 2022 05:42:36 +0900
+In-Reply-To: <7303da75-56e4-7139-34ce-b90da9eccc03@gmail.com>
+References: <7303da75-56e4-7139-34ce-b90da9eccc03@gmail.com>
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ dlls/win32u/bitmap.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/win32u/bitmap.c b/dlls/win32u/bitmap.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/bitmap.c
++++ b/dlls/win32u/bitmap.c
+@@ -159,7 +159,7 @@ HBITMAP WINAPI NtGdiCreateBitmap( INT width, INT height, UINT planes,
+     bmpobj->dib.dsBm.bmWidthBytes = get_bitmap_stride( width, bpp );
+     bmpobj->dib.dsBm.bmPlanes     = planes;
+     bmpobj->dib.dsBm.bmBitsPixel  = bpp;
+-    bmpobj->dib.dsBm.bmBits       = calloc( 1, size );
++    bmpobj->dib.dsBm.bmBits       = alloc_gdi_cache_memory( size, TRUE );
+     if (!bmpobj->dib.dsBm.bmBits)
+     {
+         free( bmpobj );
+@@ -169,7 +169,7 @@ HBITMAP WINAPI NtGdiCreateBitmap( INT width, INT height, UINT planes,
+ 
+     if (!(hbitmap = alloc_gdi_handle( &bmpobj->obj, NTGDI_OBJ_BITMAP, &bitmap_funcs )))
+     {
+-        free( bmpobj->dib.dsBm.bmBits );
++        free_gdi_cache_memory( bmpobj->dib.dsBm.bmBits, size );
+         free( bmpobj );
+         return 0;
+     }
+@@ -444,9 +444,15 @@ HGDIOBJ WINAPI NtGdiSelectBitmap( HDC hdc, HGDIOBJ handle )
+ static BOOL BITMAP_DeleteObject( HGDIOBJ handle )
+ {
+     BITMAPOBJ *bmp = free_gdi_handle( handle );
++    INT dib_stride;
++    SIZE_T size;
+ 
+     if (!bmp) return FALSE;
+-    free( bmp->dib.dsBm.bmBits );
++
++    dib_stride = get_dib_stride( bmp->dib.dsBm.bmWidth, bmp->dib.dsBm.bmBitsPixel );
++    size = dib_stride * bmp->dib.dsBm.bmHeight;
++
++    free_gdi_cache_memory( bmp->dib.dsBm.bmBits, size );
+     free( bmp );
+     return TRUE;
+ }
+
+-- 
+2.35.1
+

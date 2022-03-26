@@ -1,0 +1,71 @@
+From 60bf73512677baf0577f963925d117d34ed853ef Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 3 Mar 2022 01:17:41 +0100
+Subject: [PATCH 10/20] winegstreamer: Reply with the custom buffer pool to
+ ALLOCATION query.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=45988
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=47084
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=49715
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52183
+CW-Bug-Id: #16839
+CW-Bug-Id: #18678
+CW-Bug-Id: #19362
+---
+ dlls/winegstreamer/wg_pool.c      | 4 +++-
+ dlls/winegstreamer/wg_transform.c | 7 ++++++-
+ 2 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winegstreamer/wg_pool.c b/dlls/winegstreamer/wg_pool.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wg_pool.c
++++ b/dlls/winegstreamer/wg_pool.c
+@@ -146,7 +146,7 @@ void wg_pool_configure(GstBufferPool *gst_pool, GstCaps *caps, gsize *buffer_siz
+         gst_audio_info_from_caps(&pool->u.audio_info, caps);
+ 
+     if (!pool->is_video)
+-        pool->buffer_size = 16384 * pool->u.audio_info.bpf;
++        pool->buffer_size = 65536 * pool->u.audio_info.bpf;
+     else
+         pool->buffer_size = pool->u.video_info.size;
+     pool->buffer_size = max(pool->buffer_size, *buffer_size);
+@@ -158,6 +158,8 @@ void wg_pool_configure(GstBufferPool *gst_pool, GstCaps *caps, gsize *buffer_siz
+         gst_buffer_pool_set_config(gst_pool, config);
+     }
+ 
++    GST_INFO("Configured buffer pool %p, size %zu", pool, pool->buffer_size);
++
+     *buffer_size = pool->buffer_size;
+ }
+ 
+diff --git a/dlls/winegstreamer/wg_transform.c b/dlls/winegstreamer/wg_transform.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wg_transform.c
++++ b/dlls/winegstreamer/wg_transform.c
+@@ -89,10 +89,13 @@ static gboolean transform_sink_query_cb(GstPad *pad, GstObject *parent, GstQuery
+         GstBufferPool *pool;
+         gboolean need_pool;
+         GstCaps *caps;
++        gchar *str;
+         int i;
+ 
+         gst_query_parse_allocation(query, &caps, &need_pool);
+-        GST_INFO("Parsed allocation query, caps %p, need_pool %u", caps, need_pool);
++        str = gst_caps_to_string(caps);
++        GST_INFO("Parsed allocation query, need_pool %u, caps \"%s\".", need_pool, str);
++        g_free(str);
+         if (!need_pool || !caps)
+             break;
+ 
+@@ -105,6 +108,8 @@ static gboolean transform_sink_query_cb(GstPad *pad, GstObject *parent, GstQuery
+             max_buffers = max(max, max_buffers);
+         }
+ 
++        GST_INFO("Found need_pool %u, buffer_size %zu, min_buffers %u, max_buffers %u.", need_pool, buffer_size, min_buffers, max_buffers);
++
+         pthread_mutex_lock(&transform->mutex);
+         if (need_pool && (pool = wg_pool_create()))
+         {
+-- 
+2.35.1
+

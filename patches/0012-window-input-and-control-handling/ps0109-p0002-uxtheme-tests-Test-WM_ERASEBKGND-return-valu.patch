@@ -1,0 +1,56 @@
+From: Zhiyi Zhang <zzhang@codeweavers.com>
+Subject: [PATCH 2/4] uxtheme/tests: Test WM_ERASEBKGND return value from custom dialog procedures.
+Message-Id: <4865c61f-4cab-43d3-79be-cf4f18155bd7@codeweavers.com>
+Date: Thu, 24 Mar 2022 17:05:59 +0800
+
+Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
+---
+ dlls/uxtheme/tests/system.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/dlls/uxtheme/tests/system.c b/dlls/uxtheme/tests/system.c
+index 11111111111..11111111111 100644
+--- a/dlls/uxtheme/tests/system.c
++++ b/dlls/uxtheme/tests/system.c
+@@ -1618,6 +1618,7 @@ static const struct message empty_seq[] =
+ 
+ static HWND dialog_child;
+ static DWORD dialog_init_flag;
++static BOOL handle_WM_ERASEBKGND;
+ static BOOL handle_WM_CTLCOLORSTATIC;
+ 
+ static INT_PTR CALLBACK test_EnableThemeDialogTexture_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+@@ -1643,6 +1644,15 @@ static INT_PTR CALLBACK test_EnableThemeDialogTexture_proc(HWND hwnd, UINT msg,
+             EnableThemeDialogTexture(hwnd, dialog_init_flag);
+         return TRUE;
+ 
++    case WM_ERASEBKGND:
++    {
++        if (!handle_WM_ERASEBKGND)
++            return FALSE;
++
++        SetWindowLongPtrW(hwnd, DWLP_MSGRESULT, 0);
++        return TRUE;
++    }
++
+     case WM_CTLCOLORSTATIC:
+         return (INT_PTR)(handle_WM_CTLCOLORSTATIC ? GetSysColorBrush(COLOR_MENU) : 0);
+ 
+@@ -1880,6 +1890,13 @@ static void test_EnableThemeDialogTexture(void)
+        GetSysColorBrush(COLOR_MENU), brush);
+     handle_WM_CTLCOLORSTATIC = FALSE;
+ 
++    /* Test that the dialog procedure should take precedence over DefDlgProc() for WM_ERASEBKGND */
++    handle_WM_ERASEBKGND = TRUE;
++    lr = SendMessageW(dialog, WM_ERASEBKGND, (WPARAM)child_hdc, 0);
++    todo_wine
++    ok(lr == 0, "Expected 0, got %#lx.\n", lr);
++    handle_WM_ERASEBKGND = FALSE;
++
+     /* Test that dialog doesn't have theme handle opened for itself */
+     ok(GetWindowTheme(dialog) == NULL, "Expected NULL theme handle.\n");
+ 
+
+-- 
+2.35.1
+

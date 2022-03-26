@@ -1,0 +1,303 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH 4/4] win32u: Use alloc_gdi_cache_bits in place of malloc / free.
+Message-Id: <f719e600-3e14-0624-505b-c994d0b805f3@gmail.com>
+Date: Mon, 21 Mar 2022 05:42:52 +0900
+In-Reply-To: <7303da75-56e4-7139-34ce-b90da9eccc03@gmail.com>
+References: <7303da75-56e4-7139-34ce-b90da9eccc03@gmail.com>
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ dlls/win32u/bitblt.c         | 34 +++++++++++++---------------------
+ dlls/win32u/bitmap.c         |  4 +---
+ dlls/win32u/brush.c          |  3 +--
+ dlls/win32u/dib.c            | 12 ++++++------
+ dlls/win32u/dibdrv/bitblt.c  | 18 +++++-------------
+ dlls/win32u/dibdrv/objects.c |  5 ++---
+ dlls/win32u/font.c           | 25 +++++++------------------
+ 7 files changed, 35 insertions(+), 66 deletions(-)
+
+diff --git a/dlls/win32u/bitblt.c b/dlls/win32u/bitblt.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/bitblt.c
++++ b/dlls/win32u/bitblt.c
+@@ -190,7 +190,7 @@ BOOL alloc_gdi_cache_bits( struct gdi_image_bits *bits, SIZE_T size, int flags )
+ DWORD convert_bits( const BITMAPINFO *src_info, struct bitblt_coords *src,
+                     BITMAPINFO *dst_info, struct gdi_image_bits *bits )
+ {
+-    void *ptr;
++    struct gdi_image_bits new_bits;
+     DWORD err;
+     BOOL top_down = dst_info->bmiHeader.biHeight < 0;
+ 
+@@ -199,14 +199,12 @@ DWORD convert_bits( const BITMAPINFO *src_info, struct bitblt_coords *src,
+     dst_info->bmiHeader.biSizeImage = get_dib_image_size( dst_info );
+     if (top_down) dst_info->bmiHeader.biHeight = -dst_info->bmiHeader.biHeight;
+ 
+-    if (!(ptr = malloc( dst_info->bmiHeader.biSizeImage )))
++    if (!alloc_gdi_cache_bits( &new_bits, dst_info->bmiHeader.biSizeImage, ALLOC_IS_COPY ))
+         return ERROR_OUTOFMEMORY;
+ 
+-    err = convert_bitmapinfo( src_info, bits->ptr, src, dst_info, ptr );
++    err = convert_bitmapinfo( src_info, bits->ptr, src, dst_info, new_bits.ptr );
+     if (bits->free) bits->free( bits );
+-    bits->ptr = ptr;
+-    bits->is_copy = TRUE;
+-    bits->free = free_heap_bits;
++    *bits = new_bits;
+     return err;
+ }
+ 
+@@ -214,7 +212,7 @@ DWORD stretch_bits( const BITMAPINFO *src_info, struct bitblt_coords *src,
+                     BITMAPINFO *dst_info, struct bitblt_coords *dst,
+                     struct gdi_image_bits *bits, int mode )
+ {
+-    void *ptr;
++    struct gdi_image_bits new_bits;
+     DWORD err;
+ 
+     dst_info->bmiHeader.biWidth = dst->visrect.right - dst->visrect.left;
+@@ -222,14 +220,12 @@ DWORD stretch_bits( const BITMAPINFO *src_info, struct bitblt_coords *src,
+     dst_info->bmiHeader.biSizeImage = get_dib_image_size( dst_info );
+ 
+     if (src_info->bmiHeader.biHeight < 0) dst_info->bmiHeader.biHeight = -dst_info->bmiHeader.biHeight;
+-    if (!(ptr = malloc( dst_info->bmiHeader.biSizeImage )))
++    if (!alloc_gdi_cache_bits( &new_bits, dst_info->bmiHeader.biSizeImage, ALLOC_IS_COPY ))
+         return ERROR_OUTOFMEMORY;
+ 
+-    err = stretch_bitmapinfo( src_info, bits->ptr, src, dst_info, ptr, dst, mode );
++    err = stretch_bitmapinfo( src_info, bits->ptr, src, dst_info, new_bits.ptr, dst, mode );
+     if (bits->free) bits->free( bits );
+-    bits->ptr = ptr;
+-    bits->is_copy = TRUE;
+-    bits->free = free_heap_bits;
++    *bits = new_bits;
+     return err;
+ }
+ 
+@@ -240,13 +236,11 @@ static DWORD blend_bits( const BITMAPINFO *src_info, const struct gdi_image_bits
+     if (!dst_bits->is_copy)
+     {
+         int size = dst_info->bmiHeader.biSizeImage;
+-        void *ptr = malloc( size );
+-        if (!ptr) return ERROR_OUTOFMEMORY;
+-        memcpy( ptr, dst_bits->ptr, size );
++        struct gdi_image_bits new_bits;
++        if (!alloc_gdi_cache_bits( &new_bits, size, ALLOC_IS_COPY )) return ERROR_OUTOFMEMORY;
++        memcpy( new_bits.ptr, dst_bits->ptr, size );
+         if (dst_bits->free) dst_bits->free( dst_bits );
+-        dst_bits->ptr = ptr;
+-        dst_bits->is_copy = TRUE;
+-        dst_bits->free = free_heap_bits;
++        *dst_bits = new_bits;
+     }
+     return blend_bitmapinfo( src_info, src_bits->ptr, src, dst_info, dst_bits->ptr, dst, blend );
+ }
+@@ -489,10 +483,8 @@ BOOL CDECL nulldrv_GradientFill( PHYSDEV dev, TRIVERTEX *vert_array, ULONG nvert
+     if (err && err != ERROR_BAD_FORMAT) goto done;
+ 
+     info->bmiHeader.biSizeImage = get_dib_image_size( info );
+-    if (!(bits.ptr = calloc( 1, info->bmiHeader.biSizeImage )))
++    if (!alloc_gdi_cache_bits( &bits, info->bmiHeader.biSizeImage, ALLOC_ZERO_MEMORY | ALLOC_IS_COPY ))
+         goto done;
+-    bits.is_copy = TRUE;
+-    bits.free = free_heap_bits;
+ 
+     /* make src and points relative to the bitmap */
+     src = dst;
+diff --git a/dlls/win32u/bitmap.c b/dlls/win32u/bitmap.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/bitmap.c
++++ b/dlls/win32u/bitmap.c
+@@ -322,13 +322,11 @@ LONG WINAPI NtGdiSetBitmapBits(
+     }
+     else
+     {
+-        if (!(src_bits.ptr = malloc( dst.height * dst_stride )))
++        if (!alloc_gdi_cache_bits( &src_bits, dst.height * dst_stride, ALLOC_IS_COPY ))
+         {
+             GDI_ReleaseObj( hbitmap );
+             return 0;
+         }
+-        src_bits.is_copy = TRUE;
+-        src_bits.free = free_heap_bits;
+         for (i = 0; i < count / src_stride; i++)
+             memcpy( (char *)src_bits.ptr + i * dst_stride, (char *)bits + i * src_stride, src_stride );
+         if (count % src_stride)
+diff --git a/dlls/win32u/brush.c b/dlls/win32u/brush.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/brush.c
++++ b/dlls/win32u/brush.c
+@@ -73,9 +73,8 @@ static BOOL copy_bitmap( struct brush_pattern *brush, HBITMAP bitmap )
+     brush->bits = bits;
+     if (!bits.free)
+     {
+-        if (!(brush->bits.ptr = malloc( info->bmiHeader.biSizeImage ))) goto done;
++        if (!alloc_gdi_cache_bits( &brush->bits, info->bmiHeader.biSizeImage, 0 )) goto done;
+         memcpy( brush->bits.ptr, bits.ptr, info->bmiHeader.biSizeImage );
+-        brush->bits.free = free_heap_bits;
+     }
+ 
+     if (!(brush->info = malloc( get_dib_info_size( info, DIB_RGB_COLORS ))))
+diff --git a/dlls/win32u/dib.c b/dlls/win32u/dib.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/dib.c
++++ b/dlls/win32u/dib.c
+@@ -67,6 +67,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <assert.h>
++#include <sys/mman.h>
+ 
+ #include "ntstatus.h"
+ #define WIN32_NO_STATUS
+@@ -323,14 +324,15 @@ static BOOL build_rle_bitmap( BITMAPINFO *info, struct gdi_image_bits *bits, HRG
+     int x, y, width = info->bmiHeader.biWidth, height = info->bmiHeader.biHeight;
+     HRGN run = NULL;
+     BYTE skip, num, data;
+-    BYTE *out_bits, *in_bits = bits->ptr;
++    BYTE *out_bits = NULL, *in_bits = bits->ptr;
++    struct gdi_image_bits new_bits;
+ 
+     if (clip) *clip = NULL;
+ 
+     assert( info->bmiHeader.biBitCount == 4 || info->bmiHeader.biBitCount == 8 );
+ 
+-    out_bits = calloc( 1, get_dib_image_size( info ) );
+-    if (!out_bits) goto fail;
++    if (!alloc_gdi_cache_bits( &new_bits, get_dib_image_size( info ), ALLOC_ZERO_MEMORY | ALLOC_IS_COPY)) goto fail;
++    out_bits = new_bits.ptr;
+ 
+     if (clip)
+     {
+@@ -446,9 +448,7 @@ done:
+     if (run) NtGdiDeleteObjectApp( run );
+     if (bits->free) bits->free( bits );
+ 
+-    bits->ptr     = out_bits;
+-    bits->is_copy = TRUE;
+-    bits->free    = free_heap_bits;
++    *bits = new_bits;
+     info->bmiHeader.biSizeImage = get_dib_image_size( info );
+ 
+     return TRUE;
+diff --git a/dlls/win32u/dibdrv/bitblt.c b/dlls/win32u/dibdrv/bitblt.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/dibdrv/bitblt.c
++++ b/dlls/win32u/dibdrv/bitblt.c
+@@ -699,22 +699,19 @@ static DWORD copy_src_bits( dib_info *src, RECT *src_rect )
+ {
+     int y, stride = get_dib_stride( src->width, src->bit_count );
+     int height = src_rect->bottom - src_rect->top;
+-    void *ptr = malloc( stride * height );
++    struct gdi_image_bits new_bits;
+ 
+-    if (!ptr) return ERROR_OUTOFMEMORY;
++    if (!alloc_gdi_cache_bits( &new_bits, stride * height, ALLOC_IS_COPY )) return ERROR_OUTOFMEMORY;
+ 
+     for (y = 0; y < height; y++)
+-        memcpy( (char *)ptr + y * stride,
++        memcpy( (char *)new_bits.ptr + y * stride,
+                 (char *)src->bits.ptr + (src->rect.top + src_rect->top + y) * src->stride, stride );
+     src->stride = stride;
+     src->height = height;
+     src->rect.top = 0;
+     src->rect.bottom = height;
+     if (src->bits.free) src->bits.free( &src->bits );
+-    src->bits.is_copy = TRUE;
+-    src->bits.ptr = ptr;
+-    src->bits.free = free_heap_bits;
+-    src->bits.param = NULL;
++    src->bits = new_bits;
+ 
+     offset_rect( src_rect, 0, -src_rect->top );
+     return ERROR_SUCCESS;
+@@ -730,12 +727,7 @@ static DWORD create_tmp_dib( const dib_info *copy, int width, int height, dib_in
+     ret->rect.top    = 0;
+     ret->rect.right  = width;
+     ret->rect.bottom = height;
+-    ret->bits.ptr = malloc( ret->height * ret->stride );
+-    ret->bits.is_copy = TRUE;
+-    ret->bits.free = free_heap_bits;
+-    ret->bits.param = NULL;
+-
+-    return ret->bits.ptr ? ERROR_SUCCESS : ERROR_OUTOFMEMORY;
++    return alloc_gdi_cache_bits( &ret->bits, ret->height * ret->stride, ALLOC_IS_COPY ) ? ERROR_SUCCESS : ERROR_OUTOFMEMORY;
+ }
+ 
+ static DWORD execute_rop( dibdrv_physdev *pdev, const RECT *dst_rect, dib_info *src,
+diff --git a/dlls/win32u/dibdrv/objects.c b/dlls/win32u/dibdrv/objects.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/dibdrv/objects.c
++++ b/dlls/win32u/dibdrv/objects.c
+@@ -2022,9 +2022,8 @@ static BOOL select_pattern_brush( dibdrv_physdev *pdev, dib_brush *brush, BOOL *
+     }
+     else
+     {
+-        brush->dib.bits.ptr     = malloc( brush->dib.height * brush->dib.stride );
+-        brush->dib.bits.is_copy = TRUE;
+-        brush->dib.bits.free    = free_heap_bits;
++        memset( &brush->dib.bits, 0, sizeof(brush->dib.bits) );
++        alloc_gdi_cache_bits( &brush->dib.bits, brush->dib.height * brush->dib.stride, ALLOC_IS_COPY );
+         brush->dib.funcs->convert_to(&brush->dib, &pattern, &pattern.rect, dither);
+     }
+     return TRUE;
+diff --git a/dlls/win32u/font.c b/dlls/win32u/font.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -5178,15 +5178,13 @@ static DWORD get_glyph_bitmap( HDC hdc, UINT index, UINT flags, UINT aa_flags,
+     stride = get_dib_stride( metrics->gmBlackBoxX, 1 );
+     size = metrics->gmBlackBoxY * stride;
+ 
+-    if (!(image->ptr = malloc( size ))) return ERROR_OUTOFMEMORY;
+-    image->is_copy = TRUE;
+-    image->free = free_heap_bits;
++    if (!alloc_gdi_cache_bits( image, size, ALLOC_IS_COPY )) return ERROR_OUTOFMEMORY;
+ 
+     ret = NtGdiGetGlyphOutline( hdc, index, aa_flags, metrics, size, image->ptr,
+                                 &identity, FALSE );
+     if (ret == GDI_ERROR)
+     {
+-        free( image->ptr );
++        if (image->free) image->free( image );
+         return ERROR_NOT_FOUND;
+     }
+     return ERROR_SUCCESS;
+@@ -5349,10 +5347,7 @@ BOOL CDECL nulldrv_ExtTextOut( PHYSDEV dev, INT x, INT y, UINT flags, const RECT
+                 src.visrect.right = src.width;
+                 src.visrect.bottom = src.height;
+ 
+-                bits.ptr = malloc( info->bmiHeader.biSizeImage );
+-                if (!bits.ptr) return ERROR_OUTOFMEMORY;
+-                bits.is_copy = TRUE;
+-                bits.free = free_heap_bits;
++                if (!alloc_gdi_cache_bits( &bits, info->bmiHeader.biSizeImage, ALLOC_IS_COPY )) return ERROR_OUTOFMEMORY;
+                 err = ERROR_SUCCESS;
+             }
+         }
+@@ -5362,17 +5357,11 @@ BOOL CDECL nulldrv_ExtTextOut( PHYSDEV dev, INT x, INT y, UINT flags, const RECT
+             err = src_dev->funcs->pGetImage( src_dev, info, &bits, &src );
+             if (!err && !bits.is_copy)
+             {
+-                void *ptr = malloc( info->bmiHeader.biSizeImage );
+-                if (!ptr)
+-                {
+-                    if (bits.free) bits.free( &bits );
+-                    return ERROR_OUTOFMEMORY;
+-                }
+-                memcpy( ptr, bits.ptr, info->bmiHeader.biSizeImage );
++                struct gdi_image_bits new_bits;
++                if (!alloc_gdi_cache_bits( &new_bits, info->bmiHeader.biSizeImage, ALLOC_IS_COPY )) return ERROR_OUTOFMEMORY;
++                memcpy( new_bits.ptr, bits.ptr, info->bmiHeader.biSizeImage );
+                 if (bits.free) bits.free( &bits );
+-                bits.ptr = ptr;
+-                bits.is_copy = TRUE;
+-                bits.free = free_heap_bits;
++                bits = new_bits;
+             }
+         }
+         if (!err)
+
+-- 
+2.35.1
+

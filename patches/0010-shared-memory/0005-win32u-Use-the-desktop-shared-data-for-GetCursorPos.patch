@@ -4,18 +4,18 @@ Date: Tue, 30 Jun 2020 11:24:53 +0100
 Subject: [PATCH 05/44] win32u: Use the desktop shared data for GetCursorPos().
 
 ---
- dlls/win32u/input.c          | 20 +++++------
- dlls/win32u/ntuser_private.h |  2 ++
+ dlls/win32u/input.c          | 20 +++++-----
+ dlls/win32u/ntuser_private.h |  2 +
  dlls/win32u/sysparams.c      |  7 ++++
  dlls/win32u/win32u_private.h | 23 ++++++++++++
- dlls/win32u/winstation.c     | 68 ++++++++++++++++++++++++++++++++++++
- 5 files changed, 109 insertions(+), 11 deletions(-)
+ dlls/win32u/winstation.c     | 72 ++++++++++++++++++++++++++++++++++++
+ 5 files changed, 113 insertions(+), 11 deletions(-)
 
 diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/input.c
 +++ b/dlls/win32u/input.c
-@@ -104,25 +104,23 @@ BOOL WINAPI NtUserSetCursorPos( INT x, INT y )
+@@ -113,25 +113,23 @@ BOOL WINAPI NtUserSetCursorPos( INT x, INT y )
   */
  BOOL get_cursor_pos( POINT *pt )
  {
@@ -54,10 +54,10 @@ diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/ntuser_private.h
 +++ b/dlls/win32u/ntuser_private.h
-@@ -118,6 +118,8 @@ struct user_thread_info
-     HWND                          top_window;             /* Desktop window */
+@@ -161,6 +161,8 @@ struct user_thread_info
      HWND                          msg_window;             /* HWND_MESSAGE parent window */
      struct rawinput_thread_data  *rawinput;               /* RawInput thread local data / buffer */
+     UINT                          spy_indent;             /* Current spy indent */
 +    HANDLE                        desktop_shared_map;     /* HANDLE to server's desktop shared memory */
 +    struct desktop_shared_memory *desktop_shared_memory;  /* Ptr to server's desktop shared memory */
  };
@@ -67,25 +67,25 @@ diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/sysparams.c
 +++ b/dlls/win32u/sysparams.c
-@@ -4528,6 +4528,13 @@ static void thread_detach(void)
+@@ -4613,6 +4613,13 @@ static void thread_detach(void)
+     destroy_thread_windows();
+     NtClose( thread_info->server_queue );
  
-     free( thread_info->key_state );
-     thread_info->key_state = 0;
-+
 +    if (thread_info->desktop_shared_map)
 +    {
 +        NtClose( thread_info->desktop_shared_map );
 +        thread_info->desktop_shared_map = NULL;
 +        thread_info->desktop_shared_memory = NULL;
 +    }
++
+     exiting_thread_id = 0;
  }
  
- /***********************************************************************
 diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/win32u_private.h
 +++ b/dlls/win32u/win32u_private.h
-@@ -294,6 +294,9 @@ static inline void release_win_ptr( struct tagWND *ptr )
+@@ -408,6 +408,9 @@ static inline void release_win_ptr( struct tagWND *ptr )
      user_unlock();
  }
  
@@ -95,7 +95,7 @@ index 11111111111..11111111111 100644
  extern void wrappers_init( unixlib_handle_t handle ) DECLSPEC_HIDDEN;
  extern NTSTATUS gdi_init(void) DECLSPEC_HIDDEN;
  extern NTSTATUS callbacks_init( void *args ) DECLSPEC_HIDDEN;
-@@ -473,4 +476,24 @@ static inline const char *debugstr_us( const UNICODE_STRING *us )
+@@ -587,4 +590,24 @@ static inline const char *debugstr_us( const UNICODE_STRING *us )
      return debugstr_wn( us->Buffer, us->Length / sizeof(WCHAR) );
  }
  
@@ -124,7 +124,7 @@ diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/winstation.c
 +++ b/dlls/win32u/winstation.c
-@@ -241,6 +241,12 @@ BOOL WINAPI NtUserSetThreadDesktop( HDESK handle )
+@@ -242,6 +242,12 @@ BOOL WINAPI NtUserSetThreadDesktop( HDESK handle )
          thread_info->top_window = 0;
          thread_info->msg_window = 0;
          if (key_state_info) key_state_info->time = 0;
@@ -137,7 +137,7 @@ index 11111111111..11111111111 100644
      }
      return ret;
  }
-@@ -451,6 +457,68 @@ static const WCHAR *get_default_desktop( void *buf, size_t buf_size )
+@@ -566,6 +572,72 @@ static const WCHAR *get_default_desktop( void *buf, size_t buf_size )
      return defaultW;
  }
  
@@ -178,11 +178,13 @@ index 11111111111..11111111111 100644
 +{
 +    static const WCHAR dir_desktop_mapsW[] = {'_','_','w','i','n','e','_','d','e','s','k','t','o','p','_','m','a','p','p','i','n','g','s','\\',0};
 +    struct user_thread_info *thread_info = get_user_thread_info();
-+    HANDLE root = get_winstations_dir_handle(), handles[2];
++    HANDLE root, handles[2];
 +    WCHAR buf[MAX_PATH], *ptr;
 +    DWORD i, needed;
 +
 +    if (thread_info->desktop_shared_memory) return thread_info->desktop_shared_memory;
++
++    root = get_winstations_dir_handle();
 +
 +    handles[0] = NtUserGetProcessWindowStation();
 +    handles[1] = NtUserGetThreadDesktop( GetCurrentThreadId() );
@@ -199,6 +201,8 @@ index 11111111111..11111111111 100644
 +
 +    map_shared_memory_section( buf, sizeof(struct desktop_shared_memory), root,
 +                               &thread_info->desktop_shared_map, (void **)&thread_info->desktop_shared_memory );
++
++    NtClose( root );
 +    return thread_info->desktop_shared_memory;
 +}
 +

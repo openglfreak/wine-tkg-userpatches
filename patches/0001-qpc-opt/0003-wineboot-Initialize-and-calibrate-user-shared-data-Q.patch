@@ -1,0 +1,57 @@
+From 285439de54ff8dbe078aaf06527aa19828bc5a01 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 22 Mar 2021 10:16:43 +0100
+Subject: [PATCH 3/9] wineboot: Initialize and calibrate user shared data Qpc
+ frequency.
+
+---
+ programs/wineboot/wineboot.c | 18 ++++++++++++++----
+ 1 file changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
+index 11111111111..11111111111 100644
+--- a/programs/wineboot/wineboot.c
++++ b/programs/wineboot/wineboot.c
+@@ -246,7 +246,7 @@ static void initialize_xstate_features(struct _KUSER_SHARED_DATA *data)
+ 
+ static UINT64 read_tsc_frequency( BOOL has_rdtscp )
+ {
+-    UINT64 freq = 0;
++    static UINT64 freq = 0;
+ 
+ /* FIXME: Intel provides TSC freq in some CPUID but it's been slightly broken,
+    fix it properly and test it on real Intel hardware */
+@@ -350,7 +350,6 @@ static BOOL is_tsc_trusted_by_the_kernel(void)
+ 
+ static void initialize_qpc_features( struct _KUSER_SHARED_DATA *data, UINT64 *tsc_frequency )
+ {
+-    BOOL has_rdtscp = FALSE;
+     int regs[4];
+ 
+     data->QpcBypassEnabled = 0;
+@@ -385,12 +384,23 @@ static void initialize_qpc_features( struct _KUSER_SHARED_DATA *data, UINT64 *ts
+         WARN( "Failed to compute TSC frequency, no invariant TSC.\n" );
+         return;
+     }
++    data->QpcBypassEnabled |= SHARED_GLOBAL_FLAGS_QPC_BYPASS_ENABLED;
+ 
+     /* check for rdtscp support bit */
+     __cpuid( regs, 0x80000001 );
+-    if ((regs[3] & (1 << 27))) has_rdtscp = TRUE;
++    if ((regs[3] & (1 << 27)))
++        data->QpcBypassEnabled |= SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_RDTSCP;
++    else if (data->ProcessorFeatures[PF_XMMI64_INSTRUCTIONS_AVAILABLE])
++        data->QpcBypassEnabled |= SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_LFENCE;
++    else
++        data->QpcBypassEnabled |= SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_MFENCE;
+ 
+-    *tsc_frequency = read_tsc_frequency( has_rdtscp );
++    *tsc_frequency = read_tsc_frequency( data->QpcBypassEnabled & SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_RDTSCP );
++    if ((data->QpcFrequency = (*tsc_frequency >> 10)))
++    {
++        data->QpcShift = 10;
++        data->QpcBias = 0;
++    }
+ }
+ 
+ #else

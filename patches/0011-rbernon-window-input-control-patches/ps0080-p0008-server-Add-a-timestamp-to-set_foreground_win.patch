@@ -8,18 +8,20 @@ We call SetForegroundWindow in event handlers and sometimes overwrite
 the foreground window with an older event. Having a timestamp will help
 discarding old events.
 ---
- dlls/win32u/input.c |  7 ++++---
- server/protocol.def |  1 +
- server/queue.c      | 10 ++++++++--
- server/user.h       |  1 +
- server/winstation.c |  1 +
- 5 files changed, 15 insertions(+), 5 deletions(-)
+ dlls/win32u/input.c          |  3 ++-
+ dlls/win32u/win32u_private.h |  2 +-
+ dlls/win32u/window.c         |  6 +++---
+ server/protocol.def          |  1 +
+ server/queue.c               | 10 ++++++++--
+ server/user.h                |  1 +
+ server/winstation.c          |  1 +
+ 7 files changed, 17 insertions(+), 7 deletions(-)
 
 diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/input.c
 +++ b/dlls/win32u/input.c
-@@ -209,7 +209,7 @@ clear_flags:
+@@ -1356,7 +1356,7 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
  /*******************************************************************
   *		set_foreground_window
   */
@@ -28,7 +30,7 @@ index 11111111111..11111111111 100644
  {
      BOOL ret, send_msg_old = FALSE, send_msg_new = FALSE;
      HWND previous = 0;
-@@ -217,6 +217,7 @@ static BOOL set_foreground_window( HWND hwnd, BOOL mouse )
+@@ -1366,6 +1366,7 @@ BOOL set_foreground_window( HWND hwnd, BOOL mouse )
      SERVER_START_REQ( set_foreground_window )
      {
          req->handle = wine_server_user_handle( hwnd );
@@ -37,36 +39,54 @@ index 11111111111..11111111111 100644
          {
              previous = wine_server_ptr_handle( reply->previous );
 diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
-index 412c354400d..8b896d62fa1 100644
+index 11111111111..11111111111 100644
 --- a/dlls/win32u/win32u_private.h
 +++ b/dlls/win32u/win32u_private.h
-@@ -291,7 +291,7 @@ extern BOOL get_cursor_pos( POINT *pt ) DECLSPEC_HIDDEN;
+@@ -333,7 +333,7 @@ extern HWND get_focus(void) DECLSPEC_HIDDEN;
  extern DWORD get_input_state(void) DECLSPEC_HIDDEN;
  extern BOOL WINAPI release_capture(void) DECLSPEC_HIDDEN;
  extern BOOL set_capture_window( HWND hwnd, UINT gui_flags, HWND *prev_ret ) DECLSPEC_HIDDEN;
 -extern BOOL set_foreground_window( HWND hwnd, BOOL mouse ) DECLSPEC_HIDDEN;
 +extern BOOL set_foreground_window( HWND hwnd, BOOL mouse, DWORD time ) DECLSPEC_HIDDEN;
  
- /* message.c */
- extern LRESULT post_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam ) DECLSPEC_HIDDEN;
+ /* menu.c */
+ extern HMENU create_menu(void) DECLSPEC_HIDDEN;
 diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
-index 3fe0b21e1a7..cda8a91df96 100644
+index 11111111111..11111111111 100644
 --- a/dlls/win32u/window.c
 +++ b/dlls/win32u/window.c
-@@ -1947,7 +1947,7 @@ ULONG_PTR WINAPI NtUserCallHwndParam( HWND hwnd, DWORD_PTR param, DWORD code )
+@@ -3174,7 +3174,7 @@ BOOL set_window_pos( WINDOWPOS *winpos, int parent_x, int parent_y )
+         if ((get_window_long( winpos->hwnd, GWL_STYLE ) & (WS_CHILD | WS_POPUP)) == WS_CHILD)
+             send_message( winpos->hwnd, WM_CHILDACTIVATE, 0, 0 );
+         else if (user_callbacks)
+-            set_foreground_window( winpos->hwnd, FALSE );
++            set_foreground_window( winpos->hwnd, FALSE, NtGetTickCount() );
+     }
+ 
+     if(!(orig_flags & SWP_DEFERERASE))
+@@ -3488,7 +3488,7 @@ static void activate_other_window( HWND hwnd )
+     TRACE( "win = %p fg = %p\n", hwnd_to, fg );
+     if (!fg || hwnd == fg)
+     {
+-        if (set_foreground_window( hwnd_to, FALSE )) return;
++        if (set_foreground_window( hwnd_to, FALSE, NtGetTickCount() )) return;
+     }
+     if (NtUserSetActiveWindow( hwnd_to )) NtUserSetActiveWindow( 0 );
+ }
+@@ -5044,7 +5044,7 @@ ULONG_PTR WINAPI NtUserCallHwndParam( HWND hwnd, DWORD_PTR param, DWORD code )
      case NtUserSetCaptureWindow:
          return set_capture_window( hwnd, param, NULL );
      case NtUserSetForegroundWindow:
 -        return set_foreground_window( hwnd, param );
 +        return set_foreground_window( hwnd, param, NtGetTickCount() );
+     case NtUserSetWindowPixelFormat:
+         return set_window_pixel_format( hwnd, param );
      /* temporary exports */
-     case NtUserIsWindowDrawable:
-         return is_window_drawable( hwnd, param );
 diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -2837,6 +2837,7 @@ enum coords_relative
+@@ -2838,6 +2838,7 @@ enum coords_relative
  /* Set the system foreground window */
  @REQ(set_foreground_window)
      user_handle_t  handle;        /* handle to the foreground window */

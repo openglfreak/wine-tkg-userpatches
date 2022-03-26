@@ -25,22 +25,69 @@ It uses the undocumented user32 API SetWindowCompositionAttribute to do
 so. Of course, the documented DwmSetWindowAttribute will just be a wrapper
 around this one.
 
- dlls/user32/driver.c       |   6 ++
- dlls/user32/message.c      |   2 +
- dlls/win32u/ntuser_private.h |  39 ++++++++++++
- dlls/user32/win.c          | 121 ++++++++++++++++++++++++++++++++++---
- dlls/win32u/driver.c       |   7 +++
- include/ntuser.h           |   1 +
- include/wine/gdi_driver.h  |   1 +
- server/protocol.def        |  13 ++++
- server/window.c            |  80 +++++++++++++++++++++---
- 9 files changed, 254 insertions(+), 16 deletions(-)
+ dlls/user32/user_private.h   |   1 +
+ dlls/user32/win.c            |   7 +--
+ dlls/win32u/driver.c         |  12 ++++
+ dlls/win32u/gdiobj.c         |   1 +
+ dlls/win32u/message.c        |   2 +
+ dlls/win32u/ntuser_private.h |   2 +
+ dlls/win32u/win32u.spec      |   2 +-
+ dlls/win32u/win32u_private.h |   1 +
+ dlls/win32u/window.c         | 109 ++++++++++++++++++++++++++++++++++-
+ dlls/win32u/wrappers.c       |   6 ++
+ include/ntuser.h             |  42 ++++++++++++++
+ include/wine/gdi_driver.h    |   1 +
+ server/protocol.def          |  13 +++++
+ server/window.c              |  83 +++++++++++++++++++++++---
+ 14 files changed, 266 insertions(+), 16 deletions(-)
 
+diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/user32/user_private.h
++++ b/dlls/user32/user_private.h
+@@ -203,5 +203,6 @@ void WINAPI USER_ScrollBarDraw(HWND, HDC, INT, enum SCROLL_HITTEST,
+                                const struct SCROLL_TRACKING_INFO *, BOOL, BOOL, RECT *, INT, INT,
+                                INT, BOOL) DECLSPEC_HIDDEN;
+ void WINAPI SCROLL_SetStandardScrollPainted(HWND hwnd, INT bar, BOOL visible);
++BOOL WINAPI SetWindowCompositionAttribute(HWND hwnd, const struct WINCOMPATTRDATA* data);
+ 
+ #endif /* __WINE_USER_PRIVATE_H */
+diff --git a/dlls/user32/win.c b/dlls/user32/win.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/win.c
++++ b/dlls/user32/win.c
+@@ -1966,11 +1966,10 @@ BOOL WINAPI SetWindowDisplayAffinity(HWND hwnd, DWORD affinity)
+ /**********************************************************************
+  *              SetWindowCompositionAttribute (USER32.@)
+  */
+-BOOL WINAPI SetWindowCompositionAttribute(HWND hwnd, void *data)
++BOOL WINAPI SetWindowCompositionAttribute(HWND hwnd, const struct WINCOMPATTRDATA *data)
+ {
+-    FIXME("(%p, %p): stub\n", hwnd, data);
+-    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+-    return FALSE;
++    TRACE("(%p, %p)\n", hwnd, data);
++    return NtUserSetWindowCompositionAttribute(hwnd, data);
+ }
+ 
+ /***********************************************************************
 diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
-index 04d5d71c6c2..d61125eab2f 100644
+index 11111111111..11111111111 100644
 --- a/dlls/win32u/driver.c
 +++ b/dlls/win32u/driver.c
-@@ -1158,6 +1158,11 @@ static void CDECL loaderdrv_SetLayeredWindowAttributes( HWND hwnd, COLORREF key,
+@@ -862,6 +862,11 @@ static void CDECL nulldrv_SetParent( HWND hwnd, HWND parent, HWND old_parent )
+ {
+ }
+ 
++static DWORD CDECL nulldrv_SetWindowCompositionAttribute( HWND hwnd, DWORD attribute, void *data )
++{
++    return STATUS_NOT_IMPLEMENTED;
++}
++
+ static void CDECL nulldrv_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
+ {
+ }
+@@ -1163,6 +1168,11 @@ static void CDECL loaderdrv_SetLayeredWindowAttributes( HWND hwnd, COLORREF key,
      load_driver()->pSetLayeredWindowAttributes( hwnd, key, alpha, flags );
  }
  
@@ -52,34 +99,285 @@ index 04d5d71c6c2..d61125eab2f 100644
  static void CDECL loaderdrv_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
  {
      load_driver()->pSetWindowRgn( hwnd, hrgn, redraw );
-@@ -1203,6 +1208,7 @@ static const struct user_driver_funcs lazy_load_driver =
-     .pFlashWindowEx = loaderdrv_FlashWindowEx,
-     .pSetCapture = nulldrv_SetCapture,
-     .pSetLayeredWindowAttributes = loaderdrv_SetLayeredWindowAttributes,
-+    .pSetWindowCompositionAttribute = loaderdrv_SetWindowCompositionAttribute,
-     .pSetWindowRgn = loaderdrv_SetWindowRgn,
-     .pMsgWaitForMultipleObjectsEx = nulldrv_MsgWaitForMultipleObjectsEx,
-     .pScrollDC = nulldrv_ScrollDC,
+@@ -1218,6 +1228,7 @@ static const struct user_driver_funcs lazy_load_driver =
+     nulldrv_SetFocus,
+     loaderdrv_SetLayeredWindowAttributes,
+     nulldrv_SetParent,
++    loaderdrv_SetWindowCompositionAttribute,
+     loaderdrv_SetWindowRgn,
+     nulldrv_SetWindowIcon,
+     nulldrv_SetWindowStyle,
+@@ -1287,6 +1298,7 @@ void CDECL __wine_set_display_driver( struct user_driver_funcs *driver, UINT ver
+     SET_USER_FUNC(SetFocus);
+     SET_USER_FUNC(SetLayeredWindowAttributes);
+     SET_USER_FUNC(SetParent);
++    SET_USER_FUNC(SetWindowCompositionAttribute);
+     SET_USER_FUNC(SetWindowRgn);
+     SET_USER_FUNC(SetWindowIcon);
+     SET_USER_FUNC(SetWindowStyle);
+diff --git a/dlls/win32u/gdiobj.c b/dlls/win32u/gdiobj.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/gdiobj.c
++++ b/dlls/win32u/gdiobj.c
+@@ -1208,6 +1208,7 @@ static struct unix_funcs unix_funcs =
+     NtUserSetLayeredWindowAttributes,
+     NtUserSetParent,
+     NtUserSetSysColors,
++    NtUserSetWindowCompositionAttribute,
+     NtUserSetWindowLong,
+     NtUserSetWindowLongPtr,
+     NtUserSetWindowPos,
 diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/message.c
 +++ b/dlls/win32u/message.c
-@@ -1882,6 +1882,8 @@ LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
+@@ -146,6 +146,8 @@ LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
      case WM_WINE_UPDATEWINDOWSTATE:
          update_window_state( hwnd );
          return 0;
 +    case WM_WINE_SETWINDOWCLOAKED:
 +        return user_driver->pSetWindowCompositionAttribute( hwnd, WCA_CLOAK, &wparam );
      default:
-         {
          if (msg >= WM_WINE_FIRST_DRIVER_MSG && msg <= WM_WINE_LAST_DRIVER_MSG)
+             return user_driver->pWindowMessage( hwnd, msg, wparam, lparam );
+diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/ntuser_private.h
++++ b/dlls/win32u/ntuser_private.h
+@@ -312,6 +312,8 @@ WND *get_win_ptr( HWND hwnd ) DECLSPEC_HIDDEN;
+ BOOL is_child( HWND parent, HWND child );
+ BOOL is_window( HWND hwnd ) DECLSPEC_HIDDEN;
+ 
++NTSTATUS WINAPI NtUserSetWindowCompositionAttribute( HWND hwnd, const struct WINCOMPATTRDATA *data );
++
+ #if defined(__i386__) || defined(__x86_64__)
+ #define __SHARED_READ_SEQ( x ) (*(x))
+ #define __SHARED_READ_FENCE do {} while(0)
+diff --git a/dlls/win32u/win32u.spec b/dlls/win32u/win32u.spec
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/win32u.spec
++++ b/dlls/win32u/win32u.spec
+@@ -1240,7 +1240,7 @@
+ @ stdcall -syscall NtUserSetWinEventHook(long long long ptr ptr long long long)
+ @ stub NtUserSetWindowArrangement
+ @ stub NtUserSetWindowBand
+-@ stub NtUserSetWindowCompositionAttribute
++@ stdcall NtUserSetWindowCompositionAttribute(long ptr)
+ @ stub NtUserSetWindowCompositionTransition
+ @ stub NtUserSetWindowDisplayAffinity
+ @ stub NtUserSetWindowFNID
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -261,6 +261,7 @@ struct unix_funcs
+     BOOL     (WINAPI *pNtUserSetLayeredWindowAttributes)( HWND hwnd, COLORREF key, BYTE alpha, DWORD flags );
+     HWND     (WINAPI *pNtUserSetParent)( HWND hwnd, HWND parent );
+     BOOL     (WINAPI *pNtUserSetSysColors)( INT count, const INT *colors, const COLORREF *values );
++    NTSTATUS (WINAPI *pNtUserSetWindowCompositionAttribute)( HWND hwnd, const struct WINCOMPATTRDATA *data );
+     LONG     (WINAPI *pNtUserSetWindowLong)( HWND hwnd, INT offset, LONG newval, BOOL ansi );
+     LONG_PTR (WINAPI *pNtUserSetWindowLongPtr)( HWND hwnd, INT offset, LONG_PTR newval, BOOL ansi );
+     BOOL     (WINAPI *pNtUserSetWindowPos)( HWND hwnd, HWND after, INT x, INT y, INT cx, INT cy, UINT flags );
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -1138,10 +1138,102 @@ static DWORD fix_exstyle( DWORD style, DWORD exstyle )
+     return exstyle;
+ }
+ 
++BOOL WINAPI NtUserSetWindowCompositionAttribute( HWND hwnd, const struct WINCOMPATTRDATA *data )
++{
++    user_handle_t *list;
++    NTSTATUS status;
++    HWND parent;
++    DWORD ret;
++    WND *win;
++
++    TRACE( "(%p, %p)\n", hwnd, data );
++
++    if (!data || !data->pData)
++    {
++        SetLastError( ERROR_NOACCESS );
++        return FALSE;
++    }
++    if (!hwnd || is_broadcast(hwnd) || !(win = get_win_ptr( hwnd )))
++    {
++        SetLastError( ERROR_INVALID_HANDLE );
++        return FALSE;
++    }
++    if (win == WND_DESKTOP || win == WND_OTHER_PROCESS)
++    {
++        SetLastError( ERROR_ACCESS_DENIED );
++        return FALSE;
++    }
++    parent = win->parent;
++    release_win_ptr( win );
++    if (parent && parent != get_desktop_window())
++    {
++        SetLastError( ERROR_INVALID_HANDLE );
++        return FALSE;
++    }
++
++    switch (data->attribute)
++    {
++    case WCA_CLOAK:
++    {
++        unsigned size, count = 0, i;
++
++        if (data->dataSize < sizeof(BOOL))
++        {
++            SetLastError( ERROR_INSUFFICIENT_BUFFER );
++            return FALSE;
++        }
++
++        ret = user_driver->pSetWindowCompositionAttribute( hwnd, WCA_CLOAK, data->pData );
++        if (ret == ~0) return FALSE;
++
++        size = 128;
++        for (;;)
++        {
++            if (!(list = malloc( size * sizeof(user_handle_t) )))
++            {
++                SetLastError( ERROR_OUTOFMEMORY );
++                return FALSE;
++            }
++            SERVER_START_REQ( set_window_cloaked )
++            {
++                req->handle  = wine_server_user_handle( hwnd );
++                req->cloaked = ret;
++                wine_server_set_reply( req, list, size * sizeof(user_handle_t) );
++                status = wine_server_call( req );
++                count = reply->count;
++            }
++            SERVER_END_REQ;
++            if (status && status != STATUS_BUFFER_TOO_SMALL || count <= size)
++                break;
++            free( list );
++            size = count;  /* restart with a large enough buffer */
++        }
++        /* Go through the list to cloak the windows that inherit it */
++        for (i = 0; i < count; i++)
++        {
++            HWND full_handle, handle = wine_server_ptr_handle( list[i] );
++
++            if ((full_handle = is_current_process_window( handle )))
++                user_driver->pSetWindowCompositionAttribute( full_handle, WCA_CLOAK, data->pData );
++            else
++                send_message( handle, WM_WINE_SETWINDOWCLOAKED, *(BOOL*)(data->pData), 0 );
++        }
++        free( list );
++        if (status) SetLastError( RtlNtStatusToDosError( status ) );
++        return !status;
++    }
++    default:
++        FIXME( "unimplemented attribute %ld, size %lu, for hwnd %p.\n", data->attribute, data->dataSize, hwnd );
++        return ERROR_CALL_NOT_IMPLEMENTED;
++    }
++    return TRUE;
++}
++
+ /* Change the owner of a window. */
+ static HWND set_window_owner( HWND hwnd, HWND owner )
+ {
+     WND *win = get_win_ptr( hwnd );
++    BOOL needs_cloak = FALSE;
+     HWND ret = 0;
+ 
+     if (!win || win == WND_DESKTOP) return 0;
+@@ -1158,10 +1250,19 @@ static HWND set_window_owner( HWND hwnd, HWND owner )
+         {
+             win->owner = wine_server_ptr_handle( reply->full_owner );
+             ret = wine_server_ptr_handle( reply->prev_owner );
++            needs_cloak = reply->needs_cloak;
+         }
+     }
+     SERVER_END_REQ;
+     release_win_ptr( win );
++    if (needs_cloak)
++    {
++        struct WINCOMPATTRDATA data;
++        data.attribute = WCA_CLOAK;
++        data.pData = &needs_cloak;
++        data.dataSize = sizeof(needs_cloak);
++        NtUserSetWindowCompositionAttribute( hwnd, &data );
++    }
+     return ret;
+ }
+ 
+@@ -4535,7 +4636,7 @@ void destroy_thread_windows(void)
+  */
+ static WND *create_window_handle( HWND parent, HWND owner, UNICODE_STRING *name,
+                                   HINSTANCE instance, BOOL ansi,
+-                                  DWORD style, DWORD ex_style )
++                                  DWORD style, DWORD ex_style, BOOL *needs_cloak )
+ {
+     DPI_AWARENESS awareness = get_thread_dpi_awareness();
+     HWND handle = 0, full_parent = 0, full_owner = 0;
+@@ -4564,6 +4665,7 @@ static WND *create_window_handle( HWND parent, HWND owner, UNICODE_STRING *name,
+             dpi         = reply->dpi;
+             awareness   = reply->awareness;
+             class       = wine_server_get_ptr( reply->class_ptr );
++            *needs_cloak = reply->needs_cloak;
+         }
+     }
+     SERVER_END_REQ;
+@@ -4719,6 +4821,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
+     LRESULT result;
+     RECT rect;
+     WND *win;
++    BOOL needs_cloak;
+ 
+     static const WCHAR messageW[] = {'M','e','s','s','a','g','e'};
+ 
+@@ -4781,7 +4884,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
+ 
+     style = cs.style & ~WS_VISIBLE;
+     ex_style = cs.dwExStyle & ~WS_EX_LAYERED;
+-    if (!(win = create_window_handle( parent, owner, class_name, instance, ansi, style, ex_style )))
++    if (!(win = create_window_handle( parent, owner, class_name, instance, ansi, style, ex_style, &needs_cloak )))
+         return 0;
+     hwnd = win->obj.handle;
+ 
+@@ -4935,6 +5038,8 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
+     /* call the driver */
+ 
+     if (!user_driver->pCreateWindow( hwnd )) goto failed;
++    if (needs_cloak)
++        user_driver->pSetWindowCompositionAttribute( hwnd, WCA_CLOAK, &needs_cloak );
+ 
+     NtUserNotifyWinEvent( EVENT_OBJECT_CREATE, hwnd, OBJID_WINDOW, 0 );
+ 
+diff --git a/dlls/win32u/wrappers.c b/dlls/win32u/wrappers.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/wrappers.c
++++ b/dlls/win32u/wrappers.c
+@@ -1070,6 +1070,12 @@ BOOL WINAPI NtUserSetSysColors( INT count, const INT *colors, const COLORREF *va
+     return unix_funcs->pNtUserSetSysColors( count, colors, values );
+ }
+ 
++NTSTATUS WINAPI NtUserSetWindowCompositionAttribute( HWND hwnd, const struct WINCOMPATTRDATA *data )
++{
++    if (!unix_funcs) return 0;
++    return unix_funcs->pNtUserSetWindowCompositionAttribute( hwnd, data );
++}
++
+ LONG WINAPI NtUserSetWindowLong( HWND hwnd, INT offset, LONG newval, BOOL ansi )
+ {
+     if (!unix_funcs) return 0;
 diff --git a/include/ntuser.h b/include/ntuser.h
 index 11111111111..11111111111 100644
 --- a/include/ntuser.h
 +++ b/include/ntuser.h
-@@ -241,6 +241,46 @@ typedef struct
+@@ -308,11 +308,52 @@ enum wine_internal_message
+     WM_WINE_MOUSE_LL_HOOK,
+     WM_WINE_CLIPCURSOR,
+     WM_WINE_UPDATEWINDOWSTATE,
++    WM_WINE_SETWINDOWCLOAKED,
+     WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
      WM_WINE_LAST_DRIVER_MSG = 0x80001fff
  };
+ 
  
 +/* Undocumented structure for (Get|Set)WindowCompositionAttribute */
 +struct WINCOMPATTRDATA
@@ -124,246 +422,19 @@ index 11111111111..11111111111 100644
  HKL     WINAPI NtUserActivateKeyboardLayout( HKL layout, UINT flags );
  BOOL    WINAPI NtUserAddClipboardFormatListener( HWND hwnd );
  BOOL    WINAPI NtUserAttachThreadInput( DWORD from, DWORD to, BOOL attach );
-diff --git a/dlls/user32/win.c b/dlls/user32/win.c
-index 11111111111..11111111111 100644
---- a/dlls/user32/win.c
-+++ b/dlls/user32/win.c
-@@ -26,6 +26,7 @@
- #include "user_private.h"
- #include "winnls.h"
- #include "winver.h"
-+#include "dwmapi.h"
- #include "wine/server.h"
- #include "wine/asm.h"
- #include "win.h"
-@@ -39,6 +40,8 @@ WINE_DEFAULT_DEBUG_CHANNEL(win);
- static DWORD process_layout = ~0u;
- 
- 
-+BOOL WINAPI SetWindowCompositionAttribute(HWND, const struct WINCOMPATTRDATA*);
-+
- /**********************************************************************/
- 
- /* helper for Get/SetWindowLong */
-@@ -128,7 +131,7 @@ void *free_user_handle( HANDLE handle, unsigned int type )
-  */
- static WND *create_window_handle( HWND parent, HWND owner, LPCWSTR name,
-                                   HINSTANCE instance, BOOL unicode,
--                                  DWORD style, DWORD ex_style )
-+                                  DWORD style, DWORD ex_style, BOOL *needs_cloak )
- {
-     WND *win;
-     HWND handle = 0, full_parent = 0, full_owner = 0;
-@@ -157,6 +160,7 @@ static WND *create_window_handle( HWND parent, HWND owner, LPCWSTR name,
-             dpi         = reply->dpi;
-             awareness   = reply->awareness;
-             class       = wine_server_get_ptr( reply->class_ptr );
-+            *needs_cloak = reply->needs_cloak;
-         }
-     }
-     SERVER_END_REQ;
-@@ -800,6 +804,7 @@ HWND WIN_GetFullHandle( HWND hwnd )
- static HWND WIN_SetOwner( HWND hwnd, HWND owner )
- {
-     WND *win = WIN_GetPtr( hwnd );
-+    BOOL needs_cloak = FALSE;
-     HWND ret = 0;
- 
-     if (!win || win == WND_DESKTOP) return 0;
-@@ -816,10 +821,19 @@ static HWND WIN_SetOwner( HWND hwnd, HWND owner )
-         {
-             win->owner = wine_server_ptr_handle( reply->full_owner );
-             ret = wine_server_ptr_handle( reply->prev_owner );
-+            needs_cloak = reply->needs_cloak;
-         }
-     }
-     SERVER_END_REQ;
-     WIN_ReleasePtr( win );
-+    if (needs_cloak)
-+    {
-+        struct WINCOMPATTRDATA data;
-+        data.attribute = WCA_CLOAK;
-+        data.pData = &needs_cloak;
-+        data.dataSize = sizeof(needs_cloak);
-+        SetWindowCompositionAttribute( hwnd, &data );
-+    }
-     return ret;
- }
- 
-@@ -1401,6 +1415,7 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
-     MDICREATESTRUCTW mdi_cs;
-     CBT_CREATEWNDW cbtc;
-     CREATESTRUCTW cbcs;
-+    BOOL needs_cloak;
- 
-     className = CLASS_GetVersionedName(className, NULL, NULL, TRUE);
- 
-@@ -1525,7 +1540,7 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
-     style = cs->style & ~WS_VISIBLE;
-     ex_style = cs->dwExStyle & ~WS_EX_LAYERED;
-     if (!(wndPtr = create_window_handle( parent, owner, &class, module,
--                                         unicode, style, ex_style )))
-+                                         unicode, style, ex_style, &needs_cloak )))
-         return 0;
-     hwnd = wndPtr->obj.handle;
- 
-@@ -1707,6 +1722,8 @@ HWND WIN_CreateWindowEx( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE module,
-     /* call the driver */
- 
-     if (!USER_Driver->pCreateWindow( hwnd )) goto failed;
-+    if (needs_cloak)
-+        USER_Driver->pSetWindowCompositionAttribute( hwnd, WCA_CLOAK, &needs_cloak );
- 
-     NtUserNotifyWinEvent( EVENT_OBJECT_CREATE, hwnd, OBJID_WINDOW, 0 );
- 
-@@ -4233,11 +4250,101 @@ BOOL WINAPI SetWindowDisplayAffinity(HWND hwnd, DWORD affinity)
- /**********************************************************************
-  *              SetWindowCompositionAttribute (USER32.@)
-  */
--BOOL WINAPI SetWindowCompositionAttribute(HWND hwnd, void *data)
-+BOOL WINAPI SetWindowCompositionAttribute(HWND hwnd, const struct WINCOMPATTRDATA *data)
- {
--    FIXME("(%p, %p): stub\n", hwnd, data);
--    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
--    return FALSE;
-+    user_handle_t *list;
-+    unsigned i, size;
-+    NTSTATUS status;
-+    HWND parent;
-+    DWORD ret;
-+    WND *win;
-+
-+    TRACE("(%p, %p)\n", hwnd, data);
-+
-+    if (!data || !data->pData)
-+    {
-+        SetLastError( ERROR_NOACCESS );
-+        return FALSE;
-+    }
-+    if (!hwnd || is_broadcast(hwnd) || !(win = WIN_GetPtr(hwnd)))
-+    {
-+        SetLastError( ERROR_INVALID_HANDLE );
-+        return FALSE;
-+    }
-+    if (win == WND_DESKTOP || win == WND_OTHER_PROCESS)
-+    {
-+        SetLastError( ERROR_ACCESS_DENIED );
-+        return FALSE;
-+    }
-+    parent = win->parent;
-+    WIN_ReleasePtr(win);
-+    if (parent && parent != GetDesktopWindow())
-+    {
-+        SetLastError( ERROR_INVALID_HANDLE );
-+        return FALSE;
-+    }
-+
-+    switch (data->attribute)
-+    {
-+    case WCA_CLOAK:
-+        if (data->dataSize < sizeof(BOOL))
-+        {
-+            SetLastError( ERROR_INSUFFICIENT_BUFFER );
-+            return FALSE;
-+        }
-+
-+        ret = USER_Driver->pSetWindowCompositionAttribute( hwnd, WCA_CLOAK, data->pData );
-+        if (ret == ~0) return FALSE;
-+
-+        size = 128;
-+        for (;;)
-+        {
-+            unsigned count = 0;
-+
-+            if (!(list = HeapAlloc( GetProcessHeap(), 0, size * sizeof(user_handle_t) )))
-+            {
-+                SetLastError( ERROR_OUTOFMEMORY );
-+                return FALSE;
-+            }
-+            SERVER_START_REQ( set_window_cloaked )
-+            {
-+                req->handle  = wine_server_user_handle( hwnd );
-+                req->cloaked = ret;
-+                wine_server_set_reply( req, list, size * sizeof(user_handle_t) );
-+                if (!(status = wine_server_call( req ))) count = reply->count;
-+            }
-+            SERVER_END_REQ;
-+            if (count < size)
-+            {
-+                /* Go through the list to cloak the windows that inherit it */
-+                for (i = 0; i < count; i++)
-+                {
-+                    HWND full_handle, handle = wine_server_ptr_handle( list[i] );
-+
-+                    if ((full_handle = WIN_IsCurrentProcess( handle )))
-+                        USER_Driver->pSetWindowCompositionAttribute( full_handle, WCA_CLOAK, data->pData );
-+                    else
-+                        SendMessageW( handle, WM_WINE_SETWINDOWCLOAKED, *(BOOL*)(data->pData), 0 );
-+                }
-+                count = 0;
-+            }
-+            HeapFree( GetProcessHeap(), 0, list );
-+            if (!count) break;
-+            size = count;  /* restart with a large enough buffer */
-+        }
-+        if (status)
-+        {
-+            SetLastError( RtlNtStatusToDosError( status ));
-+            return FALSE;
-+        }
-+        return TRUE;
-+
-+    default:
-+        FIXME("unimplemented attribute %d, size %u, for hwnd %p.\n", data->attribute, data->dataSize, hwnd);
-+        SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
-+        return FALSE;
-+    }
-+    return TRUE;
- }
- 
- /***********************************************************************
-diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
-index 11111111111..11111111111 100644
---- a/dlls/win32u/driver.c
-+++ b/dlls/win32u/driver.c
-@@ -865,6 +865,12 @@ static void CDECL nulldrv_SetParent( HWND hwnd, HWND parent, HWND old_parent )
- {
- }
- 
-+static DWORD CDECL nulldrv_SetWindowCompositionAttribute( HWND hwnd, DWORD attribute, void *data )
-+{
-+    SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
-+    return ~0;
-+}
-+
- static void CDECL nulldrv_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
- {
- }
-@@ -1133,6 +1139,7 @@ void CDECL __wine_set_display_driver( struct user_driver_funcs *driver, UINT ver
-     SET_USER_FUNC(SetFocus);
-     SET_USER_FUNC(SetLayeredWindowAttributes);
-     SET_USER_FUNC(SetParent);
-+    SET_USER_FUNC(SetWindowCompositionAttribute);
-     SET_USER_FUNC(SetWindowRgn);
-     SET_USER_FUNC(SetWindowIcon);
-     SET_USER_FUNC(SetWindowStyle);
-diff --git a/include/ntuser.h b/include/ntuser.h
-index 11111111111..11111111111 100644
---- a/include/ntuser.h
-+++ b/include/ntuser.h
-@@ -196,6 +196,7 @@ enum wine_internal_message
-     WM_WINE_MOUSE_LL_HOOK,
-     WM_WINE_CLIPCURSOR,
-     WM_WINE_UPDATEWINDOWSTATE,
-+    WM_WINE_SETWINDOWCLOAKED,
-     WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
-     WM_WINE_LAST_DRIVER_MSG = 0x80001fff
- };
+@@ -456,6 +497,7 @@ BOOL    WINAPI NtUserSetSystemMenu( HWND hwnd, HMENU menu );
+ UINT_PTR WINAPI NtUserSetSystemTimer( HWND hwnd, UINT_PTR id, UINT timeout, TIMERPROC proc );
+ BOOL    WINAPI NtUserSetThreadDesktop( HDESK handle );
+ UINT_PTR WINAPI NtUserSetTimer( HWND hwnd, UINT_PTR id, UINT timeout, TIMERPROC proc, ULONG tolerance );
++NTSTATUS WINAPI NtUserSetWindowCompositionAttribute(HWND hwnd, const struct WINCOMPATTRDATA* data);
+ LONG    WINAPI NtUserSetWindowLong( HWND hwnd, INT offset, LONG newval, BOOL ansi );
+ LONG_PTR WINAPI NtUserSetWindowLongPtr( HWND hwnd, INT offset, LONG_PTR newval, BOOL ansi );
+ BOOL    WINAPI NtUserSetWindowPos( HWND hwnd, HWND after, INT x, INT y, INT cx, INT cy, UINT flags );
 diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
 index 11111111111..11111111111 100644
 --- a/include/wine/gdi_driver.h
 +++ b/include/wine/gdi_driver.h
-@@ -305,6 +305,7 @@ struct user_driver_funcs
+@@ -309,6 +309,7 @@ struct user_driver_funcs
      void    (CDECL *pSetFocus)(HWND);
      void    (CDECL *pSetLayeredWindowAttributes)(HWND,COLORREF,BYTE,DWORD);
      void    (CDECL *pSetParent)(HWND,HWND,HWND);
@@ -375,7 +446,7 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -2320,6 +2320,7 @@ enum message_type
+@@ -2321,6 +2321,7 @@ enum message_type
      client_ptr_t   class_ptr;   /* pointer to class in client address space */
      int            dpi;         /* window DPI if not per-monitor aware */
      int            awareness;   /* window DPI awareness */
@@ -383,7 +454,7 @@ index 11111111111..11111111111 100644
  @END
  
  
-@@ -2345,6 +2346,7 @@ enum message_type
+@@ -2346,6 +2347,7 @@ enum message_type
  @REPLY
      user_handle_t  full_owner;  /* full handle of new owner */
      user_handle_t  prev_owner;  /* full handle of previous owner */
@@ -391,7 +462,7 @@ index 11111111111..11111111111 100644
  @END
  
  
-@@ -2392,6 +2394,17 @@ enum message_type
+@@ -2393,6 +2395,17 @@ enum message_type
  #define SET_WIN_UNICODE   0x40
  
  
@@ -495,7 +566,7 @@ index 11111111111..11111111111 100644
  }
  
  
-@@ -2309,6 +2330,47 @@ DECL_HANDLER(set_window_info)
+@@ -2309,6 +2330,50 @@ DECL_HANDLER(set_window_info)
  }
  
  
@@ -520,7 +591,10 @@ index 11111111111..11111111111 100644
 +
 +    reply->count = total = get_owned_windows( win, NULL );
 +    if (get_reply_max_size() < total * sizeof(user_handle_t))
++    {
++        set_error( STATUS_BUFFER_TOO_SMALL );
 +        return;
++    }
 +
 +    if (total)
 +    {

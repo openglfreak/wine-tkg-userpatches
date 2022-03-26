@@ -1,0 +1,223 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH 1/4] win32u: Add freelist cache allocator.
+Message-Id: <7303da75-56e4-7139-34ce-b90da9eccc03@gmail.com>
+Date: Mon, 21 Mar 2022 05:41:48 +0900
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ dlls/win32u/Makefile.in     |   1 +
+ dlls/win32u/alloc.c         | 173 ++++++++++++++++++++++++++++++++++++
+ dlls/win32u/ntgdi_private.h |   4 +
+ 3 files changed, 178 insertions(+)
+ create mode 100644 dlls/win32u/alloc.c
+
+diff --git a/dlls/win32u/Makefile.in b/dlls/win32u/Makefile.in
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/Makefile.in
++++ b/dlls/win32u/Makefile.in
+@@ -9,6 +9,7 @@ IMPORTS   = ntdll winecrt0
+ EXTRADLLFLAGS = -nodefaultlibs -Wb,--syscall-table,1
+ 
+ C_SRCS = \
++	alloc.c \
+ 	bitblt.c \
+ 	bitmap.c \
+ 	brush.c \
+diff --git a/dlls/win32u/alloc.c b/dlls/win32u/alloc.c
+new file mode 100644
+index 00000000000..11111111111
+--- /dev/null
++++ b/dlls/win32u/alloc.c
+@@ -0,0 +1,173 @@
++/*
++ * simple freelist cache allocator
++ *
++ * Copyright 2022 Jinoh Kang
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include <stdarg.h>
++#include <stdlib.h>
++#include <string.h>
++#include <assert.h>
++#include <pthread.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "wingdi.h"
++#include "ntgdi_private.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(gdi);
++
++
++#define MEM_CACHE_NR_BUCKETS 1024
++#define MEM_CACHE_MIN_SIZE 16384
++#define MEM_CACHE_STEP 4096
++#ifdef _WIN64
++#define MEM_CACHE_THRESHOLD (32UL << 20)  /* 32MB */
++#else
++#define MEM_CACHE_THRESHOLD ( 8UL << 20)   /* 8MB */
++#endif
++
++static pthread_mutex_t mem_cache_lock = PTHREAD_MUTEX_INITIALIZER;
++static void **mem_cache_buckets[MEM_CACHE_NR_BUCKETS];
++static SIZE_T mem_cache_total_size;
++
++static SIZE_T get_bucket_index( SIZE_T size )
++{
++    if (size < MEM_CACHE_MIN_SIZE) return (SIZE_T)-1;
++    return (size - MEM_CACHE_MIN_SIZE + MEM_CACHE_STEP - 1) / MEM_CACHE_STEP;
++}
++
++static SIZE_T get_bucket_chunk_size( SIZE_T index )
++{
++    return index * MEM_CACHE_STEP + MEM_CACHE_MIN_SIZE;
++}
++
++static void *bucket_pop_chunk( SIZE_T i )
++{
++    SIZE_T real_size = get_bucket_chunk_size( i );
++    void *mem;
++
++    if (!(mem = mem_cache_buckets[i]))
++        return NULL;
++
++    assert(mem_cache_total_size >= real_size);
++    mem_cache_buckets[i] = *(void **)mem;
++    mem_cache_total_size -= real_size;
++    return mem;
++}
++
++static void bucket_push_chunk( SIZE_T i, void *mem )
++{
++    SIZE_T real_size = get_bucket_chunk_size( i );
++
++    mem_cache_total_size += real_size;
++    *(void **)mem = mem_cache_buckets[i];
++    mem_cache_buckets[i] = mem;
++}
++
++void *alloc_gdi_cache_memory( SIZE_T size, BOOL zero_mem )
++{
++    SIZE_T i, real_size = size;
++    SIZE_T real_bucket_i;
++    void *mem = NULL;
++
++    i = get_bucket_index( real_size );
++    if (i < MEM_CACHE_NR_BUCKETS)
++    {
++        real_size = get_bucket_chunk_size( i );
++        assert(real_size >= size);
++
++        pthread_mutex_lock( &mem_cache_lock );
++
++        real_bucket_i = i;
++        while (!(mem = bucket_pop_chunk( real_bucket_i )))
++        {
++            if (++real_bucket_i >= MEM_CACHE_NR_BUCKETS) break;
++        }
++
++        pthread_mutex_unlock( &mem_cache_lock );
++
++        if (mem)
++        {
++            if (i != real_bucket_i)
++            {
++                void *realloc_mem = realloc( mem, real_size );
++                if (realloc_mem)
++                    mem = realloc_mem;
++            }
++            if (zero_mem)
++                memset(mem, 0, size);
++        }
++        else TRACE("no cache for %lu\n", real_size);
++    }
++
++    if (!mem)
++    {
++        if (zero_mem)
++            mem = calloc( 1, real_size );
++        else
++            mem = malloc( real_size );
++    }
++
++    return mem;
++}
++
++void free_gdi_cache_memory( void *mem, SIZE_T size )
++{
++    SIZE_T i, real_size;
++    SIZE_T free_bucket_i;
++
++    i = get_bucket_index( size );
++    if (i < MEM_CACHE_NR_BUCKETS)
++    {
++        real_size = get_bucket_chunk_size( i );
++
++        pthread_mutex_lock( &mem_cache_lock );
++
++        free_bucket_i = 0;
++        while (real_size > MEM_CACHE_THRESHOLD - mem_cache_total_size)
++        {
++            void *old_mem = bucket_pop_chunk( free_bucket_i );
++            if (old_mem)
++            {
++                TRACE("pop cache %p (%lu)\n", old_mem, real_size);
++                free( old_mem );
++            }
++            if (++free_bucket_i >= MEM_CACHE_NR_BUCKETS) break;
++        }
++
++        if (real_size <= MEM_CACHE_THRESHOLD - mem_cache_total_size)
++        {
++            bucket_push_chunk( i, mem );
++            mem = NULL;
++        }
++        else
++        {
++            TRACE("discard memory %p (%lu)\n", mem, real_size);
++        }
++
++        pthread_mutex_unlock( &mem_cache_lock );
++    }
++
++    if (mem)
++        free( mem );
++}
+diff --git a/dlls/win32u/ntgdi_private.h b/dlls/win32u/ntgdi_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/ntgdi_private.h
++++ b/dlls/win32u/ntgdi_private.h
+@@ -433,6 +433,10 @@ extern HRGN create_polypolygon_region( const POINT *pts, const INT *count, INT n
+ extern BOOL delete_dce( struct dce *dce ) DECLSPEC_HIDDEN;
+ extern void update_dc( DC *dc ) DECLSPEC_HIDDEN;
+ 
++/* alloc.c */
++extern void *alloc_gdi_cache_memory( SIZE_T size, BOOL zero_mem ) DECLSPEC_HIDDEN;
++extern void free_gdi_cache_memory( void *mem, SIZE_T size ) DECLSPEC_HIDDEN;
++
+ #define RGN_DEFAULT_RECTS 4
+ typedef struct
+ {
+
+-- 
+2.35.1
+

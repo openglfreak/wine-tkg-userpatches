@@ -1,7 +1,7 @@
 From 653dab05664e3d311cd6cacd5e33a14dca1ca83f Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Tue, 8 Feb 2022 17:27:13 +0100
-Subject: [PATCH 1/2] server: Seal shared memory mappings against future writes.
+Subject: [PATCH 1/3] server: Seal shared memory mappings against future writes.
 
 So that even if we leak console handles, we will, at least, stop messing
 with these once and for all. This only prevents write(2) and mmap(2), as
@@ -18,10 +18,10 @@ CW-Bug-Id: #20128
  2 files changed, 25 insertions(+)
 
 diff --git a/configure.ac b/configure.ac
-index bc4f47d9889..22229880023 100644
+index 11111111111..11111111111 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -1994,6 +1994,7 @@ AC_CHECK_FUNCS(\
+@@ -2119,6 +2119,7 @@ AC_CHECK_FUNCS(\
  	getrandom \
  	kqueue \
  	mach_continuous_time \
@@ -30,10 +30,10 @@ index bc4f47d9889..22229880023 100644
  	port_create \
  	posix_fadvise \
 diff --git a/server/mapping.c b/server/mapping.c
-index ecbfbee7ea1..4514a877177 100644
+index 11111111111..11111111111 100644
 --- a/server/mapping.c
 +++ b/server/mapping.c
-@@ -268,6 +268,7 @@ int grow_file( int unix_fd, file_pos_t new_size )
+@@ -271,6 +271,7 @@ int grow_file( int unix_fd, file_pos_t new_size )
      return 0;
  }
  
@@ -41,7 +41,7 @@ index ecbfbee7ea1..4514a877177 100644
  /* simplified version of mkstemps() */
  static int make_temp_file( char name[16] )
  {
-@@ -301,10 +302,23 @@ static int check_current_dir_for_exec(void)
+@@ -304,10 +305,23 @@ static int check_current_dir_for_exec(void)
      unlink( tmpfn );
      return (ret != MAP_FAILED);
  }
@@ -65,7 +65,7 @@ index ecbfbee7ea1..4514a877177 100644
      static int temp_dir_fd = -1;
      char tmpfn[16];
      int fd;
-@@ -337,6 +351,7 @@ static int create_temp_file( file_pos_t size )
+@@ -340,6 +354,7 @@ static int create_temp_file( file_pos_t size )
      else file_set_error();
  
      if (temp_dir_fd != server_dir_fd) fchdir( server_dir_fd );
@@ -73,7 +73,7 @@ index ecbfbee7ea1..4514a877177 100644
      return fd;
  }
  
-@@ -1103,6 +1118,10 @@ int get_page_size(void)
+@@ -1106,6 +1121,10 @@ int get_page_size(void)
      return page_mask + 1;
  }
  
@@ -84,7 +84,7 @@ index ecbfbee7ea1..4514a877177 100644
  struct object *create_user_data_mapping( struct object *root, const struct unicode_str *name,
                                           unsigned int attr, const struct security_descriptor *sd )
  {
-@@ -1112,6 +1131,7 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
+@@ -1115,6 +1134,7 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
      if (!(mapping = create_mapping( root, name, attr, sizeof(KSHARED_USER_DATA),
                                      SEC_COMMIT, 0, FILE_READ_DATA | FILE_WRITE_DATA, sd ))) return NULL;
      ptr = mmap( NULL, mapping->size, PROT_WRITE, MAP_SHARED, get_unix_fd( mapping->fd ), 0 );
@@ -92,7 +92,7 @@ index ecbfbee7ea1..4514a877177 100644
      if (ptr != MAP_FAILED)
      {
          user_shared_data = ptr;
-@@ -1123,11 +1143,15 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
+@@ -1140,11 +1160,15 @@ struct object *create_hypervisor_data_mapping( struct object *root, const struct
  struct object *create_shared_mapping( struct object *root, const struct unicode_str *name,
                                        mem_size_t size, const struct security_descriptor *sd, void **ptr )
  {

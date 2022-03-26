@@ -1,0 +1,94 @@
+From: Dmitry Timoshkov <dmitry@baikal.ru>
+Subject: [PATCH v2 1/3] sc: Add support for the 'query' command.
+Message-Id: <20220322172235.6c05f624a9147d9766602048@baikal.ru>
+Date: Tue, 22 Mar 2022 17:22:35 +0300
+
+Output is modelled on behaviour observed under the Windows 10.
+
+v2:
+Fix the typos.
+Add a helper to use in the next patch.
+
+Signed-off-by: Dmitry Timoshkov <dmitry@baikal.ru>
+---
+ programs/sc/sc.c | 56 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 56 insertions(+)
+
+diff --git a/programs/sc/sc.c b/programs/sc/sc.c
+index 11111111111..11111111111 100644
+--- a/programs/sc/sc.c
++++ b/programs/sc/sc.c
+@@ -175,6 +175,58 @@ static void usage( void )
+     exit( 1 );
+ }
+ 
++static const WCHAR *service_type_string( DWORD type )
++{
++    switch (type)
++    {
++        case SERVICE_WIN32_OWN_PROCESS: return L"WIN32_OWN_PROCESS";
++        case SERVICE_WIN32_SHARE_PROCESS: return L"WIN32_SHARE_PROCESS";
++        case SERVICE_WIN32: return L"WIN32";
++        default: return L"";
++    }
++}
++
++static const WCHAR *service_state_string( DWORD state )
++{
++    static const WCHAR * const state_str[] = { L"", L"STOPPED", L"START_PENDING",
++        L"STOP_PENDING", L"RUNNING", L"CONTINUE_PENDING", L"PAUSE_PENDING", L"PAUSED" };
++
++    if (state <= ARRAY_SIZE( state_str )) return state_str[ state ];
++    return L"";
++}
++
++static BOOL query_service( SC_HANDLE manager, const WCHAR *name )
++{
++    SC_HANDLE service;
++    SERVICE_STATUS status;
++    BOOL ret = FALSE;
++
++    service = OpenServiceW( manager, name, SERVICE_QUERY_STATUS );
++    if (service)
++    {
++        ret = QueryServiceStatus( service, &status );
++        if (!ret)
++            WINE_ERR("failed to query service status %lu\n", GetLastError());
++        else
++            printf( "SERVICE_NAME: %ws\n"
++                    "        TYPE               : %lx  %ws\n"
++                    "        STATE              : %lx  %ws\n"
++                    "        WIN32_EXIT_CODE    : %lu  (0x%lx)\n"
++                    "        SERVICE_EXIT_CODE  : %lu  (0x%lx)\n"
++                    "        CHECKPOINT         : 0x%lx\n"
++                    "        WAIT_HINT          : 0x%lx\n",
++                    name, status.dwServiceType, service_type_string( status.dwServiceType ),
++                    status.dwCurrentState, service_state_string( status.dwCurrentState ),
++                    status.dwWin32ExitCode, status.dwWin32ExitCode,
++                    status.dwServiceSpecificExitCode, status.dwServiceSpecificExitCode,
++                    status.dwCheckPoint, status.dwWaitHint );
++        CloseServiceHandle( service );
++    }
++    else WINE_ERR("failed to open service %lu\n", GetLastError());
++
++    return ret;
++}
++
+ int __cdecl wmain( int argc, const WCHAR *argv[] )
+ {
+     SC_HANDLE manager, service;
+@@ -285,6 +337,10 @@ int __cdecl wmain( int argc, const WCHAR *argv[] )
+         }
+         else WINE_ERR("failed to open service %lu\n", GetLastError());
+     }
++    else if (!wcsicmp( argv[1], L"query" ))
++    {
++        ret = query_service( manager, argv[2] );
++    }
+     else if (!wcsicmp( argv[1], L"sdset" ))
+     {
+         WINE_FIXME("SdSet command not supported, faking success\n");
+
+-- 
+2.35.1
+

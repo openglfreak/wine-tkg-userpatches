@@ -1,0 +1,49 @@
+From 013f2c210789c8ffd27b6bc8b143b09a2ddb1137 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Wed, 23 Mar 2022 22:56:53 +0100
+Subject: [PATCH 31/30] server: Implement fast synchronization for pulse_event.
+
+---
+ server/event.c     |  1 +
+ server/fast_sync.c | 13 +++++++++++++
+ 2 files changed, 14 insertions(+)
+
+diff --git a/server/event.c b/server/event.c
+index 11111111111..11111111111 100644
+--- a/server/event.c
++++ b/server/event.c
+@@ -199,6 +199,7 @@ static void pulse_event( struct event *event )
+     event->signaled = 1;
+     /* wake up all waiters if manual reset, a single one otherwise */
+     wake_up( &event->obj, !event->manual_reset );
++    fast_pulse_event( event->fast_sync );
+     event->signaled = 0;
+ 
+     if (do_fsync())
+diff --git a/server/fast_sync.c b/server/fast_sync.c
+index 11111111111..11111111111 100644
+--- a/server/fast_sync.c
++++ b/server/fast_sync.c
+@@ -339,6 +339,19 @@ void fast_reset_event( struct fast_sync *fast_sync )
+     ioctl( get_unix_fd( fast_sync->device->fd ), WINESYNC_IOC_WAIT_ANY, &args );
+ }
+ 
++void fast_pulse_event( struct fast_sync *fast_sync )
++{
++    struct winesync_sem_args args = {0};
++
++    if (!fast_sync) return;
++
++    if (debug_level) fprintf( stderr, "fast_pulse_event %u\n", fast_sync->linux_obj );
++
++    args.sem = fast_sync->linux_obj;
++    args.count = 1;
++    ioctl( get_unix_fd( fast_sync->device->fd ), WINESYNC_IOC_PULSE_SEM, &args );
++}
++
+ void fast_abandon_mutexes( thread_id_t tid )
+ {
+     struct fast_sync_device *device;
+-- 
+2.35.1
+

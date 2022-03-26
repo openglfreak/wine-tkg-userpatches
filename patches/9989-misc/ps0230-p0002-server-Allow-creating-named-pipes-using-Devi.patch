@@ -1,9 +1,9 @@
 From: Jinoh Kang <jinoh.kang.kr@gmail.com>
-Subject: [PATCH v3 resend 2/2] server: Allow creating named pipes using \Device\NamedPipe\ as RootDirectory.
-Message-Id: <fe8eab95-ac90-4f9d-b589-e1abb22d14f6@gmail.com>
-Date: Tue, 4 Jan 2022 19:08:39 +0900
-In-Reply-To: <f5425e85-bd1b-a340-c4ab-60b3a2819f5a@gmail.com>
-References: <f5425e85-bd1b-a340-c4ab-60b3a2819f5a@gmail.com>
+Subject: [PATCH v4 resend 2/2] server: Allow creating named pipes using \Device\NamedPipe\ as RootDirectory.
+Message-Id: <1a5fdfd1-14f3-0342-219b-47da6e5b14b2@gmail.com>
+Date: Fri, 25 Mar 2022 00:49:25 +0900
+In-Reply-To: <e4b7924b-6074-c95f-58f2-a31f7f938172@gmail.com>
+References: <e4b7924b-6074-c95f-58f2-a31f7f938172@gmail.com>
 
 Separate the named pipe root directory from the named pipe device file.
 Open the root directory instead of the device file if the path ends
@@ -12,10 +12,16 @@ with backslash.
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52105
 Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
 ---
+
+Notes:
+    v3 -> v4:
+    - don't memcpy backslash
+    - formatting changes
+
  dlls/ntdll/tests/om.c   |   2 +-
  dlls/ntdll/tests/pipe.c |   6 +-
- server/named_pipe.c     | 220 ++++++++++++++++++++++++++++++++--------
- 3 files changed, 184 insertions(+), 44 deletions(-)
+ server/named_pipe.c     | 228 +++++++++++++++++++++++++++++++++-------
+ 3 files changed, 192 insertions(+), 44 deletions(-)
 
 diff --git a/dlls/ntdll/tests/om.c b/dlls/ntdll/tests/om.c
 index 11111111111..11111111111 100644
@@ -34,7 +40,7 @@ diff --git a/dlls/ntdll/tests/pipe.c b/dlls/ntdll/tests/pipe.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/tests/pipe.c
 +++ b/dlls/ntdll/tests/pipe.c
-@@ -2509,7 +2509,7 @@ static void test_empty_name(void)
+@@ -2506,7 +2506,7 @@ static void test_empty_name(void)
  
      pRtlInitUnicodeString(&name, L"nonexistent_pipe");
      status = wait_pipe(hdirectory, &name, &zero_timeout);
@@ -43,7 +49,7 @@ index 11111111111..11111111111 100644
  
      name.Buffer = NULL;
      name.Length = 0;
-@@ -2650,11 +2650,11 @@ static void test_empty_name(void)
+@@ -2647,11 +2647,11 @@ static void test_empty_name(void)
      timeout.QuadPart = -(LONG64)10000000;
      status = pNtCreateNamedPipeFile(&hpipe, GENERIC_READ|GENERIC_WRITE, &attr, &io, FILE_SHARE_READ|FILE_SHARE_WRITE,
                                      FILE_CREATE, FILE_PIPE_FULL_DUPLEX, 0, 0, 0, 1, 256, 256, &timeout);
@@ -61,10 +67,11 @@ diff --git a/server/named_pipe.c b/server/named_pipe.c
 index 11111111111..11111111111 100644
 --- a/server/named_pipe.c
 +++ b/server/named_pipe.c
-@@ -103,6 +103,13 @@ struct named_pipe_device_file
+@@ -103,6 +103,14 @@ struct named_pipe_device_file
      struct named_pipe_device *device;      /* named pipe device */
  };
  
++/* mostly identical to named_pipe_device_file (declared separately for type checking) */
 +struct named_pipe_dir
 +{
 +    struct object             obj;         /* object header */
@@ -75,7 +82,7 @@ index 11111111111..11111111111 100644
  static void named_pipe_dump( struct object *obj, int verbose );
  static unsigned int named_pipe_map_access( struct object *obj, unsigned int access );
  static WCHAR *named_pipe_get_full_name( struct object *obj, data_size_t *ret_len );
-@@ -336,6 +343,60 @@ static const struct fd_ops named_pipe_device_fd_ops =
+@@ -336,6 +344,60 @@ static const struct fd_ops named_pipe_device_fd_ops =
      default_fd_reselect_async                /* reselect_async */
  };
  
@@ -136,23 +143,26 @@ index 11111111111..11111111111 100644
  static void named_pipe_dump( struct object *obj, int verbose )
  {
      fputs( "Named pipe\n", stderr );
-@@ -516,6 +577,15 @@ static struct object *named_pipe_device_lookup_name( struct object *obj, struct
+@@ -516,6 +578,18 @@ static struct object *named_pipe_device_lookup_name( struct object *obj, struct
      assert( device->pipes );
  
      if (!name) return NULL;  /* open the device itself */
 +    if (!name->len && name->str)
 +    {
 +        /* open the root directory */
-+        struct named_pipe_dir *dir;
-+        if (!(dir = alloc_object( &named_pipe_dir_ops ))) return NULL;
-+        dir->fd = NULL;
++        struct named_pipe_dir *dir = alloc_object( &named_pipe_dir_ops );
++
++        if (!dir) return NULL;
++
++        dir->fd = NULL;  /* defer alloc_pseudo_fd() until after we have options */
 +        dir->device = (struct named_pipe_device *)grab_object( obj );
++
 +        return &dir->obj;
 +    }
  
      if ((found = find_object( device->pipes, name, attr | OBJ_CASE_INSENSITIVE )))
          name->len = 0;
-@@ -596,6 +666,113 @@ static void named_pipe_device_file_destroy( struct object *obj )
+@@ -596,6 +670,117 @@ static void named_pipe_device_file_destroy( struct object *obj )
      release_object( file->device );
  }
  
@@ -218,7 +228,6 @@ index 11111111111..11111111111 100644
 +
 +static WCHAR *named_pipe_dir_get_full_name( struct object *obj, data_size_t *ret_len )
 +{
-+    static const WCHAR backslash = '\\';
 +    struct named_pipe_dir *dir = (struct named_pipe_dir *)obj;
 +    data_size_t len;
 +    char *device_name, *ret;
@@ -233,9 +242,9 @@ index 11111111111..11111111111 100644
 +        free(device_name);
 +        return NULL;
 +    }
++    *(WCHAR *)(ret + len - sizeof(WCHAR)) = '\\';
 +
 +    *ret_len = len;
-+    memcpy( ret + len - sizeof(WCHAR), &backslash, sizeof(WCHAR) );
 +    return (WCHAR *)ret;
 +}
 +
@@ -251,7 +260,12 @@ index 11111111111..11111111111 100644
 +                                                unsigned int sharing, unsigned int options )
 +{
 +    struct named_pipe_dir *dir = (struct named_pipe_dir *)obj;
-+    if (!dir->fd && !(dir->fd = alloc_pseudo_fd( &named_pipe_dir_fd_ops, obj, options ))) return NULL;
++    if (!dir->fd)
++    {
++        if (!(dir->fd = alloc_pseudo_fd( &named_pipe_dir_fd_ops, obj, options )))
++            return NULL;
++        allow_fd_caching( dir->fd );
++    }
 +    return grab_object( obj );
 +}
 +
@@ -266,7 +280,7 @@ index 11111111111..11111111111 100644
  static void pipe_end_flush( struct fd *fd, struct async *async )
  {
      struct pipe_end *pipe_end = get_fd_user( fd );
-@@ -1299,14 +1476,13 @@ static struct pipe_end *create_pipe_client( struct named_pipe *pipe, data_size_t
+@@ -1299,14 +1484,13 @@ static struct pipe_end *create_pipe_client( struct named_pipe *pipe, data_size_t
  
  static int named_pipe_link_name( struct object *obj, struct object_name *name, struct object *parent )
  {
@@ -283,7 +297,7 @@ index 11111111111..11111111111 100644
      name->parent = grab_object( parent );
      return 1;
  }
-@@ -1349,43 +1525,7 @@ static struct object *named_pipe_open_file( struct object *obj, unsigned int acc
+@@ -1349,43 +1533,7 @@ static struct object *named_pipe_open_file( struct object *obj, unsigned int acc
  
  static void named_pipe_device_ioctl( struct fd *fd, ioctl_code_t code, struct async *async )
  {

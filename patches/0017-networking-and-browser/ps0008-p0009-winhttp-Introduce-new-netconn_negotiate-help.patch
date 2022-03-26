@@ -4,14 +4,14 @@ Date: Thu, 3 Dec 2020 11:14:07 +0100
 Subject: [PATCH 09/12] winhttp: Introduce new netconn_negotiate helper.
 
 ---
- dlls/winhttp/net.c | 34 ++++++++++++++++++++++------------
- 1 file changed, 22 insertions(+), 12 deletions(-)
+ dlls/winhttp/net.c | 36 +++++++++++++++++++++++-------------
+ 1 file changed, 23 insertions(+), 13 deletions(-)
 
 diff --git a/dlls/winhttp/net.c b/dlls/winhttp/net.c
 index 11111111111..11111111111 100644
 --- a/dlls/winhttp/net.c
 +++ b/dlls/winhttp/net.c
-@@ -268,27 +268,22 @@ void netconn_close( struct netconn *conn )
+@@ -274,28 +274,23 @@ void netconn_close( struct netconn *conn )
      free(conn);
  }
  
@@ -36,15 +36,17 @@ index 11111111111..11111111111 100644
  
      if (!(read_buf = malloc( read_buf_size ))) return ERROR_OUTOFMEMORY;
  
+-    memset( &ctx, 0, sizeof(ctx) );
 -    status = InitializeSecurityContextW(cred_handle, NULL, hostname, isc_req_flags, 0, 0, NULL, 0,
 -            &ctx, &out_desc, &attrs, NULL);
++    memset( new_ctx_handle, 0, sizeof(*new_ctx_handle) );
 +    status = InitializeSecurityContextW(cred_handle, ctx_handle, hostname, isc_req_flags, 0, 0, init_desc,
 +            0, new_ctx_handle, &out_desc, &attrs, NULL);
 +    if (!ctx_handle) ctx_handle = new_ctx_handle;
  
      assert(status != SEC_E_OK);
  
-@@ -301,7 +296,7 @@ DWORD netconn_secure_connect( struct netconn *conn, WCHAR *hostname, DWORD secur
+@@ -308,7 +303,7 @@ DWORD netconn_secure_connect( struct netconn *conn, WCHAR *hostname, DWORD secur
              size = sock_send(conn->socket, out_buf.pvBuffer, out_buf.cbBuffer, NULL);
              if(size != out_buf.cbBuffer) {
                  ERR("send failed\n");
@@ -53,7 +55,7 @@ index 11111111111..11111111111 100644
                  break;
              }
  
-@@ -347,7 +342,7 @@ DWORD netconn_secure_connect( struct netconn *conn, WCHAR *hostname, DWORD secur
+@@ -354,7 +349,7 @@ DWORD netconn_secure_connect( struct netconn *conn, WCHAR *hostname, DWORD secur
  
          in_bufs[0].cbBuffer += size;
          in_bufs[0].pvBuffer = read_buf;
@@ -62,7 +64,7 @@ index 11111111111..11111111111 100644
                  0, NULL, &out_desc, &attrs, NULL);
          TRACE( "InitializeSecurityContext ret %#lx\n", status );
          if(status == SEC_E_OK && in_bufs[1].BufferType == SECBUFFER_EXTRA)
-@@ -356,6 +351,21 @@ DWORD netconn_secure_connect( struct netconn *conn, WCHAR *hostname, DWORD secur
+@@ -363,6 +358,21 @@ DWORD netconn_secure_connect( struct netconn *conn, WCHAR *hostname, DWORD secur
  
      free(read_buf);
  

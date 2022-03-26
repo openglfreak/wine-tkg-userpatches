@@ -1,17 +1,18 @@
 From: Jinoh Kang <jinoh.kang.kr@gmail.com>
-Subject: [PATCH v3 resend 1/2] ntdll/tests: Add more tests for \Device\NamedPipe\ root directory.
-Message-Id: <f5425e85-bd1b-a340-c4ab-60b3a2819f5a@gmail.com>
-Date: Tue, 4 Jan 2022 19:07:33 +0900
+Subject: [PATCH v4 resend 1/2] ntdll/tests: Add more tests for \Device\NamedPipe\ root directory.
+Message-Id: <e4b7924b-6074-c95f-58f2-a31f7f938172@gmail.com>
+Date: Fri, 25 Mar 2022 00:47:29 +0900
 
 Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
 ---
 
 Notes:
     v2 -> v3: move some tests from om.c to pipe.c
+    v3 -> v4: fix and simplify STATUS_PENDING testing
 
- dlls/ntdll/tests/om.c   |  9 ++++
- dlls/ntdll/tests/pipe.c | 93 ++++++++++++++++++++++++++++++++++++++++-
- 2 files changed, 101 insertions(+), 1 deletion(-)
+ dlls/ntdll/tests/om.c   |  9 +++++
+ dlls/ntdll/tests/pipe.c | 90 ++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 98 insertions(+), 1 deletion(-)
 
 diff --git a/dlls/ntdll/tests/om.c b/dlls/ntdll/tests/om.c
 index 11111111111..11111111111 100644
@@ -32,7 +33,7 @@ index 11111111111..11111111111 100644
 +
      RtlInitUnicodeString( &path, L"\\REGISTRY\\Machine" );
      status = pNtCreateKey( &handle, KEY_READ, &attr, 0, 0, 0, 0 );
-     ok( status == STATUS_SUCCESS, "NtCreateKey failed status %x\n", status );
+     ok( status == STATUS_SUCCESS, "NtCreateKey failed status %lx\n", status );
 diff --git a/dlls/ntdll/tests/pipe.c b/dlls/ntdll/tests/pipe.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/tests/pipe.c
@@ -62,7 +63,7 @@ index 11111111111..11111111111 100644
  #endif
  
  static NTSTATUS (WINAPI *pNtFsControlFile) (HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, PVOID apc_context, PIO_STATUS_BLOCK io, ULONG code, PVOID in_buffer, ULONG in_size, PVOID out_buffer, ULONG out_size);
-@@ -177,6 +188,51 @@ static NTSTATUS listen_pipe(HANDLE hPipe, HANDLE hEvent, PIO_STATUS_BLOCK iosb,
+@@ -177,6 +188,48 @@ static NTSTATUS listen_pipe(HANDLE hPipe, HANDLE hEvent, PIO_STATUS_BLOCK iosb,
      return pNtFsControlFile(hPipe, hEvent, use_apc ? &ioapc: NULL, use_apc ? &dummy: NULL, iosb, FSCTL_PIPE_LISTEN, 0, 0, 0, 0);
  }
  
@@ -97,12 +98,9 @@ index 11111111111..11111111111 100644
 +    iosb.Status = STATUS_PENDING;
 +    status = pNtFsControlFile(handle, event, NULL, NULL, &iosb, FSCTL_PIPE_WAIT,
 +                              pipe_wait, pipe_wait_size, NULL, 0);
-+    if (status == STATUS_PENDING && iosb.Status == STATUS_PENDING)
++    if (status == STATUS_PENDING)
 +    {
 +        WaitForSingleObject(event, INFINITE);
-+    }
-+    if (SUCCEEDED(status) && iosb.Status != STATUS_PENDING)
-+    {
 +        status = iosb.Status;
 +    }
 +
@@ -114,7 +112,7 @@ index 11111111111..11111111111 100644
  static void test_create_invalid(void)
  {
      IO_STATUS_BLOCK iosb;
-@@ -2420,6 +2476,7 @@ static void test_security_info(void)
+@@ -2420,6 +2473,7 @@ static void test_security_info(void)
  
  static void test_empty_name(void)
  {
@@ -122,9 +120,9 @@ index 11111111111..11111111111 100644
      HANDLE hdirectory, hpipe, hpipe2, hwrite, hwrite2, handle;
      OBJECT_TYPE_INFORMATION *type_info;
      OBJECT_NAME_INFORMATION *name_info;
-@@ -2450,6 +2507,10 @@ static void test_empty_name(void)
+@@ -2450,6 +2504,10 @@ static void test_empty_name(void)
              FILE_SHARE_READ|FILE_SHARE_WRITE, FILE_OPEN, 0, NULL, 0 );
-     ok(!status, "Got unexpected status %#x.\n", status);
+     ok(!status, "Got unexpected status %#lx.\n", status);
  
 +    pRtlInitUnicodeString(&name, L"nonexistent_pipe");
 +    status = wait_pipe(hdirectory, &name, &zero_timeout);
@@ -133,8 +131,8 @@ index 11111111111..11111111111 100644
      name.Buffer = NULL;
      name.Length = 0;
      name.MaximumLength = 0;
-@@ -2462,6 +2523,17 @@ static void test_empty_name(void)
-     todo_wine ok(status == STATUS_OBJECT_NAME_INVALID, "Got unexpected status %#x.\n", status);
+@@ -2462,6 +2520,17 @@ static void test_empty_name(void)
+     todo_wine ok(status == STATUS_OBJECT_NAME_INVALID, "Got unexpected status %#lx.\n", status);
      if (!status)
          CloseHandle(hpipe);
 +
@@ -151,9 +149,9 @@ index 11111111111..11111111111 100644
      CloseHandle(hdirectory);
  
      pRtlInitUnicodeString(&name, L"\\Device\\NamedPipe\\");
-@@ -2475,6 +2547,10 @@ static void test_empty_name(void)
+@@ -2475,6 +2544,10 @@ static void test_empty_name(void)
              FILE_SHARE_READ|FILE_SHARE_WRITE, FILE_OPEN, 0, NULL, 0 );
-     ok(!status, "Got unexpected status %#x.\n", status);
+     ok(!status, "Got unexpected status %#lx.\n", status);
  
 +    pRtlInitUnicodeString(&name, L"nonexistent_pipe");
 +    status = wait_pipe(hdirectory, &name, &zero_timeout);
@@ -162,7 +160,7 @@ index 11111111111..11111111111 100644
      name.Buffer = NULL;
      name.Length = 0;
      name.MaximumLength = 0;
-@@ -2565,9 +2641,24 @@ static void test_empty_name(void)
+@@ -2565,9 +2638,24 @@ static void test_empty_name(void)
  
      CloseHandle(hwrite);
      CloseHandle(hpipe);

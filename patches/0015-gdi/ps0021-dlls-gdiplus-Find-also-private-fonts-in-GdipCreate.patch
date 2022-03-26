@@ -1,0 +1,138 @@
+From e12b02d2c9a460c60ffa746a4f600bdd85f478f3 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Wed, 23 Mar 2022 03:09:09 +0100
+Subject: [PATCH] dlls/gdiplus: Find also private fonts in
+ GdipCreateFontFamilyFromName
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/gdiplus/font.c            | 67 +++++++++++++++++++++++++++-------
+ dlls/gdiplus/gdiplus_private.h |  1 +
+ 2 files changed, 54 insertions(+), 14 deletions(-)
+
+diff --git a/dlls/gdiplus/font.c b/dlls/gdiplus/font.c
+index 11111111111..11111111111 100644
+--- a/dlls/gdiplus/font.c
++++ b/dlls/gdiplus/font.c
+@@ -126,6 +126,17 @@ static CRITICAL_SECTION_DEBUG critsect_debug =
+ };
+ static CRITICAL_SECTION font_cs = { &critsect_debug, -1, 0, 0, 0, 0 };
+ 
++struct list font_list_head = LIST_INIT( font_list_head );
++
++static CRITICAL_SECTION font_list_cs;
++static CRITICAL_SECTION_DEBUG font_list_critsect_debug =
++{
++    0, 0, &font_list_cs,
++    { &font_list_critsect_debug.ProcessLocksList, &font_list_critsect_debug.ProcessLocksList },
++      0, 0, { (DWORD_PTR)(__FILE__ ": font_list_cs") }
++};
++static CRITICAL_SECTION font_list_cs = { &font_list_critsect_debug, -1, 0, 0, 0, 0 };
++
+ /*******************************************************************************
+  * GdipCreateFont [GDIPLUS.@]
+  *
+@@ -729,25 +740,41 @@ GpStatus WINGDIPAPI GdipCreateFontFamilyFromName(GDIPCONST WCHAR *name,
+     if (!name || !family)
+         return InvalidParameter;
+ 
+-    if (!collection)
+-    {
+-        status = GdipNewInstalledFontCollection(&collection);
+-        if (status != Ok) return status;
+-    }
+-
+     status = FontFamilyNotFound;
+ 
+     hdc = CreateCompatibleDC(0);
+ 
+     if (!EnumFontFamiliesW(hdc, name, is_font_installed_proc, (LPARAM)&lf))
+     {
+-        for (i = 0; i < collection->count; i++)
++        if (!collection)
+         {
+-            if (!wcsicmp(lf.lfFaceName, collection->FontFamilies[i]->FamilyName))
++            GpFontFamily *font;
++            EnterCriticalSection(&font_list_cs);
++            LIST_FOR_EACH_ENTRY( font, &font_list_head, GpFontFamily, font_list_entry )
+             {
+-                status = GdipCloneFontFamily(collection->FontFamilies[i], family);
+-                TRACE("<-- %p\n", *family);
+-                break;
++                if (!wcsicmp(lf.lfFaceName, font->FamilyName))
++                {
++                    status = GdipCloneFontFamily(font, family);
++                    TRACE("<-- %p\n", *family);
++                    break;
++                }
++            }
++            LeaveCriticalSection(&font_list_cs);
++
++            if (status == FontFamilyNotFound)
++                status = GdipNewInstalledFontCollection(&collection);
++        }
++
++        if (status == FontFamilyNotFound)
++        {
++            for (i = 0; i < collection->count; i++)
++            {
++                if (!wcsicmp(lf.lfFaceName, collection->FontFamilies[i]->FamilyName))
++                {
++                    status = GdipCloneFontFamily(collection->FontFamilies[i], family);
++                    TRACE("<-- %p\n", *family);
++                    break;
++                }
+             }
+         }
+     }
+@@ -837,13 +864,21 @@ GpStatus WINGDIPAPI GdipGetFamilyName (GDIPCONST GpFontFamily *family,
+  */
+ GpStatus WINGDIPAPI GdipDeleteFontFamily(GpFontFamily *FontFamily)
+ {
++    LONG refcount;
++
+     if (!FontFamily)
+         return InvalidParameter;
+ 
+-    if (!FontFamily->installed && !InterlockedDecrement(&FontFamily->ref))
+-    {
++    if (FontFamily->installed)
++        return Ok;
++
++    EnterCriticalSection(&font_list_cs);
++    refcount = InterlockedDecrement(&FontFamily->ref);
++    if (!refcount)
++        list_remove(&FontFamily->font_list_entry);
++    LeaveCriticalSection(&font_list_cs);
++    if (!refcount)
+         heap_free(FontFamily);
+-    }
+ 
+     return Ok;
+ }
+@@ -1660,6 +1695,10 @@ static INT CALLBACK add_font_proc(const LOGFONTW *lfw, const TEXTMETRICW *ntm,
+ 
+     fonts->FontFamilies[fonts->count++] = family;
+ 
++    EnterCriticalSection(&font_list_cs);
++    list_add_head(&font_list_head, &family->font_list_entry);
++    LeaveCriticalSection(&font_list_cs);
++
+     return 1;
+ }
+ 
+diff --git a/dlls/gdiplus/gdiplus_private.h b/dlls/gdiplus/gdiplus_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/gdiplus/gdiplus_private.h
++++ b/dlls/gdiplus/gdiplus_private.h
+@@ -548,6 +548,7 @@ struct GpFontFamily{
+     int dpi;
+     BOOL installed;
+     LONG ref;
++    struct list font_list_entry;
+ };
+ 
+ /* internal use */
+-- 
+2.35.1
+

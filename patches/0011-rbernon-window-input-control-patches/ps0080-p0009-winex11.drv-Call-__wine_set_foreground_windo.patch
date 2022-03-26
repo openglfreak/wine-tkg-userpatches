@@ -13,19 +13,34 @@ a timestamp, but it will not work when the take_focus mode is not used.
 Standard focus events do not have a timestamp so we will have to use
 XInput2 focus events to support this case.
 ---
- dlls/win32u/input.c      | 16 ++++++++++++++++
- dlls/win32u/win32u.spec  |  1 +
- dlls/winex11.drv/event.c |  6 +++---
- include/winuser.h        |  1 +
- 4 files changed, 21 insertions(+), 3 deletions(-)
+ dlls/win32u/gdiobj.c         |  1 +
+ dlls/win32u/input.c          | 16 ++++++++++++++++
+ dlls/win32u/win32u.spec      |  3 +++
+ dlls/win32u/win32u_private.h |  1 +
+ dlls/win32u/wrappers.c       |  6 ++++++
+ dlls/winex11.drv/event.c     |  6 +++---
+ include/winuser.h            |  1 +
+ 7 files changed, 31 insertions(+), 3 deletions(-)
 
+diff --git a/dlls/win32u/gdiobj.c b/dlls/win32u/gdiobj.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/gdiobj.c
++++ b/dlls/win32u/gdiobj.c
+@@ -1232,6 +1232,7 @@ static struct unix_funcs unix_funcs =
+     __wine_get_vulkan_driver,
+     __wine_get_wgl_driver,
+     __wine_set_display_driver,
++    __wine_set_foreground_window,
+ };
+ 
+ NTSTATUS gdi_init(void)
 diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/input.c
 +++ b/dlls/win32u/input.c
-@@ -348,6 +348,22 @@ HWND WINAPI SetFocus( HWND hwnd )
+@@ -1066,6 +1066,22 @@ BOOL WINAPI release_capture(void)
+     return ret;
  }
- 
  
 +/*******************************************************************
 + *      __wine_set_foreground_window  (USER32.@)
@@ -44,20 +59,51 @@ index 11111111111..11111111111 100644
 +
 +
  /*******************************************************************
-  *		SetForegroundWindow  (USER32.@)
+  *           NtUserGetForegroundWindow  (win32u.@)
   */
-diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+diff --git a/dlls/win32u/win32u.spec b/dlls/win32u/win32u.spec
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/win32u.spec
 +++ b/dlls/win32u/win32u.spec
-@@ -839,6 +839,7 @@
- @ stdcall SetDCHook(long ptr long)
- @ stdcall SetHookFlags(long long)
- @ cdecl __wine_set_visible_region(long long ptr ptr ptr)
-+@ cdecl __wine_set_foreground_window(long long)
+@@ -1320,6 +1320,9 @@
+ ################################################################
+ # Wine internal extensions
  
++# user32
++@ cdecl __wine_set_foreground_window(long long)
++
  # Graphics drivers
  @ cdecl __wine_set_display_driver(ptr long)
+ 
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -294,6 +294,7 @@ struct unix_funcs
+     const struct vulkan_funcs * (CDECL *get_vulkan_driver)( UINT version );
+     struct opengl_funcs * (CDECL *get_wgl_driver)( HDC hdc, UINT version );
+     void (CDECL *set_display_driver)( struct user_driver_funcs *funcs, UINT version );
++    BOOL (CDECL *set_foreground_window)( HWND hwnd, DWORD time );
+ };
+ 
+ /* clipboard.c */
+diff --git a/dlls/win32u/wrappers.c b/dlls/win32u/wrappers.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/wrappers.c
++++ b/dlls/win32u/wrappers.c
+@@ -1185,6 +1185,12 @@ BOOL CDECL __wine_get_icm_profile( HDC hdc, BOOL allow_default, DWORD *size, WCH
+     return unix_funcs->get_icm_profile( hdc, allow_default, size, filename );
+ }
+ 
++BOOL CDECL __wine_set_foreground_window( HWND hwnd, DWORD time )
++{
++    if (!unix_funcs) return FALSE;
++    unix_funcs->set_foreground_window( hwnd, time );
++}
++
+ BOOL CDECL __wine_get_brush_bitmap_info( HBRUSH handle, BITMAPINFO *info, void *bits, UINT *usage )
+ {
+     if (!unix_funcs) return FALSE;
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/event.c
@@ -101,47 +147,6 @@ index 11111111111..11111111111 100644
  
  /* Uxtheme hook functions and struct */
  
-diff --git a/dlls/win32u/gdiobj.c b/dlls/win32u/gdiobj.c
-index 2af3b9529d5..c28523d2e68 100644
---- a/dlls/win32u/gdiobj.c
-+++ b/dlls/win32u/gdiobj.c
-@@ -1216,6 +1216,7 @@ static struct unix_funcs unix_funcs =
-     __wine_get_wgl_driver,
-     __wine_set_display_driver,
-     __wine_set_visible_region,
-+    __wine_set_foreground_window,
- };
- 
- NTSTATUS gdi_init(void)
-diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
-index 8b896d62fa1..94282648b47 100644
---- a/dlls/win32u/win32u_private.h
-+++ b/dlls/win32u/win32u_private.h
-@@ -272,6 +272,7 @@ struct unix_funcs
-     void (CDECL *set_display_driver)( struct user_driver_funcs *funcs, UINT version );
-     void (CDECL *set_visible_region)( HDC hdc, HRGN hrgn, const RECT *vis_rect, const RECT *device_rect,
-                                       struct window_surface *surface );
-+    BOOL (CDECL *set_foreground_window)( HWND hwnd, DWORD time );
- };
- 
- /* cursoricon.c */
-diff --git a/dlls/win32u/wrappers.c b/dlls/win32u/wrappers.c
-index fd96bbce5d7..70e2f76b539 100644
---- a/dlls/win32u/wrappers.c
-+++ b/dlls/win32u/wrappers.c
-@@ -1080,6 +1080,12 @@ void CDECL __wine_set_visible_region( HDC hdc, HRGN hrgn, const RECT *vis_rect,
-     unix_funcs->set_visible_region( hdc, hrgn, vis_rect, device_rect, surface );
- }
- 
-+BOOL CDECL __wine_set_foreground_window( HWND hwnd, DWORD time )
-+{
-+    if (!unix_funcs) return;
-+    unix_funcs->set_foreground_window( hwnd, time );
-+}
-+
- BOOL CDECL __wine_get_brush_bitmap_info( HBRUSH handle, BITMAPINFO *info, void *bits, UINT *usage )
- {
-     if (!unix_funcs) return FALSE;
 -- 
 2.35.1
 

@@ -1,0 +1,64 @@
+From 7ad117b864eb0929034453c6eaffbfd850668467 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Sat, 26 Mar 2022 17:04:26 +0100
+Subject: [PATCH] include: Use __builtin_expect for debug macros.
+
+---
+ include/wine/debug.h | 25 ++++++++++++++++++++-----
+ 1 file changed, 20 insertions(+), 5 deletions(-)
+
+diff --git a/include/wine/debug.h b/include/wine/debug.h
+index 11111111111..11111111111 100644
+--- a/include/wine/debug.h
++++ b/include/wine/debug.h
+@@ -55,27 +55,42 @@ struct __wine_debug_channel
+     char name[15];
+ };
+ 
++#ifdef __GNUC__
++# define __WINE_GET_DEBUGGING_UNLIKELY(x) (__builtin_expect(!!(x), 0))
++# define __WINE_GET_DEBUGGING_LIKELY(x) (__builtin_expect(!!(x), 1))
++#else
++# define __WINE_GET_DEBUGGING_UNLIKELY(x) (!!(x))
++# define __WINE_GET_DEBUGGING_LIKELY(x) (!!(x))
++#endif
++
+ #ifndef WINE_NO_TRACE_MSGS
+-# define __WINE_GET_DEBUGGING_TRACE(dbch) ((dbch)->flags & (1 << __WINE_DBCL_TRACE))
++# define __WINE_GET_DEBUGGING_TRACE(dbch) __WINE_GET_DEBUGGING_UNLIKELY((dbch)->flags & (1 << __WINE_DBCL_TRACE))
++# define __WINE_GET_DEBUGGING_EXPECT_TRACE(x) __WINE_GET_DEBUGGING_UNLIKELY(x)
+ #else
+ # define __WINE_GET_DEBUGGING_TRACE(dbch) 0
++# define __WINE_GET_DEBUGGING_EXPECT_TRACE(x) 0
+ #endif
+ 
+ #ifndef WINE_NO_DEBUG_MSGS
+-# define __WINE_GET_DEBUGGING_WARN(dbch)  ((dbch)->flags & (1 << __WINE_DBCL_WARN))
+-# define __WINE_GET_DEBUGGING_FIXME(dbch) ((dbch)->flags & (1 << __WINE_DBCL_FIXME))
++# define __WINE_GET_DEBUGGING_WARN(dbch)  __WINE_GET_DEBUGGING_UNLIKELY((dbch)->flags & (1 << __WINE_DBCL_WARN))
++# define __WINE_GET_DEBUGGING_FIXME(dbch) __WINE_GET_DEBUGGING_LIKELY((dbch)->flags & (1 << __WINE_DBCL_FIXME))
++# define __WINE_GET_DEBUGGING_EXPECT_WARN(x) __WINE_GET_DEBUGGING_UNLIKELY(x)
++# define __WINE_GET_DEBUGGING_EXPECT_FIXME(x) __WINE_GET_DEBUGGING_LIKELY(x)
+ #else
+ # define __WINE_GET_DEBUGGING_WARN(dbch)  0
+ # define __WINE_GET_DEBUGGING_FIXME(dbch) 0
++# define __WINE_GET_DEBUGGING_EXPECT_WARN(x) 0
++# define __WINE_GET_DEBUGGING_EXPECT_FIXME(x) 0
+ #endif
+ 
+ /* define error macro regardless of what is configured */
+-#define __WINE_GET_DEBUGGING_ERR(dbch)  ((dbch)->flags & (1 << __WINE_DBCL_ERR))
++#define __WINE_GET_DEBUGGING_ERR(dbch)  __WINE_GET_DEBUGGING_LIKELY((dbch)->flags & (1 << __WINE_DBCL_ERR))
++#define __WINE_GET_DEBUGGING_EXPECT_ERR(x) __WINE_GET_DEBUGGING_LIKELY(x)
+ 
+ #define __WINE_GET_DEBUGGING(dbcl,dbch)  __WINE_GET_DEBUGGING##dbcl(dbch)
+ 
+ #define __WINE_IS_DEBUG_ON(dbcl,dbch) \
+-  (__WINE_GET_DEBUGGING##dbcl(dbch) && (__wine_dbg_get_channel_flags(dbch) & (1 << __WINE_DBCL##dbcl)))
++  (__WINE_GET_DEBUGGING##dbcl(dbch) && __WINE_GET_DEBUGGING_EXPECT##dbcl((__wine_dbg_get_channel_flags(dbch) & (1 << __WINE_DBCL##dbcl))))
+ 
+ #if defined(__GNUC__) || defined(__clang__)
+ 
+-- 
+2.35.1
+

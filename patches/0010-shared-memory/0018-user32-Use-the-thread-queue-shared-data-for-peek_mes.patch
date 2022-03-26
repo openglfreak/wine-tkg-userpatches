@@ -19,7 +19,7 @@ diff --git a/dlls/user32/message.c b/dlls/user32/message.c
 index 11111111111..11111111111 100644
 --- a/dlls/user32/message.c
 +++ b/dlls/user32/message.c
-@@ -2681,12 +2681,14 @@ static inline void call_sendmsg_callback( SENDASYNCPROC callback, HWND hwnd, UIN
+@@ -2695,12 +2695,14 @@ static inline void call_sendmsg_callback( SENDASYNCPROC callback, HWND hwnd, UIN
  static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags, UINT changed_mask )
  {
      LRESULT result;
@@ -34,7 +34,7 @@ index 11111111111..11111111111 100644
  
      if (!(buffer = HeapAlloc( GetProcessHeap(), 0, buffer_size ))) return -1;
  
-@@ -2698,10 +2700,39 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -2712,10 +2714,39 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
          NTSTATUS res;
          size_t size = 0;
          const message_data_t *msg_data = buffer;
@@ -79,8 +79,8 @@ diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/ntuser_private.h
 +++ b/dlls/win32u/ntuser_private.h
-@@ -119,6 +119,8 @@ struct user_thread_info
-     struct rawinput_thread_data  *rawinput;               /* RawInput thread local data / buffer */
+@@ -162,6 +162,8 @@ struct user_thread_info
+     UINT                          spy_indent;             /* Current spy indent */
      HANDLE                        desktop_shared_map;     /* HANDLE to server's desktop shared memory */
      struct desktop_shared_memory *desktop_shared_memory;  /* Ptr to server's desktop shared memory */
 +    HANDLE                        queue_shared_map;       /* HANDLE to server's thread queue shared memory */
@@ -88,9 +88,9 @@ index 11111111111..11111111111 100644
  };
  
  C_ASSERT( sizeof(struct user_thread_info) <= sizeof(((TEB *)0)->Win32ClientInfo) );
-@@ -148,4 +150,24 @@ void *free_user_handle( HANDLE handle, unsigned int type ) DECLSPEC_HIDDEN;
- void *get_user_handle_ptr( HANDLE handle, unsigned int type ) DECLSPEC_HIDDEN;
- void release_user_handle_ptr( void *ptr ) DECLSPEC_HIDDEN;
+@@ -304,4 +306,24 @@ WND *get_win_ptr( HWND hwnd ) DECLSPEC_HIDDEN;
+ BOOL is_child( HWND parent, HWND child );
+ BOOL is_window( HWND hwnd ) DECLSPEC_HIDDEN;
  
 +#if defined(__i386__) || defined(__x86_64__)
 +#define __SHARED_READ_SEQ( x ) (*(x))
@@ -117,21 +117,21 @@ diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/sysparams.c
 +++ b/dlls/win32u/sysparams.c
-@@ -4532,6 +4532,13 @@ static void thread_detach(void)
-         thread_info->desktop_shared_map = NULL;
+@@ -4617,6 +4617,13 @@ static void thread_detach(void)
          thread_info->desktop_shared_memory = NULL;
      }
-+
+ 
 +    if (thread_info->queue_shared_map)
 +    {
 +        NtClose( thread_info->queue_shared_map );
 +        thread_info->queue_shared_map = NULL;
 +        thread_info->queue_shared_memory = NULL;
 +    }
++
+     exiting_thread_id = 0;
  }
  
- /***********************************************************************
-@@ -4547,6 +4554,8 @@ ULONG_PTR WINAPI NtUserCallNoParam( ULONG code )
+@@ -4642,6 +4649,8 @@ ULONG_PTR WINAPI NtUserCallNoParam( ULONG code )
      case NtUserThreadDetach:
          thread_detach();
          return 0;
@@ -144,7 +144,7 @@ diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/win32u_private.h
 +++ b/dlls/win32u/win32u_private.h
-@@ -295,6 +295,7 @@ static inline void release_win_ptr( struct tagWND *ptr )
+@@ -409,6 +409,7 @@ static inline void release_win_ptr( struct tagWND *ptr )
  
  /* winstation.c */
  extern volatile struct desktop_shared_memory *get_desktop_shared_memory( void ) DECLSPEC_HIDDEN;
@@ -152,7 +152,7 @@ index 11111111111..11111111111 100644
  
  extern void wrappers_init( unixlib_handle_t handle ) DECLSPEC_HIDDEN;
  extern NTSTATUS gdi_init(void) DECLSPEC_HIDDEN;
-@@ -475,24 +476,4 @@ static inline const char *debugstr_us( const UNICODE_STRING *us )
+@@ -589,24 +590,4 @@ static inline const char *debugstr_us( const UNICODE_STRING *us )
      return debugstr_wn( us->Buffer, us->Length / sizeof(WCHAR) );
  }
  
@@ -181,7 +181,7 @@ diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/winstation.c
 +++ b/dlls/win32u/winstation.c
-@@ -456,13 +456,13 @@ static const WCHAR *get_default_desktop( void *buf, size_t buf_size )
+@@ -571,13 +571,13 @@ static const WCHAR *get_default_desktop( void *buf, size_t buf_size )
  }
  
  
@@ -197,14 +197,16 @@ index 11111111111..11111111111 100644
      section_str.MaximumLength = section_str.Length + sizeof(WCHAR);
      section_str.Buffer = (WCHAR *)name;
      InitializeObjectAttributes( &attr, &section_str, 0, root, NULL );
-@@ -511,12 +511,29 @@ volatile struct desktop_shared_memory *get_desktop_shared_memory( void )
+@@ -628,7 +628,7 @@ volatile struct desktop_shared_memory *get_desktop_shared_memory( void )
          if (i == 0) *(ptr - 1) = '\\';
      }
  
 -    map_shared_memory_section( buf, sizeof(struct desktop_shared_memory), root,
 +    map_shared_memory_section( buf, ptr - buf - 1, sizeof(struct desktop_shared_memory), root,
                                 &thread_info->desktop_shared_map, (void **)&thread_info->desktop_shared_memory );
-     return thread_info->desktop_shared_memory;
+ 
+     NtClose( root );
+@@ -636,6 +636,23 @@ volatile struct desktop_shared_memory *get_desktop_shared_memory( void )
  }
  
  
@@ -232,9 +234,9 @@ diff --git a/include/ntuser.h b/include/ntuser.h
 index 11111111111..11111111111 100644
 --- a/include/ntuser.h
 +++ b/include/ntuser.h
-@@ -89,6 +89,7 @@ enum
-     NtUserGetInputState,
+@@ -128,6 +128,7 @@ enum
      /* temporary exports */
+     NtUserExitingThread,
      NtUserThreadDetach,
 +    NtUserGetQueueSharedMemory,
  };

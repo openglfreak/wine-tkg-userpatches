@@ -1,0 +1,62 @@
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Subject: [PATCH 3/4] win32u: Add gdi_image_bits allocation function based on freelist cache allocator.
+Message-Id: <f5b1a8fe-cdc8-92b8-db1e-ce5e67355fa0@gmail.com>
+Date: Mon, 21 Mar 2022 05:42:45 +0900
+In-Reply-To: <7303da75-56e4-7139-34ce-b90da9eccc03@gmail.com>
+References: <7303da75-56e4-7139-34ce-b90da9eccc03@gmail.com>
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ dlls/win32u/bitblt.c        | 19 +++++++++++++++++++
+ dlls/win32u/ntgdi_private.h |  4 ++++
+ 2 files changed, 23 insertions(+)
+
+diff --git a/dlls/win32u/bitblt.c b/dlls/win32u/bitblt.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/bitblt.c
++++ b/dlls/win32u/bitblt.c
+@@ -168,6 +168,25 @@ void CDECL free_heap_bits( struct gdi_image_bits *bits )
+     free( bits->ptr );
+ }
+ 
++static void CDECL free_gdi_cache_bits( struct gdi_image_bits *bits )
++{
++    free_gdi_cache_memory( bits->ptr, (SIZE_T)bits->param );
++}
++
++BOOL alloc_gdi_cache_bits( struct gdi_image_bits *bits, SIZE_T size, int flags )
++{
++    void *mem = alloc_gdi_cache_memory( size, flags & ALLOC_ZERO_MEMORY );
++
++    if (!mem)
++        return FALSE;
++
++    bits->ptr = mem;
++    bits->is_copy = !!(flags & ALLOC_IS_COPY);
++    bits->free = free_gdi_cache_bits;
++    bits->param = (void *)size;
++    return TRUE;
++}
++
+ DWORD convert_bits( const BITMAPINFO *src_info, struct bitblt_coords *src,
+                     BITMAPINFO *dst_info, struct gdi_image_bits *bits )
+ {
+diff --git a/dlls/win32u/ntgdi_private.h b/dlls/win32u/ntgdi_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/ntgdi_private.h
++++ b/dlls/win32u/ntgdi_private.h
+@@ -682,6 +682,10 @@ static inline void copy_bitmapinfo( BITMAPINFO *dst, const BITMAPINFO *src )
+     memcpy( dst, src, get_dib_info_size( src, DIB_RGB_COLORS ));
+ }
+ 
++#define ALLOC_ZERO_MEMORY  1
++#define ALLOC_IS_COPY      2
++
++extern BOOL alloc_gdi_cache_bits( struct gdi_image_bits *bits, SIZE_T size, int flags ) DECLSPEC_HIDDEN;
+ extern void CDECL free_heap_bits( struct gdi_image_bits *bits ) DECLSPEC_HIDDEN;
+ 
+ void set_gdi_client_ptr( HGDIOBJ handle, void *ptr ) DECLSPEC_HIDDEN;
+
+-- 
+2.35.1
+

@@ -1,31 +1,29 @@
-From e66e0313040007eb2a31ea150b80d48ede512fb0 Mon Sep 17 00:00:00 2001
-From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
-Date: Sun, 12 Dec 2021 13:19:34 +0100
-Subject: [PATCH 42/44] user32: Use input shared memory in GetKeyboardState.
+From 883ca3744ca413973955dd569dc0012c4ba8c673 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Mon, 28 Mar 2022 06:41:24 +0200
+Subject: [PATCH 42/44] win32u: Use input shared memory in
+ NtUserGetKeyboardState.
 
+Almost entirely copied from a commit by Rémi Bernon.
 ---
- dlls/user32/input.c     | 22 ++++++++++++++++++++++
- dlls/user32/user32.spec |  2 +-
- 2 files changed, 23 insertions(+), 1 deletion(-)
+ dlls/win32u/input.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
 
-diff --git a/dlls/user32/input.c b/dlls/user32/input.c
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
 index 11111111111..11111111111 100644
---- a/dlls/user32/input.c
-+++ b/dlls/user32/input.c
-@@ -502,6 +502,28 @@ BOOL WINAPI GetKeyboardLayoutNameA(LPSTR pszKLID)
-     return FALSE;
- }
- 
-+/**********************************************************************
-+ *       GetKeyboardState    (USER32.@)
-+ */
-+BOOL WINAPI GetKeyboardState( BYTE *state )
-+{
-+    volatile struct input_shared_memory *shared = (void *)NtUserCallNoParam( NtUserGetInputSharedMemory );
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -311,11 +311,23 @@ SHORT WINAPI NtUserGetKeyState( INT vkey )
+  */
+ BOOL WINAPI NtUserGetKeyboardState( BYTE *state )
+ {
++    volatile struct input_shared_memory *shared = get_input_shared_memory();
 +    BOOL skip = TRUE;
-+
-+    TRACE("(%p)\n", state);
-+
+     BOOL ret;
+     UINT i;
+ 
+     TRACE("(%p)\n", state);
+ 
 +    if (!shared) skip = FALSE;
 +    else SHARED_READ_BEGIN( &shared->seq )
 +    {
@@ -35,23 +33,10 @@ index 11111111111..11111111111 100644
 +    SHARED_READ_END( &shared->seq );
 +
 +    if (skip) return TRUE;
-+    return NtUserGetKeyboardState( state );
-+}
 +
- /****************************************************************************
-  *		GetKeyNameTextA (USER32.@)
-  */
-diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
-index 11111111111..11111111111 100644
---- a/dlls/user32/user32.spec
-+++ b/dlls/user32/user32.spec
-@@ -321,7 +321,7 @@
- @ stdcall GetKeyboardLayoutList(long ptr) NtUserGetKeyboardLayoutList
- @ stdcall GetKeyboardLayoutNameA(ptr)
- @ stdcall GetKeyboardLayoutNameW(ptr) NtUserGetKeyboardLayoutName
--@ stdcall -import GetKeyboardState(ptr) NtUserGetKeyboardState
-+@ stdcall GetKeyboardState(ptr)
- @ stdcall GetKeyboardType(long)
- @ stdcall GetLastActivePopup(long)
- @ stdcall GetLastInputInfo(ptr)
+     memset( state, 0, 256 );
+     SERVER_START_REQ( get_key_state )
+     {
+-- 
+2.35.1
 

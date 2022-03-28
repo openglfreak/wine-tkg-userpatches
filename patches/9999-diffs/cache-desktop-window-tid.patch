@@ -1,0 +1,78 @@
+diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/ntuser_private.h
++++ b/dlls/win32u/ntuser_private.h
+@@ -159,6 +159,8 @@ struct user_thread_info
+     HKL                           kbd_layout;             /* Current keyboard layout */
+     DWORD                         kbd_layout_id;          /* Current keyboard layout ID */
+     HWND                          top_window;             /* Desktop window */
++    DWORD                         top_window_tid;         /* Thread ID of desktop window */
++    DWORD                         top_window_pid;         /* Process ID of desktop window */
+     HWND                          msg_window;             /* HWND_MESSAGE parent window */
+     struct rawinput_thread_data  *rawinput;               /* RawInput thread local data / buffer */
+     UINT                          spy_indent;             /* Current spy indent */
+diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -311,8 +311,9 @@ BOOL is_window( HWND hwnd )
+ /* see GetWindowThreadProcessId */
+ DWORD get_window_thread( HWND hwnd, DWORD *process )
+ {
++    struct user_thread_info *thread_info;
+     WND *ptr;
+-    DWORD tid = 0;
++    DWORD tid = 0, pid = 0;
+ 
+     if (!(ptr = get_win_ptr( hwnd )))
+     {
+@@ -329,6 +330,16 @@ DWORD get_window_thread( HWND hwnd, DWORD *process )
+         return tid;
+     }
+ 
++    if (ptr == WND_DESKTOP)
++    {
++        thread_info = get_user_thread_info();
++        if (thread_info->top_window_tid)
++        {
++            if (process) *process = thread_info->top_window_pid;
++            return thread_info->top_window_tid;
++        }
++    }
++
+     /* check other processes */
+     SERVER_START_REQ( get_window_info )
+     {
+@@ -336,10 +347,18 @@ DWORD get_window_thread( HWND hwnd, DWORD *process )
+         if (!wine_server_call_err( req ))
+         {
+             tid = (DWORD)reply->tid;
+-            if (process) *process = (DWORD)reply->pid;
++            pid = (DWORD)reply->pid;
+         }
+     }
+     SERVER_END_REQ;
++
++    if (ptr == WND_DESKTOP && tid)
++    {
++        thread_info->top_window_tid = tid;
++        thread_info->top_window_pid = pid;
++    }
++
++    if (process) *process = pid;
+     return tid;
+ }
+ 
+diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/winstation.c
++++ b/dlls/win32u/winstation.c
+@@ -239,6 +239,8 @@ BOOL WINAPI NtUserSetThreadDesktop( HDESK handle )
+     {
+         struct user_thread_info *thread_info = get_user_thread_info();
+         thread_info->top_window = 0;
++        thread_info->top_window_tid = 0;
++        thread_info->top_window_pid = 0;
+         thread_info->msg_window = 0;
+         if (thread_info->desktop_shared_map)
+         {

@@ -17,13 +17,14 @@ index 11111111111..11111111111 100644
  #include "ntgdi_private.h"
  #include "ntuser_private.h"
  #include "devpropdef.h"
-@@ -1364,6 +1369,23 @@ static void clear_display_devices(void)
+@@ -1364,12 +1369,31 @@ static void clear_display_devices(void)
      }
  }
  
 +static ULONGLONG last_update = 0;
 +
-+static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
++#define user_shared_data ((volatile const struct _KUSER_SHARED_DATA *)0x7ffe0000)
++
 +static ULONGLONG get_tick_count(void)
 +{
 +    ULONG high, low;
@@ -41,22 +42,39 @@ index 11111111111..11111111111 100644
  static BOOL update_display_cache_from_registry(void)
  {
      DWORD adapter_id, monitor_id, monitor_count = 0, size;
-@@ -1379,6 +1401,8 @@ static BOOL update_display_cache_from_registry(void)
+     KEY_FULL_INFORMATION key;
+     struct adapter *adapter;
+     struct monitor *monitor;
++    ULONGLONG tick_count;
+     HANDLE mutex = NULL;
+     NTSTATUS status;
+     BOOL ret;
+@@ -1379,11 +1403,17 @@ static BOOL update_display_cache_from_registry(void)
                                                    sizeof(devicemap_video_keyW) )))
          return FALSE;
  
-+    if (get_tick_count() - last_update < 1000) return TRUE;
++    if ((tick_count = get_tick_count()) - last_update < 1000) return TRUE;
 +
      status = NtQueryKey( video_key, KeyFullInformation, &key, sizeof(key), &size );
      if (status && status != STATUS_BUFFER_OVERFLOW)
          return FALSE;
-@@ -1420,7 +1444,10 @@ static BOOL update_display_cache_from_registry(void)
+ 
+-    if (key.LastWriteTime.QuadPart <= last_query_display_time) return TRUE;
++    if (key.LastWriteTime.QuadPart <= last_query_display_time)
++    {
++        last_update = tick_count;
++        return TRUE;
++    }
+ 
+     mutex = get_display_device_init_mutex();
+     pthread_mutex_lock( &display_lock );
+@@ -1420,7 +1450,10 @@ static BOOL update_display_cache_from_registry(void)
      }
  
      if ((ret = !list_empty( &adapters ) && !list_empty( &monitors )))
 +    {
          last_query_display_time = key.LastWriteTime.QuadPart;
-+        last_update = get_tick_count();
++        last_update = tick_count;
 +    }
      pthread_mutex_unlock( &display_lock );
      release_display_device_init_mutex( mutex );

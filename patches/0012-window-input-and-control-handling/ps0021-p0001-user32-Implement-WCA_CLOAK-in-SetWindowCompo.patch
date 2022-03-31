@@ -35,17 +35,17 @@ around this one.
  dlls/win32u/win32u_private.h |   1 +
  dlls/win32u/window.c         | 109 ++++++++++++++++++++++++++++++++++-
  dlls/win32u/wrappers.c       |   6 ++
- include/ntuser.h             |  42 ++++++++++++++
+ include/ntuser.h             |  41 +++++++++++++
  include/wine/gdi_driver.h    |   1 +
  server/protocol.def          |  13 +++++
  server/window.c              |  83 +++++++++++++++++++++++---
- 14 files changed, 266 insertions(+), 16 deletions(-)
+ 14 files changed, 265 insertions(+), 16 deletions(-)
 
 diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/user32/user_private.h
 +++ b/dlls/user32/user_private.h
-@@ -203,5 +203,6 @@ void WINAPI USER_ScrollBarDraw(HWND, HDC, INT, enum SCROLL_HITTEST,
+@@ -197,5 +197,6 @@ void WINAPI USER_ScrollBarDraw(HWND, HDC, INT, enum SCROLL_HITTEST,
                                 const struct SCROLL_TRACKING_INFO *, BOOL, BOOL, RECT *, INT, INT,
                                 INT, BOOL) DECLSPEC_HIDDEN;
  void WINAPI SCROLL_SetStandardScrollPainted(HWND hwnd, INT bar, BOOL visible);
@@ -56,7 +56,7 @@ diff --git a/dlls/user32/win.c b/dlls/user32/win.c
 index 11111111111..11111111111 100644
 --- a/dlls/user32/win.c
 +++ b/dlls/user32/win.c
-@@ -1958,11 +1958,10 @@ BOOL WINAPI SetWindowDisplayAffinity(HWND hwnd, DWORD affinity)
+@@ -1876,11 +1876,10 @@ BOOL WINAPI SetWindowDisplayAffinity(HWND hwnd, DWORD affinity)
  /**********************************************************************
   *              SetWindowCompositionAttribute (USER32.@)
   */
@@ -75,31 +75,31 @@ diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/driver.c
 +++ b/dlls/win32u/driver.c
-@@ -862,6 +862,11 @@ static void CDECL nulldrv_SetParent( HWND hwnd, HWND parent, HWND old_parent )
+@@ -862,6 +862,11 @@ static void nulldrv_SetParent( HWND hwnd, HWND parent, HWND old_parent )
  {
  }
  
-+static DWORD CDECL nulldrv_SetWindowCompositionAttribute( HWND hwnd, DWORD attribute, void *data )
++static DWORD nulldrv_SetWindowCompositionAttribute( HWND hwnd, DWORD attribute, void *data )
 +{
 +    return STATUS_NOT_IMPLEMENTED;
 +}
 +
- static void CDECL nulldrv_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
+ static void nulldrv_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
  {
  }
-@@ -1163,6 +1168,11 @@ static void CDECL loaderdrv_SetLayeredWindowAttributes( HWND hwnd, COLORREF key,
+@@ -1152,6 +1157,11 @@ static void loaderdrv_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE
      load_driver()->pSetLayeredWindowAttributes( hwnd, key, alpha, flags );
  }
  
-+static DWORD CDECL loaderdrv_SetWindowCompositionAttribute( HWND hwnd, DWORD attribute, void *data )
++static DWORD loaderdrv_SetWindowCompositionAttribute( HWND hwnd, DWORD attribute, void *data )
 +{
 +    return load_driver()->pSetWindowCompositionAttribute( hwnd, attribute, data );
 +}
 +
- static void CDECL loaderdrv_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
+ static void loaderdrv_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
  {
      load_driver()->pSetWindowRgn( hwnd, hrgn, redraw );
-@@ -1218,6 +1228,7 @@ static const struct user_driver_funcs lazy_load_driver =
+@@ -1207,6 +1217,7 @@ static const struct user_driver_funcs lazy_load_driver =
      nulldrv_SetFocus,
      loaderdrv_SetLayeredWindowAttributes,
      nulldrv_SetParent,
@@ -107,7 +107,7 @@ index 11111111111..11111111111 100644
      loaderdrv_SetWindowRgn,
      nulldrv_SetWindowIcon,
      nulldrv_SetWindowStyle,
-@@ -1287,6 +1298,7 @@ void CDECL __wine_set_display_driver( struct user_driver_funcs *driver, UINT ver
+@@ -1280,6 +1291,7 @@ void CDECL __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT v
      SET_USER_FUNC(SetFocus);
      SET_USER_FUNC(SetLayeredWindowAttributes);
      SET_USER_FUNC(SetParent);
@@ -119,7 +119,7 @@ diff --git a/dlls/win32u/gdiobj.c b/dlls/win32u/gdiobj.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/gdiobj.c
 +++ b/dlls/win32u/gdiobj.c
-@@ -1208,6 +1208,7 @@ static struct unix_funcs unix_funcs =
+@@ -1199,6 +1199,7 @@ static struct unix_funcs unix_funcs =
      NtUserSetLayeredWindowAttributes,
      NtUserSetParent,
      NtUserSetSysColors,
@@ -131,7 +131,7 @@ diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/message.c
 +++ b/dlls/win32u/message.c
-@@ -146,6 +146,8 @@ LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
+@@ -1122,6 +1122,8 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
      case WM_WINE_UPDATEWINDOWSTATE:
          update_window_state( hwnd );
          return 0;
@@ -144,7 +144,7 @@ diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/ntuser_private.h
 +++ b/dlls/win32u/ntuser_private.h
-@@ -312,6 +312,8 @@ WND *get_win_ptr( HWND hwnd ) DECLSPEC_HIDDEN;
+@@ -339,6 +339,8 @@ WND *get_win_ptr( HWND hwnd ) DECLSPEC_HIDDEN;
  BOOL is_child( HWND parent, HWND child );
  BOOL is_window( HWND hwnd ) DECLSPEC_HIDDEN;
  
@@ -170,7 +170,7 @@ diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/win32u_private.h
 +++ b/dlls/win32u/win32u_private.h
-@@ -261,6 +261,7 @@ struct unix_funcs
+@@ -271,6 +271,7 @@ struct unix_funcs
      BOOL     (WINAPI *pNtUserSetLayeredWindowAttributes)( HWND hwnd, COLORREF key, BYTE alpha, DWORD flags );
      HWND     (WINAPI *pNtUserSetParent)( HWND hwnd, HWND parent );
      BOOL     (WINAPI *pNtUserSetSysColors)( INT count, const INT *colors, const COLORREF *values );
@@ -182,7 +182,7 @@ diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/window.c
 +++ b/dlls/win32u/window.c
-@@ -1138,10 +1138,102 @@ static DWORD fix_exstyle( DWORD style, DWORD exstyle )
+@@ -1183,10 +1183,102 @@ static DWORD fix_exstyle( DWORD style, DWORD exstyle )
      return exstyle;
  }
  
@@ -285,7 +285,7 @@ index 11111111111..11111111111 100644
      HWND ret = 0;
  
      if (!win || win == WND_DESKTOP) return 0;
-@@ -1158,10 +1250,19 @@ static HWND set_window_owner( HWND hwnd, HWND owner )
+@@ -1203,10 +1295,19 @@ static HWND set_window_owner( HWND hwnd, HWND owner )
          {
              win->owner = wine_server_ptr_handle( reply->full_owner );
              ret = wine_server_ptr_handle( reply->prev_owner );
@@ -305,7 +305,7 @@ index 11111111111..11111111111 100644
      return ret;
  }
  
-@@ -4535,7 +4636,7 @@ void destroy_thread_windows(void)
+@@ -4635,7 +4736,7 @@ void destroy_thread_windows(void)
   */
  static WND *create_window_handle( HWND parent, HWND owner, UNICODE_STRING *name,
                                    HINSTANCE instance, BOOL ansi,
@@ -314,7 +314,7 @@ index 11111111111..11111111111 100644
  {
      DPI_AWARENESS awareness = get_thread_dpi_awareness();
      HWND handle = 0, full_parent = 0, full_owner = 0;
-@@ -4564,6 +4665,7 @@ static WND *create_window_handle( HWND parent, HWND owner, UNICODE_STRING *name,
+@@ -4664,6 +4765,7 @@ static WND *create_window_handle( HWND parent, HWND owner, UNICODE_STRING *name,
              dpi         = reply->dpi;
              awareness   = reply->awareness;
              class       = wine_server_get_ptr( reply->class_ptr );
@@ -322,15 +322,15 @@ index 11111111111..11111111111 100644
          }
      }
      SERVER_END_REQ;
-@@ -4719,6 +4821,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
-     LRESULT result;
+@@ -4818,6 +4920,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
+     INT sw = SW_SHOW;
      RECT rect;
      WND *win;
 +    BOOL needs_cloak;
  
      static const WCHAR messageW[] = {'M','e','s','s','a','g','e'};
  
-@@ -4781,7 +4884,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
+@@ -4880,7 +4983,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
  
      style = cs.style & ~WS_VISIBLE;
      ex_style = cs.dwExStyle & ~WS_EX_LAYERED;
@@ -339,7 +339,7 @@ index 11111111111..11111111111 100644
          return 0;
      hwnd = win->obj.handle;
  
-@@ -4935,6 +5038,8 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
+@@ -5033,6 +5136,8 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
      /* call the driver */
  
      if (!user_driver->pCreateWindow( hwnd )) goto failed;
@@ -352,7 +352,7 @@ diff --git a/dlls/win32u/wrappers.c b/dlls/win32u/wrappers.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/wrappers.c
 +++ b/dlls/win32u/wrappers.c
-@@ -1070,6 +1070,12 @@ BOOL WINAPI NtUserSetSysColors( INT count, const INT *colors, const COLORREF *va
+@@ -1125,6 +1125,12 @@ BOOL WINAPI NtUserSetSysColors( INT count, const INT *colors, const COLORREF *va
      return unix_funcs->pNtUserSetSysColors( count, colors, values );
  }
  
@@ -369,7 +369,7 @@ diff --git a/include/ntuser.h b/include/ntuser.h
 index 11111111111..11111111111 100644
 --- a/include/ntuser.h
 +++ b/include/ntuser.h
-@@ -309,11 +309,52 @@ enum wine_internal_message
+@@ -232,10 +232,50 @@ enum wine_internal_message
      WM_WINE_MOUSE_LL_HOOK,
      WM_WINE_CLIPCURSOR,
      WM_WINE_UPDATEWINDOWSTATE,
@@ -377,7 +377,6 @@ index 11111111111..11111111111 100644
      WM_WINE_FIRST_DRIVER_MSG = 0x80001000,  /* range of messages reserved for the USER driver */
      WM_WINE_LAST_DRIVER_MSG = 0x80001fff
  };
- 
  
 +/* Undocumented structure for (Get|Set)WindowCompositionAttribute */
 +struct WINCOMPATTRDATA
@@ -418,11 +417,10 @@ index 11111111111..11111111111 100644
 +    WCA_LAST
 +};
 +
-+
- HKL     WINAPI NtUserActivateKeyboardLayout( HKL layout, UINT flags );
- BOOL    WINAPI NtUserAddClipboardFormatListener( HWND hwnd );
- BOOL    WINAPI NtUserAttachThreadInput( DWORD from, DWORD to, BOOL attach );
-@@ -457,6 +498,7 @@ BOOL    WINAPI NtUserSetSystemMenu( HWND hwnd, HMENU menu );
+ /* the various structures that can be sent in messages, in platform-independent layout */
+ struct packed_CREATESTRUCTW
+ {
+@@ -545,6 +585,7 @@ BOOL    WINAPI NtUserSetSystemMenu( HWND hwnd, HMENU menu );
  UINT_PTR WINAPI NtUserSetSystemTimer( HWND hwnd, UINT_PTR id, UINT timeout, TIMERPROC proc );
  BOOL    WINAPI NtUserSetThreadDesktop( HDESK handle );
  UINT_PTR WINAPI NtUserSetTimer( HWND hwnd, UINT_PTR id, UINT timeout, TIMERPROC proc, ULONG tolerance );
@@ -434,14 +432,14 @@ diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
 index 11111111111..11111111111 100644
 --- a/include/wine/gdi_driver.h
 +++ b/include/wine/gdi_driver.h
-@@ -309,6 +309,7 @@ struct user_driver_funcs
-     void    (CDECL *pSetFocus)(HWND);
-     void    (CDECL *pSetLayeredWindowAttributes)(HWND,COLORREF,BYTE,DWORD);
-     void    (CDECL *pSetParent)(HWND,HWND,HWND);
-+    DWORD   (CDECL *pSetWindowCompositionAttribute)(HWND,DWORD,void*);
-     void    (CDECL *pSetWindowRgn)(HWND,HRGN,BOOL);
-     void    (CDECL *pSetWindowIcon)(HWND,UINT,HICON);
-     void    (CDECL *pSetWindowStyle)(HWND,INT,STYLESTRUCT*);
+@@ -307,6 +307,7 @@ struct user_driver_funcs
+     void    (*pSetFocus)(HWND);
+     void    (*pSetLayeredWindowAttributes)(HWND,COLORREF,BYTE,DWORD);
+     void    (*pSetParent)(HWND,HWND,HWND);
++    DWORD   (*pSetWindowCompositionAttribute)(HWND,DWORD,void*);
+     void    (*pSetWindowRgn)(HWND,HRGN,BOOL);
+     void    (*pSetWindowIcon)(HWND,UINT,HICON);
+     void    (*pSetWindowStyle)(HWND,INT,STYLESTRUCT*);
 diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
@@ -619,5 +617,5 @@ index 11111111111..11111111111 100644
  {
 
 -- 
-2.35.1
+2.35.3
 

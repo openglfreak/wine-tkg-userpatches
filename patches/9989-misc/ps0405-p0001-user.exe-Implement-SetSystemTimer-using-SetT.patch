@@ -1,0 +1,68 @@
+From: Zebediah Figura <zfigura@codeweavers.com>
+Subject: [PATCH v2 1/6] user.exe: Implement SetSystemTimer() using SetTimer().
+Message-Id: <20220415182828.3116131-1-zfigura@codeweavers.com>
+Date: Fri, 15 Apr 2022 13:28:23 -0500
+
+Avoid using SetSystemTimer() to specify a callback; it does not support one.
+
+Signed-off-by: Zebediah Figura <zfigura@codeweavers.com>
+---
+ dlls/user.exe16/message.c      | 4 ++++
+ dlls/user.exe16/user_private.h | 2 ++
+ dlls/user.exe16/window.c       | 4 ++--
+ 3 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/user.exe16/message.c b/dlls/user.exe16/message.c
+index 11111111111..11111111111 100644
+--- a/dlls/user.exe16/message.c
++++ b/dlls/user.exe16/message.c
+@@ -1292,6 +1292,10 @@ LRESULT WINPROC_CallProc32ATo16( winproc_callback16_t callback, HWND hwnd, UINT
+         lParam = MAKELPARAM( 0, convert_handle_32_to_16( lParam, GMEM_DDESHARE ));
+         ret = callback( HWND_16(hwnd), msg, wParam, lParam, result, arg );
+         break; /* FIXME don't know how to free allocated memory (handle) !! */
++    case WM_TIMER:
++        if (wParam & SYSTEM_TIMER_FLAG)
++            msg = WM_SYSTIMER;
++        break;
+     case SBM_SETRANGE:
+         ret = callback( HWND_16(hwnd), SBM_SETRANGE16, 0, MAKELPARAM(wParam, lParam), result, arg );
+         break;
+diff --git a/dlls/user.exe16/user_private.h b/dlls/user.exe16/user_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/user.exe16/user_private.h
++++ b/dlls/user.exe16/user_private.h
+@@ -95,6 +95,8 @@ extern void call_WH_CALLWNDPROC_hook( HWND16 hwnd, UINT16 msg, WPARAM16 wp, LPAR
+ 
+ #define WM_SYSTIMER 0x0118
+ 
++#define SYSTEM_TIMER_FLAG 0x10000
++
+ /* Dialog info structure (must match the user32 one) */
+ typedef struct tagDIALOGINFO
+ {
+diff --git a/dlls/user.exe16/window.c b/dlls/user.exe16/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/user.exe16/window.c
++++ b/dlls/user.exe16/window.c
+@@ -111,7 +111,7 @@ UINT16 WINAPI SetTimer16( HWND16 hwnd, UINT16 id, UINT16 timeout, TIMERPROC16 pr
+ UINT16 WINAPI SetSystemTimer16( HWND16 hwnd, UINT16 id, UINT16 timeout, TIMERPROC16 proc )
+ {
+     TIMERPROC proc32 = (TIMERPROC)WINPROC_AllocProc16( (WNDPROC16)proc );
+-    return SetSystemTimer( WIN_Handle32(hwnd), id, timeout, proc32 );
++    return SetTimer( WIN_Handle32(hwnd), (UINT_PTR)id | SYSTEM_TIMER_FLAG, timeout, proc32 );
+ }
+ 
+ 
+@@ -1087,7 +1087,7 @@ void WINAPI SwitchToThisWindow16( HWND16 hwnd, BOOL16 restore )
+  */
+ BOOL16 WINAPI KillSystemTimer16( HWND16 hwnd, UINT16 id )
+ {
+-    return KillSystemTimer( WIN_Handle32(hwnd), id );
++    return KillTimer( WIN_Handle32(hwnd), (UINT_PTR)id | SYSTEM_TIMER_FLAG );
+ }
+ 
+ 
+
+-- 
+2.35.3
+

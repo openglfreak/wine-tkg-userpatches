@@ -11,60 +11,14 @@ Subject: [PATCH v2 2/2] win32u: Fix a pop-up window is not visible when its
 
 Signed-off-by: Haidong Yu <yuhaidong@uniontech.com>
 ---
- dlls/win32u/window.c | 40 ++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 40 insertions(+)
+ dlls/win32u/window.c | 1 +
+ 1 file changed, 1 insertion(+)
 
 diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/window.c
 +++ b/dlls/win32u/window.c
-@@ -3736,6 +3736,45 @@ static POINT get_minimized_pos( HWND hwnd, POINT pt )
-     return pt;
- }
- 
-+/***********************************************************************
-+ *              show_owned_popups
-+ *
-+ * Implementation of ShowOwnedPopups.
-+ */
-+static BOOL show_owned_popups( HWND owner, BOOL show )
-+{
-+    int count = 0;
-+    HWND *win_array = list_window_children( 0, get_desktop_window(), NULL, 0 );
-+
-+    if (!win_array) return TRUE;
-+
-+    while (win_array[count]) count++;
-+    while (--count >= 0)
-+    {
-+        if (get_window_relative( win_array[count], GW_OWNER ) != owner) continue;
-+        if (show)
-+        {
-+            if (win_get_flags( win_array[count] ) & WIN_NEEDS_SHOW_OWNEDPOPUP)
-+                /* In Windows, ShowOwnedPopups(TRUE) generates
-+                 * WM_SHOWWINDOW messages with SW_PARENTOPENING,
-+                 * regardless of the state of the owner
-+                 */
-+                send_message(win_array[count], WM_SHOWWINDOW, SW_SHOWNORMAL, SW_PARENTOPENING);
-+        }
-+        else
-+        {
-+            if (get_window_long( win_array[count], GWL_STYLE ) & WS_VISIBLE)
-+                /* In Windows, ShowOwnedPopups(FALSE) generates
-+                 * WM_SHOWWINDOW messages with SW_PARENTCLOSING,
-+                 * regardless of the state of the owner
-+                 */
-+                send_message(win_array[count], WM_SHOWWINDOW, SW_HIDE, SW_PARENTCLOSING);
-+        }
-+    }
-+    free( win_array );
-+    return TRUE;
-+}
-+
- /***********************************************************************
-  *           window_min_maximize
-  */
-@@ -3819,6 +3858,7 @@ static UINT window_min_maximize( HWND hwnd, UINT cmd, RECT *rect )
+@@ -3920,6 +3920,7 @@ static UINT window_min_maximize( HWND hwnd, UINT cmd, RECT *rect )
  
      case SW_SHOWNOACTIVATE:
          win_set_flags( hwnd, 0, WIN_RESTORE_MAX );

@@ -15,7 +15,7 @@ diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/init.c
 +++ b/dlls/winex11.drv/init.c
-@@ -382,7 +382,6 @@ static const struct user_driver_funcs x11drv_funcs =
+@@ -385,7 +385,6 @@ static const struct user_driver_funcs x11drv_funcs =
      .pToUnicodeEx = X11DRV_ToUnicodeEx,
      .pVkKeyScanEx = X11DRV_VkKeyScanEx,
      .pDestroyCursorIcon = X11DRV_DestroyCursorIcon,
@@ -93,7 +93,7 @@ index 11111111111..11111111111 100644
 -    if (!data->clip_hwnd) sync_window_cursor( clip_window );
 -    InterlockedExchangePointer( (void **)&cursor_window, msg_hwnd );
      data->clip_hwnd = msg_hwnd;
-     SendNotifyMessageW( GetDesktopWindow(), WM_X11DRV_CLIP_CURSOR_NOTIFY, 0, (LPARAM)msg_hwnd );
+     send_notify_message( NtUserGetDesktopWindow(), WM_X11DRV_CLIP_CURSOR_NOTIFY, 0, (LPARAM)msg_hwnd );
      return TRUE;
 @@ -771,23 +758,11 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
  
@@ -118,21 +118,21 @@ index 11111111111..11111111111 100644
 -    }
      release_win_data( data );
  
-     if (hwnd != GetDesktopWindow())
-@@ -1584,19 +1559,6 @@ void CDECL X11DRV_DestroyCursorIcon( HCURSOR handle )
+     if (hwnd != NtUserGetDesktopWindow())
+@@ -1587,19 +1562,6 @@ void X11DRV_DestroyCursorIcon( HCURSOR handle )
      }
  }
  
 -/***********************************************************************
 - *		SetCursor (X11DRV.@)
 - */
--void CDECL X11DRV_SetCursor( HCURSOR handle )
+-void X11DRV_SetCursor( HCURSOR handle )
 -{
 -    if (InterlockedExchangePointer( (void **)&last_cursor, handle ) != handle ||
 -        GetTickCount() - last_cursor_change > 100)
 -    {
 -        last_cursor_change = GetTickCount();
--        if (cursor_window) SendNotifyMessageW( cursor_window, WM_X11DRV_SET_CURSOR, 0, (LPARAM)handle );
+-        if (cursor_window) send_notify_message( cursor_window, WM_X11DRV_SET_CURSOR, 0, (LPARAM)handle );
 -    }
 -}
 -
@@ -143,16 +143,16 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -1629,8 +1629,6 @@ static void create_whole_window( struct x11drv_win_data *data )
+@@ -1640,8 +1640,6 @@ static void create_whole_window( struct x11drv_win_data *data )
  
      XFlush( data->display );  /* make sure the window exists before we start painting to it */
  
 -    sync_window_cursor( data->whole_window );
 -
  done:
-     if (win_rgn) DeleteObject( win_rgn );
+     if (win_rgn) NtGdiDeleteObjectApp( win_rgn );
  }
-@@ -1833,6 +1831,15 @@ BOOL CDECL X11DRV_CreateDesktopWindow( HWND hwnd )
+@@ -1844,6 +1842,15 @@ BOOL X11DRV_CreateDesktopWindow( HWND hwnd )
  {
      unsigned int width, height;
  
@@ -168,12 +168,12 @@ index 11111111111..11111111111 100644
      /* retrieve the real size of the desktop */
      SERVER_START_REQ( get_window_rectangles )
      {
-@@ -2931,6 +2938,9 @@ LRESULT CDECL X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
+@@ -2944,6 +2951,9 @@ LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
          }
          if (clipping_cursor) set_window_cursor( x11drv_thread_data()->clip_window, (HCURSOR)lp );
          return 0;
 +    case WM_X11DRV_DESKTOP_SET_WINDOW_CURSOR:
-+        SendNotifyMessageW( (HWND)wp, WM_X11DRV_SET_CURSOR, 0, lp );
++        send_notify_message( (HWND)wp, WM_X11DRV_SET_CURSOR, 0, lp );
 +        return 0;
      case WM_X11DRV_CLIP_CURSOR_NOTIFY:
          return clip_cursor_notify( hwnd, (HWND)wp, (HWND)lp );
@@ -182,15 +182,15 @@ diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -201,7 +201,6 @@ extern INT CDECL X11DRV_ToUnicodeEx( UINT virtKey, UINT scanCode, const BYTE *lp
-                                      LPWSTR bufW, int bufW_size, UINT flags, HKL hkl ) DECLSPEC_HIDDEN;
- extern SHORT CDECL X11DRV_VkKeyScanEx( WCHAR wChar, HKL hkl ) DECLSPEC_HIDDEN;
- extern void CDECL X11DRV_DestroyCursorIcon( HCURSOR handle ) DECLSPEC_HIDDEN;
--extern void CDECL X11DRV_SetCursor( HCURSOR handle ) DECLSPEC_HIDDEN;
- extern BOOL CDECL X11DRV_SetCursorPos( INT x, INT y ) DECLSPEC_HIDDEN;
- extern BOOL CDECL X11DRV_GetCursorPos( LPPOINT pos ) DECLSPEC_HIDDEN;
- extern BOOL CDECL X11DRV_ClipCursor( LPCRECT clip ) DECLSPEC_HIDDEN;
-@@ -599,6 +598,7 @@ enum x11drv_window_messages
+@@ -200,7 +200,6 @@ extern INT X11DRV_ToUnicodeEx( UINT virtKey, UINT scanCode, const BYTE *lpKeySta
+                                LPWSTR bufW, int bufW_size, UINT flags, HKL hkl ) DECLSPEC_HIDDEN;
+ extern SHORT X11DRV_VkKeyScanEx( WCHAR wChar, HKL hkl ) DECLSPEC_HIDDEN;
+ extern void X11DRV_DestroyCursorIcon( HCURSOR handle ) DECLSPEC_HIDDEN;
+-extern void X11DRV_SetCursor( HCURSOR handle ) DECLSPEC_HIDDEN;
+ extern BOOL X11DRV_SetCursorPos( INT x, INT y ) DECLSPEC_HIDDEN;
+ extern BOOL X11DRV_GetCursorPos( LPPOINT pos ) DECLSPEC_HIDDEN;
+ extern BOOL X11DRV_ClipCursor( LPCRECT clip ) DECLSPEC_HIDDEN;
+@@ -597,6 +596,7 @@ enum x11drv_window_messages
      WM_X11DRV_SET_WIN_REGION,
      WM_X11DRV_RESIZE_DESKTOP,
      WM_X11DRV_SET_CURSOR,
@@ -198,14 +198,14 @@ index 11111111111..11111111111 100644
      WM_X11DRV_CLIP_CURSOR_NOTIFY,
      WM_X11DRV_CLIP_CURSOR_REQUEST,
      WM_X11DRV_DELETE_TAB,
-@@ -694,7 +694,6 @@ extern XContext cursor_context DECLSPEC_HIDDEN;
+@@ -692,7 +692,6 @@ extern XContext cursor_context DECLSPEC_HIDDEN;
  extern void X11DRV_InitClipboard(void) DECLSPEC_HIDDEN;
- extern void CDECL X11DRV_SetFocus( HWND hwnd ) DECLSPEC_HIDDEN;
+ extern void X11DRV_SetFocus( HWND hwnd ) DECLSPEC_HIDDEN;
  extern void set_window_cursor( Window window, HCURSOR handle ) DECLSPEC_HIDDEN;
 -extern void sync_window_cursor( Window window ) DECLSPEC_HIDDEN;
  extern LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd ) DECLSPEC_HIDDEN;
  extern LRESULT clip_cursor_request( HWND hwnd, BOOL fullscreen, BOOL reset ) DECLSPEC_HIDDEN;
  extern void ungrab_clipping_window(void) DECLSPEC_HIDDEN;
 -- 
-2.35.1
+2.35.3
 

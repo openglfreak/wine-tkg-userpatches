@@ -5,15 +5,15 @@ Date: Tue, 10 Aug 2021 17:16:08 -0500
 
 Signed-off-by: David Curtiss <david.curtiss@ni.com>
 ---
- dlls/kernel32/tests/locale.c | 92 ++++++++++++++++++++++++++++++++++++
- dlls/kernelbase/locale.c     | 44 +++++++++++++++--
- 2 files changed, 133 insertions(+), 3 deletions(-)
+ dlls/kernel32/tests/locale.c | 69 ++++++++++++++++++++++++++++++++++++
+ dlls/kernelbase/locale.c     | 44 +++++++++++++++++++++--
+ 2 files changed, 110 insertions(+), 3 deletions(-)
 
 diff --git a/dlls/kernel32/tests/locale.c b/dlls/kernel32/tests/locale.c
 index 11111111111..11111111111 100644
 --- a/dlls/kernel32/tests/locale.c
 +++ b/dlls/kernel32/tests/locale.c
-@@ -89,6 +89,7 @@ static INT (WINAPI *pFindNLSStringEx)(LPCWSTR, DWORD, LPCWSTR, INT, LPCWSTR, INT
+@@ -90,6 +90,7 @@ static void * (WINAPI *pNlsValidateLocale)(LCID*,ULONG);
  static LANGID (WINAPI *pSetThreadUILanguage)(LANGID);
  static LANGID (WINAPI *pGetThreadUILanguage)(VOID);
  static INT (WINAPI *pNormalizeString)(NORM_FORM, LPCWSTR, INT, LPWSTR, INT);
@@ -21,7 +21,7 @@ index 11111111111..11111111111 100644
  static INT (WINAPI *pFindStringOrdinal)(DWORD, LPCWSTR lpStringSource, INT, LPCWSTR, INT, BOOL);
  static BOOL (WINAPI *pGetNLSVersion)(NLS_FUNCTION,LCID,NLSVERSIONINFO*);
  static BOOL (WINAPI *pGetNLSVersionEx)(NLS_FUNCTION,LPCWSTR,NLSVERSIONINFOEX*);
-@@ -139,6 +140,7 @@ static void InitFunctionPointers(void)
+@@ -140,6 +141,7 @@ static void InitFunctionPointers(void)
    X(SetThreadUILanguage);
    X(GetThreadUILanguage);
    X(NormalizeString);
@@ -29,14 +29,14 @@ index 11111111111..11111111111 100644
    X(FindStringOrdinal);
    X(GetNLSVersion);
    X(GetNLSVersionEx);
-@@ -6965,6 +6967,95 @@ static void test_NormalizeString(void)
+@@ -7122,6 +7124,72 @@ static void test_NormalizeString(void)
      }
  }
  
 +static void test_ResolveLocaleName(void)
 +{
 +    INT ret;
-+    WCHAR buffer[BUFFER_SIZE], input[BUFFER_SIZE], Expected[BUFFER_SIZE], Alternate[BUFFER_SIZE];
++    WCHAR buffer[BUFFER_SIZE];
 +    INT buffer_size = BUFFER_SIZE;
 +
 +    if (!pResolveLocaleName)
@@ -46,86 +46,63 @@ index 11111111111..11111111111 100644
 +    }
 +
 +    /* already-valid cases */
-+    STRINGSW("fr-FR","fr-FR");
-+    ret = pResolveLocaleName(input, buffer, buffer_size);
-+    EXPECT_LENW; EXPECT_EQW;
++    ret = pResolveLocaleName(L"fr-FR", buffer, ARRAY_SIZE(buffer));
++    expect_wstr(ret, buffer, L"fr-FR");
 +
-+    STRINGSW("fr-BE","fr-BE");
-+    ret = pResolveLocaleName(input, buffer, buffer_size);
-+    EXPECT_LENW; EXPECT_EQW;
++    ret = pResolveLocaleName(L"fr-BE", buffer, ARRAY_SIZE(buffer));
++    expect_wstr(ret, buffer, L"fr-FR");
 +
 +    /* just-resolve cases */
-+    STRINGSW("fr","fr-FR");
-+    ret = pResolveLocaleName(input, buffer, buffer_size);
-+    EXPECT_LENW; EXPECT_EQW;
++    ret = pResolveLocaleName(L"fr", buffer, ARRAY_SIZE(buffer));
++    expect_wstr(ret, buffer, L"fr-FR");
 +
 +    /* truncate-and-resolve cases */
-+    STRINGSW("fr-aaa-BE","fr-FR");
-+    ret = pResolveLocaleName(input, buffer, buffer_size);
-+    EXPECT_LENW; EXPECT_EQW;
++    ret = pResolveLocaleName(L"fr-aaa-BE", buffer, ARRAY_SIZE(buffer));
++    expect_wstr(ret, buffer, L"fr-FR");
 +
-+    STRINGSW("fr-BE_aaa","fr-BE"); /* old Windows gives fr-FR; new gives fr-BE */
-+    MultiByteToWideChar(CP_ACP,0,"fr-FR",-1,Alternate,ARRAY_SIZE(Alternate));
-+    ret = pResolveLocaleName(input, buffer, buffer_size);
-+    EXPECT_LENW;
-+    ok(wcsncmp(buffer, Expected, lstrlenW(Expected)) == 0
-+       || wcsncmp(buffer, Alternate, lstrlenW(Alternate)) == 0,
++    ret = pResolveLocaleName(L"fr-BE_aaa", buffer, ARRAY_SIZE(buffer));
++    ok(ret == lstrlenW("fr-BE"), "Expected Len %d, got %d\n", lstrlenW("fr-BE"), ret);
++    ok(wcsncmp(buffer, "fr-BE", lstrlenW("fr-BE")) == 0
++       || wcsncmp(buffer, "fr-FR", lstrlenW("fr-FR")) == 0,
 +       "Bad conversion\n");
 +
-+    STRINGSW("fr-BE-x-y-z","fr-BE");
-+    ret = pResolveLocaleName(input, buffer, buffer_size);
-+    EXPECT_LENW; EXPECT_EQW;
++    ret = pResolveLocaleName(L"fr-BE-x-y-z", buffer, ARRAY_SIZE(buffer));
++    expect_wstr(ret, buffer, L"fr-BE");
 +
 +    /* just-big-enough buffer size */
-+    STRINGSW("fr","fr-FR");
-+    buffer_size = lstrlenW(Expected) + 1;
-+    ret = pResolveLocaleName(input, buffer, buffer_size);
-+    EXPECT_LENW; EXPECT_EQW;
-+
-+    buffer_size = BUFFER_SIZE; /* restore normal value */
++    ret = pResolveLocaleName(L"fr", buffer, lstrlenW(L"fr-FR") + 1);
++    expect_wstr(ret, buffer, L"fr-FR");
 +
 +    /* unknown locales return empty string */
-+    STRINGSW("xx-XX",""); /* unknown locale */
-+    ret = pResolveLocaleName(input, buffer, buffer_size);
-+    EXPECT_LENW; EXPECT_EQW;
++    ret = pResolveLocaleName(L"xx-XX", buffer, ARRAY_SIZE(buffer));
++    expect_wstr(ret, buffer, L"");
 +
-+    STRINGSW("xx",""); /* unknown locale, no hyphen */
-+    ret = pResolveLocaleName(input, buffer, buffer_size);
-+    EXPECT_LENW; EXPECT_EQW;
++    ret = pResolveLocaleName(L"xx", buffer, ARRAY_SIZE(buffer));
++    expect_wstr(ret, buffer, L"");
 +
-+    STRINGSW("-en-US",""); /* string is empty after truncated */
-+    ret = pResolveLocaleName(input, buffer, buffer_size);
-+    EXPECT_LENW; EXPECT_EQW;
++    ret = pResolveLocaleName(L"-en-US", buffer, ARRAY_SIZE(buffer));
++    expect_wstr(ret, buffer, L"");
 +
 +    /* when no output buffer, returns required buffer size */
-+    STRINGSW("en-US","en-US");
-+    ret = pResolveLocaleName(input, NULL, buffer_size);
-+    EXPECT_LENW;
++    ret = pResolveLocaleName(L"en-US", NULL, ARRAY_SIZE(buffer));
++    ok(ret == lstrlenW("en-US"), "Expected Len %d, got %d\n", lstrlenW("en-US"), ret);
 +
-+    STRINGSW("en-US-x-y-z","en-US");
-+    ret = pResolveLocaleName(input, NULL, buffer_size);
-+    EXPECT_LENW;
++    ret = pResolveLocaleName(L"en-US-x-y-z", NULL, ARRAY_SIZE(buffer));
++    ok(ret == lstrlenW("en-US"), "Expected Len %d, got %d\n", lstrlenW("en-US"), ret);
 +
 +    /* buffer-size error cases */
-+    STRINGSW("fr","");
-+    buffer_size = 5; /* too small to hold "fr-FR\0" */
-+    ret = pResolveLocaleName(input, buffer, buffer_size);
-+    ok(!ret && GetLastError() == ERROR_INSUFFICIENT_BUFFER,
-+        "Expected ret == 0 w/ error %d, got %d (%s), error %d\n",
-+        ERROR_INSUFFICIENT_BUFFER, ret, wine_dbgstr_w(buffer), GetLastError());
++    ret = pResolveLocaleName(L"fr", buffer, 5); /* too small to hold "fr-FR\0" */
++    expect_werr(ret, buffer, ERROR_INSUFFICIENT_BUFFER);
 +
 +    /* null-input error cases */
-+    STRINGSW("en-US","");
-+    ret = pResolveLocaleName(NULL, buffer, buffer_size);
-+    ok(!ret && GetLastError() == ERROR_INSUFFICIENT_BUFFER,
-+        "Expected ret == 0 w/ error %d, got %d (%s), error %d\n",
-+        ERROR_INSUFFICIENT_BUFFER, ret, wine_dbgstr_w(buffer), GetLastError());
++    ret = pResolveLocaleName(NULL, buffer, ARRAY_SIZE(buffer));
++    expect_werr(ret, buffer, ERROR_INSUFFICIENT_BUFFER);
 +}
 +
  static void test_SpecialCasing(void)
  {
      int ret, i;
-@@ -7801,6 +7892,7 @@ START_TEST(locale)
+@@ -7958,6 +8026,7 @@ START_TEST(locale)
    test_FindStringOrdinal();
    test_SetThreadUILanguage();
    test_NormalizeString();
@@ -137,7 +114,7 @@ diff --git a/dlls/kernelbase/locale.c b/dlls/kernelbase/locale.c
 index 11111111111..11111111111 100644
 --- a/dlls/kernelbase/locale.c
 +++ b/dlls/kernelbase/locale.c
-@@ -6781,10 +6781,48 @@ INT WINAPI DECLSPEC_HOTPATCH NormalizeString(NORM_FORM form, const WCHAR *src, I
+@@ -6596,10 +6596,48 @@ INT WINAPI DECLSPEC_HOTPATCH NormalizeString(NORM_FORM form, const WCHAR *src, I
   */
  INT WINAPI DECLSPEC_HOTPATCH ResolveLocaleName( LPCWSTR name, LPWSTR buffer, INT len )
  {
@@ -191,5 +168,5 @@ index 11111111111..11111111111 100644
  
 
 -- 
-2.35.1
+2.35.3
 

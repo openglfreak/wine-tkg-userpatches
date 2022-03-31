@@ -1,0 +1,108 @@
+From 5a7ff5331e0c29110417c02f2e494aaecf8b5794 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 29 Apr 2021 11:36:15 +0200
+Subject: [PATCH 22/44] win32u: Allocate heap in peek_message only when
+ necessary.
+
+---
+ dlls/win32u/message.c | 30 ++++++++++++++++++++++--------
+ 1 file changed, 22 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -1657,12 +1657,11 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+     INPUT_MESSAGE_SOURCE prev_source = thread_info->msg_source;
+     struct received_message_info info;
+     unsigned int hw_id = 0;  /* id of previous hardware message */
+-    void *buffer;
++    char buffer_init[1024];
+     size_t buffer_size = 1024;
++    void *buffer = buffer_init;
+     BOOL skip = FALSE;
+ 
+-    if (!(buffer = malloc( buffer_size ))) return -1;
+-
+     if (!first && !last) last = ~0;
+     if (hwnd == HWND_BROADCAST) hwnd = HWND_TOPMOST;
+ 
+@@ -1737,19 +1736,22 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+ 
+         if (res)
+         {
+-            free( buffer );
+             if (res == STATUS_PENDING)
+             {
+                 thread_info->wake_mask = changed_mask & (QS_SENDMESSAGE | QS_SMRESULT);
+                 thread_info->changed_mask = changed_mask;
++                if (buffer != buffer_init) free( buffer );
+                 return 0;
+             }
+             if (res != STATUS_BUFFER_OVERFLOW)
+             {
+                 SetLastError( RtlNtStatusToDosError(res) );
++                if (buffer != buffer_init) free( buffer );
+                 return -1;
+             }
+-            if (!(buffer = malloc( buffer_size ))) return -1;
++            if (buffer == buffer_init) buffer = malloc( buffer_size );
++            else buffer = realloc( buffer, buffer_size );
++            if (!buffer) return -1;
+             continue;
+         }
+ 
+@@ -1766,6 +1768,12 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+             break;
+         case MSG_NOTIFY:
+             info.flags = ISMEX_NOTIFY;
++            /* unpack_message may have to reallocate */
++            if (buffer == buffer_init)
++            {
++                buffer = malloc( buffer_size );
++                memcpy( buffer, buffer_init, buffer_size );
++            }
+             if (!unpack_message( info.msg.hwnd, info.msg.message, &info.msg.wParam,
+                                  &info.msg.lParam, &buffer, size ))
+                 continue;
+@@ -1841,6 +1849,12 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+             continue;
+         case MSG_OTHER_PROCESS:
+             info.flags = ISMEX_SEND;
++            /* unpack_message may have to reallocate */
++            if (buffer == buffer_init)
++            {
++                buffer = malloc( buffer_size );
++                memcpy( buffer, buffer_init, buffer_size );
++            }
+             if (!unpack_message( info.msg.hwnd, info.msg.message, &info.msg.wParam,
+                                  &info.msg.lParam, &buffer, size ))
+             {
+@@ -1864,7 +1878,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+                 thread_info->GetMessagePosVal = MAKELONG( info.msg.pt.x, info.msg.pt.y );
+                 thread_info->GetMessageTimeVal = info.msg.time;
+                 thread_info->GetMessageExtraInfoVal = msg_data->hardware.info;
+-                free( buffer );
++                if (buffer != buffer_init) free( buffer );
+                 call_hooks( WH_GETMESSAGE, HC_ACTION, flags & PM_REMOVE, (LPARAM)msg, TRUE );
+                 return 1;
+             }
+@@ -1879,7 +1893,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+                     /* if this is a nested call return right away */
+                     if (first == info.msg.message && last == info.msg.message)
+                     {
+-                        free( buffer );
++                        if (buffer != buffer_init) free( buffer );
+                         return 0;
+                     }
+                 }
+@@ -1900,7 +1914,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+             thread_info->GetMessageTimeVal = info.msg.time;
+             thread_info->GetMessageExtraInfoVal = 0;
+             thread_info->msg_source = msg_source_unavailable;
+-            free( buffer );
++            if (buffer != buffer_init) free( buffer );
+             call_hooks( WH_GETMESSAGE, HC_ACTION, flags & PM_REMOVE, (LPARAM)msg, TRUE );
+             return 1;
+         }
+

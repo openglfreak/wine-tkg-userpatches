@@ -1,0 +1,360 @@
+From 6b91d470b98666212f4d486ce6193148a8f2680c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sun, 12 Dec 2021 13:15:26 +0100
+Subject: [PATCH 18/44] win32u: Use the thread queue shared data for
+ peek_message.
+
+---
+ dlls/win32u/message.c        | 33 ++++++++++++++++++++++++++++-
+ dlls/win32u/ntuser_private.h | 22 ++++++++++++++++++++
+ dlls/win32u/sysparams.c      | 10 +++++++++
+ dlls/win32u/win32u_private.h | 21 +------------------
+ dlls/win32u/winstation.c     | 23 ++++++++++++++++++---
+ include/ntuser.h             |  1 +
+ server/protocol.def          |  4 ++++
+ server/queue.c               | 40 ++++++++++++++++++++++++++++++++++++
+ 8 files changed, 130 insertions(+), 24 deletions(-)
+
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -1652,12 +1652,14 @@ static BOOL process_hardware_message( MSG *msg, UINT hw_id, const struct hardwar
+ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags, UINT changed_mask )
+ {
+     LRESULT result;
++    volatile struct queue_shared_memory *shared = get_queue_shared_memory();
+     struct user_thread_info *thread_info = get_user_thread_info();
+     INPUT_MESSAGE_SOURCE prev_source = thread_info->msg_source;
+     struct received_message_info info;
+     unsigned int hw_id = 0;  /* id of previous hardware message */
+     void *buffer;
+     size_t buffer_size = 1024;
++    BOOL skip = FALSE;
+ 
+     if (!(buffer = malloc( buffer_size ))) return -1;
+ 
+@@ -1670,10 +1672,39 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+         size_t size = 0;
+         const message_data_t *msg_data = buffer;
+         BOOL needs_unpack = FALSE;
++        UINT wake_mask = changed_mask & (QS_SENDMESSAGE | QS_SMRESULT);
++        DWORD clear_bits = 0, filter = flags >> 16 ? flags >> 16 : QS_ALLINPUT;
++        if (filter & QS_POSTMESSAGE)
++        {
++            clear_bits |= QS_POSTMESSAGE | QS_HOTKEY | QS_TIMER;
++            if (first == 0 && last == ~0U) clear_bits |= QS_ALLPOSTMESSAGE;
++        }
++        if (filter & QS_INPUT) clear_bits |= QS_INPUT;
++        if (filter & QS_PAINT) clear_bits |= QS_PAINT;
+ 
+         thread_info->msg_source = prev_source;
+ 
+-        SERVER_START_REQ( get_message )
++        if (!shared) skip = FALSE;
++        else SHARED_READ_BEGIN( &shared->seq )
++        {
++            /* not created yet */
++            if (!shared->created) skip = FALSE;
++            /* if the masks need an update */
++            else if (shared->wake_mask != wake_mask) skip = FALSE;
++            else if (shared->changed_mask != changed_mask) skip = FALSE;
++            /* or if the queue is signaled */
++            else if (shared->wake_bits & wake_mask) skip = FALSE;
++            else if (shared->changed_bits & changed_mask) skip = FALSE;
++            /* or if the filter matches some bits */
++            else if (shared->wake_bits & filter) skip = FALSE;
++            /* or if we should clear some bits */
++            else if (shared->changed_bits & clear_bits) skip = FALSE;
++            else skip = TRUE;
++        }
++        SHARED_READ_END( &shared->seq );
++
++        if (skip) res = STATUS_PENDING;
++        else SERVER_START_REQ( get_message )
+         {
+             req->flags     = flags;
+             req->get_win   = wine_server_user_handle( hwnd );
+diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/ntuser_private.h
++++ b/dlls/win32u/ntuser_private.h
+@@ -163,6 +163,8 @@ struct user_thread_info
+     UINT                          spy_indent;             /* Current spy indent */
+     HANDLE                        desktop_shared_map;     /* HANDLE to server's desktop shared memory */
+     struct desktop_shared_memory *desktop_shared_memory;  /* Ptr to server's desktop shared memory */
++    HANDLE                        queue_shared_map;       /* HANDLE to server's thread queue shared memory */
++    struct queue_shared_memory   *queue_shared_memory;     /* Ptr to server's thread queue shared memory */
+ };
+ 
+ C_ASSERT( sizeof(struct user_thread_info) <= sizeof(((TEB *)0)->Win32ClientInfo) );
+@@ -331,4 +333,24 @@ WND *get_win_ptr( HWND hwnd ) DECLSPEC_HIDDEN;
+ BOOL is_child( HWND parent, HWND child );
+ BOOL is_window( HWND hwnd ) DECLSPEC_HIDDEN;
+ 
++#if defined(__i386__) || defined(__x86_64__)
++#define __SHARED_READ_SEQ( x ) (*(x))
++#define __SHARED_READ_FENCE do {} while(0)
++#else
++#define __SHARED_READ_SEQ( x ) __atomic_load_n( x, __ATOMIC_RELAXED )
++#define __SHARED_READ_FENCE __atomic_thread_fence( __ATOMIC_ACQUIRE )
++#endif
++
++#define SHARED_READ_BEGIN( x )                                          \
++    do {                                                                \
++        unsigned int __seq;                                             \
++        do {                                                            \
++            while ((__seq = __SHARED_READ_SEQ( x )) & SEQUENCE_MASK) NtYieldExecution(); \
++            __SHARED_READ_FENCE;
++
++#define SHARED_READ_END( x )                       \
++            __SHARED_READ_FENCE;                   \
++        } while (__SHARED_READ_SEQ( x ) != __seq); \
++    } while(0)
++
+ #endif /* __WINE_NTUSER_PRIVATE_H */
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -4626,6 +4626,13 @@ static void thread_detach(void)
+         thread_info->desktop_shared_memory = NULL;
+     }
+ 
++    if (thread_info->queue_shared_map)
++    {
++        NtClose( thread_info->queue_shared_map );
++        thread_info->queue_shared_map = NULL;
++        thread_info->queue_shared_memory = NULL;
++    }
++
+     exiting_thread_id = 0;
+ }
+ 
+@@ -4661,6 +4668,9 @@ ULONG_PTR WINAPI NtUserCallNoParam( ULONG code )
+         user_driver->pUpdateClipboard();
+         return 0;
+ 
++    case NtUserGetQueueSharedMemory:
++        return get_queue_shared_memory();
++
+     default:
+         FIXME( "invalid code %u\n", code );
+         return 0;
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -443,6 +443,7 @@ static inline void release_win_ptr( struct tagWND *ptr )
+ 
+ /* winstation.c */
+ extern volatile struct desktop_shared_memory *get_desktop_shared_memory( void ) DECLSPEC_HIDDEN;
++extern volatile struct queue_shared_memory *get_queue_shared_memory( void ) DECLSPEC_HIDDEN;
+ 
+ extern void wrappers_init( unixlib_handle_t handle ) DECLSPEC_HIDDEN;
+ extern NTSTATUS gdi_init(void) DECLSPEC_HIDDEN;
+@@ -642,24 +643,4 @@ static inline const char *debugstr_us( const UNICODE_STRING *us )
+     return debugstr_wn( us->Buffer, us->Length / sizeof(WCHAR) );
+ }
+ 
+-#if defined(__i386__) || defined(__x86_64__)
+-#define __SHARED_READ_SEQ( x ) (*(x))
+-#define __SHARED_READ_FENCE do {} while(0)
+-#else
+-#define __SHARED_READ_SEQ( x ) __atomic_load_n( x, __ATOMIC_RELAXED )
+-#define __SHARED_READ_FENCE __atomic_thread_fence( __ATOMIC_ACQUIRE )
+-#endif
+-
+-#define SHARED_READ_BEGIN( x )                                          \
+-    do {                                                                \
+-        unsigned int __seq;                                             \
+-        do {                                                            \
+-            while ((__seq = __SHARED_READ_SEQ( x )) & SEQUENCE_MASK) NtYieldExecution(); \
+-            __SHARED_READ_FENCE;
+-
+-#define SHARED_READ_END( x )                       \
+-            __SHARED_READ_FENCE;                   \
+-        } while (__SHARED_READ_SEQ( x ) != __seq); \
+-    } while(0)
+-
+ #endif /* __WINE_WIN32U_PRIVATE */
+diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/winstation.c
++++ b/dlls/win32u/winstation.c
+@@ -571,13 +571,13 @@ static const WCHAR *get_default_desktop( void *buf, size_t buf_size )
+ }
+ 
+ 
+-static void map_shared_memory_section( const WCHAR *name, SIZE_T size, HANDLE root, HANDLE *handle, void **ptr )
++static void map_shared_memory_section( const WCHAR *name, UINT namelen, SIZE_T size, HANDLE root, HANDLE *handle, void **ptr )
+ {
+     OBJECT_ATTRIBUTES attr;
+     UNICODE_STRING section_str;
+     NTSTATUS status;
+ 
+-    section_str.Length = wcslen(name) * sizeof(WCHAR);
++    section_str.Length = (namelen ? namelen : wcslen(name)) * sizeof(WCHAR);
+     section_str.MaximumLength = section_str.Length + sizeof(WCHAR);
+     section_str.Buffer = (WCHAR *)name;
+     InitializeObjectAttributes( &attr, &section_str, 0, root, NULL );
+@@ -628,7 +628,7 @@ volatile struct desktop_shared_memory *get_desktop_shared_memory( void )
+         if (i == 0) *(ptr - 1) = '\\';
+     }
+ 
+-    map_shared_memory_section( buf, sizeof(struct desktop_shared_memory), root,
++    map_shared_memory_section( buf, ptr - buf - 1, sizeof(struct desktop_shared_memory), root,
+                                &thread_info->desktop_shared_map, (void **)&thread_info->desktop_shared_memory );
+ 
+     NtClose( root );
+@@ -636,6 +636,23 @@ volatile struct desktop_shared_memory *get_desktop_shared_memory( void )
+ }
+ 
+ 
++volatile struct queue_shared_memory *get_queue_shared_memory( void )
++{
++    struct user_thread_info *thread_info = get_user_thread_info();
++    char bufA[MAX_PATH];
++    WCHAR buf[MAX_PATH];
++    UINT len;
++
++    if (thread_info->queue_shared_memory) return thread_info->queue_shared_memory;
++
++    snprintf( bufA, ARRAY_SIZE(buf), "\\KernelObjects\\__wine_thread_mappings\\%08x-queue", GetCurrentThreadId() );
++    len = asciiz_to_unicode( buf, bufA ) / sizeof(WCHAR) - 1;
++    map_shared_memory_section( buf, len, sizeof(struct queue_shared_memory), NULL,
++                               &thread_info->queue_shared_map, (void **)&thread_info->queue_shared_memory );
++    return thread_info->queue_shared_memory;
++}
++
++
+ /***********************************************************************
+  *           winstation_init
+  *
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 11111111111..11111111111 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -588,6 +588,7 @@ enum
+     NtUserExitingThread,
+     NtUserThreadDetach,
+     NtUserUpdateClipboard,
++    NtUserGetQueueSharedMemory,
+ };
+ 
+ static inline HWND NtUserGetDesktopWindow(void)
+diff --git a/server/protocol.def b/server/protocol.def
+index 11111111111..11111111111 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -872,6 +872,10 @@ struct queue_shared_memory
+ {
+     unsigned int         seq;              /* sequence number - server updating if (seq_no & SEQUENCE_MASK) != 0 */
+     int                  created;          /* queue has been created */
++    unsigned int         wake_bits;
++    unsigned int         changed_bits;
++    unsigned int         wake_mask;
++    unsigned int         changed_mask;
+ };
+ 
+ /* Bits that must be clear for client to read */
+diff --git a/server/queue.c b/server/queue.c
+index 11111111111..11111111111 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -600,6 +600,12 @@ static inline void set_queue_bits( struct msg_queue *queue, unsigned int bits )
+     }
+     queue->wake_bits |= bits;
+     queue->changed_bits |= bits;
++
++    SHARED_WRITE_BEGIN( &queue->shared->seq );
++    queue->shared->wake_bits = queue->wake_bits;
++    queue->shared->changed_bits = queue->changed_bits;
++    SHARED_WRITE_END( &queue->shared->seq );
++
+     if (is_signaled( queue ))
+     {
+         wake_up( &queue->obj, 0 );
+@@ -625,6 +631,11 @@ static inline void clear_queue_bits( struct msg_queue *queue, unsigned int bits
+ 
+     if (do_esync() && !is_signaled( queue ))
+         esync_clear( queue->esync_fd );
++
++    SHARED_WRITE_BEGIN( &queue->shared->seq );
++    queue->shared->wake_bits = queue->wake_bits;
++    queue->shared->changed_bits = queue->changed_bits;
++    SHARED_WRITE_END( &queue->shared->seq );
+ }
+ 
+ /* check whether msg is a keyboard message */
+@@ -1167,6 +1178,11 @@ static void msg_queue_satisfied( struct object *obj, struct wait_queue_entry *en
+     struct msg_queue *queue = (struct msg_queue *)obj;
+     queue->wake_mask = 0;
+     queue->changed_mask = 0;
++
++    SHARED_WRITE_BEGIN( &queue->shared->seq );
++    queue->shared->wake_mask = queue->wake_mask;
++    queue->shared->changed_mask = queue->changed_mask;
++    SHARED_WRITE_END( &queue->shared->seq );
+     fast_reset_event( queue->fast_sync );
+ }
+ 
+@@ -2620,12 +2636,22 @@ DECL_HANDLER(set_queue_mask)
+         queue->changed_mask = req->changed_mask;
+         reply->wake_bits    = queue->wake_bits;
+         reply->changed_bits = queue->changed_bits;
++
++        SHARED_WRITE_BEGIN( &queue->shared->seq );
++        queue->shared->wake_mask = queue->wake_mask;
++        queue->shared->changed_mask = queue->changed_mask;
++        SHARED_WRITE_END( &queue->shared->seq );
++
+         if (is_signaled( queue ))
+         {
+             /* if skip wait is set, do what would have been done in the subsequent wait */
+             if (req->skip_wait)
+             {
+                 queue->wake_mask = queue->changed_mask = 0;
++                SHARED_WRITE_BEGIN( &queue->shared->seq );
++                queue->shared->wake_mask = queue->wake_mask;
++                queue->shared->changed_mask = queue->changed_mask;
++                SHARED_WRITE_END( &queue->shared->seq );
+                 fast_reset_event( queue->fast_sync );
+             }
+             else
+@@ -2662,6 +2688,10 @@ DECL_HANDLER(get_queue_status)
+ 
+         if (do_esync() && !is_signaled( queue ))
+             esync_clear( queue->esync_fd );
++
++        SHARED_WRITE_BEGIN( &queue->shared->seq );
++        queue->shared->changed_bits = queue->changed_bits;
++        SHARED_WRITE_END( &queue->shared->seq );
+     }
+     else reply->wake_bits = reply->changed_bits = 0;
+ }
+@@ -2845,6 +2875,10 @@ DECL_HANDLER(get_message)
+     if (!is_signaled( queue ))
+         fast_reset_event( queue->fast_sync );
+ 
++    SHARED_WRITE_BEGIN( &queue->shared->seq );
++    queue->shared->changed_bits = queue->changed_bits;
++    SHARED_WRITE_END( &queue->shared->seq );
++
+     /* then check for posted messages */
+     if ((filter & QS_POSTMESSAGE) &&
+         get_posted_message( queue, queue->ignore_post_msg, get_win, req->get_first, req->get_last, req->flags, reply ))
+@@ -2908,6 +2942,12 @@ DECL_HANDLER(get_message)
+     if (get_win == -1 && current->process->idle_event) set_event( current->process->idle_event );
+     queue->wake_mask = req->wake_mask;
+     queue->changed_mask = req->changed_mask;
++
++    SHARED_WRITE_BEGIN( &queue->shared->seq );
++    queue->shared->wake_mask = queue->wake_mask;
++    queue->shared->changed_mask = queue->changed_mask;
++    SHARED_WRITE_END( &queue->shared->seq );
++
+     fast_reset_event( queue->fast_sync );
+     set_error( STATUS_PENDING );  /* FIXME */
+ 
+

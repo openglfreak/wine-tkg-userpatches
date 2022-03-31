@@ -9,19 +9,20 @@ the foreground window with an older event. Having a timestamp will help
 discarding old events.
 ---
  dlls/win32u/input.c          |  3 ++-
+ dlls/win32u/message.c        |  2 +-
  dlls/win32u/win32u_private.h |  2 +-
  dlls/win32u/window.c         |  6 +++---
  server/protocol.def          |  1 +
  server/queue.c               | 10 ++++++++--
  server/user.h                |  1 +
  server/winstation.c          |  1 +
- 7 files changed, 17 insertions(+), 7 deletions(-)
+ 8 files changed, 18 insertions(+), 8 deletions(-)
 
 diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/input.c
 +++ b/dlls/win32u/input.c
-@@ -1408,7 +1408,7 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
+@@ -1520,7 +1520,7 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
  /*******************************************************************
   *		set_foreground_window
   */
@@ -30,7 +31,7 @@ index 11111111111..11111111111 100644
  {
      BOOL ret, send_msg_old = FALSE, send_msg_new = FALSE;
      HWND previous = 0;
-@@ -1418,6 +1418,7 @@ BOOL set_foreground_window( HWND hwnd, BOOL mouse )
+@@ -1530,6 +1530,7 @@ BOOL set_foreground_window( HWND hwnd, BOOL mouse )
      SERVER_START_REQ( set_foreground_window )
      {
          req->handle = wine_server_user_handle( hwnd );
@@ -38,11 +39,24 @@ index 11111111111..11111111111 100644
          if ((ret = !wine_server_call_err( req )))
          {
              previous = wine_server_ptr_handle( reply->previous );
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -1590,7 +1590,7 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+                     /* fall through */
+                 case MA_ACTIVATE:
+                 case 0:
+-                    if (!set_foreground_window( hwndTop, TRUE )) eat_msg = TRUE;
++                    if (!set_foreground_window( hwndTop, TRUE, NtGetTickCount() )) eat_msg = TRUE;
+                     break;
+                 default:
+                     WARN( "unknown WM_MOUSEACTIVATE code %d\n", ret );
 diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/win32u_private.h
 +++ b/dlls/win32u/win32u_private.h
-@@ -333,7 +333,7 @@ extern HWND get_focus(void) DECLSPEC_HIDDEN;
+@@ -351,7 +351,7 @@ extern HWND get_focus(void) DECLSPEC_HIDDEN;
  extern DWORD get_input_state(void) DECLSPEC_HIDDEN;
  extern BOOL WINAPI release_capture(void) DECLSPEC_HIDDEN;
  extern BOOL set_capture_window( HWND hwnd, UINT gui_flags, HWND *prev_ret ) DECLSPEC_HIDDEN;
@@ -50,12 +64,12 @@ index 11111111111..11111111111 100644
 +extern BOOL set_foreground_window( HWND hwnd, BOOL mouse, DWORD time ) DECLSPEC_HIDDEN;
  
  /* menu.c */
- extern HMENU create_menu(void) DECLSPEC_HIDDEN;
+ extern HMENU create_menu( BOOL is_popup ) DECLSPEC_HIDDEN;
 diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/window.c
 +++ b/dlls/win32u/window.c
-@@ -3174,7 +3174,7 @@ BOOL set_window_pos( WINDOWPOS *winpos, int parent_x, int parent_y )
+@@ -3275,7 +3275,7 @@ BOOL set_window_pos( WINDOWPOS *winpos, int parent_x, int parent_y )
          if ((get_window_long( winpos->hwnd, GWL_STYLE ) & (WS_CHILD | WS_POPUP)) == WS_CHILD)
              send_message( winpos->hwnd, WM_CHILDACTIVATE, 0, 0 );
          else if (user_callbacks)
@@ -64,7 +78,7 @@ index 11111111111..11111111111 100644
      }
  
      if(!(orig_flags & SWP_DEFERERASE))
-@@ -3488,7 +3488,7 @@ static void activate_other_window( HWND hwnd )
+@@ -3589,7 +3589,7 @@ static void activate_other_window( HWND hwnd )
      TRACE( "win = %p fg = %p\n", hwnd_to, fg );
      if (!fg || hwnd == fg)
      {
@@ -73,15 +87,15 @@ index 11111111111..11111111111 100644
      }
      if (NtUserSetActiveWindow( hwnd_to )) NtUserSetActiveWindow( 0 );
  }
-@@ -5044,7 +5044,7 @@ ULONG_PTR WINAPI NtUserCallHwndParam( HWND hwnd, DWORD_PTR param, DWORD code )
-     case NtUserSetCaptureWindow:
-         return set_capture_window( hwnd, param, NULL );
-     case NtUserSetForegroundWindow:
+@@ -5231,7 +5231,7 @@ ULONG_PTR WINAPI NtUserCallHwndParam( HWND hwnd, DWORD_PTR param, DWORD code )
+         return screen_to_client( hwnd, (POINT *)param );
+ 
+     case NtUserCallHwndParam_SetForegroundWindow:
 -        return set_foreground_window( hwnd, param );
 +        return set_foreground_window( hwnd, param, NtGetTickCount() );
-     case NtUserSetWindowPixelFormat:
+ 
+     case NtUserCallHwndParam_SetWindowPixelFormat:
          return set_window_pixel_format( hwnd, param );
-     /* temporary exports */
 diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
@@ -152,5 +166,5 @@ index 11111111111..11111111111 100644
              desktop->cursor_clip_msg = 0;
              desktop->cursor_win = 0;
 -- 
-2.35.1
+2.35.3
 

@@ -1,0 +1,58 @@
+From: chen <cjy520lcy@163.com>
+#Subject: [PATCH] server: clear area when file size is not full page.
+Message-Id: <692ae76b.7662.18023090f5d.Coremail.cjy520lcy@163.com>
+Date: Wed, 13 Apr 2022 21:07:17 +0800 (CST)
+
+From 5854267efc727bc70e7fdc938c4e36e5ec028b88 Mon Sep 17 00:00:00 2001
+From: chenjiangyi <chenjiangyi@uniontech.com>
+Date: Wed, 13 Apr 2022 20:06:27 +0800
+Subject: [PATCH] server: clear area when file size is not full page.
+
+Signed-off-by: chenjiangyi <chenjiangyi@uniontech.com>
+---
+ server/mapping.c | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/server/mapping.c b/server/mapping.c
+index 11111111111..11111111111 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -584,7 +584,7 @@ static int build_shared_mapping( struct mapping *mapping, int fd,
+     struct file *file;
+     unsigned int i;
+     mem_size_t total_size;
+-    size_t file_size, map_size, max_size;
++    size_t file_size, map_size, max_size, file_roundsize;
+     off_t shared_pos, read_pos, write_pos;
+     char *buffer = NULL;
+     int shared_fd;
+@@ -621,6 +621,7 @@ static int build_shared_mapping( struct mapping *mapping, int fd,
+     {
+         if (!(sec[i].Characteristics & IMAGE_SCN_MEM_SHARED)) continue;
+         if (!(sec[i].Characteristics & IMAGE_SCN_MEM_WRITE)) continue;
++        memset(buffer, 0, max_size);
+         get_section_sizes( &sec[i], &map_size, &read_pos, &file_size );
+         write_pos = shared_pos;
+         shared_pos += map_size;
+@@ -638,7 +639,16 @@ static int build_shared_mapping( struct mapping *mapping, int fd,
+             toread -= res;
+             read_pos += res;
+         }
+-        if (pwrite( shared_fd, buffer, file_size, write_pos ) != file_size) goto error;
++        if (file_size & page_mask)
++        {
++            file_roundsize = ROUND_SIZE( file_size );
++            if (file_roundsize > map_size) file_roundsize = map_size;
++            if (pwrite( shared_fd, buffer, file_roundsize, write_pos ) != file_roundsize) goto error;
++        }
++        else
++        {
++            if (pwrite( shared_fd, buffer, file_size, write_pos ) != file_size) goto error;
++        }
+     }
+ 
+     if (!(shared = alloc_object( &shared_map_ops ))) goto error;
+
+-- 
+2.35.3
+

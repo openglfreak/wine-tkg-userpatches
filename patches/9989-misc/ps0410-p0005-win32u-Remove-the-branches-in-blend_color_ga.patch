@@ -1,0 +1,200 @@
+From: Byeongsik Jeon <bsjeon@hanmail.net>
+Subject: [PATCH v2 5/5] win32u: Remove the branches in blend_color_gamma().
+Message-Id: <20220421184922.394344-6-bsjeon@hanmail.net>
+Date: Fri, 22 Apr 2022 03:49:22 +0900
+In-Reply-To: <20220421184922.394344-1-bsjeon@hanmail.net>
+References: <20220421184922.394344-1-bsjeon@hanmail.net>
+
+Signed-off-by: Byeongsik Jeon <bsjeon@hanmail.net>
+---
+v2: ~0u --> 0xffffff, and add 'commit 11d68d0' supplemental code.
+
+Numerically, there is a difference in code behavior because it only
+processes the full pixel alpha value 0xFFFFFF.
+
+For example, if the red subpixel alpha value is 0xFF, the dst red subpixel is
+calculated by:
+
+gamma->encode[ blend_color( gamma->decode[dst.r], gamma->decode[text.r], alpha.r) ]
+
+alpha.r == 0xFF, so,
+gamma->encode[ gamma->decode[text.r] ]
+
+The original code will get text.r, but the changed code will cause little errors.
+
+However, since the affected pixels have already been changed by the LCD Filter,
+I wonder if they require strict subpixel color accuracy.
+
+ dlls/win32u/dibdrv/primitives.c | 65 ++++++++++++++-------------------
+ dlls/win32u/freetype.c          |  4 +-
+ 2 files changed, 29 insertions(+), 40 deletions(-)
+
+diff --git a/dlls/win32u/dibdrv/primitives.c b/dlls/win32u/dibdrv/primitives.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/dibdrv/primitives.c
++++ b/dlls/win32u/dibdrv/primitives.c
+@@ -6339,22 +6339,18 @@ static void draw_glyph_null( const dib_info *dib, const RECT *rect, const dib_in
+ {
+     return;
+ }
+-static inline BYTE blend_color_gamma( BYTE dst, BYTE text, BYTE decoded_text, BYTE alpha,
++static inline BYTE blend_color_gamma( BYTE dst, BYTE decoded_text, BYTE alpha,
+                                       const struct font_gamma_ramp *gamma_ramp )
+ {
+-    if (alpha == 0) return dst;
+-    if (alpha == 255) return text;
+-    if (dst == text) return dst;
+-
+     return gamma_ramp->encode[ blend_color( gamma_ramp->decode[dst], decoded_text, alpha ) ];
+ }
+ 
+-static inline DWORD blend_subpixel( BYTE r, BYTE g, BYTE b, DWORD text, DWORD decoded_text, DWORD alpha,
++static inline DWORD blend_subpixel( BYTE r, BYTE g, BYTE b, DWORD decoded_text, DWORD alpha,
+                                     const struct font_gamma_ramp *gamma_ramp )
+ {
+-    return blend_color_gamma( r, text >> 16, decoded_text >> 16, alpha >> 16, gamma_ramp ) << 16 |
+-           blend_color_gamma( g, text >> 8,  decoded_text >> 8,  alpha >> 8,  gamma_ramp ) << 8  |
+-           blend_color_gamma( b, text,       decoded_text,       alpha,       gamma_ramp );
++    return blend_color_gamma( r, decoded_text >> 16, alpha >> 16, gamma_ramp ) << 16 |
++           blend_color_gamma( g, decoded_text >> 8,  alpha >> 8,  gamma_ramp ) << 8  |
++           blend_color_gamma( b, decoded_text,       alpha,       gamma_ramp );
+ }
+ 
+ static void draw_subpixel_glyph_8888( const dib_info *dib, const RECT *rect, const dib_info *glyph,
+@@ -6375,8 +6371,9 @@ static void draw_subpixel_glyph_8888( const dib_info *dib, const RECT *rect, con
+         for (x = 0; x < rect->right - rect->left; x++)
+         {
+             if (glyph_ptr[x] == 0) continue;
++            if (glyph_ptr[x] == 0xffffff) { dst_ptr[x] = text_pixel; continue; }
+             dst_ptr[x] = blend_subpixel( dst_ptr[x] >> 16, dst_ptr[x] >> 8, dst_ptr[x],
+-                                         text_pixel, decoded_text, glyph_ptr[x], gamma_ramp );
++                                         decoded_text, glyph_ptr[x], gamma_ramp );
+         }
+         dst_ptr += dib->stride / 4;
+         glyph_ptr += glyph->stride / 4;
+@@ -6390,25 +6387,22 @@ static void draw_subpixel_glyph_32( const dib_info *dib, const RECT *rect, const
+     DWORD *dst_ptr = get_pixel_ptr_32( dib, rect->left, rect->top );
+     const DWORD *glyph_ptr = get_pixel_ptr_32( glyph, origin->x, origin->y );
+     int x, y;
+-    DWORD text, decoded_text, val;
+-
+-    text = get_field( text_pixel, dib->red_shift,   dib->red_len ) << 16 |
+-           get_field( text_pixel, dib->green_shift, dib->green_len ) << 8 |
+-           get_field( text_pixel, dib->blue_shift,  dib->blue_len );
++    DWORD decoded_text, val;
+ 
+-    decoded_text = gamma_ramp->decode[ (BYTE)(text >> 16) ] << 16 |
+-                   gamma_ramp->decode[ (BYTE)(text >> 8 ) ] << 8 |
+-                   gamma_ramp->decode[ (BYTE)(text      ) ];
++    decoded_text = gamma_ramp->decode[ get_field( text_pixel, dib->red_shift,   dib->red_len   ) ] << 16 |
++                   gamma_ramp->decode[ get_field( text_pixel, dib->green_shift, dib->green_len ) ] << 8 |
++                   gamma_ramp->decode[ get_field( text_pixel, dib->blue_shift,  dib->blue_len  ) ];
+ 
+     for (y = rect->top; y < rect->bottom; y++)
+     {
+         for (x = 0; x < rect->right - rect->left; x++)
+         {
+             if (glyph_ptr[x] == 0) continue;
++            if (glyph_ptr[x] == 0xffffff) { dst_ptr[x] = text_pixel; continue; }
+             val = blend_subpixel( get_field(dst_ptr[x], dib->red_shift,   dib->red_len),
+                                   get_field(dst_ptr[x], dib->green_shift, dib->green_len),
+                                   get_field(dst_ptr[x], dib->blue_shift,  dib->blue_len),
+-                                  text, decoded_text, glyph_ptr[x], gamma_ramp );
++                                  decoded_text, glyph_ptr[x], gamma_ramp );
+             dst_ptr[x] = rgb_to_pixel_masks( dib, val >> 16, val >> 8, val );
+         }
+         dst_ptr += dib->stride / 4;
+@@ -6434,8 +6428,9 @@ static void draw_subpixel_glyph_24( const dib_info *dib, const RECT *rect, const
+         for (x = 0; x < rect->right - rect->left; x++)
+         {
+             if (glyph_ptr[x] == 0) continue;
++            if (glyph_ptr[x] == 0xffffff) { dst_ptr[x] = text_pixel; continue; }
+             val = blend_subpixel( dst_ptr[x * 3 + 2], dst_ptr[x * 3 + 1], dst_ptr[x * 3],
+-                                  text_pixel, decoded_text, glyph_ptr[x], gamma_ramp );
++                                  decoded_text, glyph_ptr[x], gamma_ramp );
+             dst_ptr[x * 3]     = val;
+             dst_ptr[x * 3 + 1] = val >> 8;
+             dst_ptr[x * 3 + 2] = val >> 16;
+@@ -6452,25 +6447,22 @@ static void draw_subpixel_glyph_555( const dib_info *dib, const RECT *rect, cons
+     WORD *dst_ptr = get_pixel_ptr_16( dib, rect->left, rect->top );
+     const DWORD *glyph_ptr = get_pixel_ptr_32( glyph, origin->x, origin->y );
+     int x, y;
+-    DWORD text, decoded_text, val;
+-
+-    text = ((text_pixel << 9) & 0xf80000) | ((text_pixel << 4) & 0x070000) |
+-           ((text_pixel << 6) & 0x00f800) | ((text_pixel << 1) & 0x000700) |
+-           ((text_pixel << 3) & 0x0000f8) | ((text_pixel >> 2) & 0x000007);
++    DWORD decoded_text, val;
+ 
+-    decoded_text = gamma_ramp->decode[ (BYTE)(text >> 16) ] << 16 |
+-                   gamma_ramp->decode[ (BYTE)(text >> 8 ) ] << 8 |
+-                   gamma_ramp->decode[ (BYTE)(text      ) ];
++    decoded_text = gamma_ramp->decode[ ((text_pixel >> 7) & 0xf8) | ((text_pixel >> 12) & 0x07) ] << 16 |
++                   gamma_ramp->decode[ ((text_pixel >> 2) & 0xf8) | ((text_pixel >>  7) & 0x07) ] << 8 |
++                   gamma_ramp->decode[ ((text_pixel << 3) & 0xf8) | ((text_pixel >>  2) & 0x07) ];
+ 
+     for (y = rect->top; y < rect->bottom; y++)
+     {
+         for (x = 0; x < rect->right - rect->left; x++)
+         {
+             if (glyph_ptr[x] == 0) continue;
++            if (glyph_ptr[x] == 0xffffff) { dst_ptr[x] = text_pixel; continue; }
+             val = blend_subpixel( ((dst_ptr[x] >> 7) & 0xf8) | ((dst_ptr[x] >> 12) & 0x07),
+                                   ((dst_ptr[x] >> 2) & 0xf8) | ((dst_ptr[x] >>  7) & 0x07),
+                                   ((dst_ptr[x] << 3) & 0xf8) | ((dst_ptr[x] >>  2) & 0x07),
+-                                  text, decoded_text, glyph_ptr[x], NULL );
++                                  decoded_text, glyph_ptr[x], NULL );
+             dst_ptr[x] = ((val >> 9) & 0x7c00) | ((val >> 6) & 0x03e0) | ((val >> 3) & 0x001f);
+         }
+         dst_ptr += dib->stride / 2;
+@@ -6485,25 +6477,22 @@ static void draw_subpixel_glyph_16( const dib_info *dib, const RECT *rect, const
+     WORD *dst_ptr = get_pixel_ptr_16( dib, rect->left, rect->top );
+     const DWORD *glyph_ptr = get_pixel_ptr_32( glyph, origin->x, origin->y );
+     int x, y;
+-    DWORD text, decoded_text, val;
+-
+-    text = get_field( text_pixel, dib->red_shift,   dib->red_len ) << 16 |
+-           get_field( text_pixel, dib->green_shift, dib->green_len ) << 8 |
+-           get_field( text_pixel, dib->blue_shift,  dib->blue_len );
++    DWORD decoded_text, val;
+ 
+-    decoded_text = gamma_ramp->decode[ (BYTE)(text >> 16) ] << 16 |
+-                   gamma_ramp->decode[ (BYTE)(text >> 8 ) ] << 8 |
+-                   gamma_ramp->decode[ (BYTE)(text      ) ];
++    decoded_text = gamma_ramp->decode[ get_field( text_pixel, dib->red_shift,   dib->red_len   ) ] << 16 |
++                   gamma_ramp->decode[ get_field( text_pixel, dib->green_shift, dib->green_len ) ] << 8 |
++                   gamma_ramp->decode[ get_field( text_pixel, dib->blue_shift,  dib->blue_len  ) ];
+ 
+     for (y = rect->top; y < rect->bottom; y++)
+     {
+         for (x = 0; x < rect->right - rect->left; x++)
+         {
+             if (glyph_ptr[x] == 0) continue;
++            if (glyph_ptr[x] == 0xffffff) { dst_ptr[x] = text_pixel; continue; }
+             val = blend_subpixel( get_field(dst_ptr[x], dib->red_shift,   dib->red_len),
+                                   get_field(dst_ptr[x], dib->green_shift, dib->green_len),
+                                   get_field(dst_ptr[x], dib->blue_shift,  dib->blue_len),
+-                                  text, decoded_text, glyph_ptr[x], NULL );
++                                  decoded_text, glyph_ptr[x], NULL );
+             dst_ptr[x] = rgb_to_pixel_masks( dib, val >> 16, val >> 8, val );
+         }
+         dst_ptr += dib->stride / 2;
+diff --git a/dlls/win32u/freetype.c b/dlls/win32u/freetype.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/freetype.c
++++ b/dlls/win32u/freetype.c
+@@ -3116,8 +3116,8 @@ static DWORD get_subpixel_glyph_bitmap( FT_GlyphSlot glyph, FT_BBox bbox, UINT f
+             {
+                 if ( src[x / 8] & masks[x % 8] )
+                 {
+-                    ((unsigned int *)dst)[x] = ~0u;
+-                    if (fake_bold && x + 1 < width) ((unsigned int *)dst)[x + 1] = ~0u;
++                    ((unsigned int *)dst)[x] = 0xffffff;
++                    if (fake_bold && x + 1 < width) ((unsigned int *)dst)[x + 1] = 0xffffff;
+                 }
+             }
+             src += glyph->bitmap.pitch;
+
+-- 
+2.36.0
+

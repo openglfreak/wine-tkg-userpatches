@@ -1,0 +1,113 @@
+From 86639fe48a8814234c0407ba669dab1c028fd1ce Mon Sep 17 00:00:00 2001
+From: Zebediah Figura <z.figura12@gmail.com>
+Date: Mon, 8 Mar 2021 18:07:23 -0600
+Subject: [PATCH 21/29] ntdll: Introduce a helper to wait on an internal server
+ handle.
+
+---
+ dlls/ntdll/unix/file.c         |  2 +-
+ dlls/ntdll/unix/process.c      |  2 +-
+ dlls/ntdll/unix/server.c       | 17 ++++++++++++++++-
+ dlls/ntdll/unix/thread.c       |  2 +-
+ dlls/ntdll/unix/unix_private.h |  4 +++-
+ 5 files changed, 22 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -7155,7 +7155,7 @@ NTSTATUS WINAPI NtLockFile( HANDLE file, HANDLE event, PIO_APC_ROUTINE apc, void
+         }
+         if (handle)
+         {
+-            NtWaitForSingleObject( handle, FALSE, NULL );
++            server_wait_for_object( handle, FALSE, NULL );
+             NtClose( handle );
+         }
+         else  /* Unix lock conflict, sleep a bit and retry */
+diff --git a/dlls/ntdll/unix/process.c b/dlls/ntdll/unix/process.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -873,7 +873,7 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
+ 
+     /* wait for the new process info to be ready */
+ 
+-    NtWaitForSingleObject( process_info, FALSE, NULL );
++    server_wait_for_object( process_info, FALSE, NULL );
+     SERVER_START_REQ( get_new_process_info )
+     {
+         req->info = wine_server_obj_handle( process_info );
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -704,6 +704,21 @@ unsigned int server_wait( const select_op_t *select_op, data_size_t size, UINT f
+ }
+ 
+ 
++/* helper function to perform a server-side wait on an internal handle without
++ * using the fast synchronization path */
++unsigned int server_wait_for_object( HANDLE handle, BOOL alertable, const LARGE_INTEGER *timeout )
++{
++    select_op_t select_op;
++    UINT flags = SELECT_INTERRUPTIBLE;
++
++    if (alertable) flags |= SELECT_ALERTABLE;
++
++    select_op.wait.op = SELECT_WAIT;
++    select_op.wait.handles[0] = wine_server_obj_handle( handle );
++    return server_wait( &select_op, offsetof( select_op_t, wait.handles[1] ), flags, timeout );
++}
++
++
+ /***********************************************************************
+  *              NtContinue  (NTDLL.@)
+  */
+@@ -765,7 +780,7 @@ unsigned int server_queue_process_apc( HANDLE process, const apc_call_t *call, a
+         }
+         else
+         {
+-            NtWaitForSingleObject( handle, FALSE, NULL );
++            server_wait_for_object( handle, FALSE, NULL );
+ 
+             SERVER_START_REQ( get_apc_result )
+             {
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1735,7 +1735,7 @@ NTSTATUS get_thread_context( HANDLE handle, void *context, BOOL *self, USHORT ma
+ 
+     if (ret == STATUS_PENDING)
+     {
+-        NtWaitForSingleObject( context_handle, FALSE, NULL );
++        server_wait_for_object( context_handle, FALSE, NULL );
+ 
+         SERVER_START_REQ( get_thread_context )
+         {
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -173,6 +173,8 @@ extern unsigned int server_select( const select_op_t *select_op, data_size_t siz
+                                    timeout_t abs_timeout, context_t *context, user_apc_t *user_apc ) DECLSPEC_HIDDEN;
+ extern unsigned int server_wait( const select_op_t *select_op, data_size_t size, UINT flags,
+                                  const LARGE_INTEGER *timeout ) DECLSPEC_HIDDEN;
++extern unsigned int server_wait_for_object( HANDLE handle, BOOL alertable,
++                                            const LARGE_INTEGER *timeout ) DECLSPEC_HIDDEN;
+ extern unsigned int server_queue_process_apc( HANDLE process, const apc_call_t *call,
+                                               apc_result_t *result ) DECLSPEC_HIDDEN;
+ extern int server_get_unix_fd( HANDLE handle, unsigned int wanted_access, int *unix_fd,
+@@ -363,7 +365,7 @@ static inline async_data_t server_async( HANDLE handle, struct async_fileio *use
+ 
+ static inline NTSTATUS wait_async( HANDLE handle, BOOL alertable )
+ {
+-    return NtWaitForSingleObject( handle, alertable, NULL );
++    return server_wait_for_object( handle, alertable, NULL );
+ }
+ 
+ static inline BOOL in_wow64_call(void)
+-- 
+2.36.0
+

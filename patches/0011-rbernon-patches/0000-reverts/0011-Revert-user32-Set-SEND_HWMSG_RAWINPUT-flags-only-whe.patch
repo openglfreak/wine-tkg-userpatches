@@ -1,0 +1,276 @@
+From 4ede93ff8dd394f7a3f3e4edc28e5be0f905bff3 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Mon, 25 Apr 2022 05:24:26 +0200
+Subject: [PATCH 11/16] Revert "user32: Set SEND_HWMSG_RAWINPUT flags only when
+ RAWINPUT is set."
+
+This reverts staging patch patches/user32-rawinput-mouse/0006-user32-Set-SEND_HWMSG_RAWINPUT-flags-only-when-RAWIN.patch
+---
+ dlls/win32u/input.c             |  3 +--
+ dlls/win32u/message.c           |  4 ++--
+ dlls/wineandroid.drv/keyboard.c |  3 +--
+ dlls/wineandroid.drv/window.c   |  5 ++---
+ dlls/winemac.drv/ime.c          |  6 ++----
+ dlls/winemac.drv/keyboard.c     |  3 +--
+ dlls/winemac.drv/mouse.c        |  3 +--
+ dlls/winex11.drv/keyboard.c     |  3 +--
+ dlls/winex11.drv/mouse.c        | 11 ++++-------
+ 9 files changed, 15 insertions(+), 26 deletions(-)
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -131,7 +131,6 @@ UINT WINAPI NtUserSendInput( UINT count, INPUT *inputs, int size )
+ {
+     UINT i;
+     NTSTATUS status = STATUS_SUCCESS;
+-    RAWINPUT rawinput;
+ 
+     if (size != sizeof(INPUT))
+     {
+@@ -161,7 +160,7 @@ UINT WINAPI NtUserSendInput( UINT count, INPUT *inputs, int size )
+             update_mouse_coords( &input );
+             /* fallthrough */
+         case INPUT_KEYBOARD:
+-            status = send_hardware_message( 0, &input, &rawinput, SEND_HWMSG_INJECTED );
++            status = send_hardware_message( 0, &input, NULL, SEND_HWMSG_INJECTED );
+             break;
+         case INPUT_HARDWARE:
+             SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2486,7 +2486,7 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
+             req->input.mouse.flags = input->mi.dwFlags;
+             req->input.mouse.time  = input->mi.time;
+             req->input.mouse.info  = input->mi.dwExtraInfo;
+-            if (rawinput) req->flags |= SEND_HWMSG_RAWINPUT;
++            req->flags |= SEND_HWMSG_RAWINPUT;
+             break;
+         case INPUT_KEYBOARD:
+             req->input.kbd.vkey  = input->ki.wVk;
+@@ -2494,7 +2494,7 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
+             req->input.kbd.flags = input->ki.dwFlags;
+             req->input.kbd.time  = input->ki.time;
+             req->input.kbd.info  = input->ki.dwExtraInfo;
+-            if (rawinput) req->flags |= SEND_HWMSG_RAWINPUT;
++            req->flags |= SEND_HWMSG_RAWINPUT;
+             break;
+         case INPUT_HARDWARE:
+             req->input.hw.msg    = input->hi.uMsg;
+diff --git a/dlls/wineandroid.drv/keyboard.c b/dlls/wineandroid.drv/keyboard.c
+index 11111111111..11111111111 100644
+--- a/dlls/wineandroid.drv/keyboard.c
++++ b/dlls/wineandroid.drv/keyboard.c
+@@ -671,7 +671,6 @@ static BOOL get_async_key_state( BYTE state[256] )
+ 
+ static void send_keyboard_input( HWND hwnd, WORD vkey, WORD scan, DWORD flags )
+ {
+-    RAWINPUT rawinput;
+     INPUT input;
+ 
+     input.type             = INPUT_KEYBOARD;
+@@ -681,7 +680,7 @@ static void send_keyboard_input( HWND hwnd, WORD vkey, WORD scan, DWORD flags )
+     input.u.ki.time        = 0;
+     input.u.ki.dwExtraInfo = 0;
+ 
+-    __wine_send_input( hwnd, &input, &rawinput );
++    __wine_send_input( hwnd, &input, NULL );
+ }
+ 
+ /***********************************************************************
+diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/wineandroid.drv/window.c
++++ b/dlls/wineandroid.drv/window.c
+@@ -424,7 +424,6 @@ static int process_events( DWORD mask )
+     DPI_AWARENESS_CONTEXT context;
+     struct java_event *event, *next, *previous;
+     unsigned int count = 0;
+-    RAWINPUT rawinput;
+ 
+     assert( GetCurrentThreadId() == desktop_tid );
+ 
+@@ -518,7 +517,7 @@ static int process_events( DWORD mask )
+                     }
+                     SERVER_END_REQ;
+                 }
+-                __wine_send_input( capture ? capture : event->data.motion.hwnd, &event->data.motion.input, &rawinput );
++                __wine_send_input( capture ? capture : event->data.motion.hwnd, &event->data.motion.input, NULL );
+             }
+             break;
+ 
+@@ -532,7 +531,7 @@ static int process_events( DWORD mask )
+                       event->data.kbd.input.u.ki.wVk, event->data.kbd.input.u.ki.wVk,
+                       event->data.kbd.input.u.ki.wScan );
+             update_keyboard_lock_state( event->data.kbd.input.u.ki.wVk, event->data.kbd.lock_state );
+-            __wine_send_input( 0, &event->data.kbd.input, &rawinput );
++            __wine_send_input( 0, &event->data.kbd.input, NULL );
+             break;
+ 
+         default:
+diff --git a/dlls/winemac.drv/ime.c b/dlls/winemac.drv/ime.c
+index 11111111111..11111111111 100644
+--- a/dlls/winemac.drv/ime.c
++++ b/dlls/winemac.drv/ime.c
+@@ -42,7 +42,6 @@
+ #include "winuser.h"
+ #include "imm.h"
+ #include "ddk/imm.h"
+-#include "wine/server.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(imm);
+ 
+@@ -1419,7 +1418,6 @@ void macdrv_im_set_text(const macdrv_event *event)
+                 event->im_set_text.cursor_pos, !event->im_set_text.complete);
+         else
+         {
+-            RAWINPUT rawinput;
+             INPUT input;
+             CFIndex i;
+ 
+@@ -1432,10 +1430,10 @@ void macdrv_im_set_text(const macdrv_event *event)
+             {
+                 input.ki.wScan      = chars[i];
+                 input.ki.dwFlags    = KEYEVENTF_UNICODE;
+-                __wine_send_input(hwnd, &input, &rawinput);
++                __wine_send_input(hwnd, &input, NULL);
+ 
+                 input.ki.dwFlags    = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+-                __wine_send_input(hwnd, &input, &rawinput);
++                __wine_send_input(hwnd, &input, NULL);
+             }
+         }
+ 
+diff --git a/dlls/winemac.drv/keyboard.c b/dlls/winemac.drv/keyboard.c
+index 11111111111..11111111111 100644
+--- a/dlls/winemac.drv/keyboard.c
++++ b/dlls/winemac.drv/keyboard.c
+@@ -916,7 +916,6 @@ void macdrv_compute_keyboard_layout(struct macdrv_thread_data *thread_data)
+  */
+ static void macdrv_send_keyboard_input(HWND hwnd, WORD vkey, WORD scan, DWORD flags, DWORD time)
+ {
+-    RAWINPUT rawinput;
+     INPUT input;
+ 
+     TRACE_(key)("hwnd %p vkey=%04x scan=%04x flags=%04x\n", hwnd, vkey, scan, flags);
+@@ -928,7 +927,7 @@ static void macdrv_send_keyboard_input(HWND hwnd, WORD vkey, WORD scan, DWORD fl
+     input.ki.time           = time;
+     input.ki.dwExtraInfo    = 0;
+ 
+-    __wine_send_input(hwnd, &input, &rawinput);
++    __wine_send_input(hwnd, &input, NULL);
+ }
+ 
+ 
+diff --git a/dlls/winemac.drv/mouse.c b/dlls/winemac.drv/mouse.c
+index 11111111111..11111111111 100644
+--- a/dlls/winemac.drv/mouse.c
++++ b/dlls/winemac.drv/mouse.c
+@@ -136,7 +136,6 @@ static const CFStringRef cocoa_cursor_names[] =
+ static void send_mouse_input(HWND hwnd, macdrv_window cocoa_window, UINT flags, int x, int y,
+                              DWORD mouse_data, BOOL drag, unsigned long time)
+ {
+-    RAWINPUT rawinput;
+     INPUT input;
+     HWND top_level_hwnd;
+ 
+@@ -166,7 +165,7 @@ static void send_mouse_input(HWND hwnd, macdrv_window cocoa_window, UINT flags,
+     input.mi.time           = time;
+     input.mi.dwExtraInfo    = 0;
+ 
+-    __wine_send_input(top_level_hwnd, &input, &rawinput);
++    __wine_send_input(top_level_hwnd, &input, NULL);
+ }
+ 
+ 
+diff --git a/dlls/winex11.drv/keyboard.c b/dlls/winex11.drv/keyboard.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/keyboard.c
++++ b/dlls/winex11.drv/keyboard.c
+@@ -1131,7 +1131,6 @@ static WORD EVENT_event_to_vkey( XIC xic, XKeyEvent *e)
+  */
+ static void X11DRV_send_keyboard_input( HWND hwnd, WORD vkey, WORD scan, DWORD flags, DWORD time )
+ {
+-    RAWINPUT rawinput;
+     INPUT input;
+ 
+     TRACE_(key)( "hwnd %p vkey=%04x scan=%04x flags=%04x\n", hwnd, vkey, scan, flags );
+@@ -1143,7 +1142,7 @@ static void X11DRV_send_keyboard_input( HWND hwnd, WORD vkey, WORD scan, DWORD f
+     input.u.ki.time        = time;
+     input.u.ki.dwExtraInfo = 0;
+ 
+-    __wine_send_input( hwnd, &input, &rawinput );
++    __wine_send_input( hwnd, &input, NULL );
+ }
+ 
+ 
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -745,7 +745,6 @@ static void map_event_coords( HWND hwnd, Window window, Window event_root, int x
+ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPUT *input )
+ {
+     struct x11drv_win_data *data;
+-    RAWINPUT rawinput;
+ 
+     input->type = INPUT_MOUSE;
+ 
+@@ -762,7 +761,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
+             sync_window_cursor( window );
+             last_cursor_change = input->u.mi.time;
+         }
+-        __wine_send_input( hwnd, input, &rawinput );
++        __wine_send_input( hwnd, input, NULL );
+         return;
+     }
+ 
+@@ -802,7 +801,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
+         SERVER_END_REQ;
+     }
+ 
+-    __wine_send_input( hwnd, input, &rawinput );
++    __wine_send_input( hwnd, input, NULL );
+ }
+ 
+ #ifdef SONAME_LIBXCURSOR
+@@ -1767,7 +1766,6 @@ void move_resize_window( HWND hwnd, int dir )
+     {
+         MSG msg;
+         INPUT input;
+-        RAWINPUT rawinput;
+         int x, y, rootX, rootY;
+ 
+         if (!XQueryPointer( display, root_window, &root, &child, &rootX, &rootY, &x, &y, &xstate )) break;
+@@ -1783,7 +1781,7 @@ void move_resize_window( HWND hwnd, int dir )
+             input.u.mi.dwFlags     = button_up_flags[button - 1] | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
+             input.u.mi.time        = GetTickCount();
+             input.u.mi.dwExtraInfo = 0;
+-            __wine_send_input( hwnd, &input, &rawinput );
++            __wine_send_input( hwnd, &input, NULL );
+         }
+ 
+         while (NtUserPeekMessage( &msg, 0, 0, 0, PM_REMOVE ))
+@@ -1996,7 +1994,6 @@ static BOOL map_raw_event_coords( XIRawEvent *event, INPUT *input )
+ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+ {
+     XIRawEvent *event = xev->data;
+-    RAWINPUT rawinput;
+     INPUT input;
+ 
+     if (broken_rawevents && is_old_motion_event( xev->serial ))
+@@ -2014,7 +2011,7 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+     input.u.mi.dy          = 0;
+     if (!map_raw_event_coords( event, &input )) return FALSE;
+ 
+-    __wine_send_input( 0, &input, &rawinput );
++    __wine_send_input( 0, &input, NULL );
+     return TRUE;
+ }
+ 
+-- 
+2.36.0
+

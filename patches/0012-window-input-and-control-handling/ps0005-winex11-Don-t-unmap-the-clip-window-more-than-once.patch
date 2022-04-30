@@ -13,35 +13,38 @@ diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
-@@ -129,6 +129,7 @@ static RECT last_clip_rect;
- static HWND last_clip_foreground_window;
- static BOOL last_clip_refused;
+@@ -126,6 +126,7 @@ static const UINT button_up_data[NB_BUTTONS] =
+ XContext cursor_context = 0;
+ 
  static RECT clip_rect;
 +static BOOL clip_window_mapped = FALSE;
  static Cursor create_cursor( HANDLE handle );
  
  #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
-@@ -529,11 +530,12 @@ static BOOL grab_clipping_window( const RECT *clip )
+@@ -451,6 +452,7 @@ static BOOL grab_clipping_window( const RECT *clip )
+     if (!clipping_cursor)
+     {
+         XMapWindow( data->display, clip_window );
++        clip_window_mapped = TRUE;
+         GetCursorInfo( &pci );
+         set_window_cursor( clip_window, (pci.flags & CURSOR_SHOWING) ? pci.hCursor : 0 );
+     }
+@@ -467,7 +469,7 @@ static BOOL grab_clipping_window( const RECT *clip )
  
-     TRACE( "clipping to %s win %lx\n", wine_dbgstr_rect(clip), clip_window );
- 
--    if (!data->clip_hwnd) XUnmapWindow( data->display, clip_window );
-+    if (clip_window_mapped && !data->clip_hwnd) XUnmapWindow( data->display, clip_window );
-     pos = virtual_screen_to_root( clip->left, clip->top );
-     XMoveResizeWindow( data->display, clip_window, pos.x, pos.y,
-                        max( 1, clip->right - clip->left ), max( 1, clip->bottom - clip->top ) );
-     XMapWindow( data->display, clip_window );
-+    clip_window_mapped = TRUE;
- 
-     /* if the rectangle is shrinking we may get a pointer warp */
-     if (!data->clip_hwnd || clip->left > clip_rect.left || clip->top > clip_rect.top ||
-@@ -583,7 +585,8 @@ void ungrab_clipping_window(void)
+     if (!clipping_cursor)
+     {
+-        XUnmapWindow( data->display, clip_window );
++        if (clip_window_mapped) XUnmapWindow( data->display, clip_window );
+         return FALSE;
+     }
+     clip_rect = *clip;
+@@ -492,7 +494,8 @@ void ungrab_clipping_window(void)
      if (!clip_window) return;
  
      TRACE( "no longer clipping\n" );
--    XUnmapWindow( display, clip_window );
-+    if (clip_window_mapped) XUnmapWindow( display, clip_window );
+-    XUnmapWindow( data->display, clip_window );
++    if (clip_window_mapped) XUnmapWindow( data->display, clip_window );
 +    clip_window_mapped = FALSE;
-     if (clipping_cursor) XUngrabPointer( display, CurrentTime );
+     if (clipping_cursor) XUngrabPointer( data->display, CurrentTime );
      clipping_cursor = FALSE;
-     send_notify_message( NtUserGetDesktopWindow(), WM_X11DRV_CLIP_CURSOR_NOTIFY, 0, 0 );
+     data->clip_reset = GetTickCount();

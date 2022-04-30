@@ -1,0 +1,64 @@
+From f26ea881a5e9c7626f4a426ed37075a6062e9af5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 22 Oct 2021 00:12:16 +0200
+Subject: [PATCH 10/14] winex11.drv: Resize vulkan surfaces client rect size
+ changes.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=45277
+CW-Bug-Id: 16608
+---
+ dlls/winex11.drv/vulkan.c | 12 ++++++++++++
+ dlls/winex11.drv/window.c |  1 +
+ dlls/winex11.drv/x11drv.h |  1 +
+ 3 files changed, 14 insertions(+)
+
+diff --git a/dlls/winex11.drv/vulkan.c b/dlls/winex11.drv/vulkan.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/vulkan.c
++++ b/dlls/winex11.drv/vulkan.c
+@@ -291,6 +291,18 @@ static BOOL wine_vk_surface_set_offscreen(struct wine_vk_surface *surface, BOOL
+     return !offscreen;
+ }
+ 
++void resize_vk_surfaces(HWND hwnd, Window active, int mask, XWindowChanges *changes)
++{
++    struct wine_vk_surface *surface;
++    pthread_mutex_lock(&vulkan_mutex);
++    LIST_FOR_EACH_ENTRY(surface, &surface_list, struct wine_vk_surface, entry)
++    {
++        if (surface->hwnd != hwnd) continue;
++        if (surface->window != active) XConfigureWindow(gdi_display, surface->window, mask, changes);
++    }
++    pthread_mutex_unlock(&vulkan_mutex);
++}
++
+ void sync_vk_surface(HWND hwnd, BOOL known_child)
+ {
+     struct wine_vk_surface *surface;
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1371,6 +1371,7 @@ static void sync_client_position( struct x11drv_win_data *data,
+         TRACE( "setting client win %lx pos %d,%d,%dx%d changes=%x\n",
+                data->client_window, changes.x, changes.y, changes.width, changes.height, mask );
+         XConfigureWindow( data->display, data->client_window, mask, &changes );
++        resize_vk_surfaces( data->hwnd, data->client_window, mask, &changes );
+     }
+ }
+ 
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -641,6 +641,7 @@ extern void set_gl_drawable_parent( HWND hwnd, HWND parent ) DECLSPEC_HIDDEN;
+ extern void destroy_gl_drawable( HWND hwnd ) DECLSPEC_HIDDEN;
+ extern void destroy_vk_surface( HWND hwnd ) DECLSPEC_HIDDEN;
+ extern void sync_vk_surface( HWND hwnd, BOOL known_child ) DECLSPEC_HIDDEN;
++extern void resize_vk_surfaces( HWND hwnd, Window active, int mask, XWindowChanges *changes ) DECLSPEC_HIDDEN;
+ extern void vulkan_thread_detach(void) DECLSPEC_HIDDEN;
+ 
+ extern void wait_for_withdrawn_state( HWND hwnd, BOOL set ) DECLSPEC_HIDDEN;
+-- 
+2.36.0
+

@@ -1,0 +1,50 @@
+From 10468d310037393372551dce84749d27c96998cd Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 15 Oct 2021 11:39:46 +0200
+Subject: [PATCH 4/4] server: Check for internal messages before validating
+ window handle.
+
+---
+ dlls/user32/tests/win.c | 1 -
+ server/queue.c          | 6 +++++-
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/tests/win.c
++++ b/dlls/user32/tests/win.c
+@@ -952,7 +952,6 @@ static void test_thread_exit_destroy(void)
+     ret = IsWindow( child2 );
+     ok( !ret, "IsWindow returned %lu\n", ret );
+     ret = IsWindow( child3 );
+-    todo_wine
+     ok( !ret, "IsWindow returned %lu\n", ret );
+     ret = DestroyWindow( child2 );
+     ok( !ret, "DestroyWindow returned %lu\n", ret );
+diff --git a/server/queue.c b/server/queue.c
+index 11111111111..11111111111 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -2905,6 +2905,10 @@ DECL_HANDLER(get_message)
+     user_handle_t get_win = get_user_full_handle( req->get_win );
+     unsigned int filter = req->flags >> 16;
+ 
++    /* first check for internal messages */
++    if (queue && get_queued_message( queue, 0, SEND_MESSAGE, 0, 0x80000000, 0xffffffff, PM_REMOVE, reply ))
++        return;
++
+     if (get_win && get_win != 1 && get_win != -1 && !get_user_object( get_win, USER_WINDOW ))
+     {
+         set_win32_error( ERROR_INVALID_WINDOW_HANDLE );
+@@ -2916,7 +2920,7 @@ DECL_HANDLER(get_message)
+     if (!filter) filter = QS_ALLINPUT;
+ 
+     /* first check for sent messages */
+-    if (get_queued_message( queue, 0, SEND_MESSAGE, 0, 0, 0xffffffff, PM_REMOVE, reply ))
++    if (get_queued_message( queue, 0, SEND_MESSAGE, 0, 0, 0x7fffffff, PM_REMOVE, reply ))
+         return;
+ 
+     /* clear changed bits so we can wait on them if we don't find a message */
+-- 
+2.36.0
+

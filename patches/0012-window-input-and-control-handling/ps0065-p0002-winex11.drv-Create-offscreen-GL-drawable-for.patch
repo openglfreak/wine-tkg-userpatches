@@ -15,7 +15,7 @@ diff --git a/dlls/winex11.drv/opengl.c b/dlls/winex11.drv/opengl.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/opengl.c
 +++ b/dlls/winex11.drv/opengl.c
-@@ -235,6 +235,12 @@ enum dc_gl_type
+@@ -234,6 +234,12 @@ enum dc_gl_type
      DC_GL_PBUFFER     /* pseudo memory DC using a PBuffer */
  };
  
@@ -28,7 +28,7 @@ index 11111111111..11111111111 100644
  struct gl_drawable
  {
      LONG                           ref;          /* reference count */
-@@ -245,6 +251,7 @@ struct gl_drawable
+@@ -244,6 +250,7 @@ struct gl_drawable
      Pixmap                         pixmap;       /* base pixmap if drawable is a GLXPixmap */
      const struct wgl_pixel_format *format;       /* pixel format for the drawable */
      SIZE                           pixmap_size;  /* pixmap size for GLXPixmap drawables */
@@ -36,7 +36,7 @@ index 11111111111..11111111111 100644
      int                            swap_interval;
      BOOL                           refresh_swap_interval;
      BOOL                           mutable_pf;
-@@ -1318,6 +1325,19 @@ static GLXContext create_glxcontext(Display *display, struct wgl_context *contex
+@@ -1309,6 +1316,19 @@ static GLXContext create_glxcontext(Display *display, struct wgl_context *contex
  }
  
  
@@ -56,7 +56,7 @@ index 11111111111..11111111111 100644
  /***********************************************************************
   *              create_gl_drawable
   */
-@@ -1345,8 +1365,24 @@ static struct gl_drawable *create_gl_drawable( HWND hwnd, const struct wgl_pixel
+@@ -1336,8 +1356,24 @@ static struct gl_drawable *create_gl_drawable( HWND hwnd, const struct wgl_pixel
      gl->ref = 1;
      gl->mutable_pf = mutable_pf;
  
@@ -83,7 +83,7 @@ index 11111111111..11111111111 100644
      {
          gl->type = DC_GL_WINDOW;
          gl->window = create_client_window( hwnd, visual );
-@@ -1472,24 +1508,22 @@ static BOOL set_pixel_format(HDC hdc, int format, BOOL allow_change)
+@@ -1463,24 +1499,22 @@ static BOOL set_pixel_format(HDC hdc, int format, BOOL allow_change)
   */
  void sync_gl_drawable( HWND hwnd, BOOL known_child )
  {
@@ -119,30 +119,30 @@ index 11111111111..11111111111 100644
      }
      release_gl_drawable( old );
  }
-@@ -1971,7 +2005,7 @@ static void wglFinish(void)
+@@ -1963,7 +1997,7 @@ static void wglFinish(void)
      {
          switch (gl->type)
          {
--        case DC_GL_PIXMAP_WIN: escape.gl_drawable = gl->pixmap; break;
-+        case DC_GL_PIXMAP_WIN: if (!gl->layered_type) escape.gl_drawable = gl->pixmap; break;
-         case DC_GL_CHILD_WIN:  escape.gl_drawable = gl->window; break;
+-        case DC_GL_PIXMAP_WIN: escape.drawable = gl->pixmap; break;
++        case DC_GL_PIXMAP_WIN: if (!gl->layered_type) escape.drawable = gl->pixmap; break;
+         case DC_GL_CHILD_WIN:  escape.drawable = gl->window; break;
          default: break;
          }
-@@ -1998,7 +2032,7 @@ static void wglFlush(void)
+@@ -1990,7 +2024,7 @@ static void wglFlush(void)
      {
          switch (gl->type)
          {
--        case DC_GL_PIXMAP_WIN: escape.gl_drawable = gl->pixmap; break;
-+        case DC_GL_PIXMAP_WIN: if (!gl->layered_type) escape.gl_drawable = gl->pixmap; break;
-         case DC_GL_CHILD_WIN:  escape.gl_drawable = gl->window; break;
+-        case DC_GL_PIXMAP_WIN: escape.drawable = gl->pixmap; break;
++        case DC_GL_PIXMAP_WIN: if (!gl->layered_type) escape.drawable = gl->pixmap; break;
+         case DC_GL_CHILD_WIN:  escape.drawable = gl->window; break;
          default: break;
          }
-@@ -3352,7 +3386,7 @@ static BOOL WINAPI glxdrv_wglSwapBuffers( HDC hdc )
+@@ -3344,7 +3378,7 @@ static BOOL WINAPI glxdrv_wglSwapBuffers( HDC hdc )
      {
      case DC_GL_PIXMAP_WIN:
          if (ctx) sync_context( ctx );
--        escape.gl_drawable = gl->pixmap;
-+        if (!gl->layered_type) escape.gl_drawable = gl->pixmap;
+-        escape.drawable = gl->pixmap;
++        if (!gl->layered_type) escape.drawable = gl->pixmap;
          if (pglXCopySubBufferMESA) {
              /* (glX)SwapBuffers has an implicit glFlush effect, however
               * GLX_MESA_copy_sub_buffer doesn't. Make sure GL is flushed before
@@ -150,7 +150,7 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -1552,6 +1552,30 @@ Window get_dummy_parent(void)
+@@ -1665,6 +1665,30 @@ void update_client_window( HWND hwnd )
  }
  
  
@@ -181,15 +181,15 @@ index 11111111111..11111111111 100644
  /**********************************************************************
   *		create_dummy_client_window
   */
-@@ -1850,6 +1874,7 @@ void X11DRV_SetWindowStyle( HWND hwnd, INT offset, STYLESTRUCT *style )
- {
+@@ -1965,6 +1989,7 @@ void X11DRV_SetWindowStyle( HWND hwnd, INT offset, STYLESTRUCT *style )
      struct x11drv_win_data *data;
      DWORD changed = style->styleNew ^ style->styleOld;
+     HWND parent = NtUserGetAncestor( hwnd, GA_PARENT );
 +    BOOL need_sync_gl = FALSE;
  
-     if (hwnd == NtUserGetDesktopWindow()) return;
-     if (!(data = get_win_data( hwnd ))) return;
-@@ -1860,12 +1885,15 @@ void X11DRV_SetWindowStyle( HWND hwnd, INT offset, STYLESTRUCT *style )
+     if (offset == GWL_STYLE && (changed & WS_CHILD))
+     {
+@@ -1983,12 +2008,15 @@ void X11DRV_SetWindowStyle( HWND hwnd, INT offset, STYLESTRUCT *style )
      if (offset == GWL_EXSTYLE && (changed & WS_EX_LAYERED)) /* changing WS_EX_LAYERED resets attributes */
      {
          data->layered = FALSE;
@@ -205,15 +205,15 @@ index 11111111111..11111111111 100644
  }
  
  
-@@ -2960,6 +2988,7 @@ void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha, DWO
+@@ -3074,6 +3102,7 @@ void X11DRV_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
+ void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha, DWORD flags )
  {
      struct x11drv_win_data *data = get_win_data( hwnd );
-     DWORD swp_flags;
 +    BOOL need_sync_gl;
  
      if (data)
      {
-@@ -2970,7 +2999,9 @@ void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha, DWO
+@@ -3084,7 +3113,9 @@ void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha, DWO
          if (data->surface)
              set_surface_color_key( data->surface, (flags & LWA_COLORKEY) ? key : CLR_INVALID );
  
@@ -223,10 +223,10 @@ index 11111111111..11111111111 100644
          if (!data->mapped)  /* mapping is delayed until attributes are set */
          {
              DWORD style = NtUserGetWindowLongW( data->hwnd, GWL_STYLE );
-@@ -2981,10 +3012,12 @@ void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha, DWO
-                 swp_flags = data->swp_flags;
+@@ -3094,10 +3125,12 @@ void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha, DWO
+             {
                  release_win_data( data );
-                 map_window( hwnd, style, swp_flags );
+                 map_window( hwnd, style );
 +                if (need_sync_gl) sync_gl_drawable( hwnd, FALSE );
                  return;
              }
@@ -236,7 +236,7 @@ index 11111111111..11111111111 100644
      }
      else
      {
-@@ -3023,6 +3056,7 @@ BOOL X11DRV_UpdateLayeredWindow( HWND hwnd, const UPDATELAYEREDWINDOWINFO *info,
+@@ -3136,6 +3169,7 @@ BOOL X11DRV_UpdateLayeredWindow( HWND hwnd, const UPDATELAYEREDWINDOWINFO *info,
      BITMAPINFO *bmi = (BITMAPINFO *)buffer;
      void *src_bits, *dst_bits;
      RECT rect, src_rect;
@@ -244,7 +244,7 @@ index 11111111111..11111111111 100644
      HDC hdc = 0;
      HBITMAP dib;
      BOOL mapped, ret = FALSE;
-@@ -3032,6 +3066,7 @@ BOOL X11DRV_UpdateLayeredWindow( HWND hwnd, const UPDATELAYEREDWINDOWINFO *info,
+@@ -3145,6 +3179,7 @@ BOOL X11DRV_UpdateLayeredWindow( HWND hwnd, const UPDATELAYEREDWINDOWINFO *info,
  
      if (!(data = get_win_data( hwnd ))) return FALSE;
  
@@ -252,8 +252,8 @@ index 11111111111..11111111111 100644
      data->layered = TRUE;
      if (!data->embedded && argb_visual.visualid) set_window_visual( data, &argb_visual, TRUE );
  
-@@ -3064,6 +3099,8 @@ BOOL X11DRV_UpdateLayeredWindow( HWND hwnd, const UPDATELAYEREDWINDOWINFO *info,
-             map_window( hwnd, style, data->swp_flags );
+@@ -3177,6 +3212,8 @@ BOOL X11DRV_UpdateLayeredWindow( HWND hwnd, const UPDATELAYEREDWINDOWINFO *info,
+             map_window( hwnd, style );
      }
  
 +    if (need_sync_gl) sync_gl_drawable( hwnd, FALSE );
@@ -265,7 +265,7 @@ diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -648,6 +648,8 @@ struct x11drv_win_data
+@@ -644,6 +644,8 @@ struct x11drv_win_data
      BOOL        embedded : 1;   /* is window an XEMBED client? */
      BOOL        shaped : 1;     /* is window using a custom region shape? */
      BOOL        layered : 1;    /* is window layered and with valid attributes? */
@@ -274,12 +274,12 @@ index 11111111111..11111111111 100644
      BOOL        use_alpha : 1;  /* does window use an alpha channel? */
      BOOL        skip_taskbar : 1; /* does window should be deleted from taskbar */
      BOOL        add_taskbar : 1; /* does window should be added to taskbar regardless of style */
-@@ -687,6 +689,7 @@ extern void update_net_wm_states( struct x11drv_win_data *data ) DECLSPEC_HIDDEN
+@@ -689,6 +691,7 @@ extern void update_net_wm_states( struct x11drv_win_data *data ) DECLSPEC_HIDDEN
  extern void make_window_embedded( struct x11drv_win_data *data ) DECLSPEC_HIDDEN;
  extern Window create_dummy_client_window(void) DECLSPEC_HIDDEN;
  extern Window create_client_window( HWND hwnd, const XVisualInfo *visual ) DECLSPEC_HIDDEN;
 +extern void detach_client_window( HWND hwnd ) DECLSPEC_HIDDEN;
+ extern void update_client_window( HWND hwnd ) DECLSPEC_HIDDEN;
  extern void set_window_visual( struct x11drv_win_data *data, const XVisualInfo *vis, BOOL use_alpha ) DECLSPEC_HIDDEN;
  extern void change_systray_owner( Display *display, Window systray_window ) DECLSPEC_HIDDEN;
- extern void update_systray_balloon_position(void) DECLSPEC_HIDDEN;
 

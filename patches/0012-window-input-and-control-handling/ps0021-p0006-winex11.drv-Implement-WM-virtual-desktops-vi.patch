@@ -41,7 +41,7 @@ diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -554,15 +554,20 @@ Time x11drv_ticks_to_time( DWORD ticks )
+@@ -573,15 +573,20 @@ Time x11drv_ticks_to_time( DWORD ticks )
  static inline BOOL can_activate_window( HWND hwnd )
  {
      LONG style = NtUserGetWindowLongW( hwnd, GWL_STYLE );
@@ -64,7 +64,7 @@ index 11111111111..11111111111 100644
  }
  
  
-@@ -1162,7 +1167,7 @@ static BOOL X11DRV_ConfigureNotify( HWND hwnd, XEvent *xev )
+@@ -1218,7 +1223,7 @@ static BOOL X11DRV_ConfigureNotify( HWND hwnd, XEvent *xev )
  
      if (!hwnd) return FALSE;
      if (!(data = get_win_data( hwnd ))) return FALSE;
@@ -73,7 +73,7 @@ index 11111111111..11111111111 100644
      if (data->whole_window && !data->managed) goto done;
      /* ignore synthetic events on foreign windows */
      if (event->send_event && !data->whole_window) goto done;
-@@ -1391,6 +1396,26 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event, BOOL updat
+@@ -1453,6 +1458,26 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event, BOOL updat
      }
      else if (!data->iconic && data->wm_state == IconicState)
      {
@@ -100,7 +100,7 @@ index 11111111111..11111111111 100644
          data->iconic = TRUE;
          if ((style & WS_MINIMIZEBOX) && !(style & WS_DISABLED))
          {
-@@ -1401,6 +1426,22 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event, BOOL updat
+@@ -1463,6 +1488,22 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event, BOOL updat
          }
          TRACE( "not minimizing win %p/%lx style %08x\n", data->hwnd, data->whole_window, style );
      }
@@ -127,7 +127,7 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -73,6 +73,7 @@ static const unsigned int net_wm_state_atoms[NB_NET_WM_STATES] =
+@@ -75,6 +75,7 @@ static const unsigned int net_wm_state_atoms[NB_NET_WM_STATES] =
  {
      XATOM__NET_WM_STATE_FULLSCREEN,
      XATOM__NET_WM_STATE_ABOVE,
@@ -135,16 +135,16 @@ index 11111111111..11111111111 100644
      XATOM__NET_WM_STATE_MAXIMIZED_VERT,
      XATOM__NET_WM_STATE_SKIP_PAGER,
      XATOM__NET_WM_STATE_SKIP_TASKBAR
-@@ -1319,7 +1320,7 @@ static void sync_window_position( struct x11drv_win_data *data,
+@@ -1382,7 +1383,7 @@ static HWND sync_window_position( struct x11drv_win_data *data,
      XWindowChanges changes;
      unsigned int mask = 0;
  
--    if (data->managed && data->iconic) return;
-+    if (data->managed && (data->iconic || data->off_desktop)) return;
+-    if (data->managed && data->iconic) return NULL;
++    if (data->managed && (data->iconic || data->off_desktop)) return NULL;
  
      /* resizing a managed maximized window is not allowed */
      if (!(style & WS_MAXIMIZE) || !data->managed)
-@@ -2739,7 +2740,7 @@ UINT X11DRV_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp )
+@@ -2854,7 +2855,7 @@ UINT X11DRV_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp )
          }
          goto done;
      }
@@ -153,7 +153,7 @@ index 11111111111..11111111111 100644
  
      /* only fetch the new rectangle if the ShowWindow was a result of a window manager event */
  
-@@ -2797,6 +2798,14 @@ DWORD CDECL X11DRV_SetWindowCompositionAttribute( HWND hwnd, DWORD attribute, vo
+@@ -2912,6 +2913,14 @@ DWORD CDECL X11DRV_SetWindowCompositionAttribute( HWND hwnd, DWORD attribute, vo
          }
          ret = *(BOOL*)attr_data ? SET_WINDOW_CLOAKED_ON : 0;
  
@@ -172,15 +172,15 @@ diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -518,6 +518,7 @@ enum x11drv_atoms
-     XATOM__NET_WM_STATE_ABOVE,
+@@ -511,6 +511,7 @@ enum x11drv_atoms
+     XATOM__NET_WM_STATE_BELOW,
      XATOM__NET_WM_STATE_DEMANDS_ATTENTION,
      XATOM__NET_WM_STATE_FULLSCREEN,
 +    XATOM__NET_WM_STATE_HIDDEN,
      XATOM__NET_WM_STATE_MAXIMIZED_HORZ,
      XATOM__NET_WM_STATE_MAXIMIZED_VERT,
      XATOM__NET_WM_STATE_SKIP_PAGER,
-@@ -619,6 +620,7 @@ enum x11drv_net_wm_state
+@@ -615,6 +616,7 @@ enum x11drv_net_wm_state
  {
      NET_WM_STATE_FULLSCREEN,
      NET_WM_STATE_ABOVE,
@@ -188,21 +188,21 @@ index 11111111111..11111111111 100644
      NET_WM_STATE_MAXIMIZED,
      NET_WM_STATE_SKIP_PAGER,
      NET_WM_STATE_SKIP_TASKBAR,
-@@ -649,6 +651,8 @@ struct x11drv_win_data
-     BOOL        use_alpha : 1;  /* does window use an alpha channel? */
+@@ -646,6 +648,8 @@ struct x11drv_win_data
      BOOL        skip_taskbar : 1; /* does window should be deleted from taskbar */
      BOOL        add_taskbar : 1; /* does window should be added to taskbar regardless of style */
+     BOOL        pending_fullscreen : 1;
 +    BOOL        off_desktop : 1;/* is window on another WM desktop? */
 +    BOOL        shell_cloak : 1;/* the shell is (un)cloaking the window */
-     DWORD       swp_flags;      /* last swp flags used for the window */
      int         wm_state;       /* current value of the WM_STATE property */
      DWORD       net_wm_state;   /* bit mask of active x11drv_net_wm_state values */
+     Window      embedder;       /* window id of embedder */
 diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv_main.c
 +++ b/dlls/winex11.drv/x11drv_main.c
-@@ -178,6 +178,7 @@ static const char * const atom_names[NB_XATOMS - FIRST_XATOM] =
-     "_NET_WM_STATE_ABOVE",
+@@ -163,6 +163,7 @@ static const char * const atom_names[NB_XATOMS - FIRST_XATOM] =
+     "_NET_WM_STATE_BELOW",
      "_NET_WM_STATE_DEMANDS_ATTENTION",
      "_NET_WM_STATE_FULLSCREEN",
 +    "_NET_WM_STATE_HIDDEN",
@@ -285,5 +285,5 @@ index 11111111111..11111111111 100644
          set_error( STATUS_ACCESS_DENIED );
 
 -- 
-2.35.3
+2.36.0
 

@@ -1,0 +1,241 @@
+From 4394239f42539afde27bb3b144352e13eb6c6361 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 12 Mar 2021 00:10:49 +0100
+Subject: [PATCH 07/14] winex11.drv: Move Xfixes extension query to
+ process_attach.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=45277
+CW-Bug-Id: 16608
+---
+ dlls/winex11.drv/clipboard.c   | 26 ++------------
+ dlls/winex11.drv/x11drv.h      |  2 ++
+ dlls/winex11.drv/x11drv_main.c | 63 ++++++++++++++++++++++++++++++++++
+ dlls/winex11.drv/xfixes.h      | 36 +++++++++++++++++++
+ 4 files changed, 103 insertions(+), 24 deletions(-)
+ create mode 100644 dlls/winex11.drv/xfixes.h
+
+diff --git a/dlls/winex11.drv/clipboard.c b/dlls/winex11.drv/clipboard.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/clipboard.c
++++ b/dlls/winex11.drv/clipboard.c
+@@ -77,6 +77,7 @@
+ #include <assert.h>
+ 
+ #include "x11drv.h"
++#include "xfixes.h"
+ 
+ #ifdef HAVE_X11_EXTENSIONS_XFIXES_H
+ #include <X11/extensions/Xfixes.h>
+@@ -194,7 +195,6 @@ static UINT rendered_formats;
+ static ULONG last_clipboard_update;
+ static struct clipboard_format **current_x11_formats;
+ static unsigned int nb_current_x11_formats;
+-static BOOL use_xfixes;
+ 
+ Display *clipboard_display = NULL;
+ 
+@@ -2060,28 +2060,6 @@ static BOOL selection_notify_event( HWND hwnd, XEvent *event )
+ static void xfixes_init(void)
+ {
+ #ifdef SONAME_LIBXFIXES
+-    typeof(XFixesSelectSelectionInput) *pXFixesSelectSelectionInput;
+-    typeof(XFixesQueryExtension) *pXFixesQueryExtension;
+-    typeof(XFixesQueryVersion) *pXFixesQueryVersion;
+-
+-    int event_base, error_base;
+-    int major = 3, minor = 0;
+-    void *handle;
+-
+-    handle = dlopen(SONAME_LIBXFIXES, RTLD_NOW);
+-    if (!handle) return;
+-
+-    pXFixesQueryExtension = dlsym(handle, "XFixesQueryExtension");
+-    if (!pXFixesQueryExtension) return;
+-    pXFixesQueryVersion = dlsym(handle, "XFixesQueryVersion");
+-    if (!pXFixesQueryVersion) return;
+-    pXFixesSelectSelectionInput = dlsym(handle, "XFixesSelectSelectionInput");
+-    if (!pXFixesSelectSelectionInput) return;
+-
+-    if (!pXFixesQueryExtension(clipboard_display, &event_base, &error_base))
+-        return;
+-    pXFixesQueryVersion(clipboard_display, &major, &minor);
+-    use_xfixes = (major >= 1);
+     if (!use_xfixes) return;
+ 
+     pXFixesSelectSelectionInput(clipboard_display, import_window, x11drv_atom(CLIPBOARD),
+@@ -2095,7 +2073,7 @@ static void xfixes_init(void)
+                 XFixesSelectionWindowDestroyNotifyMask |
+                 XFixesSelectionClientCloseNotifyMask);
+     }
+-    X11DRV_register_event_handler(event_base + XFixesSelectionNotify,
++    X11DRV_register_event_handler(xfixes_event_base + XFixesSelectionNotify,
+             selection_notify_event, "XFixesSelectionNotify");
+     TRACE("xfixes succesully initialized\n");
+ #else
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -435,6 +435,7 @@ extern BOOL show_systray DECLSPEC_HIDDEN;
+ extern BOOL grab_pointer DECLSPEC_HIDDEN;
+ extern BOOL grab_fullscreen DECLSPEC_HIDDEN;
+ extern BOOL usexcomposite DECLSPEC_HIDDEN;
++extern BOOL use_xfixes DECLSPEC_HIDDEN;
+ extern BOOL managed_mode DECLSPEC_HIDDEN;
+ extern BOOL decorated_mode DECLSPEC_HIDDEN;
+ extern BOOL private_color_map DECLSPEC_HIDDEN;
+@@ -442,6 +443,7 @@ extern int primary_monitor DECLSPEC_HIDDEN;
+ extern int copy_default_colors DECLSPEC_HIDDEN;
+ extern int alloc_system_colors DECLSPEC_HIDDEN;
+ extern int xrender_error_base DECLSPEC_HIDDEN;
++extern int xfixes_event_base DECLSPEC_HIDDEN;
+ extern HMODULE x11drv_module DECLSPEC_HIDDEN;
+ extern char *process_name DECLSPEC_HIDDEN;
+ extern Display *clipboard_display DECLSPEC_HIDDEN;
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -46,6 +46,7 @@
+ 
+ #include "x11drv.h"
+ #include "xcomposite.h"
++#include "xfixes.h"
+ #include "wine/server.h"
+ #include "wine/unicode.h"
+ #include "wine/debug.h"
+@@ -64,6 +65,7 @@ Window root_window;
+ BOOL usexvidmode = TRUE;
+ BOOL usexrandr = TRUE;
+ BOOL usexcomposite = TRUE;
++BOOL use_xfixes = FALSE;
+ BOOL use_xkb = TRUE;
+ BOOL use_take_focus = TRUE;
+ BOOL use_primary_selection = FALSE;
+@@ -81,6 +83,7 @@ BOOL shape_layered_windows = TRUE;
+ int copy_default_colors = 128;
+ int alloc_system_colors = 256;
+ int xrender_error_base = 0;
++int xfixes_event_base = 0;
+ HMODULE x11drv_module = 0;
+ char *process_name = NULL;
+ 
+@@ -574,6 +577,63 @@ sym_not_found:
+ }
+ #endif /* defined(SONAME_LIBXCOMPOSITE) */
+ 
++#ifdef SONAME_LIBXFIXES
++
++#define MAKE_FUNCPTR(f) typeof(f) * p##f;
++MAKE_FUNCPTR(XFixesQueryExtension)
++MAKE_FUNCPTR(XFixesQueryVersion)
++MAKE_FUNCPTR(XFixesCreateRegion)
++MAKE_FUNCPTR(XFixesCreateRegionFromGC)
++MAKE_FUNCPTR(XFixesSelectSelectionInput)
++#undef MAKE_FUNCPTR
++
++static void x11drv_load_xfixes(void)
++{
++    int event, error, major = 3, minor = 0;
++    void *xfixes;
++
++    if (!(xfixes = dlopen(SONAME_LIBXFIXES, RTLD_NOW)))
++    {
++        WARN("Xfixes library %s not found, disabled.\n", SONAME_LIBXFIXES);
++        return;
++    }
++
++#define LOAD_FUNCPTR(f) \
++    if (!(p##f = dlsym(xfixes, #f)))                          \
++    {                                                         \
++        WARN("Xfixes function %s not found, disabled\n", #f); \
++        dlclose(xfixes);                                      \
++        return;                                               \
++    }
++    LOAD_FUNCPTR(XFixesQueryExtension)
++    LOAD_FUNCPTR(XFixesQueryVersion)
++    LOAD_FUNCPTR(XFixesCreateRegion)
++    LOAD_FUNCPTR(XFixesCreateRegionFromGC)
++    LOAD_FUNCPTR(XFixesSelectSelectionInput)
++#undef LOAD_FUNCPTR
++
++    if (!pXFixesQueryExtension(gdi_display, &event, &error))
++    {
++        WARN("Xfixes extension not found, disabled.\n");
++        dlclose(xfixes);
++        return;
++    }
++
++    if (!pXFixesQueryVersion(gdi_display, &major, &minor) ||
++        major < 2)
++    {
++        WARN("Xfixes version 2.0 not found, disabled.\n");
++        dlclose(xfixes);
++        return;
++    }
++
++    TRACE("Xfixes, error %d, event %d, version %d.%d found\n",
++          error, event, major, minor);
++    use_xfixes = TRUE;
++    xfixes_event_base = event;
++}
++#endif /* SONAME_LIBXFIXES */
++
+ static void init_visuals( Display *display, int screen )
+ {
+     int count;
+@@ -676,6 +736,9 @@ static BOOL process_attach(void)
+     X11DRV_XF86VM_Init();
+     /* initialize XRandR */
+     X11DRV_XRandR_Init();
++#ifdef SONAME_LIBXFIXES
++    x11drv_load_xfixes();
++#endif
+ #ifdef SONAME_LIBXCOMPOSITE
+     X11DRV_XComposite_Init();
+ #endif
+diff --git a/dlls/winex11.drv/xfixes.h b/dlls/winex11.drv/xfixes.h
+new file mode 100644
+index 00000000000..11111111111
+--- /dev/null
++++ b/dlls/winex11.drv/xfixes.h
+@@ -0,0 +1,36 @@
++/*
++ * Wine X11DRV Xfixes interface
++ *
++ * Copyright 2021 Rémi Bernon for CodeWeavers
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++#ifndef __WINE_XFIXES_H
++#define __WINE_XFIXES_H
++
++#ifndef __WINE_CONFIG_H
++# error You must include config.h to use this header
++#endif
++
++#ifdef SONAME_LIBXFIXES
++#include <X11/extensions/Xfixes.h>
++#define MAKE_FUNCPTR(f) extern typeof(f) * p##f DECLSPEC_HIDDEN;
++MAKE_FUNCPTR(XFixesQueryExtension)
++MAKE_FUNCPTR(XFixesQueryVersion)
++MAKE_FUNCPTR(XFixesSelectSelectionInput)
++#undef MAKE_FUNCPTR
++#endif /* defined(SONAME_LIBXFIXES) */
++
++#endif /* __WINE_XFIXES_H */
+-- 
+2.36.0
+

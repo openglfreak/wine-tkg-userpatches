@@ -1,70 +1,65 @@
-From 3edd2ba5f21a57228a831d97cfb7defaf6984430 Mon Sep 17 00:00:00 2001
+From bf287c143795f5bbb302fe7d3fd10e212d28018d Mon Sep 17 00:00:00 2001
 From: Zebediah Figura <z.figura12@gmail.com>
-Date: Mon, 8 Mar 2021 17:46:06 -0600
-Subject: [PATCH 18/31] server: Add a request to retrieve the fast
- synchronization device.
+Date: Mon, 8 Mar 2021 17:55:00 -0600
+Subject: [PATCH 18/29] server: Add a request to retrieve the fast
+ synchronization object from a handle.
 
 ---
- server/fast_sync.c  | 19 +++++++++++++++++++
- server/protocol.def |  7 +++++++
- 2 files changed, 26 insertions(+)
+ server/fast_sync.c  | 24 ++++++++++++++++++++++++
+ server/protocol.def | 11 +++++++++++
+ 2 files changed, 35 insertions(+)
 
 diff --git a/server/fast_sync.c b/server/fast_sync.c
 index 11111111111..11111111111 100644
 --- a/server/fast_sync.c
 +++ b/server/fast_sync.c
-@@ -36,6 +36,8 @@
- #include "winternl.h"
- 
- #include "file.h"
-+#include "handle.h"
-+#include "request.h"
- #include "thread.h"
- 
- #ifdef HAVE_LINUX_WINESYNC_H
-@@ -347,6 +349,12 @@ void fast_abandon_mutexes( thread_id_t tid )
- 
- #else
- 
-+static struct fast_sync_device *get_fast_sync_device(void)
-+{
-+    set_error( STATUS_NOT_IMPLEMENTED );
-+    return NULL;
-+}
-+
- struct fast_sync *fast_create_event( enum fast_sync_type type, int signaled )
- {
+@@ -400,3 +400,27 @@ DECL_HANDLER(get_linux_sync_device)
      set_error( STATUS_NOT_IMPLEMENTED );
-@@ -378,3 +386,14 @@ void fast_abandon_mutexes( thread_id_t tid )
- }
- 
  #endif
+ }
 +
-+DECL_HANDLER(get_fast_sync_device)
++DECL_HANDLER(get_linux_sync_obj)
 +{
-+    struct fast_sync_device *device;
++#ifdef HAVE_LINUX_WINESYNC_H
++    struct object *obj;
 +
-+    if ((device = get_fast_sync_device()))
++    if ((obj = get_handle_obj( current->process, req->handle, 0, NULL )))
 +    {
-+        reply->handle = alloc_handle( current->process, device, 0, 0 );
-+        release_object( device );
++        struct fast_sync *fast_sync;
++
++        if ((fast_sync = obj->ops->get_fast_sync( obj )))
++        {
++            reply->handle = alloc_handle( current->process, fast_sync, 0, 0 );
++            reply->obj = fast_sync->linux_obj;
++            reply->type = fast_sync->type;
++            reply->access = get_handle_access( current->process, req->handle );
++            release_object( fast_sync );
++        }
++        release_object( obj );
 +    }
++#else
++    set_error( STATUS_NOT_IMPLEMENTED );
++#endif
 +}
 diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -3881,3 +3881,10 @@ enum fast_sync_type
-     FAST_SYNC_MANUAL_SERVER,
-     FAST_SYNC_QUEUE,
- };
+@@ -3889,3 +3889,14 @@ enum fast_sync_type
+ @REPLY
+     obj_handle_t handle;          /* handle to the device */
+ @END
 +
 +
-+/* Obtain a handle to the fast synchronization device object */
-+@REQ(get_fast_sync_device)
++/* Get the fast synchronization object associated with the given handle */
++@REQ(get_linux_sync_obj)
++    obj_handle_t handle;          /* handle to the object */
 +@REPLY
-+    obj_handle_t handle;          /* handle to the device */
++    obj_handle_t handle;          /* handle to the fast synchronization object */
++    int          obj;             /* linux object */
++    int          type;            /* object type */
++    unsigned int access;          /* handle access rights */
 +@END
 -- 
-2.35.3
+2.36.0
 

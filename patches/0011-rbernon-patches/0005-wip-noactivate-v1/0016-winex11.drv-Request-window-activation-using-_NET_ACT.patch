@@ -1,0 +1,95 @@
+From fb7e258b1deab9224eb5d78fca86870e671cbedf Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 9 Mar 2022 12:12:28 +0100
+Subject: [PATCH 16/22] winex11.drv: Request window activation using
+ _NET_ACTIVE_WINDOW messages.
+
+Or, if the window is not yet mapped, by making sure its _NET_USER_TIME
+is not 0, so it activates on next XMapWindow call.
+
+CW-Bug-Id: #19553
+CW-Bug-Id: #19644
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=2155
+---
+ dlls/winex11.drv/event.c | 57 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 57 insertions(+)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -1479,14 +1479,71 @@ void wait_for_withdrawn_state( HWND hwnd, BOOL set )
+ void X11DRV_SetActiveWindow( HWND hwnd, HWND prev )
+ {
+     struct x11drv_thread_data *thread_data;
++    struct x11drv_win_data *data;
++    Window active, window;
++    Time user_time = 0;
++    XEvent event;
+ 
+     if (is_virtual_desktop()) return;
+     if (!hwnd || hwnd == NtUserGetDesktopWindow()) return;
+     if (!(thread_data = x11drv_init_thread_data())) return;
++    if (thread_data->activating_hwnd == hwnd) return;
+ 
+     TRACE( "hwnd %p, prev %p\n", hwnd, prev );
+ 
+     thread_data->activating_time = GetTickCount();
++    if (NtUserGetWindowLongW(hwnd, GWL_STYLE) & WS_MINIMIZE) return;
++    if (!ewmh.has__net_active_window) return;
++    if (!(data = get_win_data( hwnd ))) return;
++    window = data->whole_window;
++
++    /* _NET_ACTIVE_WINDOW will not activate unmapped windows, but mapping a window will activate it
++     * by default unless _NET_USER_TIME is 0. Delete the property to make sure it's not.
++     */
++    get_window_user_time( data->display, data->whole_window, &user_time );
++    if (!data->mapped && !user_time) set_window_user_time( data->display, window, -1 );
++
++    if (!data->managed || !window)
++    {
++        release_win_data( data );
++        return;
++    }
++    release_win_data( data );
++
++    if (!(data = get_win_data( prev ))) active = None;
++    else
++    {
++        get_window_user_time( data->display, data->whole_window, &user_time );
++        active = data->whole_window;
++        release_win_data( data );
++    }
++
++    /* if foreground is on a Wine window already, raise it and force input focus */
++    if (get_foreground_window( thread_data->display, NULL ))
++    {
++        TRACE( "activating and focusing window %p/%lx\n", hwnd, window );
++        XRaiseWindow( thread_data->display, window );
++        XSetInputFocus( thread_data->display, window, RevertToParent, CurrentTime );
++    }
++
++    TRACE( "sending _NET_ACTIVE_WINDOW to %p/%lx, active %p/%lx, user time %lu\n",
++           hwnd, window, prev, active, user_time );
++
++    event.xclient.type = ClientMessage;
++    event.xclient.window = window;
++    event.xclient.message_type = x11drv_atom(_NET_ACTIVE_WINDOW);
++    event.xclient.serial = 0;
++    event.xclient.display = thread_data->display;
++    event.xclient.send_event = True;
++    event.xclient.format = 32;
++
++    event.xclient.data.l[0] = 1; /* source: application */
++    event.xclient.data.l[1] = 0; /* user_time: 0 == force, otherwise makes activation unpredictable */
++    event.xclient.data.l[2] = active;
++    event.xclient.data.l[3] = 0;
++    event.xclient.data.l[4] = 0;
++    XSendEvent( thread_data->display, DefaultRootWindow( thread_data->display ), False,
++                SubstructureRedirectMask | SubstructureNotifyMask, &event );
+ }
+ 
+ 
+-- 
+2.36.0
+

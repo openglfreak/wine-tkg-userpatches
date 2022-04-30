@@ -1,0 +1,114 @@
+From: Paul Gofman <pgofman@codeweavers.com>
+Subject: [PATCH v3 5/7] crypt32: Fix filling short output in CertGetNameStringA().
+Message-Id: <20220421124453.28893-5-pgofman@codeweavers.com>
+Date: Thu, 21 Apr 2022 15:44:51 +0300
+In-Reply-To: <20220421124453.28893-1-pgofman@codeweavers.com>
+References: <20220421124453.28893-1-pgofman@codeweavers.com>
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/crypt32/str.c       | 60 +++++++++++++++++-----------------------
+ dlls/crypt32/tests/str.c |  8 ++++--
+ 2 files changed, 32 insertions(+), 36 deletions(-)
+
+diff --git a/dlls/crypt32/str.c b/dlls/crypt32/str.c
+index 11111111111..11111111111 100644
+--- a/dlls/crypt32/str.c
++++ b/dlls/crypt32/str.c
+@@ -1110,46 +1110,38 @@ BOOL WINAPI CertStrToNameW(DWORD dwCertEncodingType, LPCWSTR pszX500,
+     return ret;
+ }
+ 
+-DWORD WINAPI CertGetNameStringA(PCCERT_CONTEXT pCertContext, DWORD dwType,
+- DWORD dwFlags, void *pvTypePara, LPSTR pszNameString, DWORD cchNameString)
++DWORD WINAPI CertGetNameStringA(PCCERT_CONTEXT cert, DWORD type,
++                                DWORD flags, void *type_para, LPSTR name, DWORD name_len)
+ {
+-    DWORD ret;
++    DWORD len, len_mb, ret;
++    LPWSTR nameW;
+ 
+-    TRACE("(%p, %ld, %08lx, %p, %p, %ld)\n", pCertContext, dwType, dwFlags,
+-     pvTypePara, pszNameString, cchNameString);
++    TRACE("(%p, %ld, %08lx, %p, %p, %ld)\n", cert, type, flags, type_para, name, name_len);
+ 
+-    if (pszNameString)
++    len = CertGetNameStringW(cert, type, flags, type_para, NULL, 0);
++
++    if (!(nameW = CryptMemAlloc(len * sizeof(*nameW))))
+     {
+-        LPWSTR wideName;
+-        DWORD nameLen;
++        ERR("No memory.\n");
++        if (name && name_len) *name = 0;
++        return 1;
++    }
+ 
+-        nameLen = CertGetNameStringW(pCertContext, dwType, dwFlags, pvTypePara,
+-         NULL, 0);
+-        wideName = CryptMemAlloc(nameLen * sizeof(WCHAR));
+-        if (wideName)
+-        {
+-            CertGetNameStringW(pCertContext, dwType, dwFlags, pvTypePara,
+-             wideName, nameLen);
+-            nameLen = WideCharToMultiByte(CP_ACP, 0, wideName, nameLen,
+-             pszNameString, cchNameString, NULL, NULL);
+-            if (nameLen <= cchNameString)
+-                ret = nameLen;
+-            else
+-            {
+-                pszNameString[cchNameString - 1] = '\0';
+-                ret = cchNameString;
+-            }
+-            CryptMemFree(wideName);
+-        }
+-        else
+-        {
+-            *pszNameString = '\0';
+-            ret = 1;
+-        }
++    len = CertGetNameStringW(cert, type, flags, type_para, nameW, len);
++    len_mb = WideCharToMultiByte(CP_ACP, 0, nameW, len, NULL, 0, NULL, NULL);
++    if (!name || !name_len)
++    {
++        CryptMemFree(nameW);
++        return len_mb;
+     }
+-    else
+-        ret = CertGetNameStringW(pCertContext, dwType, dwFlags, pvTypePara,
+-         NULL, 0);
++
++    ret = WideCharToMultiByte(CP_ACP, 0, nameW, len, name, name_len, NULL, NULL);
++    if (ret < len_mb)
++    {
++        name[0] = 0;
++        ret = 1;
++    }
++    CryptMemFree(nameW);
+     return ret;
+ }
+ 
+diff --git a/dlls/crypt32/tests/str.c b/dlls/crypt32/tests/str.c
+index 11111111111..11111111111 100644
+--- a/dlls/crypt32/tests/str.c
++++ b/dlls/crypt32/tests/str.c
+@@ -766,9 +766,13 @@ static void test_CertGetNameString_value_(unsigned int line, PCCERT_CONTEXT cont
+     ok(!strcmp(str, expected), "line %u: unexpected value %s.\n", line, str);
+     str[0] = str[1] = 0xcc;
+     retlen = CertGetNameStringA(context, type, 0, type_para, str, len - 1);
+-    todo_wine ok(retlen == 1, "line %u: Unexpected len %lu, expected 1.\n", line, retlen);
+-    todo_wine ok(!str[0], "line %u: unexpected str[0] %#x.\n", line, str[0]);
++    ok(retlen == 1, "line %u: Unexpected len %lu, expected 1.\n", line, retlen);
++    ok(!str[0], "line %u: unexpected str[0] %#x.\n", line, str[0]);
+     ok(str[1] == expected[1], "line %u: unexpected str[1] %#x.\n", line, str[1]);
++
++    retlen = CertGetNameStringA(context, type, 0, type_para, str, 0);
++    ok(retlen == len, "line %u: Unexpected len %lu, expected 1.\n", line, retlen);
++
+     retlen = CertGetNameStringW(context, type, 0, type_para, strW, len);
+     ok(retlen == len, "line %u: unexpected len %lu, expected 1.\n", line, retlen);
+     ok(!wcscmp(strW, expectedW), "line %u: unexpected value %s.\n", line, debugstr_w(strW));
+
+-- 
+2.36.0
+

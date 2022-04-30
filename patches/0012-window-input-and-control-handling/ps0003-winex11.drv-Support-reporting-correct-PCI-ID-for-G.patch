@@ -101,7 +101,7 @@ index 11111111111..11111111111 100644
  DELAYIMPORTS = comctl32 ole32 shell32 imm32
 -EXTRAINCL = $(X_CFLAGS)
 +EXTRAINCL = $(X_CFLAGS) $(DRM_CFLAGS)
- EXTRALIBS = $(X_LIBS) $(X_EXTRA_LIBS)
+ EXTRALIBS = $(X_LIBS) $(X_EXTRA_LIBS) $(PTHREAD_LIBS)
  
  EXTRADLLFLAGS = -mcygwin
 diff --git a/dlls/winex11.drv/xrandr.c b/dlls/winex11.drv/xrandr.c
@@ -129,7 +129,7 @@ index 11111111111..11111111111 100644
  #include <dlfcn.h>
  #include "x11drv.h"
  
-@@ -82,6 +94,25 @@ MAKE_FUNCPTR(XRRGetProviderInfo)
+@@ -81,6 +93,25 @@ MAKE_FUNCPTR(XRRGetProviderInfo)
  MAKE_FUNCPTR(XRRFreeProviderInfo)
  #endif
  
@@ -155,7 +155,7 @@ index 11111111111..11111111111 100644
  #undef MAKE_FUNCPTR
  
  static int load_xrandr(void)
-@@ -92,47 +123,72 @@ static int load_xrandr(void)
+@@ -91,47 +122,72 @@ static int load_xrandr(void)
          (xrandr_handle = dlopen(SONAME_LIBXRANDR, RTLD_NOW)))
      {
  
@@ -261,7 +261,7 @@ index 11111111111..11111111111 100644
      return r;
  }
  
-@@ -743,6 +799,181 @@ done:
+@@ -735,6 +791,181 @@ done:
          vulkan_funcs->p_vkDestroyInstance( vk_instance, NULL );
  }
  
@@ -443,14 +443,15 @@ index 11111111111..11111111111 100644
  VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDisplayKHR)
  
  static BOOL get_gpu_properties_from_vulkan( struct gdi_gpu *gpu, const XRRProviderInfo *provider_info )
-@@ -914,11 +1145,17 @@ static BOOL xrandr14_get_gpus2( struct gdi_gpu **new_gpus, int *count, BOOL get_
+@@ -909,12 +1140,18 @@ static BOOL xrandr14_get_gpus2( struct gdi_gpu **new_gpus, int *count, BOOL get_
          if (get_properties)
          {
              if (!get_gpu_properties_from_vulkan( &gpus[i], provider_info ))
 +            {
 +                if (!get_gpu_pci_id( &gpus[i], i ))
 +                    WARN("Failed to get PCI ID for GPU %s\n", wine_dbgstr_w(gpus[i].name));
-                 MultiByteToWideChar( CP_UTF8, 0, provider_info->name, -1, gpus[i].name, ARRAY_SIZE(gpus[i].name) );
+                 RtlUTF8ToUnicodeN( gpus[i].name, sizeof(gpus[i].name), &len, provider_info->name,
+                                    strlen( provider_info->name ) + 1 );
 -            /* FIXME: Add an alternate method of getting PCI IDs, for systems that don't support Vulkan */
 +            }
          }

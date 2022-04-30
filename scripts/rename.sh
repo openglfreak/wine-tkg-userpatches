@@ -214,6 +214,7 @@ main() (
 
     for patch in [0-9][0-9][0-9][0-9]-* ps[0-9][0-9][0-9][0-9]-*; do
         [ -e "${patch}" ] || continue
+        [ -d "${patch}" ] && continue
         case "${patch}" in ps999[0-9]-*|999[0-9]-*)
             continue
         esac

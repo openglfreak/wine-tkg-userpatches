@@ -1,0 +1,64 @@
+From: Brendan Shanks <bshanks@codeweavers.com>
+Subject: [PATCH v2 2/2] ntdll: Respect zero_bits when mapping a builtin or native PE file.
+Message-Id: <20220427203326.11436-2-bshanks@codeweavers.com>
+Date: Wed, 27 Apr 2022 13:33:26 -0700
+In-Reply-To: <20220427203326.11436-1-bshanks@codeweavers.com>
+References: <20220427203326.11436-1-bshanks@codeweavers.com>
+
+Signed-off-by: Brendan Shanks <bshanks@codeweavers.com>
+---
+
+v2: return CONFLICTING_ADDRESSES for map_view().
+
+The map_view() change fixes native DLLs, and virtual_map_section() for
+builtin DLLs. I wasn't sure how to test a native DLL.
+
+This showed up under Wow64 when running the 64-bit Notepad++ installer
+(a 32-bit EXE), which runs 32-bit regsvr32 to register a 64-bit DLL.
+regsvr32 calls LoadLibraryExW() with LOAD_LIBRARY_AS_IMAGE_RESOURCE,
+which was returning a truncated pointer to the DLLs base address.
+Accessing this then crashed.
+
+ dlls/ntdll/tests/virtual.c | 1 -
+ dlls/ntdll/unix/virtual.c  | 5 ++++-
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/tests/virtual.c b/dlls/ntdll/tests/virtual.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/tests/virtual.c
++++ b/dlls/ntdll/tests/virtual.c
+@@ -936,7 +936,6 @@ static void test_NtMapViewOfSection(void)
+     {
+         ok(status == STATUS_SUCCESS || status == STATUS_IMAGE_NOT_AT_BASE, "NtMapViewOfSection returned %08lx\n", status);
+         ok(!((ULONG_PTR)ptr & 0xffff), "returned memory %p is not aligned to 64k\n", ptr);
+-        todo_wine
+         ok(((UINT_PTR)ptr & ~get_zero_bits_mask(zero_bits)) == 0, "NtMapViewOfSection returned address %p\n", ptr);
+ 
+         status = NtUnmapViewOfSection(process, ptr);
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -2056,6 +2056,8 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
+     {
+         if (is_beyond_limit( base, size, address_space_limit ))
+             return STATUS_WORKING_SET_LIMIT_RANGE;
++        if (is_beyond_limit( base, size, (void*)get_zero_bits_mask( zero_bits ) ))
++            return STATUS_CONFLICTING_ADDRESSES;
+         status = map_fixed_area( base, size, vprot );
+         if (status != STATUS_SUCCESS) return status;
+         ptr = base;
+@@ -2672,7 +2674,8 @@ static NTSTATUS virtual_map_section( HANDLE handle, PVOID *addr_ptr, ULONG_PTR z
+         filename = (WCHAR *)(image_info + 1);
+         /* check if we can replace that mapping with the builtin */
+         res = load_builtin( image_info, filename, addr_ptr, size_ptr );
+-        if (res == STATUS_IMAGE_ALREADY_LOADED)
++        if (res == STATUS_IMAGE_ALREADY_LOADED ||
++            is_beyond_limit( (void *)image_info->base, image_info->map_size, (void *)get_zero_bits_mask( zero_bits ) ))
+             res = virtual_map_image( handle, access, addr_ptr, size_ptr, zero_bits, shared_file,
+                                      alloc_type, image_info, filename, FALSE );
+         if (shared_file) NtClose( shared_file );
+
+-- 
+2.36.0
+

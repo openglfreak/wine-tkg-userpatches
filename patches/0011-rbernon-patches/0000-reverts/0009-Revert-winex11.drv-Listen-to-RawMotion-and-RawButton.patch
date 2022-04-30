@@ -1,0 +1,263 @@
+From 4a98085f338709167942a6882bc48a1e3cc65a98 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Mon, 25 Apr 2022 05:24:26 +0200
+Subject: [PATCH 09/16] Revert "winex11.drv: Listen to RawMotion and RawButton*
+ events in the desktop thread."
+
+This reverts staging patch patches/user32-rawinput-mouse/0008-winex11.drv-Listen-to-RawMotion-and-RawButton-events.patch
+---
+ dlls/winex11.drv/event.c       |  10 +---
+ dlls/winex11.drv/mouse.c       | 106 +++------------------------------
+ dlls/winex11.drv/x11drv.h      |   1 -
+ dlls/winex11.drv/x11drv_main.c |   4 --
+ 4 files changed, 9 insertions(+), 112 deletions(-)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -322,10 +322,6 @@ static enum event_merge_action merge_raw_motion_events( XIRawEvent *prev, XIRawE
+  */
+ static enum event_merge_action merge_events( XEvent *prev, XEvent *next )
+ {
+-#ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
+-    struct x11drv_thread_data *thread_data = x11drv_thread_data();
+-#endif
+-
+     switch (prev->type)
+     {
+     case ConfigureNotify:
+@@ -357,21 +353,19 @@ static enum event_merge_action merge_events( XEvent *prev, XEvent *next )
+         case GenericEvent:
+             if (next->xcookie.extension != xinput2_opcode) break;
+             if (next->xcookie.evtype != XI_RawMotion) break;
+-            if (thread_data->xi2_rawinput_only) break;
+-            if (thread_data->warp_serial) break;
++            if (x11drv_thread_data()->warp_serial) break;
+             return MERGE_KEEP;
+         }
+         break;
+     case GenericEvent:
+         if (prev->xcookie.extension != xinput2_opcode) break;
+         if (prev->xcookie.evtype != XI_RawMotion) break;
+-        if (thread_data->xi2_rawinput_only) break;
+         switch (next->type)
+         {
+         case GenericEvent:
+             if (next->xcookie.extension != xinput2_opcode) break;
+             if (next->xcookie.evtype != XI_RawMotion) break;
+-            if (thread_data->warp_serial) break;
++            if (x11drv_thread_data()->warp_serial) break;
+             return merge_raw_motion_events( prev->xcookie.data, next->xcookie.data );
+ #endif
+         }
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -412,18 +412,7 @@ void x11drv_xinput_enable( Display *display, Window window, long event_mask )
+     memset( mask_bits, 0, sizeof(mask_bits) );
+     XISetMask( mask_bits, XI_DeviceChanged );
+     XISetMask( mask_bits, XI_RawMotion );
+-
+-    if (NtUserGetWindowThread( NtUserGetDesktopWindow(), NULL ) == GetCurrentThreadId())
+-    {
+-        XISetMask( mask_bits, XI_RawButtonPress );
+-        XISetMask( mask_bits, XI_RawButtonRelease );
+-        data->xi2_rawinput_only = TRUE;
+-    }
+-    else
+-    {
+-        XISetMask( mask_bits, XI_ButtonPress );
+-        data->xi2_rawinput_only = FALSE;
+-    }
++    XISetMask( mask_bits, XI_ButtonPress );
+ 
+     pXISelectEvents( display, DefaultRootWindow( display ), &mask, 1 );
+ 
+@@ -756,6 +745,7 @@ static void map_event_coords( HWND hwnd, Window window, Window event_root, int x
+ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPUT *input )
+ {
+     struct x11drv_win_data *data;
++    RAWINPUT rawinput;
+ 
+     input->type = INPUT_MOUSE;
+ 
+@@ -772,7 +762,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
+             sync_window_cursor( window );
+             last_cursor_change = input->u.mi.time;
+         }
+-        __wine_send_input( hwnd, input, NULL );
++        __wine_send_input( hwnd, input, &rawinput );
+         return;
+     }
+ 
+@@ -812,7 +802,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
+         SERVER_END_REQ;
+     }
+ 
+-    __wine_send_input( hwnd, input, NULL );
++    __wine_send_input( hwnd, input, &rawinput );
+ }
+ 
+ #ifdef SONAME_LIBXCURSOR
+@@ -1777,6 +1767,7 @@ void move_resize_window( HWND hwnd, int dir )
+     {
+         MSG msg;
+         INPUT input;
++        RAWINPUT rawinput;
+         int x, y, rootX, rootY;
+ 
+         if (!XQueryPointer( display, root_window, &root, &child, &rootX, &rootY, &x, &y, &xstate )) break;
+@@ -1792,7 +1783,7 @@ void move_resize_window( HWND hwnd, int dir )
+             input.u.mi.dwFlags     = button_up_flags[button - 1] | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
+             input.u.mi.time        = GetTickCount();
+             input.u.mi.dwExtraInfo = 0;
+-            __wine_send_input( hwnd, &input, NULL );
++            __wine_send_input( hwnd, &input, &rawinput );
+         }
+ 
+         while (NtUserPeekMessage( &msg, 0, 0, 0, PM_REMOVE ))
+@@ -2004,7 +1995,6 @@ static BOOL map_raw_event_coords( XIRawEvent *event, INPUT *input )
+  */
+ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+ {
+-    struct x11drv_thread_data *thread_data = x11drv_thread_data();
+     XIRawEvent *event = xev->data;
+     RAWINPUT rawinput;
+     INPUT input;
+@@ -2024,85 +2014,7 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+     input.u.mi.dy          = 0;
+     if (!map_raw_event_coords( event, &input )) return FALSE;
+ 
+-    if (!thread_data->xi2_rawinput_only)
+-        __wine_send_input( 0, &input, NULL );
+-    else
+-    {
+-        rawinput.header.dwType = RIM_TYPEMOUSE;
+-        rawinput.header.dwSize = offsetof(RAWINPUT, data) + sizeof(RAWMOUSE);
+-        rawinput.header.hDevice = ULongToHandle(1); /* WINE_MOUSE_HANDLE */
+-        rawinput.header.wParam = RIM_INPUT;
+-        rawinput.data.mouse.usFlags = input.u.mi.dwFlags;
+-        rawinput.data.mouse.ulRawButtons = 0;
+-        rawinput.data.mouse.u.usButtonData = 0;
+-        rawinput.data.mouse.u.usButtonFlags = 0;
+-        rawinput.data.mouse.lLastX = input.u.mi.dx;
+-        rawinput.data.mouse.lLastY = input.u.mi.dy;
+-        rawinput.data.mouse.ulExtraInformation = 0;
+-
+-        input.type = INPUT_HARDWARE;
+-        input.u.hi.uMsg = WM_INPUT;
+-        input.u.hi.wParamH = 0;
+-        input.u.hi.wParamL = 0;
+-        if (rawinput.data.mouse.lLastX || rawinput.data.mouse.lLastY)
+-            __wine_send_input( 0, &input, &rawinput );
+-    }
+-
+-    return TRUE;
+-}
+-
+-/***********************************************************************
+- *           X11DRV_RawButtonEvent
+- */
+-static BOOL X11DRV_RawButtonEvent( XGenericEventCookie *cookie )
+-{
+-    struct x11drv_thread_data *thread_data = x11drv_thread_data();
+-    XIRawEvent *event = cookie->data;
+-    int button = event->detail - 1;
+-    RAWINPUT rawinput;
+-    INPUT input;
+-
+-    if (!device_mapping || device_mapping->deviceid != event->sourceid)
+-        update_device_mapping( event->display, event->sourceid );
+-
+-    if (button >= 0 && device_mapping)
+-        button = device_mapping->buttons[button] - 1;
+-
+-    if (button >= 0 && pointer_mapping)
+-        button = pointer_mapping->buttons[button] - 1;
+-
+-    if (button < 0 || button >= NB_BUTTONS) return FALSE;
+-    if (thread_data->xi2_state != xi_enabled) return FALSE;
+-    if (event->deviceid != thread_data->xi2_core_pointer) return FALSE;
+-
+-    TRACE( "raw button %u (raw: %u) %s\n", button, event->detail, event->evtype == XI_RawButtonRelease ? "up" : "down" );
+-
+-    rawinput.header.dwType = RIM_TYPEMOUSE;
+-    rawinput.header.dwSize = offsetof(RAWINPUT, data) + sizeof(RAWMOUSE);
+-    rawinput.header.hDevice = ULongToHandle(1); /* WINE_MOUSE_HANDLE */
+-    rawinput.header.wParam = RIM_INPUT;
+-    if (event->evtype == XI_RawButtonRelease)
+-    {
+-        rawinput.data.mouse.usFlags = button_up_flags[button];
+-        rawinput.data.mouse.ulRawButtons = button_up_data[button];
+-    }
+-    else
+-    {
+-        rawinput.data.mouse.usFlags = button_down_flags[button];
+-        rawinput.data.mouse.ulRawButtons = button_down_data[button];
+-    }
+-    rawinput.data.mouse.u.usButtonData = 0;
+-    rawinput.data.mouse.u.usButtonFlags = 0;
+-    rawinput.data.mouse.lLastX = 0;
+-    rawinput.data.mouse.lLastY = 0;
+-    rawinput.data.mouse.ulExtraInformation = 0;
+-
+-    input.type = INPUT_HARDWARE;
+-    input.u.hi.uMsg = WM_INPUT;
+-    input.u.hi.wParamH = 0;
+-    input.u.hi.wParamL = 0;
+-    if (rawinput.data.mouse.usFlags || rawinput.data.mouse.ulRawButtons)
+-        __wine_send_input( 0, &input, &rawinput );
++    __wine_send_input( 0, &input, &rawinput );
+     return TRUE;
+ }
+ 
+@@ -2178,10 +2090,6 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+     case XI_RawMotion:
+         ret = X11DRV_RawMotion( event );
+         break;
+-    case XI_RawButtonPress:
+-    case XI_RawButtonRelease:
+-        ret = X11DRV_RawButtonEvent( event );
+-        break;
+ 
+     default:
+         TRACE( "Unhandled event %#x\n", event->evtype );
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -402,7 +402,6 @@ struct x11drv_thread_data
+     XIValuatorClassInfo x_valuator;
+     XIValuatorClassInfo y_valuator;
+     int      xi2_core_pointer;     /* XInput2 core pointer id */
+-    int      xi2_rawinput_only;
+ #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
+ };
+ 
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -704,8 +704,6 @@ void X11DRV_ThreadDetach(void)
+     if (data)
+     {
+         vulkan_thread_detach();
+-        if (NtUserGetWindowThread( NtUserGetDesktopWindow(), NULL ) == GetCurrentThreadId())
+-            x11drv_xinput_disable( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
+         if (data->xim) XCloseIM( data->xim );
+         if (data->font_set) XFreeFontSet( data->display, data->font_set );
+         XCloseDisplay( data->display );
+@@ -777,8 +775,6 @@ struct x11drv_thread_data *x11drv_init_thread_data(void)
+     if (use_xim) X11DRV_SetupXIM();
+ 
+     x11drv_xinput_init();
+-    if (NtUserGetWindowThread( NtUserGetDesktopWindow(), NULL ) == GetCurrentThreadId())
+-        x11drv_xinput_enable( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
+ 
+     return data;
+ }
+-- 
+2.36.0
+

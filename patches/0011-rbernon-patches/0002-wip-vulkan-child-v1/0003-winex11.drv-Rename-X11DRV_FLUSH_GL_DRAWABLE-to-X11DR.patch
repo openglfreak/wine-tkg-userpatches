@@ -1,0 +1,197 @@
+From 82492aa2686c50daaa4ac06d5d7961feb1362327 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 22 Oct 2021 00:23:49 +0200
+Subject: [PATCH 03/14] winex11.drv: Rename X11DRV_FLUSH_GL_DRAWABLE to
+ X11DRV_PRESENT_DRAWABLE.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=45277
+CW-Bug-Id: 16608
+---
+ dlls/winex11.drv/init.c   |  8 ++++----
+ dlls/winex11.drv/opengl.c | 40 +++++++++++++++++++--------------------
+ dlls/winex11.drv/x11drv.h |  8 ++++----
+ 3 files changed, 28 insertions(+), 28 deletions(-)
+
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -240,16 +240,16 @@ static INT CDECL X11DRV_ExtEscape( PHYSDEV dev, INT escape, INT in_count, LPCVOI
+                     return TRUE;
+                 }
+                 break;
+-            case X11DRV_FLUSH_GL_DRAWABLE:
+-                if (in_count >= sizeof(struct x11drv_escape_flush_gl_drawable))
++            case X11DRV_PRESENT_DRAWABLE:
++                if (in_count >= sizeof(struct x11drv_escape_present_drawable))
+                 {
+-                    const struct x11drv_escape_flush_gl_drawable *data = in_data;
++                    const struct x11drv_escape_present_drawable *data = in_data;
+                     RECT rect = physDev->dc_rect;
+ 
+                     OffsetRect( &rect, -physDev->dc_rect.left, -physDev->dc_rect.top );
+                     if (data->flush) XFlush( gdi_display );
+                     XSetFunction( gdi_display, physDev->gc, GXcopy );
+-                    XCopyArea( gdi_display, data->gl_drawable, physDev->drawable, physDev->gc,
++                    XCopyArea( gdi_display, data->drawable, physDev->drawable, physDev->gc,
+                                0, 0, rect.right, rect.bottom,
+                                physDev->dc_rect.left, physDev->dc_rect.top );
+                     add_device_bounds( physDev, &rect );
+diff --git a/dlls/winex11.drv/opengl.c b/dlls/winex11.drv/opengl.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/opengl.c
++++ b/dlls/winex11.drv/opengl.c
+@@ -1936,20 +1936,20 @@ static BOOL WINAPI glxdrv_wglShareLists(struct wgl_context *org, struct wgl_cont
+ 
+ static void wglFinish(void)
+ {
+-    struct x11drv_escape_flush_gl_drawable escape;
++    struct x11drv_escape_present_drawable escape;
+     struct gl_drawable *gl;
+     struct wgl_context *ctx = NtCurrentTeb()->glContext;
+ 
+-    escape.code = X11DRV_FLUSH_GL_DRAWABLE;
+-    escape.gl_drawable = 0;
++    escape.code = X11DRV_PRESENT_DRAWABLE;
++    escape.drawable = 0;
+     escape.flush = FALSE;
+ 
+     if ((gl = get_gl_drawable( NtUserWindowFromDC( ctx->hdc ), 0 )))
+     {
+         switch (gl->type)
+         {
+-        case DC_GL_PIXMAP_WIN: escape.gl_drawable = gl->pixmap; break;
+-        case DC_GL_CHILD_WIN:  escape.gl_drawable = gl->window; break;
++        case DC_GL_PIXMAP_WIN: escape.drawable = gl->pixmap; break;
++        case DC_GL_CHILD_WIN:  escape.drawable = gl->window; break;
+         default: break;
+         }
+         sync_context(ctx);
+@@ -1957,26 +1957,26 @@ static void wglFinish(void)
+     }
+ 
+     pglFinish();
+-    if (escape.gl_drawable)
++    if (escape.drawable)
+         NtGdiExtEscape( ctx->hdc, NULL, 0, X11DRV_ESCAPE, sizeof(escape), (LPSTR)&escape, 0, NULL );
+ }
+ 
+ static void wglFlush(void)
+ {
+-    struct x11drv_escape_flush_gl_drawable escape;
++    struct x11drv_escape_present_drawable escape;
+     struct gl_drawable *gl;
+     struct wgl_context *ctx = NtCurrentTeb()->glContext;
+ 
+-    escape.code = X11DRV_FLUSH_GL_DRAWABLE;
+-    escape.gl_drawable = 0;
++    escape.code = X11DRV_PRESENT_DRAWABLE;
++    escape.drawable = 0;
+     escape.flush = FALSE;
+ 
+     if ((gl = get_gl_drawable( NtUserWindowFromDC( ctx->hdc ), 0 )))
+     {
+         switch (gl->type)
+         {
+-        case DC_GL_PIXMAP_WIN: escape.gl_drawable = gl->pixmap; break;
+-        case DC_GL_CHILD_WIN:  escape.gl_drawable = gl->window; break;
++        case DC_GL_PIXMAP_WIN: escape.drawable = gl->pixmap; break;
++        case DC_GL_CHILD_WIN:  escape.drawable = gl->window; break;
+         default: break;
+         }
+         sync_context(ctx);
+@@ -1984,7 +1984,7 @@ static void wglFlush(void)
+     }
+ 
+     pglFlush();
+-    if (escape.gl_drawable)
++    if (escape.drawable)
+         NtGdiExtEscape( ctx->hdc, NULL, 0, X11DRV_ESCAPE, sizeof(escape), (LPSTR)&escape, 0, NULL );
+ }
+ 
+@@ -3300,15 +3300,15 @@ static void X11DRV_WineGL_LoadExtensions(void)
+  */
+ static BOOL WINAPI glxdrv_wglSwapBuffers( HDC hdc )
+ {
+-    struct x11drv_escape_flush_gl_drawable escape;
++    struct x11drv_escape_present_drawable escape;
+     struct gl_drawable *gl;
+     struct wgl_context *ctx = NtCurrentTeb()->glContext;
+     INT64 ust, msc, sbc, target_sbc = 0;
+ 
+     TRACE("(%p)\n", hdc);
+ 
+-    escape.code = X11DRV_FLUSH_GL_DRAWABLE;
+-    escape.gl_drawable = 0;
++    escape.code = X11DRV_PRESENT_DRAWABLE;
++    escape.drawable = 0;
+     escape.flush = !pglXWaitForSbcOML;
+ 
+     if (!(gl = get_gl_drawable( NtUserWindowFromDC( hdc ), hdc )))
+@@ -3329,7 +3329,7 @@ static BOOL WINAPI glxdrv_wglSwapBuffers( HDC hdc )
+     {
+     case DC_GL_PIXMAP_WIN:
+         if (ctx) sync_context( ctx );
+-        escape.gl_drawable = gl->pixmap;
++        escape.drawable = gl->pixmap;
+         if (pglXCopySubBufferMESA) {
+             /* (glX)SwapBuffers has an implicit glFlush effect, however
+              * GLX_MESA_copy_sub_buffer doesn't. Make sure GL is flushed before
+@@ -3350,10 +3350,10 @@ static BOOL WINAPI glxdrv_wglSwapBuffers( HDC hdc )
+     case DC_GL_WINDOW:
+     case DC_GL_CHILD_WIN:
+         if (ctx) sync_context( ctx );
+-        if (gl->type == DC_GL_CHILD_WIN) escape.gl_drawable = gl->window;
++        if (gl->type == DC_GL_CHILD_WIN) escape.drawable = gl->window;
+         /* fall through */
+     default:
+-        if (escape.gl_drawable && pglXSwapBuffersMscOML)
++        if (escape.drawable && pglXSwapBuffersMscOML)
+         {
+             pglFlush();
+             target_sbc = pglXSwapBuffersMscOML( gdi_display, gl->drawable, 0, 0, 0 );
+@@ -3363,12 +3363,12 @@ static BOOL WINAPI glxdrv_wglSwapBuffers( HDC hdc )
+         break;
+     }
+ 
+-    if (escape.gl_drawable && pglXWaitForSbcOML)
++    if (escape.drawable && pglXWaitForSbcOML)
+         pglXWaitForSbcOML( gdi_display, gl->drawable, target_sbc, &ust, &msc, &sbc );
+ 
+     release_gl_drawable( gl );
+ 
+-    if (escape.gl_drawable)
++    if (escape.drawable)
+         NtGdiExtEscape( ctx->hdc, NULL, 0, X11DRV_ESCAPE, sizeof(escape), (LPSTR)&escape, 0, NULL );
+     return TRUE;
+ }
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -341,7 +341,7 @@ enum x11drv_escape_codes
+     X11DRV_GET_DRAWABLE,     /* get current drawable for a DC */
+     X11DRV_START_EXPOSURES,  /* start graphics exposures */
+     X11DRV_END_EXPOSURES,    /* end graphics exposures */
+-    X11DRV_FLUSH_GL_DRAWABLE, /* flush changes made to the gl drawable */
++    X11DRV_PRESENT_DRAWABLE, /* present the drawable on screen */
+     X11DRV_FLUSH_GDI_DISPLAY /* flush the gdi display */
+ };
+ 
+@@ -361,10 +361,10 @@ struct x11drv_escape_get_drawable
+     int                      pixel_format; /* internal GL pixel format */
+ };
+ 
+-struct x11drv_escape_flush_gl_drawable
++struct x11drv_escape_present_drawable
+ {
+-    enum x11drv_escape_codes code;         /* escape code (X11DRV_FLUSH_GL_DRAWABLE) */
+-    Drawable                 gl_drawable;  /* GL drawable */
++    enum x11drv_escape_codes code;         /* escape code (X11DRV_PRESENT_DRAWABLE) */
++    Drawable                 drawable;     /* GL / VK drawable */
+     BOOL                     flush;        /* flush X11 before copying */
+ };
+ 
+-- 
+2.36.0
+

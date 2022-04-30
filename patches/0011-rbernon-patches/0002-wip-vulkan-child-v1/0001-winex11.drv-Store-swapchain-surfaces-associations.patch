@@ -1,0 +1,85 @@
+From 27593c4ded29d706f30e3d4d343fdd1cbf0e7a39 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 12 Mar 2021 18:27:41 +0100
+Subject: [PATCH 01/14] winex11.drv: Store swapchain surfaces associations.
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Based on a patch from Felix Hädicke <felixhaedicke@web.de>.
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=45277
+CW-Bug-Id: 16608
+---
+ dlls/winex11.drv/vulkan.c | 22 +++++++++++++++++++++-
+ 1 file changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/winex11.drv/vulkan.c b/dlls/winex11.drv/vulkan.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/vulkan.c
++++ b/dlls/winex11.drv/vulkan.c
+@@ -48,6 +48,7 @@ WINE_DECLARE_DEBUG_CHANNEL(fps);
+ static pthread_mutex_t vulkan_mutex;
+ 
+ static XContext vulkan_hwnd_context;
++static XContext vulkan_swapchain_context;
+ 
+ #define VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR 1000004000
+ 
+@@ -148,6 +149,8 @@ static void wine_vk_init(void)
+ #undef LOAD_OPTIONAL_FUNCPTR
+ 
+     vulkan_hwnd_context = XUniqueContext();
++    vulkan_swapchain_context = XUniqueContext();
++
+     return;
+ 
+ fail:
+@@ -293,6 +296,8 @@ static VkResult X11DRV_vkCreateSwapchainKHR(VkDevice device,
+ {
+     struct wine_vk_surface *x11_surface = surface_from_handle(create_info->surface);
+     VkSwapchainCreateInfoKHR create_info_host;
++    VkResult result;
++
+     TRACE("%p %p %p %p\n", device, create_info, allocator, swapchain);
+ 
+     if (allocator)
+@@ -304,7 +309,14 @@ static VkResult X11DRV_vkCreateSwapchainKHR(VkDevice device,
+     create_info_host = *create_info;
+     create_info_host.surface = x11_surface->surface;
+ 
+-    return pvkCreateSwapchainKHR(device, &create_info_host, NULL /* allocator */, swapchain);
++    result = pvkCreateSwapchainKHR(device, &create_info_host, NULL /* allocator */, swapchain);
++    if (result == VK_SUCCESS)
++    {
++        pthread_mutex_lock(&vulkan_mutex);
++        XSaveContext(gdi_display, (XID)(*swapchain), vulkan_swapchain_context, (char *)wine_vk_surface_grab(x11_surface));
++        pthread_mutex_unlock(&vulkan_mutex);
++    }
++    return result;
+ }
+ 
+ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
+@@ -416,12 +428,20 @@ static void X11DRV_vkDestroySurfaceKHR(VkInstance instance, VkSurfaceKHR surface
+ static void X11DRV_vkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
+          const VkAllocationCallbacks *allocator)
+ {
++    struct wine_vk_surface *surface;
++
+     TRACE("%p, 0x%s %p\n", device, wine_dbgstr_longlong(swapchain), allocator);
+ 
+     if (allocator)
+         FIXME("Support for allocation callbacks not implemented yet\n");
+ 
+     pvkDestroySwapchainKHR(device, swapchain, NULL /* allocator */);
++
++    pthread_mutex_lock(&vulkan_mutex);
++    if (!XFindContext(gdi_display, (XID)swapchain, vulkan_swapchain_context, (char **)&surface))
++        wine_vk_surface_release(surface);
++    XDeleteContext(gdi_display, (XID)swapchain, vulkan_swapchain_context);
++    pthread_mutex_unlock(&vulkan_mutex);
+ }
+ 
+ static VkResult X11DRV_vkEnumerateInstanceExtensionProperties(const char *layer_name,
+-- 
+2.36.0
+

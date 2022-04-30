@@ -1,0 +1,36 @@
+From 7563c241f385299b4639c3b939558c2ba430886e Mon Sep 17 00:00:00 2001
+From: Andrew Eikum <aeikum@codeweavers.com>
+Date: Tue, 18 Sep 2018 14:48:58 -0500
+Subject: [PATCH 2/4] winex11.drv: Allow the application to change window size and
+ states during PropertyNotify.
+
+On focus loss, fullscreened DDLC changes to a 1x1 pixel window and
+minimizes. On restore, it un-minimizes and changes back to fullscreen
+size. However, this restoring happens during the PropertyNotify handler,
+which means we didn't update size or the NET_WM_STATEs.
+---
+ dlls/winex11.drv/window.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -2689,7 +2689,7 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, UINT swp_flags,
+     }
+ 
+     /* don't change position if we are about to minimize or maximize a managed window */
+-    if (!event_type &&
++    if ((!event_type || event_type == PropertyNotify) &&
+             !(data->managed && (swp_flags & SWP_STATECHANGED) && (new_style & (WS_MINIMIZE|WS_MAXIMIZE))))
+         prev_window = sync_window_position( data, swp_flags, &old_window_rect, &old_whole_rect, &old_client_rect );
+ 
+@@ -2732,7 +2732,7 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, UINT swp_flags,
+         else
+         {
+             if (swp_flags & (SWP_FRAMECHANGED|SWP_STATECHANGED)) set_wm_hints( data );
+-            if (!event_type)
++            if (!event_type || event_type == PropertyNotify)
+             {
+                 update_net_wm_states( data );
+                 if (!prev_window && insert_after && data->net_wm_state & (1 << NET_WM_STATE_FULLSCREEN))

@@ -1,0 +1,197 @@
+From b87b21aa3acbdf2e7d964369c3fcd32025a53a7e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 22 Apr 2022 23:23:49 +0200
+Subject: [PATCH 13/14] winex11.drv: Consider only Vulkan surfaces with
+ swapchains for offscreen rendering.
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+"A native window cannot be associated with more than one non-retired
+swapchain at a time."[1]
+
+The hack introduced in 81f5a09134e5 ("winex11: Allow multiple vulkan
+surfaces per hwnd") sends surfaces for offscreen rendering using
+XComposite when there are multiple surfaces associated with a single
+hwnd.
+
+That's overzealous though, as some of the swapchains may be already
+destroyed.
+
+E.g. DOOM Eternal with vsync enabled does the following:
+
+    vkCreateWin32SurfaceKHR(vk_inst, &surface_create_info, NULL, &old_surface)
+    vkCreateSwapchainKHR(vk_inst, &sc_create_info, NULL, &old_sc);
+    vkDestroySwapchainKHR(vk_inst, old_sc, NULL);
+    /* old_surface never gets destroyed */
+
+    vkCreateWin32SurfaceKHR(vk_inst, &surface_create_info, NULL, &new_surface);
+    vkCreateSwapchainKHR(vk_inst, &sc_create_info, NULL, &new_swapchain);
+
+Which makes the hack kick in and degrades the performance.
+
+This change makes sure that we only count surfaces that have any
+swapchains associated with them, whether they are retired or not.
+
+That's a bit of oversimplification, as swapchain can get retired without
+new swapchain being created:
+
+"Upon calling vkCreateSwapchainKHR with an oldSwapchain that is not
+VK_NULL_HANDLE, oldSwapchain is retired — even if creation of the new
+swapchain fails. The new swapchain is created in the non-retired state
+whether or not oldSwapchain is VK_NULL_HANDLE."[2]
+
+but that's unlikely to happen and cause problems.
+
+[1]: https://khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VkSwapchainKHR.html
+[2]: https://khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VkSwapchainCreateInfoKHR.html
+
+CW-Bug-Id: #19666
+---
+ dlls/winex11.drv/vulkan.c | 47 ++++++++++++++++++++++-----------------
+ 1 file changed, 27 insertions(+), 20 deletions(-)
+
+diff --git a/dlls/winex11.drv/vulkan.c b/dlls/winex11.drv/vulkan.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/vulkan.c
++++ b/dlls/winex11.drv/vulkan.c
+@@ -63,6 +63,7 @@ struct wine_vk_surface
+     VkPresentModeKHR present_mode;
+     BOOL known_child; /* hwnd is or has a child */
+     BOOL offscreen; /* drawable is offscreen */
++    LONG swapchain_count; /* surface can have one active an many retired swapchains */
+     HDC hdc;
+     HWND hwnd;
+     DWORD hwnd_thread_id;
+@@ -307,43 +308,43 @@ void resize_vk_surfaces(HWND hwnd, Window active, int mask, XWindowChanges *chan
+ void sync_vk_surface(HWND hwnd, BOOL known_child)
+ {
+     struct wine_vk_surface *surface;
+-    DWORD surface_count = 0;
++    DWORD surface_with_swapchain_count = 0;
+ 
+     pthread_mutex_lock(&vulkan_mutex);
+     LIST_FOR_EACH_ENTRY(surface, &surface_list, struct wine_vk_surface, entry)
+     {
+         if (surface->hwnd != hwnd) continue;
++        if (surface->swapchain_count) surface_with_swapchain_count++;
+         surface->known_child = known_child;
+-        surface_count++;
+     }
+-    TRACE("hwnd %p surface_count %u known_child %u\n", hwnd, surface_count, known_child);
++    TRACE("hwnd %p surface_with_swapchain_count %u known_child %u\n", hwnd, surface_with_swapchain_count, known_child);
+     LIST_FOR_EACH_ENTRY(surface, &surface_list, struct wine_vk_surface, entry)
+     {
+         if (surface->hwnd != hwnd) continue;
+-        if (surface_count > 1) wine_vk_surface_set_offscreen(surface, TRUE);
++        if (surface_with_swapchain_count > 1) wine_vk_surface_set_offscreen(surface, TRUE);
+         else wine_vk_surface_set_offscreen(surface, known_child);
+     }
+     pthread_mutex_unlock(&vulkan_mutex);
+ }
+ 
+-Window wine_vk_active_surface( HWND hwnd )
++Window wine_vk_active_surface(HWND hwnd)
+ {
+     struct wine_vk_surface *surface, *active = NULL;
+-    DWORD surface_count = 0;
++    DWORD surface_with_swapchain_count = 0;
+     Window window;
+ 
+     pthread_mutex_lock(&vulkan_mutex);
+     LIST_FOR_EACH_ENTRY(surface, &surface_list, struct wine_vk_surface, entry)
+     {
+         if (surface->hwnd != hwnd) continue;
++        if (surface->swapchain_count) surface_with_swapchain_count++;
+         active = surface;
+-        surface_count++;
+     }
+     if (!active) window = None;
+     else
+     {
+-        TRACE("hwnd %p surface_count %u known_child %u\n", hwnd, surface_count, active->known_child);
+-        if (surface_count > 1) wine_vk_surface_set_offscreen(active, TRUE);
++        TRACE("hwnd %p surface_with_swapchain_count %u known_child %u\n", hwnd, surface_with_swapchain_count, active->known_child);
++        if (surface_with_swapchain_count > 1) wine_vk_surface_set_offscreen(active, TRUE);
+         else wine_vk_surface_set_offscreen(active, active->known_child);
+         window = active->window;
+     }
+@@ -461,7 +462,7 @@ static VkResult X11DRV_vkCreateSwapchainKHR(VkDevice device,
+         const VkSwapchainCreateInfoKHR *create_info,
+         const VkAllocationCallbacks *allocator, VkSwapchainKHR *swapchain)
+ {
+-    struct wine_vk_surface *x11_surface = surface_from_handle(create_info->surface);
++    struct wine_vk_surface *other, *x11_surface = surface_from_handle(create_info->surface);
+     VkSwapchainCreateInfoKHR create_info_host;
+     VkResult result;
+ 
+@@ -482,13 +483,22 @@ static VkResult X11DRV_vkCreateSwapchainKHR(VkDevice device,
+         create_info_host.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+     x11_surface->present_mode = create_info->presentMode;
+ 
++    pthread_mutex_lock(&vulkan_mutex);
++    LIST_FOR_EACH_ENTRY(other, &surface_list, struct wine_vk_surface, entry)
++    {
++        if (other->hwnd != x11_surface->hwnd) continue;
++        if (!other->swapchain_count) continue;
++        TRACE("hwnd %p already has a swapchain, moving surface offscreen\n", x11_surface->hwnd);
++        wine_vk_surface_set_offscreen(other, TRUE);
++        wine_vk_surface_set_offscreen(x11_surface, TRUE);
++    }
+     result = pvkCreateSwapchainKHR(device, &create_info_host, NULL /* allocator */, swapchain);
+     if (result == VK_SUCCESS)
+     {
+-        pthread_mutex_lock(&vulkan_mutex);
++        x11_surface->swapchain_count++;
+         XSaveContext(gdi_display, (XID)(*swapchain), vulkan_swapchain_context, (char *)wine_vk_surface_grab(x11_surface));
+-        pthread_mutex_unlock(&vulkan_mutex);
+     }
++    pthread_mutex_unlock(&vulkan_mutex);
+     return result;
+ }
+ 
+@@ -498,7 +508,7 @@ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
+ {
+     VkResult res;
+     VkXlibSurfaceCreateInfoKHR create_info_host;
+-    struct wine_vk_surface *x11_surface, *other;
++    struct wine_vk_surface *x11_surface;
+ 
+     TRACE("%p %p %p %p\n", instance, create_info, allocator, surface);
+ 
+@@ -512,6 +522,7 @@ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
+     x11_surface->ref = 1;
+     x11_surface->hwnd = create_info->hwnd;
+     x11_surface->known_child = FALSE;
++    x11_surface->swapchain_count = 0;
+     if (x11_surface->hwnd)
+     {
+         x11_surface->hdc = GetDC(create_info->hwnd);
+@@ -557,13 +568,6 @@ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
+     }
+ 
+     pthread_mutex_lock(&vulkan_mutex);
+-    LIST_FOR_EACH_ENTRY(other, &surface_list, struct wine_vk_surface, entry)
+-    {
+-        if (other->hwnd != x11_surface->hwnd) continue;
+-        TRACE("hwnd %p already has a swapchain, moving surface offscreen\n", x11_surface->hwnd);
+-        wine_vk_surface_set_offscreen(other, TRUE);
+-        wine_vk_surface_set_offscreen(x11_surface, TRUE);
+-    }
+     list_add_tail(&surface_list, &x11_surface->entry);
+     pthread_mutex_unlock(&vulkan_mutex);
+ 
+@@ -622,7 +626,10 @@ static void X11DRV_vkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapcha
+ 
+     pthread_mutex_lock(&vulkan_mutex);
+     if (!XFindContext(gdi_display, (XID)swapchain, vulkan_swapchain_context, (char **)&surface))
++    {
++        surface->swapchain_count--;
+         wine_vk_surface_release(surface);
++    }
+     XDeleteContext(gdi_display, (XID)swapchain, vulkan_swapchain_context);
+     pthread_mutex_unlock(&vulkan_mutex);
+ }
+-- 
+2.36.0
+

@@ -8,73 +8,31 @@ Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=46452
 
 Signed-off-by: Roman Pišl <rpisl@seznam.cz>
 ---
+ dlls/winex11.drv/event.c  | 21 +++++++++++++++------
  dlls/winex11.drv/window.c |  3 +++
- dlls/winex11.drv/x11drv.h |  4 +++-
- dlls/winex11.drv/xdnd.c   | 27 ++++++++++++++++++++-------
- 3 files changed, 26 insertions(+), 8 deletions(-)
+ dlls/winex11.drv/x11drv.h |  3 +++
+ 3 files changed, 21 insertions(+), 6 deletions(-)
 
-diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 11111111111..11111111111 100644
---- a/dlls/winex11.drv/window.c
-+++ b/dlls/winex11.drv/window.c
-@@ -2987,6 +2987,9 @@ LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
-     case WM_X11DRV_ADD_TAB:
-         taskbar_add_tab( hwnd );
-         return 0;
-+    case WM_X11DRV_DROPEVENT:
-+        X11DRV_XDND_DropEventProcess( hwnd );
-+        return 0;
-     default:
-         FIXME( "got window msg %x hwnd %p wp %lx lp %lx\n", msg, hwnd, wp, lp );
-         return 0;
-diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
-index 11111111111..11111111111 100644
---- a/dlls/winex11.drv/x11drv.h
-+++ b/dlls/winex11.drv/x11drv.h
-@@ -299,6 +299,7 @@ extern void IME_SetResultString(LPWSTR lpResult, DWORD dwResultlen) DECLSPEC_HID
- 
- extern void X11DRV_XDND_EnterEvent( HWND hWnd, XEvent *xev ) DECLSPEC_HIDDEN;
- extern void X11DRV_XDND_PositionEvent( HWND hWnd, XEvent *xev ) DECLSPEC_HIDDEN;
-+extern void X11DRV_XDND_DropEventProcess( HWND hWnd );
- extern void X11DRV_XDND_DropEvent( HWND hWnd, XEvent *xev ) DECLSPEC_HIDDEN;
- extern void X11DRV_XDND_LeaveEvent( HWND hWnd, XEvent *xev ) DECLSPEC_HIDDEN;
- extern void X11DRV_CLIPBOARD_ImportSelection( Display *display, Window win, Atom selection,
-@@ -609,7 +610,8 @@ enum x11drv_window_messages
-     WM_X11DRV_CLIP_CURSOR_NOTIFY,
-     WM_X11DRV_CLIP_CURSOR_REQUEST,
-     WM_X11DRV_DELETE_TAB,
--    WM_X11DRV_ADD_TAB
-+    WM_X11DRV_ADD_TAB,
-+    WM_X11DRV_DROPEVENT,
- };
- 
- /* _NET_WM_STATE properties that we keep track of */
-diff --git a/dlls/winex11.drv/xdnd.c b/dlls/winex11.drv/xdnd.c
-index 11111111111..11111111111 100644
---- a/dlls/winex11.drv/xdnd.c
-+++ b/dlls/winex11.drv/xdnd.c
-@@ -398,14 +398,15 @@ void X11DRV_XDND_PositionEvent( HWND hWnd, XEvent *xev )
-     XSendEvent(event->display, event->data.l[0], False, NoEventMask, (XEvent*)&e);
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -2186,9 +2186,10 @@ static void handle_xdnd_position_event( HWND hwnd, XEvent *xev )
  }
  
+ 
+-static void handle_xdnd_drop_event( HWND hwnd, XEvent *xev )
 +static XClientMessageEvent dropEvent;
 +
- /**************************************************************************
-- * X11DRV_XDND_DropEvent
-+ * X11DRV_XDND_DropEventProcess
-  *
-  * Handle an XdndDrop event.
-  */
--void X11DRV_XDND_DropEvent( HWND hWnd, XEvent *xev )
-+void X11DRV_XDND_DropEventProcess( HWND hWnd )
++void process_xdnd_drop_event( HWND hwnd )
  {
 -    XClientMessageEvent *event = &xev->xclient;
+     struct dnd_drop_event_params params;
      XClientMessageEvent e;
-     IDropTarget *dropTarget;
-     DWORD effect = XDNDDropEffect;
-@@ -478,17 +479,29 @@ void X11DRV_XDND_DropEvent( HWND hWnd, XEvent *xev )
+     DWORD effect;
+@@ -2200,14 +2201,22 @@ static void handle_xdnd_drop_event( HWND hwnd, XEvent *xev )
      /* Tell the target we are finished. */
-     memset(&e, 0, sizeof(e));
+     memset( &e, 0, sizeof(e) );
      e.type = ClientMessage;
 -    e.display = event->display;
 -    e.window = event->data.l[0];
@@ -84,25 +42,53 @@ index 11111111111..11111111111 100644
      e.format = 32;
 -    e.data.l[0] = event->window;
 +    e.data.l[0] = dropEvent.window;
-     e.data.l[1] = accept;
-     if (accept)
-         e.data.l[2] = X11DRV_XDND_DROPEFFECTToXdndAction(effect);
-     else
-         e.data.l[2] = None;
--    XSendEvent(event->display, event->data.l[0], False, NoEventMask, (XEvent*)&e);
-+    XSendEvent(dropEvent.display, dropEvent.data.l[0], False, NoEventMask, (XEvent*)&e);
+     e.data.l[1] = !!effect;
+     e.data.l[2] = drop_effect_to_xdnd_action( effect );
+-    XSendEvent( event->display, event->data.l[0], False, NoEventMask, (XEvent *)&e );
++    XSendEvent( dropEvent.display, dropEvent.data.l[0], False, NoEventMask, (XEvent *)&e );
 +}
 +
-+/**************************************************************************
-+ * X11DRV_XDND_DropEvent
-+ *
-+ * Notify a XdndDrop event.
-+ */
-+void X11DRV_XDND_DropEvent( HWND hWnd, XEvent *xev )
++
++static void handle_xdnd_drop_event( HWND hwnd, XEvent *xev )
 +{
 +    XClientMessageEvent *event = &xev->xclient;
 +    memcpy(&dropEvent, event, sizeof(*event));
-+    NtUserPostMessage(hWnd, WM_X11DRV_DROPEVENT, 0, 0);
++    NtUserPostMessage(hwnd, WM_X11DRV_DROPEVENT, 0, 0);
  }
  
- /**************************************************************************
+ 
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -3099,6 +3099,9 @@ LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
+     case WM_X11DRV_DESKTOP_RELEASE_CURSOR:
+         ungrab_clipping_window();
+         return 0;
++    case WM_X11DRV_DROPEVENT:
++        process_xdnd_drop_event( hwnd );
++        return 0;
+     default:
+         FIXME( "got window msg %x hwnd %p wp %lx lp %lx\n", msg, hwnd, wp, lp );
+         return 0;
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -304,6 +304,8 @@ extern void IME_SetResultString(LPWSTR lpResult, DWORD dwResultlen) DECLSPEC_HID
+ extern void handle_dnd_enter_event( struct format_entry *formats, ULONG size ) DECLSPEC_HIDDEN;
+ extern UINT handle_dnd_event( void *params ) DECLSPEC_HIDDEN;
+ 
++extern void process_xdnd_drop_event( HWND hwnd ) DECLSPEC_HIDDEN;
++
+ extern struct format_entry *import_xdnd_selection( Display *display, Window win, Atom selection,
+                                                    Atom *targets, UINT count,
+                                                    size_t *size ) DECLSPEC_HIDDEN;
+@@ -605,6 +607,7 @@ enum x11drv_window_messages
+     WM_X11DRV_ADD_TAB,
+     WM_X11DRV_CLIP_CURSOR_REQUEST,
+     WM_X11DRV_DESKTOP_RELEASE_CURSOR,
++    WM_X11DRV_DROPEVENT,
+ };
+ 
+ /* _NET_WM_STATE properties that we keep track of */

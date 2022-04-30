@@ -1,0 +1,123 @@
+From da38edad6989bb181e1fa4272d096f9d9bd16c23 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 17 Jan 2020 14:23:29 +0100
+Subject: [PATCH 9/9] winex11.drv: Support XInput2 focus events with
+ timestamps.
+
+---
+ dlls/winex11.drv/event.c |  3 ++
+ dlls/winex11.drv/mouse.c | 70 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 73 insertions(+)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -247,6 +247,9 @@ static Bool filter_event( Display *display, XEvent *event, char *arg )
+             case XI_RawMotion:
+             case XI_DeviceChanged:
+                 return (mask & QS_INPUT) != 0;
++            case XI_FocusIn:
++            case XI_FocusOut:
++                return (mask & QS_POSTMESSAGE) != 0;
+             }
+         }
+ #endif
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -410,6 +410,12 @@ void X11DRV_XInput2_Enable( Display *display, Window window, long event_mask )
+         XISetMask( mask_bits, XI_DeviceChanged );
+         XISetMask( mask_bits, raw ? XI_RawButtonRelease : XI_ButtonRelease );
+     }
++    if ((event_mask & FocusChangeMask))
++    {
++        event_mask &= ~FocusChangeMask;
++        XISetMask( mask_bits, XI_FocusIn );
++        XISetMask( mask_bits, XI_FocusOut );
++    }
+ 
+     pXISelectEvents( display, raw ? DefaultRootWindow( display ) : window, &mask, 1 );
+     if (!raw) XSelectInput( display, window, event_mask );
+@@ -2056,6 +2062,66 @@ void X11DRV_XInput2_Load(void)
+ }
+ 
+ 
++#ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
++
++static BOOL X11DRV_XIEnterEvent( XGenericEventCookie *xev )
++{
++    XIEnterEvent *xiev = xev->data;
++    XEvent event;
++    HWND hwnd;
++
++    if (XFindContext( xiev->display, xiev->event, winContext, (char **)&hwnd ) != 0)
++        hwnd = 0;
++    if (!hwnd && xiev->event == root_window)
++        hwnd = NtUserGetDesktopWindow();
++
++    TRACE( "hwnd/window %p/%lx\n", hwnd, xiev->event );
++
++    event.xfocus.serial = xiev->serial;
++    event.xfocus.send_event = xiev->send_event;
++    event.xfocus.display = xiev->display;
++    event.xfocus.window = xiev->event;
++
++    switch (xiev->mode)
++    {
++    case XINotifyNormal: event.xfocus.mode = NotifyNormal; break;
++    case XINotifyGrab: event.xfocus.mode = NotifyGrab; break;
++    case XINotifyUngrab: event.xfocus.mode = NotifyUngrab; break;
++    case XINotifyWhileGrabbed: event.xfocus.mode = NotifyWhileGrabbed; break;
++    default:
++        TRACE( "Ignoring event with mode %d.\n", xiev->mode);
++        return FALSE;
++    }
++
++    switch (xiev->detail)
++    {
++    case XINotifyAncestor: event.xfocus.detail = NotifyAncestor; break;
++    case XINotifyVirtual: event.xfocus.detail = NotifyVirtual; break;
++    case XINotifyInferior: event.xfocus.detail = NotifyInferior; break;
++    case XINotifyNonlinear: event.xfocus.detail = NotifyNonlinear; break;
++    case XINotifyNonlinearVirtual: event.xfocus.detail = NotifyNonlinearVirtual; break;
++    case XINotifyPointer: event.xfocus.detail = NotifyPointer; break;
++    case XINotifyPointerRoot: event.xfocus.detail = NotifyPointerRoot; break;
++    case XINotifyDetailNone: event.xfocus.detail = NotifyDetailNone; break;
++    }
++
++    switch (xiev->evtype)
++    {
++    case XI_FocusIn:
++        event.xfocus.type = FocusIn;
++        return x11drv_handle_focus_in_event( hwnd, &event, xiev->time );
++    case XI_FocusOut:
++        event.xfocus.type = FocusOut;
++        return x11drv_handle_focus_out_event( hwnd, &event, xiev->time );
++    default:
++        TRACE( "Ignoring event with type %d.\n", xiev->evtype);
++        return FALSE;
++    }
++}
++
++#endif
++
++
+ /***********************************************************************
+  *           X11DRV_GenericEvent
+  */
+@@ -2070,6 +2136,10 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+ 
+     switch (event->evtype)
+     {
++    case XI_FocusIn:
++    case XI_FocusOut:
++        ret = X11DRV_XIEnterEvent( event );
++        break;
+     case XI_DeviceChanged:
+         return X11DRV_XIDeviceChangedEvent( event->data );
+     case XI_RawMotion:
+-- 
+2.36.0
+

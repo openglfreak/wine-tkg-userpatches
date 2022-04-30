@@ -1,0 +1,82 @@
+From eb287669ea75356eb314f469e81d0b5be65c42b4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 25 Jan 2021 15:16:19 +0100
+Subject: [PATCH 02/13] server: Notify desktop of cursor handle changes.
+
+---
+ server/protocol.def |  1 +
+ server/queue.c      | 17 +++++++++++++++++
+ server/user.h       |  2 ++
+ 3 files changed, 20 insertions(+)
+
+diff --git a/server/protocol.def b/server/protocol.def
+index 11111111111..11111111111 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -3685,6 +3685,7 @@ struct handle_info
+     int            y;
+     rectangle_t    clip;          /* cursor clip rectangle */
+     unsigned int   clip_msg;      /* message to post on cursor clip changes */
++    unsigned int   change_msg;    /* message to post on cursor win / handle changes */
+ @REPLY
+     user_handle_t  prev_handle;   /* previous handle */
+     int            prev_count;    /* previous show count */
+diff --git a/server/queue.c b/server/queue.c
+index 11111111111..11111111111 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -541,6 +541,13 @@ void update_desktop_cursor_win( struct desktop *desktop )
+     update_desktop_cursor_pos( desktop, 0, desktop->shared->cursor.x, desktop->shared->cursor.y );
+ }
+ 
++static void update_desktop_cursor_handle( struct desktop *desktop, user_handle_t handle )
++{
++    if (desktop->cursor_change_msg && desktop->cursor_handle != handle)
++        post_desktop_message( desktop, desktop->cursor_change_msg, desktop->cursor_win, handle );
++    desktop->cursor_handle = handle;
++}
++
+ /* set the cursor position and queue the corresponding mouse message */
+ static void set_cursor_pos( struct desktop *desktop, int x, int y )
+ {
+@@ -3640,6 +3647,10 @@ DECL_HANDLER(set_cursor)
+     SHARED_WRITE_BEGIN( &input->shared->seq );
+     if (req->flags & SET_CURSOR_HANDLE)
+     {
++        /* only the desktop owner can set the message */
++        if (req->change_msg && get_top_window_owner(desktop) == current->process)
++            desktop->cursor_change_msg = req->change_msg;
++
+         input->shared->cursor = req->handle;
+     }
+     if (req->flags & SET_CURSOR_COUNT)
+@@ -3661,6 +3672,12 @@ DECL_HANDLER(set_cursor)
+         set_clip_rectangle( desktop, (req->flags & SET_CURSOR_NOCLIP) ? NULL : &req->clip, 0 );
+     }
+ 
++    if (req->flags & (SET_CURSOR_HANDLE | SET_CURSOR_COUNT))
++    {
++        if (input->shared->cursor_count < 0) update_desktop_cursor_handle( desktop, 0 );
++        else update_desktop_cursor_handle( desktop, input->shared->cursor );
++    }
++
+     reply->new_x       = desktop->shared->cursor.x;
+     reply->new_y       = desktop->shared->cursor.y;
+     reply->new_clip    = desktop->shared->cursor.clip;
+diff --git a/server/user.h b/server/user.h
+index 11111111111..11111111111 100644
+--- a/server/user.h
++++ b/server/user.h
+@@ -66,7 +66,9 @@ struct desktop
+     struct thread_input                   *foreground_input; /* thread input of foreground thread */
+     unsigned int                           users;            /* processes and threads using this desktop */
+     unsigned int                           cursor_clip_msg;  /* message to post for cursor clip changes */
++    unsigned int                           cursor_change_msg;/* message to post for cursor win / handle changes */
+     user_handle_t                          cursor_win;       /* window that contains the cursor */
++    user_handle_t                          cursor_handle;    /* last set cursor handle */
+     struct object                         *shared_mapping;   /* desktop shared memory mapping */
+     volatile struct desktop_shared_memory *shared;           /* desktop shared memory ptr */
+     unsigned int                           last_press_alt:1; /* last key press was Alt (used to determine msg on Alt release) */
+-- 
+2.36.0
+

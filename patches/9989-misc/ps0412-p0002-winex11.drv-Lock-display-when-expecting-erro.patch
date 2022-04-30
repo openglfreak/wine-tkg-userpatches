@@ -1,0 +1,299 @@
+From: Zhiyi Zhang <zzhang@codeweavers.com>
+Subject: [PATCH 2/3] winex11.drv: Lock display when expecting error events.
+Message-Id: <f1e53b21-a5c0-375f-99dc-63f48fd2e55f@codeweavers.com>
+Date: Thu, 28 Apr 2022 15:59:02 +0800
+
+If the display is not locked, another thread could take the error event and handle it with the
+default error handlers and thus not handled by the current thread with the specified error handlers.
+
+Fix Cladun X2 crash at start.
+
+Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
+---
+ dlls/winex11.drv/bitblt.c      |  4 ++--
+ dlls/winex11.drv/clipboard.c   |  2 +-
+ dlls/winex11.drv/event.c       |  2 +-
+ dlls/winex11.drv/graphics.c    |  2 +-
+ dlls/winex11.drv/opengl.c      |  6 +++---
+ dlls/winex11.drv/window.c      |  6 +++---
+ dlls/winex11.drv/wintab.c      |  6 +++---
+ dlls/winex11.drv/x11drv.h      |  2 +-
+ dlls/winex11.drv/x11drv_main.c |  4 +++-
+ dlls/winex11.drv/xrandr.c      |  4 ++--
+ dlls/winex11.drv/xvidmode.c    | 12 ++++++------
+ 11 files changed, 26 insertions(+), 24 deletions(-)
+
+diff --git a/dlls/winex11.drv/bitblt.c b/dlls/winex11.drv/bitblt.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/bitblt.c
++++ b/dlls/winex11.drv/bitblt.c
+@@ -1370,7 +1370,7 @@ DWORD CDECL X11DRV_GetImage( PHYSDEV dev, BITMAPINFO *info,
+     image = XGetImage( gdi_display, physdev->drawable,
+                        physdev->dc_rect.left + x, physdev->dc_rect.top + y,
+                        width, height, AllPlanes, ZPixmap );
+-    if (X11DRV_check_error())
++    if (X11DRV_check_error( gdi_display ))
+     {
+         /* use a temporary pixmap to avoid the BadMatch error */
+         Pixmap pixmap = XCreatePixmap( gdi_display, root_window, width, height, vis.depth );
+@@ -1852,7 +1852,7 @@ static XImage *create_shm_image( const XVisualInfo *vis, int width, int height,
+         X11DRV_expect_error( gdi_display, xshm_error_handler, NULL );
+         ok = (XShmAttach( gdi_display, shminfo ) != 0);
+         XSync( gdi_display, False );
+-        if (!X11DRV_check_error() && ok)
++        if (!X11DRV_check_error( gdi_display ) && ok)
+         {
+             image->data = shminfo->shmaddr;
+             shmctl( shminfo->shmid, IPC_RMID, 0 );
+diff --git a/dlls/winex11.drv/clipboard.c b/dlls/winex11.drv/clipboard.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/clipboard.c
++++ b/dlls/winex11.drv/clipboard.c
+@@ -397,7 +397,7 @@ static void register_x11_formats( const Atom *atoms, UINT size )
+ 
+         X11DRV_expect_error( display, is_atom_error, NULL );
+         if (!XGetAtomNames( display, new_atoms, count, names )) count = 0;
+-        if (X11DRV_check_error())
++        if (X11DRV_check_error( display ))
+         {
+             WARN( "got some bad atoms, ignoring\n" );
+             count = 0;
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -615,7 +615,7 @@ static HWND get_foreground_window( Display *display, Window *window )
+     X11DRV_expect_error( display, handle__net_active_window_error, NULL );
+     if (XGetWindowProperty( display, DefaultRootWindow( display ), x11drv_atom( _NET_ACTIVE_WINDOW ), 0, ~0UL, False,
+                             XA_WINDOW, &type, &format, &count, &remaining, &property )) count = 0;
+-    if (!X11DRV_check_error() && count && format == 32 && property) active = *(Window *)property;
++    if (!X11DRV_check_error( display ) && count && format == 32 && property) active = *(Window *)property;
+     else active = None;
+     XFree( property );
+ 
+diff --git a/dlls/winex11.drv/graphics.c b/dlls/winex11.drv/graphics.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/graphics.c
++++ b/dlls/winex11.drv/graphics.c
+@@ -1471,7 +1471,7 @@ BOOL CDECL X11DRV_ExtFloodFill( PHYSDEV dev, INT x, INT y, COLORREF color, UINT
+                        physDev->dc_rect.left + rect.left, physDev->dc_rect.top + rect.top,
+                        rect.right - rect.left, rect.bottom - rect.top,
+                        AllPlanes, ZPixmap );
+-    if(X11DRV_check_error()) image = NULL;
++    if(X11DRV_check_error( gdi_display )) image = NULL;
+     if (!image) return FALSE;
+ 
+     if (X11DRV_SetupGCForBrush( physDev ))
+diff --git a/dlls/winex11.drv/opengl.c b/dlls/winex11.drv/opengl.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/opengl.c
++++ b/dlls/winex11.drv/opengl.c
+@@ -1255,7 +1255,7 @@ static BOOL set_swap_interval(GLXDrawable drawable, int interval)
+         X11DRV_expect_error(gdi_display, GLXErrorHandler, NULL);
+         pglXSwapIntervalEXT(gdi_display, drawable, interval);
+         XSync(gdi_display, False);
+-        ret = !X11DRV_check_error();
++        ret = !X11DRV_check_error(gdi_display);
+         break;
+ 
+     case GLX_SWAP_CONTROL_MESA:
+@@ -1760,7 +1760,7 @@ static BOOL WINAPI glxdrv_wglCopyContext(struct wgl_context *src, struct wgl_con
+     X11DRV_expect_error( gdi_display, GLXErrorHandler, NULL );
+     pglXCopyContext( gdi_display, src->ctx, dst->ctx, mask );
+     XSync( gdi_display, False );
+-    if (X11DRV_check_error())
++    if (X11DRV_check_error( gdi_display ))
+     {
+         static unsigned int once;
+ 
+@@ -2210,7 +2210,7 @@ static struct wgl_context *X11DRV_wglCreateContextAttribsARB( HDC hdc, struct wg
+         X11DRV_expect_error(gdi_display, GLXErrorHandler, NULL);
+         ret->ctx = create_glxcontext(gdi_display, ret, hShareContext ? hShareContext->ctx : NULL);
+         XSync(gdi_display, False);
+-        if ((err = X11DRV_check_error()) || !ret->ctx)
++        if ((err = X11DRV_check_error(gdi_display)) || !ret->ctx)
+         {
+             /* In the future we should convert the GLX error to a win32 one here if needed */
+             WARN("Context creation failed (error %#x).\n", err);
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1063,13 +1063,13 @@ BOOL get_window_user_time( Display *display, Window window, Time *time )
+     X11DRV_expect_error( display, handle__net_wm_user_time_error, NULL );
+     if (XGetWindowProperty( display, window, x11drv_atom(_NET_WM_USER_TIME_WINDOW), 0, ~0UL, False,
+                             XA_WINDOW, &type, &format, &count, &remaining, &property )) count = 0;
+-    if (!X11DRV_check_error() && count && format == 32 && property) window = *(Window *)property;
++    if (!X11DRV_check_error( display ) && count && format == 32 && property) window = *(Window *)property;
+     XFree( property );
+ 
+     X11DRV_expect_error( display, handle__net_wm_user_time_error, NULL );
+     if (XGetWindowProperty( display, window, x11drv_atom(_NET_WM_USER_TIME), 0, ~0UL, False,
+                             XA_CARDINAL, &type, &format, &count, &remaining, &property )) count = 0;
+-    if (!X11DRV_check_error() && count && format == 32 && property) *time = *(Time *)property;
++    if (!X11DRV_check_error( display ) && count && format == 32 && property) *time = *(Time *)property;
+     else count = 0;
+     XFree( property );
+ 
+@@ -3539,7 +3539,7 @@ HWND get_hwnd_for_window( Display *display, Window window )
+     X11DRV_expect_error( display, handle_hwnd_for_window_error, NULL );
+     if (XGetWindowProperty( display, window, x11drv_atom(_WINE_HWND), 0, ~0UL, False, XA_CARDINAL,
+                             &type, &format, &count, &remaining, &property )) count = 0;
+-    if (!X11DRV_check_error() && count && format == 32 && property) hwnd = *(HWND *)property;
++    if (!X11DRV_check_error( display ) && count && format == 32 && property) hwnd = *(HWND *)property;
+     else WARN("Failed to find HWND for window %lx\n", window);
+     XFree(property);
+ 
+diff --git a/dlls/winex11.drv/wintab.c b/dlls/winex11.drv/wintab.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/wintab.c
++++ b/dlls/winex11.drv/wintab.c
+@@ -589,7 +589,7 @@ BOOL CDECL X11DRV_LoadTabletInfo(HWND hwnddefault)
+ 
+             X11DRV_expect_error(data->display, Tablet_ErrorHandler, NULL);
+             opendevice = pXOpenDevice(data->display,target->id);
+-            if (!X11DRV_check_error() && opendevice)
++            if (!X11DRV_check_error(data->display) && opendevice)
+             {
+                 unsigned char map[32];
+                 int i;
+@@ -597,7 +597,7 @@ BOOL CDECL X11DRV_LoadTabletInfo(HWND hwnddefault)
+ 
+                 X11DRV_expect_error(data->display,Tablet_ErrorHandler,NULL);
+                 cursor.BUTTONS = pXGetDeviceButtonMapping(data->display, opendevice, map, 32);
+-                if (X11DRV_check_error() || cursor.BUTTONS <= 0)
++                if (X11DRV_check_error(data->display) || cursor.BUTTONS <= 0)
+                 {
+                     TRACE("No buttons, Non Tablet Device\n");
+                     pXCloseDevice(data->display, opendevice);
+@@ -1102,7 +1102,7 @@ int CDECL X11DRV_AttachEventQueueToTablet(HWND hOwner)
+         }
+     }
+     XSync(data->display, False);
+-    X11DRV_check_error();
++    X11DRV_check_error(data->display);
+ 
+     if (NULL != devices) pXFreeDeviceList(devices);
+     return 0;
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -732,7 +732,7 @@ extern HWND *build_hwnd_list(void) DECLSPEC_HIDDEN;
+ typedef int (*x11drv_error_callback)( Display *display, XErrorEvent *event, void *arg );
+ 
+ extern void X11DRV_expect_error( Display *display, x11drv_error_callback callback, void *arg ) DECLSPEC_HIDDEN;
+-extern int X11DRV_check_error(void) DECLSPEC_HIDDEN;
++extern int X11DRV_check_error( Display *display ) DECLSPEC_HIDDEN;
+ extern void X11DRV_X_to_window_rect( struct x11drv_win_data *data, RECT *rect, int x, int y, int cx, int cy ) DECLSPEC_HIDDEN;
+ extern POINT virtual_screen_to_root( INT x, INT y ) DECLSPEC_HIDDEN;
+ extern POINT root_to_virtual_screen( INT x, INT y ) DECLSPEC_HIDDEN;
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -261,6 +261,7 @@ static inline BOOL ignore_error( Display *display, XErrorEvent *event )
+ void X11DRV_expect_error( Display *display, x11drv_error_callback callback, void *arg )
+ {
+     pthread_mutex_lock( &error_mutex );
++    XLockDisplay( display );
+     err_callback         = callback;
+     err_callback_display = display;
+     err_callback_arg     = arg;
+@@ -275,10 +276,11 @@ void X11DRV_expect_error( Display *display, x11drv_error_callback callback, void
+  * Check if an expected X11 error occurred; return non-zero if yes.
+  * The caller is responsible for calling XSync first if necessary.
+  */
+-int X11DRV_check_error(void)
++int X11DRV_check_error( Display *display )
+ {
+     int res = err_callback_result;
+     err_callback = NULL;
++    XUnlockDisplay( display );
+     pthread_mutex_unlock( &error_mutex );
+     return res;
+ }
+diff --git a/dlls/winex11.drv/xrandr.c b/dlls/winex11.drv/xrandr.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/xrandr.c
++++ b/dlls/winex11.drv/xrandr.c
+@@ -1051,7 +1051,7 @@ static BOOL get_gpu_properties_from_vulkan( struct gdi_gpu *gpu, const XRRProvid
+             vr = pvkGetRandROutputDisplayEXT( vk_physical_devices[device_idx], gdi_display,
+                                               provider_info->outputs[output_idx], &vk_display );
+             XSync( gdi_display, FALSE );
+-            if (X11DRV_check_error() || vr != VK_SUCCESS || vk_display == VK_NULL_HANDLE)
++            if (X11DRV_check_error( gdi_display ) || vr != VK_SUCCESS || vk_display == VK_NULL_HANDLE)
+                 continue;
+ 
+             memset( &id, 0, sizeof(id) );
+@@ -2039,7 +2039,7 @@ void X11DRV_XRandR_Init(void)
+     if (!pXRRQueryExtension( gdi_display, &event_base, &error_base )) return;
+     X11DRV_expect_error( gdi_display, XRandRErrorHandler, NULL );
+     ok = pXRRQueryVersion( gdi_display, &major, &minor );
+-    if (X11DRV_check_error() || !ok) return;
++    if (X11DRV_check_error( gdi_display ) || !ok) return;
+ 
+     TRACE("Found XRandR %d.%d.\n", major, minor);
+ 
+diff --git a/dlls/winex11.drv/xvidmode.c b/dlls/winex11.drv/xvidmode.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/xvidmode.c
++++ b/dlls/winex11.drv/xvidmode.c
+@@ -125,7 +125,7 @@ static BOOL xf86vm_get_modes(ULONG_PTR id, DWORD flags, DEVMODEW **new_modes, UI
+ 
+     X11DRV_expect_error(gdi_display, XVidModeErrorHandler, NULL);
+     ret = pXF86VidModeGetAllModeLines(gdi_display, DefaultScreen(gdi_display), &xf86vm_mode_count, &xf86vm_modes);
+-    if (X11DRV_check_error() || !ret || !xf86vm_mode_count)
++    if (X11DRV_check_error(gdi_display) || !ret || !xf86vm_mode_count)
+         return FALSE;
+ 
+     /* Put a XF86VidModeModeInfo ** at the start to store the XF86VidMode modes pointer */
+@@ -195,7 +195,7 @@ static BOOL xf86vm_get_current_mode(ULONG_PTR id, DEVMODEW *mode)
+ 
+     X11DRV_expect_error(gdi_display, XVidModeErrorHandler, NULL);
+     ret = pXF86VidModeGetModeLine(gdi_display, DefaultScreen(gdi_display), &dotclock, &xf86vm_mode);
+-    if (X11DRV_check_error() || !ret)
++    if (X11DRV_check_error(gdi_display) || !ret)
+         return FALSE;
+ 
+     mode->dmBitsPerPel = screen_bpp;
+@@ -235,7 +235,7 @@ static LONG xf86vm_set_current_mode(ULONG_PTR id, DEVMODEW *mode)
+     memcpy(&xf86vm_mode, (BYTE *)mode + sizeof(*mode), sizeof(xf86vm_mode));
+     X11DRV_expect_error(gdi_display, XVidModeErrorHandler, NULL);
+     ret = pXF86VidModeSwitchToMode(gdi_display, DefaultScreen(gdi_display), xf86vm_mode);
+-    if (X11DRV_check_error() || !ret)
++    if (X11DRV_check_error(gdi_display) || !ret)
+         return DISP_CHANGE_FAILED;
+ #if 0 /* it is said that SetViewPort causes problems with some X servers */
+     pXF86VidModeSetViewPort(gdi_display, DefaultScreen(gdi_display), 0, 0);
+@@ -287,7 +287,7 @@ void X11DRV_XF86VM_Init(void)
+ 
+   X11DRV_expect_error(gdi_display, XVidModeErrorHandler, NULL);
+   ok = pXF86VidModeQueryVersion(gdi_display, &xf86vm_major, &xf86vm_minor);
+-  if (X11DRV_check_error() || !ok) return;
++  if (X11DRV_check_error(gdi_display) || !ok) return;
+ 
+ #ifdef X_XF86VidModeSetGammaRamp
+   if (xf86vm_major > 2 || (xf86vm_major == 2 && xf86vm_minor >= 1))
+@@ -295,7 +295,7 @@ void X11DRV_XF86VM_Init(void)
+       X11DRV_expect_error(gdi_display, XVidModeErrorHandler, NULL);
+       pXF86VidModeGetGammaRampSize(gdi_display, DefaultScreen(gdi_display),
+                                    &xf86vm_gammaramp_size);
+-      if (X11DRV_check_error()) xf86vm_gammaramp_size = 0;
++      if (X11DRV_check_error(gdi_display)) xf86vm_gammaramp_size = 0;
+       TRACE("Gamma ramp size %d.\n", xf86vm_gammaramp_size);
+       if (xf86vm_gammaramp_size >= GAMMA_RAMP_SIZE)
+           xf86vm_use_gammaramp = TRUE;
+@@ -495,7 +495,7 @@ static BOOL xf86vm_set_gamma_ramp(struct x11drv_gamma_ramp *ramp)
+     ret = pXF86VidModeSetGammaRamp(gdi_display, DefaultScreen(gdi_display),
+                                    xf86vm_gammaramp_size, red, green, blue);
+     if (ret) XSync( gdi_display, FALSE );
+-    if (X11DRV_check_error()) ret = FALSE;
++    if (X11DRV_check_error(gdi_display)) ret = FALSE;
+ 
+     if (red != ramp->red)
+         free(red);
+
+-- 
+2.36.0
+

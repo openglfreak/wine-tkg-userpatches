@@ -1,0 +1,335 @@
+From 82494cbe6823eed5a9a7eead188b8066e3cce3cc Mon Sep 17 00:00:00 2001
+From: Zebediah Figura <z.figura12@gmail.com>
+Date: Fri, 12 Mar 2021 15:04:17 -0600
+Subject: [PATCH 25/29] ntdll: Cache fast synchronization objects.
+
+---
+ dlls/ntdll/unix/server.c       |   9 ++
+ dlls/ntdll/unix/sync.c         | 200 +++++++++++++++++++++++++++++++--
+ dlls/ntdll/unix/unix_private.h |   4 +
+ 3 files changed, 201 insertions(+), 12 deletions(-)
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1717,12 +1717,17 @@ NTSTATUS WINAPI NtDuplicateObject( HANDLE source_process, HANDLE source, HANDLE
+         return result.dup_handle.status;
+     }
+ 
++    /* hold fd_cache_mutex to prevent the fd from being added again between the
++     * call to remove_fd_from_cache and close_handle */
+     server_enter_uninterrupted_section( &fd_cache_mutex, &sigset );
+ 
+     /* always remove the cached fd; if the server request fails we'll just
+      * retrieve it again */
+     if (options & DUPLICATE_CLOSE_SOURCE)
++    {
+         fd = remove_fd_from_cache( source );
++        close_fast_sync_obj( source );
++    }
+ 
+     SERVER_START_REQ( dup_handle )
+     {
+@@ -1778,6 +1783,8 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
+     if (HandleToLong( handle ) >= ~5 && HandleToLong( handle ) <= ~0)
+         return STATUS_SUCCESS;
+ 
++    /* hold fd_cache_mutex to prevent the fd from being added again between the
++     * call to remove_fd_from_cache and close_handle */
+     server_enter_uninterrupted_section( &fd_cache_mutex, &sigset );
+ 
+     /* always remove the cached fd; if the server request fails we'll just
+@@ -1790,6 +1797,8 @@ NTSTATUS WINAPI NtClose( HANDLE handle )
+     if (do_esync())
+         esync_close( handle );
+ 
++    close_fast_sync_obj( handle );
++
+     SERVER_START_REQ( close_handle )
+     {
+         req->handle = wine_server_obj_handle( handle );
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -333,6 +333,12 @@ static int get_linux_sync_device(void)
+  * it closes the handle; when all handles are closed, the server deletes the
+  * fast synchronization object.
+  *
++ * We also need this for signal-and-wait. The signal and wait operations aren't
++ * atomic, but we can't perform the signal and then return STATUS_INVALID_HANDLE
++ * for the wait—we need to either do both operations or neither. That means we
++ * need to grab references to both objects, and prevent them from being
++ * destroyed before we're done with them.
++ *
+  * We want lookup of objects from the cache to be very fast; ideally, it should
+  * be lock-free. We achieve this by using atomic modifications to "refcount",
+  * and guaranteeing that all other fields are valid and correct *as long as*
+@@ -375,12 +381,139 @@ static void release_fast_sync_obj( struct fast_sync_cache_entry *cache )
+ 
+     if (!refcount)
+     {
+-        NTSTATUS ret = NtClose( handle );
++        NTSTATUS ret;
++
++        /* we can't call NtClose here as we may be inside fd_cache_mutex */
++        SERVER_START_REQ( close_handle )
++        {
++            req->handle = wine_server_obj_handle( handle );
++            ret = wine_server_call( req );
++        }
++        SERVER_END_REQ;
++
+         assert( !ret );
+     }
+ }
+ 
+ 
++#define FAST_SYNC_CACHE_BLOCK_SIZE  (65536 / sizeof(struct fast_sync_cache_entry))
++#define FAST_SYNC_CACHE_ENTRIES     128
++
++static struct fast_sync_cache_entry *fast_sync_cache[FAST_SYNC_CACHE_ENTRIES];
++static struct fast_sync_cache_entry fast_sync_cache_initial_block[FAST_SYNC_CACHE_BLOCK_SIZE];
++
++static inline unsigned int fast_sync_handle_to_index( HANDLE handle, unsigned int *entry )
++{
++    unsigned int idx = (wine_server_obj_handle(handle) >> 2) - 1;
++    *entry = idx / FAST_SYNC_CACHE_BLOCK_SIZE;
++    return idx % FAST_SYNC_CACHE_BLOCK_SIZE;
++}
++
++
++static struct fast_sync_cache_entry *cache_fast_sync_obj( HANDLE handle, obj_handle_t fast_sync, int obj,
++                                                          enum fast_sync_type type, unsigned int access )
++{
++    unsigned int entry, idx = fast_sync_handle_to_index( handle, &entry );
++    struct fast_sync_cache_entry *cache;
++    sigset_t sigset;
++    int refcount;
++
++    if (entry >= FAST_SYNC_CACHE_ENTRIES)
++    {
++        FIXME( "too many allocated handles, not caching %p\n", handle );
++        return NULL;
++    }
++
++    if (!fast_sync_cache[entry])  /* do we need to allocate a new block of entries? */
++    {
++        if (!entry) fast_sync_cache[0] = fast_sync_cache_initial_block;
++        else
++        {
++            static const size_t size = FAST_SYNC_CACHE_BLOCK_SIZE * sizeof(struct fast_sync_cache_entry);
++            void *ptr = anon_mmap_alloc( size, PROT_READ | PROT_WRITE );
++            if (ptr == MAP_FAILED) return NULL;
++            if (InterlockedCompareExchangePointer( (void **)&fast_sync_cache[entry], ptr, NULL ))
++                munmap( ptr, size ); /* someone beat us to it */
++        }
++    }
++
++    cache = &fast_sync_cache[entry][idx];
++
++    /* Hold fd_cache_mutex instead of a separate mutex, to prevent the same
++     * race between this function and NtClose. That is, prevent the object from
++     * being cached again between close_fast_sync_obj() and close_handle. */
++    server_enter_uninterrupted_section( &fd_cache_mutex, &sigset );
++
++    if (InterlockedCompareExchange( &cache->refcount, 0, 0 ))
++    {
++        /* We lost the race with another thread trying to cache this object, or
++         * the handle is currently being used for another object (i.e. it was
++         * closed and then reused). We have no way of knowing which, and in the
++         * latter case we can't cache this object until the old one is
++         * completely destroyed, so always return failure. */
++        server_leave_uninterrupted_section( &fd_cache_mutex, &sigset );
++        return NULL;
++    }
++
++    cache->handle = fast_sync;
++    cache->obj = obj;
++    cache->type = type;
++    cache->access = access;
++    cache->closed = FALSE;
++    /* Make sure we set the other members before the refcount; this store needs
++     * release semantics [paired with the load in get_cached_fast_sync_obj()].
++     * Set the refcount to 2 (one for the handle, one for the caller). */
++    refcount = InterlockedExchange( &cache->refcount, 2 );
++    assert( !refcount );
++
++    server_leave_uninterrupted_section( &fd_cache_mutex, &sigset );
++
++    return cache;
++}
++
++
++/* returns the previous value */
++static inline LONG interlocked_inc_if_nonzero( LONG *dest )
++{
++    LONG val, tmp;
++    for (val = *dest;; val = tmp)
++    {
++        if (!val || (tmp = InterlockedCompareExchange( dest, val + 1, val )) == val)
++            break;
++    }
++    return val;
++}
++
++
++static struct fast_sync_cache_entry *get_cached_fast_sync_obj( HANDLE handle )
++{
++    unsigned int entry, idx = fast_sync_handle_to_index( handle, &entry );
++    struct fast_sync_cache_entry *cache;
++
++    if (entry >= FAST_SYNC_CACHE_ENTRIES || !fast_sync_cache[entry])
++        return NULL;
++
++    cache = &fast_sync_cache[entry][idx];
++
++    /* this load needs acquire semantics [paired with the store in
++     * cache_fast_sync_obj()] */
++    if (!interlocked_inc_if_nonzero( &cache->refcount ))
++        return NULL;
++
++    if (cache->closed)
++    {
++        /* The object is still being used, but "handle" has been closed. The
++         * handle value might have been reused for another object in the
++         * meantime, in which case we have to report that valid object, so
++         * force the caller to check the server. */
++        release_fast_sync_obj( cache );
++        return NULL;
++    }
++
++    return cache;
++}
++
++
+ static BOOL fast_sync_types_match( enum fast_sync_type a, enum fast_sync_type b )
+ {
+     if (a == b) return TRUE;
+@@ -396,39 +529,78 @@ static NTSTATUS get_fast_sync_obj( HANDLE handle, enum fast_sync_type desired_ty
+                                    struct fast_sync_cache_entry *stack_cache,
+                                    struct fast_sync_cache_entry **ret_cache )
+ {
+-    struct fast_sync_cache_entry *cache = stack_cache;
++    struct fast_sync_cache_entry *cache;
++    obj_handle_t fast_sync_handle;
++    enum fast_sync_type type;
++    unsigned int access;
+     NTSTATUS ret;
++    int obj;
+ 
+-    *ret_cache = stack_cache;
++    /* try to find it in the cache already */
++    if ((cache = get_cached_fast_sync_obj( handle )))
++    {
++        *ret_cache = cache;
++        return STATUS_SUCCESS;
++    }
+ 
++    /* try to retrieve it from the server */
+     SERVER_START_REQ( get_linux_sync_obj )
+     {
+         req->handle = wine_server_obj_handle( handle );
+         if (!(ret = wine_server_call( req )))
+         {
+-            cache->handle = reply->handle;
+-            cache->access = reply->access;
+-            cache->type = reply->type;
+-            cache->obj = reply->obj;
+-            cache->refcount = 1;
+-            cache->closed = FALSE;
++            fast_sync_handle = reply->handle;
++            access = reply->access;
++            type = reply->type;
++            obj = reply->obj;
+         }
+     }
+     SERVER_END_REQ;
+ 
+-    if (!ret && desired_type && !fast_sync_types_match( cache->type, desired_type ))
++    if (ret) return ret;
++
++    cache = cache_fast_sync_obj( handle, fast_sync_handle, obj, type, access );
++    if (!cache)
++    {
++        cache = stack_cache;
++        cache->handle = fast_sync_handle;
++        cache->obj = obj;
++        cache->type = type;
++        cache->access = access;
++        cache->closed = FALSE;
++        cache->refcount = 1;
++    }
++
++    *ret_cache = cache;
++
++    if (desired_type && !fast_sync_types_match( cache->type, desired_type ))
+     {
+         release_fast_sync_obj( cache );
+         return STATUS_OBJECT_TYPE_MISMATCH;
+     }
+ 
+-    if (!ret && (cache->access & desired_access) != desired_access)
++    if ((cache->access & desired_access) != desired_access)
+     {
+         release_fast_sync_obj( cache );
+         return STATUS_ACCESS_DENIED;
+     }
+ 
+-    return ret;
++    return STATUS_SUCCESS;
++}
++
++
++/* caller must hold fd_cache_mutex */
++void close_fast_sync_obj( HANDLE handle )
++{
++    struct fast_sync_cache_entry *cache = get_cached_fast_sync_obj( handle );
++
++    if (cache)
++    {
++        cache->closed = TRUE;
++        /* once for the reference we just grabbed, and once for the handle */
++        release_fast_sync_obj( cache );
++        release_fast_sync_obj( cache );
++    }
+ }
+ 
+ 
+@@ -1002,6 +1174,10 @@ static NTSTATUS fast_signal_and_wait( HANDLE signal, HANDLE wait,
+ 
+ #else
+ 
++void close_fast_sync_obj( HANDLE handle )
++{
++}
++
+ static NTSTATUS fast_release_semaphore( HANDLE handle, ULONG count, ULONG *prev_count )
+ {
+     return STATUS_NOT_IMPLEMENTED;
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -167,6 +167,8 @@ extern NTSTATUS load_main_exe( const WCHAR *name, const char *unix_name, const W
+ extern NTSTATUS load_start_exe( WCHAR **image, void **module ) DECLSPEC_HIDDEN;
+ extern void start_server( BOOL debug ) DECLSPEC_HIDDEN;
+ 
++extern pthread_mutex_t fd_cache_mutex DECLSPEC_HIDDEN;
++
+ extern unsigned int server_call_unlocked( void *req_ptr ) DECLSPEC_HIDDEN;
+ extern void server_enter_uninterrupted_section( pthread_mutex_t *mutex, sigset_t *sigset ) DECLSPEC_HIDDEN;
+ extern void server_leave_uninterrupted_section( pthread_mutex_t *mutex, sigset_t *sigset ) DECLSPEC_HIDDEN;
+@@ -293,6 +295,8 @@ extern void set_async_direct_result( HANDLE *optional_handle, NTSTATUS status, U
+ 
+ extern void dbg_init(void) DECLSPEC_HIDDEN;
+ 
++extern void close_fast_sync_obj( HANDLE handle ) DECLSPEC_HIDDEN;
++
+ extern NTSTATUS call_user_apc_dispatcher( CONTEXT *context_ptr, ULONG_PTR arg1, ULONG_PTR arg2, ULONG_PTR arg3,
+                                           PNTAPCFUNC func, NTSTATUS status ) DECLSPEC_HIDDEN;
+ extern NTSTATUS call_user_exception_dispatcher( EXCEPTION_RECORD *rec, CONTEXT *context ) DECLSPEC_HIDDEN;
+-- 
+2.36.0
+

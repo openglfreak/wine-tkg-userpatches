@@ -1,0 +1,54 @@
+From caffea50b971482a3215ce12b68bef3cbacbcfc0 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Mon, 25 Apr 2022 05:24:26 +0200
+Subject: [PATCH 05/16] Revert "winex11.drv: Simplify XInput2 valuator lookup."
+
+This reverts staging patch patches/user32-rawinput-mouse-experimental/0004-winex11.drv-Simplify-XInput2-valuator-lookup.patch
+---
+ dlls/winex11.drv/mouse.c | 21 +++++++++++----------
+ 1 file changed, 11 insertions(+), 10 deletions(-)
+
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -327,25 +327,26 @@ void X11DRV_InitMouse( Display *display )
+ /***********************************************************************
+  *              update_relative_valuators
+  */
+-static void update_relative_valuators( XIAnyClassInfo **classes, int num_classes )
++static void update_relative_valuators(XIAnyClassInfo **valuators, int n_valuators)
+ {
+     struct x11drv_thread_data *thread_data = x11drv_thread_data();
+-    XIValuatorClassInfo *valuator;
++    int i;
+ 
+     thread_data->x_valuator.number = -1;
+     thread_data->y_valuator.number = -1;
+ 
+-    while (num_classes--)
++    for (i = 0; i < n_valuators; i++)
+     {
+-        valuator = (XIValuatorClassInfo *)classes[num_classes];
+-        if (classes[num_classes]->type != XIValuatorClass) continue;
+-        if (valuator->number == 0 && valuator->mode == XIModeRelative) thread_data->x_valuator = *valuator;
+-        if (valuator->number == 1 && valuator->mode == XIModeRelative) thread_data->y_valuator = *valuator;
++        XIValuatorClassInfo *class = (XIValuatorClassInfo *)valuators[i];
++        if (valuators[i]->type != XIValuatorClass) continue;
++        if (class->label == x11drv_atom( Rel_X ) ||
++            (!class->label && class->number == 0 && class->mode == XIModeRelative))
++            thread_data->x_valuator = *class;
++        else if (class->label == x11drv_atom( Rel_Y ) ||
++                 (!class->label && class->number == 1 && class->mode == XIModeRelative))
++            thread_data->y_valuator = *class;
+     }
+ 
+-    if (thread_data->x_valuator.number < 0 || thread_data->y_valuator.number < 0)
+-        WARN( "X/Y axis valuators not found, ignoring RawMotion events\n" );
+-
+     thread_data->x_valuator.value = 0;
+     thread_data->y_valuator.value = 0;
+ }
+-- 
+2.36.0
+

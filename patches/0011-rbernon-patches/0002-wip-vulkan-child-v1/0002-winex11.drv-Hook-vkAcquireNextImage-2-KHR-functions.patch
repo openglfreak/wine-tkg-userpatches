@@ -1,0 +1,117 @@
+From 102fc9d8bcdd6dd5cec40d72a1335c7ed4240eee Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 22 Apr 2021 23:38:16 +0200
+Subject: [PATCH 02/14] winex11.drv: Hook vkAcquireNextImage(2)KHR functions.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=45277
+---
+ dlls/winemac.drv/vulkan.c    |  2 ++
+ dlls/winevulkan/make_vulkan  |  2 ++
+ dlls/winex11.drv/vulkan.c    | 19 +++++++++++++++++++
+ include/wine/vulkan_driver.h |  6 ++++++
+ 4 files changed, 29 insertions(+)
+
+diff --git a/dlls/winemac.drv/vulkan.c b/dlls/winemac.drv/vulkan.c
+index 11111111111..11111111111 100644
+--- a/dlls/winemac.drv/vulkan.c
++++ b/dlls/winemac.drv/vulkan.c
+@@ -589,6 +589,8 @@ static VkSurfaceKHR macdrv_wine_get_native_surface(VkSurfaceKHR surface)
+ 
+ static const struct vulkan_funcs vulkan_funcs =
+ {
++    NULL,
++    NULL,
+     macdrv_vkCreateInstance,
+     macdrv_vkCreateSwapchainKHR,
+     macdrv_vkCreateWin32SurfaceKHR,
+diff --git a/dlls/winevulkan/make_vulkan b/dlls/winevulkan/make_vulkan
+index 11111111111..11111111111 100755
+--- a/dlls/winevulkan/make_vulkan
++++ b/dlls/winevulkan/make_vulkan
+@@ -236,6 +236,8 @@ FUNCTION_OVERRIDES = {
+     "vkGetPhysicalDeviceWin32PresentationSupportKHR" : {"dispatch" : True, "driver" : True, "thunk" : ThunkType.PUBLIC},
+ 
+     # VK_KHR_swapchain
++    "vkAcquireNextImageKHR" : {"dispatch" : True, "driver" : True, "thunk" : ThunkType.PUBLIC},
++    "vkAcquireNextImage2KHR": {"dispatch" : True, "driver" : True, "thunk" : ThunkType.PUBLIC},
+     "vkCreateSwapchainKHR" : {"dispatch" : True, "driver" : True, "thunk" : ThunkType.PUBLIC},
+     "vkDestroySwapchainKHR" : {"dispatch" : True, "driver" : True, "thunk" : ThunkType.PUBLIC},
+     "vkGetSwapchainImagesKHR": {"dispatch" : True, "driver" : True, "thunk" : ThunkType.PUBLIC},
+diff --git a/dlls/winex11.drv/vulkan.c b/dlls/winex11.drv/vulkan.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/vulkan.c
++++ b/dlls/winex11.drv/vulkan.c
+@@ -73,6 +73,7 @@ typedef struct VkXlibSurfaceCreateInfoKHR
+     Window window;
+ } VkXlibSurfaceCreateInfoKHR;
+ 
++static VkResult (*pvkAcquireNextImageKHR)(VkDevice, VkSwapchainKHR, uint64_t, VkSemaphore, VkFence, uint32_t *);
+ static VkResult (*pvkCreateInstance)(const VkInstanceCreateInfo *, const VkAllocationCallbacks *, VkInstance *);
+ static VkResult (*pvkCreateSwapchainKHR)(VkDevice, const VkSwapchainCreateInfoKHR *, const VkAllocationCallbacks *, VkSwapchainKHR *);
+ static VkResult (*pvkCreateXlibSurfaceKHR)(VkInstance, const VkXlibSurfaceCreateInfoKHR *, const VkAllocationCallbacks *, VkSurfaceKHR *);
+@@ -125,6 +126,7 @@ static void wine_vk_init(void)
+ 
+ #define LOAD_FUNCPTR(f) if (!(p##f = dlsym(vulkan_handle, #f))) goto fail
+ #define LOAD_OPTIONAL_FUNCPTR(f) p##f = dlsym(vulkan_handle, #f)
++    LOAD_FUNCPTR(vkAcquireNextImageKHR);
+     LOAD_FUNCPTR(vkCreateInstance);
+     LOAD_FUNCPTR(vkCreateSwapchainKHR);
+     LOAD_FUNCPTR(vkCreateXlibSurfaceKHR);
+@@ -290,6 +292,21 @@ static VkResult X11DRV_vkCreateInstance(const VkInstanceCreateInfo *create_info,
+     return res;
+ }
+ 
++static VkResult X11DRV_vkAcquireNextImageKHR(VkDevice device,
++        VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore,
++        VkFence fence, uint32_t *image_index)
++{
++    return pvkAcquireNextImageKHR(device, swapchain, timeout, semaphore, fence, image_index);
++}
++
++static VkResult X11DRV_vkAcquireNextImage2KHR(VkDevice device,
++        const VkAcquireNextImageInfoKHR *acquire_info, uint32_t *image_index)
++{
++    static int once;
++    if (!once++) FIXME("Emulating vkGetPhysicalDeviceSurfaceCapabilities2KHR with vkGetPhysicalDeviceSurfaceCapabilitiesKHR, pNext is ignored.\n");
++    return X11DRV_vkAcquireNextImageKHR(device, acquire_info->swapchain, acquire_info->timeout, acquire_info->semaphore, acquire_info->fence, image_index);
++}
++
+ static VkResult X11DRV_vkCreateSwapchainKHR(VkDevice device,
+         const VkSwapchainCreateInfoKHR *create_info,
+         const VkAllocationCallbacks *allocator, VkSwapchainKHR *swapchain)
+@@ -710,6 +727,8 @@ static VkSurfaceKHR X11DRV_wine_get_native_surface(VkSurfaceKHR surface)
+ 
+ static const struct vulkan_funcs vulkan_funcs =
+ {
++    X11DRV_vkAcquireNextImage2KHR,
++    X11DRV_vkAcquireNextImageKHR,
+     X11DRV_vkCreateInstance,
+     X11DRV_vkCreateSwapchainKHR,
+     X11DRV_vkCreateWin32SurfaceKHR,
+diff --git a/include/wine/vulkan_driver.h b/include/wine/vulkan_driver.h
+index 11111111111..11111111111 100644
+--- a/include/wine/vulkan_driver.h
++++ b/include/wine/vulkan_driver.h
+@@ -21,6 +21,8 @@ struct vulkan_funcs
+      * needs to provide. Other function calls will be provided indirectly by dispatch
+      * tables part of dispatchable Vulkan objects such as VkInstance or vkDevice.
+      */
++    VkResult (*p_vkAcquireNextImage2KHR)(VkDevice, const VkAcquireNextImageInfoKHR *, uint32_t *);
++    VkResult (*p_vkAcquireNextImageKHR)(VkDevice, VkSwapchainKHR, uint64_t, VkSemaphore, VkFence, uint32_t *);
+     VkResult (*p_vkCreateInstance)(const VkInstanceCreateInfo *, const VkAllocationCallbacks *, VkInstance *);
+     VkResult (*p_vkCreateSwapchainKHR)(VkDevice, const VkSwapchainCreateInfoKHR *, const VkAllocationCallbacks *, VkSwapchainKHR *);
+     VkResult (*p_vkCreateWin32SurfaceKHR)(VkInstance, const VkWin32SurfaceCreateInfoKHR *, const VkAllocationCallbacks *, VkSurfaceKHR *);
+@@ -55,6 +57,10 @@ static inline void *get_vulkan_driver_device_proc_addr(
+ 
+     name += 2;
+ 
++    if (!strcmp(name, "AcquireNextImage2KHR"))
++        return vulkan_funcs->p_vkAcquireNextImage2KHR;
++    if (!strcmp(name, "AcquireNextImageKHR"))
++        return vulkan_funcs->p_vkAcquireNextImageKHR;
+     if (!strcmp(name, "CreateSwapchainKHR"))
+         return vulkan_funcs->p_vkCreateSwapchainKHR;
+     if (!strcmp(name, "DestroySwapchainKHR"))
+-- 
+2.36.0
+

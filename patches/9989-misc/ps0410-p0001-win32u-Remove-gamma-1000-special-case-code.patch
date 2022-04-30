@@ -1,0 +1,64 @@
+From: Byeongsik Jeon <bsjeon@hanmail.net>
+Subject: [PATCH v2 1/5] win32u: Remove gamma == 1000 special case code.
+Message-Id: <20220421184922.394344-2-bsjeon@hanmail.net>
+Date: Fri, 22 Apr 2022 03:49:18 +0900
+In-Reply-To: <20220421184922.394344-1-bsjeon@hanmail.net>
+References: <20220421184922.394344-1-bsjeon@hanmail.net>
+
+Signed-off-by: Byeongsik Jeon <bsjeon@hanmail.net>
+---
+v2: no change.
+
+ dlls/win32u/dibdrv/primitives.c | 12 +++---------
+ dlls/win32u/font.c              | 10 ++++------
+ 2 files changed, 7 insertions(+), 15 deletions(-)
+
+diff --git a/dlls/win32u/dibdrv/primitives.c b/dlls/win32u/dibdrv/primitives.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/dibdrv/primitives.c
++++ b/dlls/win32u/dibdrv/primitives.c
+@@ -6354,15 +6354,9 @@ static inline BYTE blend_color_gamma( BYTE dst, BYTE text, BYTE alpha,
+ static inline DWORD blend_subpixel( BYTE r, BYTE g, BYTE b, DWORD text, DWORD alpha,
+                                     const struct font_gamma_ramp *gamma_ramp )
+ {
+-    if (gamma_ramp != NULL && gamma_ramp->gamma != 1000)
+-    {
+-        return blend_color_gamma( r, text >> 16, (BYTE)(alpha >> 16), gamma_ramp ) << 16 |
+-               blend_color_gamma( g, text >> 8,  (BYTE)(alpha >> 8),  gamma_ramp ) << 8  |
+-               blend_color_gamma( b, text,       (BYTE) alpha,        gamma_ramp );
+-    }
+-    return blend_color( r, text >> 16, (BYTE)(alpha >> 16) ) << 16 |
+-           blend_color( g, text >> 8,  (BYTE)(alpha >> 8) )  << 8  |
+-           blend_color( b, text,       (BYTE) alpha );
++    return blend_color_gamma( r, text >> 16, alpha >> 16, gamma_ramp ) << 16 |
++           blend_color_gamma( g, text >> 8,  alpha >> 8,  gamma_ramp ) << 8  |
++           blend_color_gamma( b, text,       alpha,       gamma_ramp );
+ }
+ 
+ static void draw_subpixel_glyph_8888( const dib_info *dib, const RECT *rect, const dib_info *glyph,
+diff --git a/dlls/win32u/font.c b/dlls/win32u/font.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -4363,13 +4363,11 @@ static UINT init_font_options(void)
+        This looks roughly similar to Windows Native with the same registry value.
+        MS GDI seems to be rasterizing the outline at a different rate than FreeType. */
+     gamma = 1000 * gamma / 1400;
+-    if (gamma != 1000)
++
++    for (i = 0; i < 256; i++)
+     {
+-        for (i = 0; i < 256; i++)
+-        {
+-            font_gamma_ramp.encode[i] = pow( i / 255., 1000. / gamma ) * 255. + .5;
+-            font_gamma_ramp.decode[i] = pow( i / 255., gamma / 1000. ) * 255. + .5;
+-        }
++        font_gamma_ramp.encode[i] = pow( i / 255., 1000. / gamma ) * 255. + .5;
++        font_gamma_ramp.decode[i] = pow( i / 255., gamma / 1000. ) * 255. + .5;
+     }
+ 
+     if (!dpi && (key = reg_open_key( NULL, fonts_config_keyW, sizeof(fonts_config_keyW) )))
+
+-- 
+2.36.0
+

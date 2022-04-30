@@ -1,0 +1,191 @@
+From 58a1d9ccabf67f394b8ef05e71e287789f99cf26 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 16 Jan 2020 17:51:48 +0100
+Subject: [PATCH 09/12] winex11.drv: Call __wine_set_foreground_window on focus
+ events.
+
+This also instroduces a new internal __wine_set_foreground_window user32
+export that takes a timestamp parameter.
+
+This fixes the broken tests, because the WM_TAKE_FOCUS messages have
+a timestamp, but it will not work when the take_focus mode is not used.
+
+Standard focus events do not have a timestamp so we will have to use
+XInput2 focus events to support this case.
+---
+ dlls/win32u/gdiobj.c         |  1 +
+ dlls/win32u/input.c          | 16 ++++++++++++++++
+ dlls/win32u/win32u.spec      |  3 +++
+ dlls/win32u/win32u_private.h |  1 +
+ dlls/win32u/wrappers.c       |  6 ++++++
+ dlls/winex11.drv/event.c     | 17 ++++++++---------
+ include/winuser.h            |  1 +
+ 7 files changed, 36 insertions(+), 9 deletions(-)
+
+diff --git a/dlls/win32u/gdiobj.c b/dlls/win32u/gdiobj.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/gdiobj.c
++++ b/dlls/win32u/gdiobj.c
+@@ -1240,6 +1240,7 @@ static struct unix_funcs unix_funcs =
+     __wine_get_wgl_driver,
+     __wine_send_input,
+     __wine_set_user_driver,
++    __wine_set_foreground_window,
+ };
+ 
+ NTSTATUS gdi_init(void)
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -1452,6 +1452,22 @@ BOOL WINAPI release_capture(void)
+     return ret;
+ }
+ 
++/*******************************************************************
++ *      __wine_set_foreground_window  (USER32.@)
++ *
++ * Internal NtUserSetForegroundWindow function to let the graphics driver
++ * update the foreground window.
++ */
++BOOL CDECL __wine_set_foreground_window( HWND hwnd, DWORD time )
++{
++    TRACE( "%p\n", hwnd );
++
++    hwnd = get_full_window_handle( hwnd );
++
++    return set_foreground_window( hwnd, FALSE, time );
++}
++
++
+ /*******************************************************************
+  *           NtUserGetForegroundWindow  (win32u.@)
+  */
+diff --git a/dlls/win32u/win32u.spec b/dlls/win32u/win32u.spec
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/win32u.spec
++++ b/dlls/win32u/win32u.spec
+@@ -1320,6 +1320,9 @@
+ ################################################################
+ # Wine internal extensions
+ 
++# user32
++@ cdecl __wine_set_foreground_window(long long)
++
+ # Graphics drivers
+ @ cdecl __wine_send_input(long ptr ptr)
+ @ cdecl __wine_set_user_driver(ptr long)
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -319,6 +319,7 @@ struct unix_funcs
+     struct opengl_funcs * (CDECL *get_wgl_driver)( HDC hdc, UINT version );
+     BOOL (CDECL *wine_send_input)( HWND hwnd, const INPUT *input, const RAWINPUT *rawinput );
+     void (CDECL *set_user_driver)( const struct user_driver_funcs *funcs, UINT version );
++    BOOL (CDECL *set_foreground_window)( HWND hwnd, DWORD time );
+ };
+ 
+ /* clipboard.c */
+diff --git a/dlls/win32u/wrappers.c b/dlls/win32u/wrappers.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/wrappers.c
++++ b/dlls/win32u/wrappers.c
+@@ -1318,6 +1318,12 @@ BOOL CDECL __wine_get_icm_profile( HDC hdc, BOOL allow_default, DWORD *size, WCH
+     return unix_funcs->get_icm_profile( hdc, allow_default, size, filename );
+ }
+ 
++BOOL CDECL __wine_set_foreground_window( HWND hwnd, DWORD time )
++{
++    if (!unix_funcs) return FALSE;
++    unix_funcs->set_foreground_window( hwnd, time );
++}
++
+ BOOL CDECL __wine_get_brush_bitmap_info( HBRUSH handle, BITMAPINFO *info, void *bits, UINT *usage )
+ {
+     if (!unix_funcs) return FALSE;
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -700,11 +700,11 @@ static HWND find_activatable_window( HWND hwnd, Time time, BOOL check )
+     return hwnd;
+ }
+ 
+-static void set_foreground_window( HWND hwnd )
++static void set_foreground_window( HWND hwnd, DWORD time )
+ {
+     struct x11drv_thread_data *thread_data = x11drv_thread_data();
+     thread_data->activating_hwnd = hwnd;
+-    NtUserSetForegroundWindow( hwnd, FALSE );
++    __wine_set_foreground_window( hwnd, time );
+     thread_data->activating_hwnd = 0;
+ }
+ 
+@@ -735,7 +735,7 @@ static void set_focus( XEvent *xev, HWND hwnd, Time time, BOOL check )
+ 
+     if (!(focus = find_activatable_window( focus, time, check ))) return;
+     TRACE( "setting foreground window to %p\n", focus );
+-    set_foreground_window( focus );
++    set_foreground_window( focus, x11drv_time_to_ticks( time ) );
+ 
+     /* Some applications expect that a being deactivated topmost window
+      * receives the WM_WINDOWPOSCHANGING/WM_WINDOWPOSCHANGED messages,
+@@ -968,7 +968,7 @@ static void focus_out( Display *display , HWND hwnd, Time time )
+         if (hwnd == NtUserGetForegroundWindow())
+         {
+             TRACE( "lost focus, setting fg to desktop\n" );
+-            set_foreground_window( NtUserGetDesktopWindow() );
++            set_foreground_window( NtUserGetDesktopWindow(), GetTickCount() );
+         }
+     }
+  }
+@@ -1437,7 +1437,7 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event, BOOL updat
+                 TRACE( "restoring win %p/%lx\n", data->hwnd, data->whole_window );
+                 release_win_data( data );
+                 if ((style & (WS_MINIMIZE | WS_VISIBLE)) == (WS_MINIMIZE | WS_VISIBLE))
+-                    set_foreground_window( hwnd );
++                    set_foreground_window( hwnd, x11drv_time_to_ticks( event->time ) );
+                 send_message( hwnd, WM_SYSCOMMAND, SC_RESTORE, 0 );
+                 return;
+             }
+@@ -1468,8 +1468,7 @@ static BOOL X11DRV_PropertyNotify( HWND hwnd, XEvent *xev )
+ {
+     XPropertyEvent *event = &xev->xproperty;
+     HWND active_window;
+-
+-    x11drv_time_to_ticks( event->time );
++    DWORD time = x11drv_time_to_ticks( event->time );
+ 
+     if (event->atom == x11drv_atom(_NET_ACTIVE_WINDOW))
+     {
+@@ -1479,12 +1478,12 @@ static BOOL X11DRV_PropertyNotify( HWND hwnd, XEvent *xev )
+ 
+         if (!(active_window = get_foreground_window( event->display, NULL )))
+         {
+-            set_foreground_window( NtUserGetDesktopWindow() );
++            set_foreground_window( NtUserGetDesktopWindow(), time );
+             x11drv_global_focus_out( event->display );
+         }
+         else
+         {
+-            set_foreground_window( active_window );
++            set_foreground_window( active_window, time );
+             x11drv_global_focus_in( event->display );
+         }
+ 
+diff --git a/include/winuser.h b/include/winuser.h
+index 11111111111..11111111111 100644
+--- a/include/winuser.h
++++ b/include/winuser.h
+@@ -4430,6 +4430,7 @@ WORD        WINAPI SYSTEM_KillSystemTimer( WORD );
+ 
+ #ifdef __WINESRC__
+ WINUSERAPI BOOL CDECL __wine_send_input( HWND hwnd, const INPUT *input, const RAWINPUT *rawinput );
++WINUSERAPI BOOL CDECL __wine_set_foreground_window( HWND hwnd, DWORD time );
+ 
+ /* Uxtheme hook functions and struct */
+ 
+-- 
+2.36.0
+

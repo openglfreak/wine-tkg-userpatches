@@ -1,0 +1,79 @@
+From 2bcc043ad74c8c45da0d9e0cdb682422da8bd647 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sat, 29 Jan 2022 13:29:20 +0100
+Subject: [PATCH 05/16] user32/tests: Run win tests without waiting for
+ messages on Windows.
+
+This speeds up the tests from ~1m-1m30s down to ~10-20s.
+---
+ dlls/user32/tests/win.c | 19 +++++++++++++++++--
+ 1 file changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/tests/win.c
++++ b/dlls/user32/tests/win.c
+@@ -91,6 +91,12 @@ static void flush_events( BOOL remove_messages )
+     int min_timeout = 100;
+     DWORD time = GetTickCount() + diff;
+ 
++    if (remove_messages && strcmp(winetest_platform, "wine"))
++    {
++        while (PeekMessageA( &msg, 0, 0, 0, PM_REMOVE )) DispatchMessageA( &msg );
++        return;
++    }
++
+     while (diff > 0)
+     {
+         if (MsgWaitForMultipleObjects( 0, NULL, FALSE, min_timeout, QS_ALLINPUT ) == WAIT_TIMEOUT) break;
+@@ -195,11 +201,14 @@ static DWORD wait_for_events( DWORD count, HANDLE *events, DWORD timeout )
+     return ret;
+ }
+ 
++static BOOL wait_for_message( MSG *msg );
++
+ static BOOL init_test_windows( HWND *main_window, HWND *other_window )
+ {
+     DWORD style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_POPUP;
+     HINSTANCE module = GetModuleHandleA( NULL );
+     BOOL ret = TRUE;
++    MSG msg;
+ 
+     *main_window = CreateWindowExA( /*WS_EX_TOOLWINDOW*/ 0, "MainWindowClass", "Main window",
+                                     style | WS_VISIBLE, 100, 100, 200, 200, 0, 0, module, NULL );
+@@ -215,6 +224,7 @@ static BOOL init_test_windows( HWND *main_window, HWND *other_window )
+         ok( !!*other_window, "CreateWindowExA failed, error %lu\n", GetLastError() );
+     }
+ 
++    wait_for_message( &msg );
+     flush_events( TRUE );
+     if (*main_window == GetForegroundWindow()) return TRUE;
+ 
+@@ -11113,9 +11123,12 @@ static void test_GetMessagePos(void)
+     button = CreateWindowExA(0, "button", "button", WS_VISIBLE,
+             100, 100, 100, 100, 0, 0, 0, NULL);
+     ok(button != 0, "CreateWindowExA failed\n");
++    flush_events(TRUE);
++    pos = GetMessagePos();
++    ok(pos != MAKELONG(120, 140), "pos = %08lx\n", pos);
+ 
+     SetCursorPos(120, 140);
+-    flush_events(TRUE);
++    wait_for_message(&msg);
+     pos = GetMessagePos();
+     ok(pos == MAKELONG(120, 140), "pos = %08lx\n", pos);
+ 
+@@ -11669,7 +11682,9 @@ static void test_hide_window(void)
+                            100, 100, 200, 200, 0, 0, GetModuleHandleA(NULL), NULL);
+     hwnd2 = CreateWindowExA(0, "MainWindowClass", "Main window 2", WS_POPUP | WS_VISIBLE,
+                             100, 100, 200, 200, 0, 0, GetModuleHandleA(NULL), NULL);
+-    if (winetest_debug > 1) trace("hwnd = %p, hwnd2 = %p\n", hwnd, hwnd2);
++    trace("hwndMain %p, hwnd %p, hwnd2 %p\n", hwndMain, hwnd, hwnd2);
++    flush_events(TRUE);
++
+     check_active_state(hwnd2, hwnd2, hwnd2);
+     ok(GetWindow(hwnd2, GW_HWNDNEXT) == hwnd, "expected %p, got %p\n", hwnd, GetWindow(hwnd2, GW_HWNDNEXT));
+ 
+-- 
+2.36.0
+

@@ -1,0 +1,124 @@
+From 2cf14211c30984d75161d44b0f4555a03a05f6e3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 22 Dec 2021 20:29:01 +0100
+Subject: [PATCH 2/9] xinput1_3: Register device notifications in DllMain.
+
+Instead of doing it lazily, which is more likely to be after the game
+has registered theirs. As the message handling order is the same as the
+registration, XInput may end updating its device list only too late,
+every time.
+
+Some games register device notifications and call XInputGetCapabilities
+or XInputGetState from their window proc, expecting XInput controller
+list to be updated already. If the controller is missing they won't try
+calling XInput functions again until another WM_DEVICECHANGE message is
+received.
+---
+ dlls/xinput1_3/main.c | 53 +++++++++++++++++++++----------------------
+ 1 file changed, 26 insertions(+), 27 deletions(-)
+
+diff --git a/dlls/xinput1_3/main.c b/dlls/xinput1_3/main.c
+index 11111111111..11111111111 100644
+--- a/dlls/xinput1_3/main.c
++++ b/dlls/xinput1_3/main.c
+@@ -119,7 +119,8 @@ static struct xinput_controller controllers[XUSER_MAX_COUNT] =
+     {{ &controller_critsect_debug[3], -1, 0, 0, 0, 0 }},
+ };
+ 
+-static HMODULE xinput_instance;
++static HDEVNOTIFY update_devnotify;
++static HWND update_hwnd;
+ static HANDLE start_event;
+ static HANDLE stop_event;
+ static HANDLE done_event;
+@@ -690,34 +691,14 @@ static DWORD WINAPI hid_update_thread_proc(void *param)
+     struct xinput_controller *devices[XUSER_MAX_COUNT + 2];
+     HANDLE events[XUSER_MAX_COUNT + 2];
+     DWORD i, count = 2, ret = WAIT_TIMEOUT;
+-    DEV_BROADCAST_DEVICEINTERFACE_W filter =
+-    {
+-        .dbcc_size = sizeof(DEV_BROADCAST_DEVICEINTERFACE_W),
+-        .dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE,
+-        .dbcc_classguid = GUID_DEVINTERFACE_WINEXINPUT,
+-    };
+-    WNDCLASSEXW cls =
+-    {
+-        .cbSize = sizeof(WNDCLASSEXW),
+-        .hInstance = xinput_instance,
+-        .lpszClassName = L"__wine_xinput_devnotify",
+-        .lpfnWndProc = xinput_devnotify_wndproc,
+-    };
+-    HDEVNOTIFY notif;
+-    HWND hwnd;
+     MSG msg;
+ 
+-    RegisterClassExW(&cls);
+-    hwnd = CreateWindowExW(0, cls.lpszClassName, NULL, 0, 0, 0, 0, 0,
+-                           HWND_MESSAGE, NULL, NULL, NULL);
+-    notif = RegisterDeviceNotificationW(hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+-
+     update_controller_list();
+     SetEvent(start_event);
+ 
+     do
+     {
+-        if (ret == count) while (PeekMessageW(&msg, hwnd, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
++        if (ret == count) while (PeekMessageW(&msg, update_hwnd, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
+         if (ret == WAIT_TIMEOUT) update_controller_list();
+         if (ret < count - 2) read_controller_state(devices[ret]);
+ 
+@@ -740,10 +721,6 @@ static DWORD WINAPI hid_update_thread_proc(void *param)
+     while ((ret = MsgWaitForMultipleObjectsEx(count, events, 2000, QS_ALLINPUT, MWMO_ALERTABLE)) < count - 1 ||
+             ret == count || ret == WAIT_TIMEOUT);
+ 
+-    UnregisterDeviceNotification(notif);
+-    DestroyWindow(hwnd);
+-    UnregisterClassW(cls.lpszClassName, xinput_instance);
+-
+     if (ret != count - 1) ERR("update thread exited unexpectedly, ret %lu\n", ret);
+     SetEvent(done_event);
+     return ret;
+@@ -801,17 +778,39 @@ static void controller_unlock(struct xinput_controller *controller)
+ 
+ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
+ {
++    DEV_BROADCAST_DEVICEINTERFACE_W filter =
++    {
++        .dbcc_size = sizeof(DEV_BROADCAST_DEVICEINTERFACE_W),
++        .dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE,
++        .dbcc_classguid = GUID_DEVINTERFACE_WINEXINPUT,
++    };
++    WNDCLASSEXW class =
++    {
++        .cbSize = sizeof(WNDCLASSEXW),
++        .hInstance = inst,
++        .lpszClassName = L"__wine_xinput_devnotify",
++        .lpfnWndProc = xinput_devnotify_wndproc,
++    };
++
+     TRACE("inst %p, reason %lu, reserved %p.\n", inst, reason, reserved);
+ 
+     switch (reason)
+     {
+     case DLL_PROCESS_ATTACH:
+-        xinput_instance = inst;
+         DisableThreadLibraryCalls(inst);
++
++        RegisterClassExW(&class);
++        update_hwnd = CreateWindowExW(0, class.lpszClassName, NULL, 0, 0, 0, 0, 0,
++                                      HWND_MESSAGE, NULL, NULL, NULL);
++        update_devnotify = RegisterDeviceNotificationW(update_hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+         break;
+     case DLL_PROCESS_DETACH:
+         if (reserved) break;
+         stop_update_thread();
++
++        UnregisterDeviceNotification(update_devnotify);
++        DestroyWindow(update_hwnd);
++        UnregisterClassW(class.lpszClassName, class.hInstance);
+         break;
+     }
+     return TRUE;
+-- 
+2.36.0
+

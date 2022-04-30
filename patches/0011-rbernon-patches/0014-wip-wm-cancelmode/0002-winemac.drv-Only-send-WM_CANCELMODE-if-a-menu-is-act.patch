@@ -1,0 +1,36 @@
+From 4b5c1fff1708163fa032809a6d3fec2aa719db8e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 13 Nov 2019 13:01:05 +0100
+Subject: [PATCH 2/2] winemac.drv: Only send WM_CANCELMODE if a menu is active.
+
+---
+ dlls/winemac.drv/window.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -2376,13 +2376,18 @@ void macdrv_window_got_focus(HWND hwnd, const macdrv_event *event)
+  */
+ void macdrv_window_lost_focus(HWND hwnd, const macdrv_event *event)
+ {
++    GUITHREADINFO threadinfo;
+     if (!hwnd) return;
+ 
+     TRACE("win %p/%p fg %p\n", hwnd, event->window, GetForegroundWindow());
+ 
+     if (hwnd == GetForegroundWindow())
+     {
+-        SendMessageW(hwnd, WM_CANCELMODE, 0, 0);
++        threadinfo.cbSize = sizeof(threadinfo);
++        GetGUIThreadInfo(0, &threadinfo);
++        if (threadinfo.flags & (GUI_INMENUMODE|GUI_INMOVESIZE|GUI_POPUPMENUMODE|GUI_SYSTEMMENUMODE))
++            SendMessageW(hwnd, WM_CANCELMODE, 0, 0);
++
+         if (hwnd == GetForegroundWindow())
+             SetForegroundWindow(GetDesktopWindow());
+     }
+-- 
+2.36.0
+

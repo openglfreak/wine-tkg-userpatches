@@ -253,10 +253,14 @@ main() (
         prefix=
         if [ x != "x${patchset_number}" ]; then
             patchset_number="$(remove_leading_zeroes "${patchset_number}")"
+            patchset_number="${patchset_number:-0}"
             patchset_number="$(format_number "${patchset_number}" 2>/dev/null)"
             prefix="ps${patchset_number}-${patch_number:+p}"
         fi
-        patch_number="$(remove_leading_zeroes "${patch_number}")"
+        if [ x != "x${patch_number}" ]; then
+            patch_number="$(remove_leading_zeroes "${patch_number}")"
+            patch_number="${patch_number:-0}"
+        fi
         filename="$(make_patch_file_name "${prefix}" "${patch_number}" \
             "${subject_commit_msg}" "${file_extension+.${file_extension}}")"
 

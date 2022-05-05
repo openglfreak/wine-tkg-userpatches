@@ -75,7 +75,7 @@ diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/driver.c
 +++ b/dlls/win32u/driver.c
-@@ -868,6 +868,11 @@ static void nulldrv_SetParent( HWND hwnd, HWND parent, HWND old_parent )
+@@ -832,6 +832,11 @@ static void nulldrv_SetParent( HWND hwnd, HWND parent, HWND old_parent )
  {
  }
  
@@ -87,7 +87,7 @@ index 11111111111..11111111111 100644
  static void nulldrv_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
  {
  }
-@@ -1163,6 +1168,11 @@ static void loaderdrv_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE
+@@ -1127,6 +1132,11 @@ static void loaderdrv_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE
      load_driver()->pSetLayeredWindowAttributes( hwnd, key, alpha, flags );
  }
  
@@ -99,7 +99,7 @@ index 11111111111..11111111111 100644
  static void loaderdrv_SetWindowRgn( HWND hwnd, HRGN hrgn, BOOL redraw )
  {
      load_driver()->pSetWindowRgn( hwnd, hrgn, redraw );
-@@ -1219,6 +1229,7 @@ static const struct user_driver_funcs lazy_load_driver =
+@@ -1183,6 +1193,7 @@ static const struct user_driver_funcs lazy_load_driver =
      nulldrv_SetForegroundWindow,
      loaderdrv_SetLayeredWindowAttributes,
      nulldrv_SetParent,
@@ -107,7 +107,7 @@ index 11111111111..11111111111 100644
      loaderdrv_SetWindowRgn,
      nulldrv_SetWindowIcon,
      nulldrv_SetWindowStyle,
-@@ -1294,6 +1305,7 @@ void CDECL __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT v
+@@ -1258,6 +1269,7 @@ void CDECL __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT v
      SET_USER_FUNC(SetFocus);
      SET_USER_FUNC(SetLayeredWindowAttributes);
      SET_USER_FUNC(SetParent);
@@ -119,10 +119,10 @@ diff --git a/dlls/win32u/gdiobj.c b/dlls/win32u/gdiobj.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/gdiobj.c
 +++ b/dlls/win32u/gdiobj.c
-@@ -1211,6 +1211,7 @@ static struct unix_funcs unix_funcs =
-     NtUserSetMenu,
+@@ -1213,6 +1213,7 @@ static struct unix_funcs unix_funcs =
      NtUserSetParent,
      NtUserSetSysColors,
+     NtUserSetSystemMenu,
 +    NtUserSetWindowCompositionAttribute,
      NtUserSetWindowLong,
      NtUserSetWindowLongPtr,
@@ -144,7 +144,7 @@ diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/ntuser_private.h
 +++ b/dlls/win32u/ntuser_private.h
-@@ -337,6 +337,8 @@ WND *get_win_ptr( HWND hwnd ) DECLSPEC_HIDDEN;
+@@ -336,6 +336,8 @@ WND *get_win_ptr( HWND hwnd ) DECLSPEC_HIDDEN;
  BOOL is_child( HWND parent, HWND child );
  BOOL is_window( HWND hwnd ) DECLSPEC_HIDDEN;
  
@@ -170,10 +170,10 @@ diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/win32u_private.h
 +++ b/dlls/win32u/win32u_private.h
-@@ -281,6 +281,7 @@ struct unix_funcs
-     BOOL     (WINAPI *pNtUserSetMenu)( HWND hwnd, HMENU menu );
+@@ -283,6 +283,7 @@ struct unix_funcs
      HWND     (WINAPI *pNtUserSetParent)( HWND hwnd, HWND parent );
      BOOL     (WINAPI *pNtUserSetSysColors)( INT count, const INT *colors, const COLORREF *values );
+     BOOL     (WINAPI *pNtUserSetSystemMenu)( HWND hwnd, HMENU menu );
 +    NTSTATUS (WINAPI *pNtUserSetWindowCompositionAttribute)( HWND hwnd, const struct WINCOMPATTRDATA *data );
      LONG     (WINAPI *pNtUserSetWindowLong)( HWND hwnd, INT offset, LONG newval, BOOL ansi );
      LONG_PTR (WINAPI *pNtUserSetWindowLongPtr)( HWND hwnd, INT offset, LONG_PTR newval, BOOL ansi );
@@ -305,7 +305,7 @@ index 11111111111..11111111111 100644
      return ret;
  }
  
-@@ -4681,7 +4782,7 @@ void destroy_thread_windows(void)
+@@ -4679,7 +4780,7 @@ void destroy_thread_windows(void)
   */
  static WND *create_window_handle( HWND parent, HWND owner, UNICODE_STRING *name,
                                    HINSTANCE instance, BOOL ansi,
@@ -314,7 +314,7 @@ index 11111111111..11111111111 100644
  {
      DPI_AWARENESS awareness = get_thread_dpi_awareness();
      HWND handle = 0, full_parent = 0, full_owner = 0;
-@@ -4710,6 +4811,7 @@ static WND *create_window_handle( HWND parent, HWND owner, UNICODE_STRING *name,
+@@ -4708,6 +4809,7 @@ static WND *create_window_handle( HWND parent, HWND owner, UNICODE_STRING *name,
              dpi         = reply->dpi;
              awareness   = reply->awareness;
              class       = wine_server_get_ptr( reply->class_ptr );
@@ -322,7 +322,7 @@ index 11111111111..11111111111 100644
          }
      }
      SERVER_END_REQ;
-@@ -4864,6 +4966,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
+@@ -4862,6 +4964,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
      INT sw = SW_SHOW;
      RECT rect;
      WND *win;
@@ -330,7 +330,7 @@ index 11111111111..11111111111 100644
  
      static const WCHAR messageW[] = {'M','e','s','s','a','g','e'};
  
-@@ -4926,7 +5029,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
+@@ -4924,7 +5027,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
  
      style = cs.style & ~WS_VISIBLE;
      ex_style = cs.dwExStyle & ~WS_EX_LAYERED;
@@ -339,7 +339,7 @@ index 11111111111..11111111111 100644
          return 0;
      hwnd = win->obj.handle;
  
-@@ -5079,6 +5182,8 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
+@@ -5077,6 +5180,8 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
      /* call the driver */
  
      if (!user_driver->pCreateWindow( hwnd )) goto failed;
@@ -352,8 +352,8 @@ diff --git a/dlls/win32u/wrappers.c b/dlls/win32u/wrappers.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/wrappers.c
 +++ b/dlls/win32u/wrappers.c
-@@ -1179,6 +1179,12 @@ BOOL WINAPI NtUserSetSysColors( INT count, const INT *colors, const COLORREF *va
-     return unix_funcs->pNtUserSetSysColors( count, colors, values );
+@@ -1191,6 +1191,12 @@ BOOL WINAPI NtUserSetSystemMenu( HWND hwnd, HMENU menu )
+     return unix_funcs->pNtUserSetSystemMenu( hwnd, menu );
  }
  
 +NTSTATUS WINAPI NtUserSetWindowCompositionAttribute( HWND hwnd, const struct WINCOMPATTRDATA *data )
@@ -369,7 +369,7 @@ diff --git a/include/ntuser.h b/include/ntuser.h
 index 11111111111..11111111111 100644
 --- a/include/ntuser.h
 +++ b/include/ntuser.h
-@@ -284,10 +284,50 @@ enum wine_internal_message
+@@ -293,10 +293,50 @@ enum wine_internal_message
      WM_WINE_MOUSE_LL_HOOK,
      WM_WINE_CLIPCURSOR,
      WM_WINE_UPDATEWINDOWSTATE,
@@ -420,7 +420,7 @@ index 11111111111..11111111111 100644
  /* the various structures that can be sent in messages, in platform-independent layout */
  struct packed_CREATESTRUCTW
  {
-@@ -613,6 +653,7 @@ BOOL    WINAPI NtUserSetSystemMenu( HWND hwnd, HMENU menu );
+@@ -625,6 +665,7 @@ BOOL    WINAPI NtUserSetSystemMenu( HWND hwnd, HMENU menu );
  UINT_PTR WINAPI NtUserSetSystemTimer( HWND hwnd, UINT_PTR id, UINT timeout );
  BOOL    WINAPI NtUserSetThreadDesktop( HDESK handle );
  UINT_PTR WINAPI NtUserSetTimer( HWND hwnd, UINT_PTR id, UINT timeout, TIMERPROC proc, ULONG tolerance );

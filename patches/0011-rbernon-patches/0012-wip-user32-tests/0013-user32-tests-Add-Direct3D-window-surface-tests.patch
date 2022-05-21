@@ -1,0 +1,309 @@
+From 8e21a9bedf4035cc49bdd5d9b2b86ffbe33f46d5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 3 May 2021 17:13:22 +0200
+Subject: [PATCH 13/16] user32/tests: Add Direct3D window surface tests.
+
+---
+ dlls/user32/tests/Makefile.in |   2 +-
+ dlls/user32/tests/win.c       | 216 +++++++++++++++++++++++++++++++++-
+ 2 files changed, 213 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/user32/tests/Makefile.in b/dlls/user32/tests/Makefile.in
+index 11111111111..11111111111 100644
+--- a/dlls/user32/tests/Makefile.in
++++ b/dlls/user32/tests/Makefile.in
+@@ -1,5 +1,5 @@
+ TESTDLL   = user32.dll
+-IMPORTS   = user32 gdi32 advapi32 hid dwmapi
++IMPORTS   = user32 gdi32 advapi32 hid dwmapi d3d9
+ 
+ C_SRCS = \
+ 	broadcast.c \
+diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/tests/win.c
++++ b/dlls/user32/tests/win.c
+@@ -32,6 +32,7 @@
+ #include "winuser.h"
+ #include "winreg.h"
+ #include "dwmapi.h"
++#include "d3d9.h"
+ 
+ #include "wine/test.h"
+ 
+@@ -13495,6 +13496,57 @@ static void check_client_surface_(int line, HWND hwnd, const DWORD *expect, SIZE
+     free(data);
+ }
+ 
++struct d3d9_context
++{
++    IDirect3D9 *d3d;
++    IDirect3DDevice9 *device;
++};
++
++static struct d3d9_context *create_d3d9_context(HWND hwnd)
++{
++    D3DPRESENT_PARAMETERS params;
++    struct d3d9_context *ctx;
++    HRESULT hr;
++    RECT rect;
++
++    if (!(ctx = malloc(sizeof(struct d3d9_context)))) return NULL;
++    ctx->d3d = Direct3DCreate9(D3D_SDK_VERSION);
++    ok(ctx->d3d != NULL, "Direct3DCreate9 failed, last error %lu\n", GetLastError());
++
++    GetClientRect(hwnd, &rect);
++    OffsetRect(&rect, -rect.left, -rect.top);
++
++    memset(&params, 0, sizeof(params));
++    params.Windowed = TRUE;
++    params.SwapEffect = D3DSWAPEFFECT_DISCARD;
++    params.hDeviceWindow = hwnd;
++    params.BackBufferFormat = D3DFMT_X8R8G8B8;
++    params.BackBufferWidth = rect.right;
++    params.BackBufferHeight = rect.bottom;
++
++    hr = IDirect3D9_CreateDevice(ctx->d3d, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hwnd,
++                                 D3DCREATE_SOFTWARE_VERTEXPROCESSING, &params, &ctx->device);
++    ok(hr == S_OK, "IDirect3D9_CreateDevice returned %#lx\n", hr);
++
++    return ctx;
++}
++
++static void paint_d3d9_client_rect(struct d3d9_context *ctx, DWORD color)
++{
++    HRESULT hr;
++    hr = IDirect3DDevice9_Clear(ctx->device, 0, NULL, D3DCLEAR_TARGET, color, 1.0f, 0);
++    ok(hr == S_OK, "IDirect3DDevice9_Clear returned %#lx\n", hr);
++    hr = IDirect3DDevice9_Present(ctx->device, NULL, NULL, NULL, NULL);
++    ok(hr == S_OK, "IDirect3DDevice9_Present returned %#lx\n", hr);
++}
++
++static void destroy_d3d9_context(struct d3d9_context *ctx)
++{
++    IDirect3DDevice9_Release(ctx->device);
++    IDirect3D9_Release(ctx->d3d);
++    free(ctx);
++}
++
+ static void paint_client_rect(HWND hwnd, COLORREF color)
+ {
+     HDC hdc = GetDC(hwnd);
+@@ -13532,6 +13584,8 @@ static void test_surface_composition(void)
+ {
+ #define COLOR1 0x00ff0000
+ #define COLOR2 0x0000ffff
++#define COLOR3 0x00ff00ff
++#define COLOR4 0x00ffff00
+ #define BGRA2RGB(x) RGB((x >> 16) & 0xff, (x >> 8) & 0xff, x & 0xff)
+     static const DWORD minimized_surface[] =
+     {
+@@ -13558,6 +13612,27 @@ static void test_surface_composition(void)
+         COLOR1, COLOR1, COLOR1, COLOR1,
+         COLOR1, COLOR1, COLOR1, COLOR1,
+     };
++    static const DWORD painted_surface2[] =
++    {
++        COLOR2, COLOR2, COLOR2, COLOR2,
++        COLOR2, COLOR2, COLOR2, COLOR2,
++        COLOR2, COLOR2, COLOR2, COLOR2,
++        COLOR2, COLOR2, COLOR2, COLOR2,
++    };
++    static const DWORD painted_surface3[] =
++    {
++        COLOR3, COLOR3, COLOR3, COLOR3,
++        COLOR3, COLOR3, COLOR3, COLOR3,
++        COLOR3, COLOR3, COLOR3, COLOR3,
++        COLOR3, COLOR3, COLOR3, COLOR3,
++    };
++    static const DWORD painted_surface4[] =
++    {
++        COLOR4, COLOR4, COLOR4, COLOR4,
++        COLOR4, COLOR4, COLOR4, COLOR4,
++        COLOR4, COLOR4, COLOR4, COLOR4,
++        COLOR4, COLOR4, COLOR4, COLOR4,
++    };
+     static const DWORD painted_child_surface[] = {
+         COLOR1, COLOR1, COLOR1, COLOR1,
+         COLOR1, COLOR2, COLOR2, COLOR1,
+@@ -13567,10 +13642,14 @@ static void test_surface_composition(void)
+ 
+     DWORD screen_surface[ARRAY_SIZE(painted_surface)];
+     DWORD layered_const_surface[ARRAY_SIZE(painted_surface)];
++    DWORD layered_const_surface2[ARRAY_SIZE(painted_surface2)];
++    DWORD layered_const_surface3[ARRAY_SIZE(painted_surface3)];
++    DWORD layered_const_surface4[ARRAY_SIZE(painted_surface4)];
+     DWORD layered_child_surface[ARRAY_SIZE(painted_child_surface)];
+     DWORD layered_child_const_surface[ARRAY_SIZE(painted_child_surface)];
+     DWORD layered_child_alpha_surface[ARRAY_SIZE(painted_child_surface)];
+ 
++    struct d3d9_context *d3d9_ctx1, *d3d9_ctx2;
+     BLENDFUNCTION blend_cst_alpha = { AC_SRC_OVER, 0, 0x7f, 0 };
+     BLENDFUNCTION blend_src_alpha = { AC_SRC_OVER, 0, 0xff, AC_SRC_ALPHA };
+     WNDCLASSEXW wc;
+@@ -13625,6 +13704,42 @@ static void test_surface_composition(void)
+         layered_const_surface[i] = BGRA2RGB(RGB(dr, dg, db));
+     }
+ 
++    for (i = 0; i < ARRAY_SIZE(painted_surface2); i++)
++    {
++        BYTE sr = (screen_surface[i] >> 16) & 0xff, dr = (painted_surface2[i] >> 16) & 0xff;
++        BYTE sg = (screen_surface[i] >> 8) & 0xff, dg = (painted_surface2[i] >> 8) & 0xff;
++        BYTE sb = (screen_surface[i] >> 0) & 0xff, db = (painted_surface2[i] >> 0) & 0xff;
++        BYTE da = 0x7f;
++        dr = min(max((sr * (0xff - da) + dr * da + 0x7f) / 0xff, 0), 0xff);
++        dg = min(max((sg * (0xff - da) + dg * da + 0x7f) / 0xff, 0), 0xff);
++        db = min(max((sb * (0xff - da) + db * da + 0x7f) / 0xff, 0), 0xff);
++        layered_const_surface2[i] = BGRA2RGB(RGB(dr, dg, db));
++    }
++
++    for (i = 0; i < ARRAY_SIZE(painted_surface3); i++)
++    {
++        BYTE sr = (screen_surface[i] >> 16) & 0xff, dr = (painted_surface3[i] >> 16) & 0xff;
++        BYTE sg = (screen_surface[i] >> 8) & 0xff, dg = (painted_surface3[i] >> 8) & 0xff;
++        BYTE sb = (screen_surface[i] >> 0) & 0xff, db = (painted_surface3[i] >> 0) & 0xff;
++        BYTE da = 0x7f;
++        dr = min(max((sr * (0xff - da) + dr * da + 0x7f) / 0xff, 0), 0xff);
++        dg = min(max((sg * (0xff - da) + dg * da + 0x7f) / 0xff, 0), 0xff);
++        db = min(max((sb * (0xff - da) + db * da + 0x7f) / 0xff, 0), 0xff);
++        layered_const_surface3[i] = BGRA2RGB(RGB(dr, dg, db));
++    }
++
++    for (i = 0; i < ARRAY_SIZE(painted_surface4); i++)
++    {
++        BYTE sr = (screen_surface[i] >> 16) & 0xff, dr = (painted_surface4[i] >> 16) & 0xff;
++        BYTE sg = (screen_surface[i] >> 8) & 0xff, dg = (painted_surface4[i] >> 8) & 0xff;
++        BYTE sb = (screen_surface[i] >> 0) & 0xff, db = (painted_surface4[i] >> 0) & 0xff;
++        BYTE da = 0x7f;
++        dr = min(max((sr * (0xff - da) + dr * da + 0x7f) / 0xff, 0), 0xff);
++        dg = min(max((sg * (0xff - da) + dg * da + 0x7f) / 0xff, 0), 0xff);
++        db = min(max((sb * (0xff - da) + db * da + 0x7f) / 0xff, 0), 0xff);
++        layered_const_surface4[i] = BGRA2RGB(RGB(dr, dg, db));
++    }
++
+     memcpy(layered_child_surface, screen_surface, sizeof(screen_surface));
+     for (i = 0; i < ARRAY_SIZE(painted_child_surface); i++)
+     {
+@@ -13957,10 +14072,6 @@ static void test_surface_composition(void)
+     check_client_surface(hwnd, hidden_surface, sizeof(hidden_surface), TRUE);
+     check_screen_surface(hwnd, layered_child_alpha_surface, sizeof(layered_child_alpha_surface), TRUE);
+ 
+-    DeleteObject(bmp_obj);
+-    DeleteDC(hdc_src);
+-    ReleaseDC(NULL, hdc_dst);
+-
+     paint_client_rect(hwnd, BGRA2RGB(COLOR1));
+     check_client_surface(hwnd, hidden_surface, sizeof(hidden_surface), TRUE);
+     check_screen_surface(hwnd, layered_child_alpha_surface, sizeof(layered_child_alpha_surface), TRUE);
+@@ -13980,11 +14091,108 @@ static void test_surface_composition(void)
+     DestroyWindow(hwnd);
+ 
+ 
++    /* D3D / GDI interactions */
++
++    hwnd = CreateWindowW(L"surface", L"", WS_POPUP | WS_VISIBLE, 0, 0, 4, 4, 0, NULL, NULL, NULL);
++    ok(hwnd != 0, "CreateWindowW failed, last error %lu\n", GetLastError());
++    d3d9_ctx1 = create_d3d9_context(hwnd);
++    d3d9_ctx2 = create_d3d9_context(hwnd);
++    flush_events( TRUE );
++
++    paint_client_rect(hwnd, BGRA2RGB(COLOR1));
++    check_client_surface(hwnd, painted_surface, sizeof(painted_surface), TRUE);
++    check_screen_surface(hwnd, painted_surface, sizeof(painted_surface), FALSE);
++
++    paint_d3d9_client_rect(d3d9_ctx1, COLOR2);
++    check_client_surface(hwnd, painted_surface2, sizeof(painted_surface2), TRUE);
++    check_screen_surface(hwnd, painted_surface2, sizeof(painted_surface2), FALSE);
++
++    paint_d3d9_client_rect(d3d9_ctx2, COLOR3);
++    check_client_surface(hwnd, painted_surface3, sizeof(painted_surface3), TRUE);
++    check_screen_surface(hwnd, painted_surface3, sizeof(painted_surface3), FALSE);
++
++    paint_client_rect(hwnd, BGRA2RGB(COLOR4));
++    check_client_surface(hwnd, painted_surface4, sizeof(painted_surface4), TRUE);
++    check_screen_surface(hwnd, painted_surface4, sizeof(painted_surface4), FALSE);
++
++    destroy_d3d9_context(d3d9_ctx1);
++    destroy_d3d9_context(d3d9_ctx2);
++    DestroyWindow(hwnd);
++
++
++    /* D3D / SLWA interactions */
++
++    hwnd = CreateWindowW(L"surface", L"", WS_POPUP, 0, 0, 4, 4, 0, NULL, NULL, NULL);
++    ok(hwnd != 0, "CreateWindowW failed, last error %lu\n", GetLastError());
++    d3d9_ctx1 = create_d3d9_context(hwnd);
++    d3d9_ctx2 = create_d3d9_context(hwnd);
++
++    SetWindowLongW(hwnd, GWL_EXSTYLE, GetWindowLongW(hwnd, GWL_EXSTYLE) | WS_EX_LAYERED);
++    ret = SetLayeredWindowAttributes(hwnd, 0, 0x7f, LWA_ALPHA);
++    ok(ret, "SetLayeredWindowAttributes failed, last error %lu\n", GetLastError());
++
++    ShowWindow(hwnd, SW_SHOW);
++    flush_events( TRUE );
++    paint_client_rect(hwnd, BGRA2RGB(COLOR1));
++    check_client_surface(hwnd, painted_surface, sizeof(painted_surface), FALSE);
++    check_screen_surface(hwnd, layered_const_surface, sizeof(layered_const_surface), TRUE);
++
++    paint_d3d9_client_rect(d3d9_ctx1, COLOR2);
++    check_client_surface(hwnd, painted_surface2, sizeof(painted_surface2), TRUE);
++    check_screen_surface(hwnd, layered_const_surface2, sizeof(layered_const_surface2), TRUE);
++
++    paint_d3d9_client_rect(d3d9_ctx2, COLOR3);
++    check_client_surface(hwnd, painted_surface3, sizeof(painted_surface3), TRUE);
++    check_screen_surface(hwnd, layered_const_surface3, sizeof(layered_const_surface3), TRUE);
++
++    paint_client_rect(hwnd, BGRA2RGB(COLOR4));
++    check_client_surface(hwnd, painted_surface4, sizeof(painted_surface4), FALSE);
++    check_screen_surface(hwnd, layered_const_surface4, sizeof(layered_const_surface4), TRUE);
++
++    destroy_d3d9_context(d3d9_ctx1);
++    destroy_d3d9_context(d3d9_ctx2);
++    DestroyWindow(hwnd);
++
++
++    /* D3D / ULW interactions */
++
++    hwnd = CreateWindowW(L"surface", L"", WS_POPUP, 0, 0, 4, 4, 0, NULL, NULL, NULL);
++    ok(hwnd != 0, "CreateWindowW failed, last error %lu\n", GetLastError());
++    d3d9_ctx1 = create_d3d9_context(hwnd);
++
++    SetWindowLongW(hwnd, GWL_EXSTYLE, GetWindowLongW(hwnd, GWL_EXSTYLE) | WS_EX_LAYERED);
++    ret = UpdateLayeredWindow(hwnd, hdc_dst, NULL, (SIZE *)&rect.right, hdc_src, (POINT *)&rect.left, 0, NULL, ULW_OPAQUE);
++    ok(ret, "UpdateLayeredWindow failed, last error %lu\n", GetLastError());
++
++    ShowWindow(hwnd, SW_SHOW);
++    flush_events( TRUE );
++    paint_client_rect(hwnd, BGRA2RGB(COLOR1));
++    check_client_surface(hwnd, hidden_surface, sizeof(hidden_surface), TRUE);
++    check_screen_surface(hwnd, painted_child_surface, sizeof(painted_child_surface), TRUE);
++
++    paint_d3d9_client_rect(d3d9_ctx1, COLOR2);
++    check_client_surface(hwnd, hidden_surface, sizeof(hidden_surface), TRUE);
++    check_screen_surface(hwnd, painted_child_surface, sizeof(painted_child_surface), TRUE);
++
++    paint_client_rect(hwnd, BGRA2RGB(COLOR1));
++    check_client_surface(hwnd, hidden_surface, sizeof(hidden_surface), TRUE);
++    check_screen_surface(hwnd, painted_child_surface, sizeof(painted_child_surface), TRUE);
++
++    destroy_d3d9_context(d3d9_ctx1);
++    DestroyWindow(hwnd);
++
++
++    DeleteObject(bmp_obj);
++    DeleteDC(hdc_src);
++    ReleaseDC(NULL, hdc_dst);
++
+     UnregisterClassW(L"surface", NULL);
+ 
+ #undef BGRA2RGB
+ #undef COLOR1
+ #undef COLOR2
++#undef COLOR3
++#undef COLOR4
+ }
+ 
+ START_TEST(win)
+-- 
+2.36.1
+

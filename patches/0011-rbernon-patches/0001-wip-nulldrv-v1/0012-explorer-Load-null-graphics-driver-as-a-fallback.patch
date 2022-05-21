@@ -1,0 +1,75 @@
+From 350af8125e52429c588f7071f8608dfe32536efb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 15 Apr 2021 12:35:12 +0200
+Subject: [PATCH 12/12] explorer: Load null graphics driver as a fallback.
+
+---
+ programs/explorer/Makefile.in |  2 +-
+ programs/explorer/desktop.c   | 10 ++++++----
+ 2 files changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/programs/explorer/Makefile.in b/programs/explorer/Makefile.in
+index 11111111111..11111111111 100644
+--- a/programs/explorer/Makefile.in
++++ b/programs/explorer/Makefile.in
+@@ -1,5 +1,5 @@
+ MODULE    = explorer.exe
+-IMPORTS   = rpcrt4 user32 gdi32 advapi32
++IMPORTS   = rpcrt4 user32 gdi32 advapi32 win32u
+ DELAYIMPORTS = comctl32 shell32 oleaut32 ole32 shlwapi
+ 
+ EXTRADLLFLAGS = -mwindows -municode
+diff --git a/programs/explorer/desktop.c b/programs/explorer/desktop.c
+index 11111111111..11111111111 100644
+--- a/programs/explorer/desktop.c
++++ b/programs/explorer/desktop.c
+@@ -32,6 +32,7 @@
+ #include "exdisp.h"
+ 
+ #include "wine/debug.h"
++#include "wine/gdi_driver.h"
+ #include "explorer_private.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(explorer);
+@@ -39,7 +40,9 @@ WINE_DEFAULT_DEBUG_CHANNEL(explorer);
+ #define DESKTOP_CLASS_ATOM ((LPCWSTR)MAKEINTATOM(32769))
+ #define DESKTOP_ALL_ACCESS 0x01ff
+ 
+-static const WCHAR default_driver[] = {'m','a','c',',','x','1','1',0};
++static char buffer[4096];
++static struct user_driver_funcs *null_driver = (void *)buffer;
++static const WCHAR default_driver[] = L"mac,x11,null";
+ 
+ static BOOL using_root;
+ 
+@@ -813,7 +816,6 @@ static HMODULE load_graphics_driver( const WCHAR *driver, const GUID *guid )
+ 
+     WCHAR buffer[MAX_PATH], libname[32], *name, *next;
+     WCHAR key[ARRAY_SIZE( device_keyW ) + 39];
+-    BOOL null_driver = FALSE;
+     HMODULE module = 0;
+     HKEY hkey;
+     char error[80];
+@@ -840,9 +842,9 @@ static HMODULE load_graphics_driver( const WCHAR *driver, const GUID *guid )
+ 
+         if (!wcscmp( name, L"null" ))
+         {
++            __wine_set_user_driver( null_driver, WINE_GDI_DRIVER_VERSION );
+             TRACE( "display %s using null driver\n", debugstr_guid(guid) );
+             wcscpy( libname, L"null" );
+-            null_driver = TRUE;
+             break;
+         }
+ 
+@@ -876,7 +878,7 @@ static HMODULE load_graphics_driver( const WCHAR *driver, const GUID *guid )
+     if (!RegCreateKeyExW( HKEY_LOCAL_MACHINE, key, 0, NULL,
+                           REG_OPTION_VOLATILE, KEY_SET_VALUE, NULL, &hkey, NULL  ))
+     {
+-        if (module || null_driver)
++        if (module || !wcscmp( libname, L"null" ))
+             RegSetValueExW( hkey, graphics_driverW, 0, REG_SZ,
+                             (BYTE *)libname, (lstrlenW(libname) + 1) * sizeof(WCHAR) );
+         else
+-- 
+2.36.1
+

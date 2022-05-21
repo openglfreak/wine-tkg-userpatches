@@ -90,10 +90,10 @@ index 11111111111..11111111111 100644
      if (queue->hooks) release_object( queue->hooks );
      if (queue->fd) release_object( queue->fd );
 +    if (queue->fast_sync) release_object( queue->fast_sync );
+     if (do_esync()) close( queue->esync_fd );
  }
  
- static void msg_queue_poll_event( struct fd *fd, int event )
-@@ -1149,6 +1170,7 @@ static void msg_queue_poll_event( struct fd *fd, int event )
+@@ -1150,6 +1171,7 @@ static void msg_queue_poll_event( struct fd *fd, int event )
      if (event & (POLLERR | POLLHUP)) set_fd_events( fd, -1 );
      else set_fd_events( queue->fd, 0 );
      wake_up( &queue->obj, 0 );
@@ -101,7 +101,7 @@ index 11111111111..11111111111 100644
  }
  
  static void thread_input_dump( struct object *obj, int verbose )
-@@ -2533,8 +2555,20 @@ DECL_HANDLER(set_queue_mask)
+@@ -2534,8 +2556,20 @@ DECL_HANDLER(set_queue_mask)
          if (is_signaled( queue ))
          {
              /* if skip wait is set, do what would have been done in the subsequent wait */
@@ -122,9 +122,9 @@ index 11111111111..11111111111 100644
 +        {
 +            fast_reset_event( queue->fast_sync );
          }
- 
-         if (do_esync() && !is_signaled( queue ))
-@@ -2552,6 +2586,8 @@ DECL_HANDLER(get_queue_status)
+         if (do_fsync() && !is_signaled( queue ))
+             fsync_clear( &queue->obj );
+@@ -2555,6 +2589,8 @@ DECL_HANDLER(get_queue_status)
          reply->wake_bits    = queue->wake_bits;
          reply->changed_bits = queue->changed_bits;
          queue->changed_bits &= ~req->clear_bits;
@@ -133,7 +133,7 @@ index 11111111111..11111111111 100644
  
          if (do_fsync() && !is_signaled( queue ))
              fsync_clear( &queue->obj );
-@@ -2742,6 +2778,9 @@ DECL_HANDLER(get_message)
+@@ -2745,6 +2781,9 @@ DECL_HANDLER(get_message)
      if (filter & QS_INPUT) queue->changed_bits &= ~QS_INPUT;
      if (filter & QS_PAINT) queue->changed_bits &= ~QS_PAINT;
  
@@ -143,14 +143,14 @@ index 11111111111..11111111111 100644
      /* then check for posted messages */
      if ((filter & QS_POSTMESSAGE) &&
          get_posted_message( queue, queue->ignore_post_msg, get_win, req->get_first, req->get_last, req->flags, reply ))
-@@ -2805,6 +2844,7 @@ DECL_HANDLER(get_message)
+@@ -2808,6 +2847,7 @@ DECL_HANDLER(get_message)
      if (get_win == -1 && current->process->idle_event) set_event( current->process->idle_event );
      queue->wake_mask = req->wake_mask;
      queue->changed_mask = req->changed_mask;
 +    fast_reset_event( queue->fast_sync );
      set_error( STATUS_PENDING );  /* FIXME */
  
-     if (do_esync() && !is_signaled( queue ))
+     if (do_fsync() && !is_signaled( queue ))
 -- 
-2.36.0
+2.36.1
 

@@ -1,0 +1,49 @@
+From 6d346418430ff55caa225c4d223f041399669598 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 7 Mar 2022 22:01:06 +0100
+Subject: [PATCH 17/22] winex11.drv: Prevent automatic window activation on
+ XMapWindow.
+
+Using the EWMH feature where setting _NET_USER_TIME to 0 prevents the
+mapped window from activating automatically.
+
+Windows should not activate automatically when shown, and should only
+do so when SetActiveWindow is called. This effectively implements the
+SWP_NOACTIVATE flag in the X11 driver.
+
+CW-Bug-Id: #19553
+CW-Bug-Id: #19644
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=2155
+---
+ dlls/winex11.drv/window.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1162,6 +1162,8 @@ static void map_window( HWND hwnd, DWORD new_style )
+         {
+             update_net_wm_states( data );
+             sync_window_style( data );
++            if (hwnd == NtUserGetForegroundWindow()) set_window_user_time( data->display, data->whole_window, -1 );
++            else set_window_user_time( data->display, data->whole_window, 0 );
+             XMapWindow( data->display, data->whole_window );
+             /* Mutter always unminimizes windows when handling map requests. Restore iconic state */
+             if (new_style & WS_MINIMIZE)
+@@ -2746,7 +2748,12 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, UINT swp_flags,
+             if (data->iconic)
+                 XIconifyWindow( data->display, data->whole_window, data->vis.screen );
+             else if (is_window_rect_mapped( rectWindow ))
++            {
++                BOOL activate = (hwnd == NtUserGetForegroundWindow());
++                if (!activate) set_window_user_time( data->display, data->whole_window, 0 );
+                 XMapWindow( data->display, data->whole_window );
++                if (activate) X11DRV_SetActiveWindow( hwnd, 0 );
++            }
+             update_net_wm_states( data );
+         }
+         else
+-- 
+2.36.1
+

@@ -1,6 +1,6 @@
-From d21f6ff13bcf2fbb410997ac32abcf444ec9ffba Mon Sep 17 00:00:00 2001
+From f81f61cad7d05d227322544b557ca0a48e53ec73 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
-Date: Thu, 11 Mar 2021 23:38:35 +0100
+Date: Sat, 7 May 2022 01:01:50 +0200
 Subject: [PATCH 08/14] winex11.drv: Use XPresentPixmap instead of XCopyArea
  when available.
 
@@ -30,7 +30,7 @@ index 11111111111..11111111111 100644
  AC_ARG_WITH(xrandr,    AS_HELP_STRING([--without-xrandr],[do not use Xrandr (multi-monitor support)]),
              [if test "x$withval" = "xno"; then ac_cv_header_X11_extensions_Xrandr_h=no; fi])
  AC_ARG_WITH(xrender,   AS_HELP_STRING([--without-xrender],[do not use the Xrender extension]),
-@@ -1206,6 +1208,7 @@ then
+@@ -1207,6 +1209,7 @@ then
                        X11/extensions/Xcomposite.h \
                        X11/extensions/Xfixes.h \
                        X11/extensions/Xinerama.h \
@@ -38,7 +38,7 @@ index 11111111111..11111111111 100644
                        X11/extensions/Xrandr.h \
                        X11/extensions/Xrender.h \
                        X11/extensions/xf86vmode.h \
-@@ -1323,6 +1326,16 @@ then
+@@ -1324,6 +1327,16 @@ then
          WINE_NOTICE_WITH(xinerama,[test "x$ac_cv_lib_soname_Xinerama" = "x"],
                           [libxinerama ${notice_platform}development files not found, multi-monitor setups won't be supported.])
  
@@ -59,7 +59,7 @@ diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/init.c
 +++ b/dlls/winex11.drv/init.c
-@@ -27,6 +27,9 @@
+@@ -31,6 +31,9 @@
  #include "winbase.h"
  #include "winreg.h"
  #include "x11drv.h"
@@ -69,7 +69,7 @@ index 11111111111..11111111111 100644
  #include "wine/debug.h"
  
  WINE_DEFAULT_DEBUG_CHANNEL(x11drv);
-@@ -240,10 +243,33 @@ static INT CDECL X11DRV_ExtEscape( PHYSDEV dev, INT escape, INT in_count, LPCVOI
+@@ -244,10 +247,33 @@ static INT CDECL X11DRV_ExtEscape( PHYSDEV dev, INT escape, INT in_count, LPCVOI
  
                      OffsetRect( &rect, -physDev->dc_rect.left, -physDev->dc_rect.top );
                      if (data->flush) XFlush( gdi_display );
@@ -111,7 +111,7 @@ diff --git a/dlls/winex11.drv/vulkan.c b/dlls/winex11.drv/vulkan.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/vulkan.c
 +++ b/dlls/winex11.drv/vulkan.c
-@@ -363,6 +363,8 @@ static VkResult X11DRV_vkAcquireNextImageKHR(VkDevice device,
+@@ -367,6 +367,8 @@ static VkResult X11DRV_vkAcquireNextImageKHR(VkDevice device,
  
      if (!surface || !surface->offscreen)
          wait_fence = FALSE;
@@ -120,16 +120,16 @@ index 11111111111..11111111111 100644
      else if (surface->present_mode == VK_PRESENT_MODE_MAILBOX_KHR ||
               surface->present_mode == VK_PRESENT_MODE_FIFO_KHR)
          wait_fence = TRUE;
-@@ -385,7 +387,7 @@ static VkResult X11DRV_vkAcquireNextImageKHR(VkDevice device,
+@@ -389,7 +391,7 @@ static VkResult X11DRV_vkAcquireNextImageKHR(VkDevice device,
          escape.drawable = surface->window;
          escape.flush = TRUE;
-         ExtEscape(hdc, X11DRV_ESCAPE, sizeof(escape), (char *)&escape, 0, NULL);
+         NtGdiExtEscape(hdc, NULL, 0, X11DRV_ESCAPE, sizeof(escape), (char *)&escape, 0, NULL);
 -        if (surface->present_mode == VK_PRESENT_MODE_MAILBOX_KHR)
 +        if (wait_fence && surface->present_mode == VK_PRESENT_MODE_MAILBOX_KHR)
              if (once++) FIXME("Application requires child window rendering with mailbox present mode, expect possible tearing!\n");
      }
  
-@@ -421,8 +423,9 @@ static VkResult X11DRV_vkCreateSwapchainKHR(VkDevice device,
+@@ -425,8 +427,9 @@ static VkResult X11DRV_vkCreateSwapchainKHR(VkDevice device,
      create_info_host = *create_info;
      create_info_host.surface = x11_surface->surface;
  
@@ -145,7 +145,7 @@ diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -437,6 +437,7 @@ extern BOOL grab_pointer DECLSPEC_HIDDEN;
+@@ -425,6 +425,7 @@ extern BOOL grab_pointer DECLSPEC_HIDDEN;
  extern BOOL grab_fullscreen DECLSPEC_HIDDEN;
  extern BOOL usexcomposite DECLSPEC_HIDDEN;
  extern BOOL use_xfixes DECLSPEC_HIDDEN;
@@ -157,15 +157,15 @@ diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv_main.c
 +++ b/dlls/winex11.drv/x11drv_main.c
-@@ -48,6 +48,7 @@
+@@ -55,6 +55,7 @@
  #include "x11drv.h"
  #include "xcomposite.h"
  #include "xfixes.h"
 +#include "xpresent.h"
  #include "wine/server.h"
- #include "wine/unicode.h"
  #include "wine/debug.h"
-@@ -67,6 +68,7 @@ BOOL usexvidmode = TRUE;
+ #include "wine/list.h"
+@@ -76,6 +77,7 @@ BOOL usexvidmode = TRUE;
  BOOL usexrandr = TRUE;
  BOOL usexcomposite = TRUE;
  BOOL use_xfixes = FALSE;
@@ -173,7 +173,7 @@ index 11111111111..11111111111 100644
  BOOL use_xkb = TRUE;
  BOOL use_take_focus = TRUE;
  BOOL use_primary_selection = FALSE;
-@@ -587,6 +589,7 @@ MAKE_FUNCPTR(XFixesQueryExtension)
+@@ -616,6 +618,7 @@ MAKE_FUNCPTR(XFixesQueryExtension)
  MAKE_FUNCPTR(XFixesQueryVersion)
  MAKE_FUNCPTR(XFixesCreateRegion)
  MAKE_FUNCPTR(XFixesCreateRegionFromGC)
@@ -181,7 +181,7 @@ index 11111111111..11111111111 100644
  MAKE_FUNCPTR(XFixesSelectSelectionInput)
  #undef MAKE_FUNCPTR
  
-@@ -612,6 +615,7 @@ static void x11drv_load_xfixes(void)
+@@ -641,6 +644,7 @@ static void x11drv_load_xfixes(void)
      LOAD_FUNCPTR(XFixesQueryVersion)
      LOAD_FUNCPTR(XFixesCreateRegion)
      LOAD_FUNCPTR(XFixesCreateRegionFromGC)
@@ -189,7 +189,7 @@ index 11111111111..11111111111 100644
      LOAD_FUNCPTR(XFixesSelectSelectionInput)
  #undef LOAD_FUNCPTR
  
-@@ -637,6 +641,57 @@ static void x11drv_load_xfixes(void)
+@@ -666,6 +670,57 @@ static void x11drv_load_xfixes(void)
  }
  #endif /* SONAME_LIBXFIXES */
  
@@ -247,7 +247,7 @@ index 11111111111..11111111111 100644
  static void init_visuals( Display *display, int screen )
  {
      int count;
-@@ -742,6 +797,9 @@ static NTSTATUS x11drv_init( void *arg )
+@@ -775,6 +830,9 @@ static NTSTATUS x11drv_init( void *arg )
  #ifdef SONAME_LIBXFIXES
      x11drv_load_xfixes();
  #endif
@@ -314,5 +314,5 @@ index 00000000000..11111111111
 +
 +#endif /* __WINE_XPRESENT_H */
 -- 
-2.36.0
+2.36.1
 

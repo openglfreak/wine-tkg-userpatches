@@ -34,7 +34,7 @@ index 11111111111..11111111111 100644
  AC_ARG_WITH(xcomposite,AS_HELP_STRING([--without-xcomposite],[do not use the Xcomposite extension]),
              [if test "x$withval" = "xno"; then ac_cv_header_X11_extensions_Xcomposite_h=no; fi])
  AC_ARG_WITH(xcursor,   AS_HELP_STRING([--without-xcursor],[do not use the Xcursor extension]),
-@@ -1198,6 +1203,7 @@ then
+@@ -1199,6 +1204,7 @@ then
  
      dnl *** All of the following tests require X11/Xlib.h
      AC_CHECK_HEADERS([X11/Xlib.h \
@@ -42,7 +42,7 @@ index 11111111111..11111111111 100644
                        X11/XKBlib.h \
                        X11/Xutil.h \
                        X11/Xcursor/Xcursor.h \
-@@ -1306,6 +1312,48 @@ then
+@@ -1307,6 +1313,48 @@ then
          WINE_NOTICE_WITH(xrandr,[test "x$ac_cv_lib_soname_Xrandr" = "x"],
                           [libxrandr ${notice_platform}development files not found, XRandr won't be supported.])
  
@@ -95,20 +95,20 @@ diff --git a/dlls/winex11.drv/Makefile.in b/dlls/winex11.drv/Makefile.in
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/Makefile.in
 +++ b/dlls/winex11.drv/Makefile.in
-@@ -2,7 +2,7 @@ EXTRADEFS = -DWINE_NO_LONG_TYPES
- MODULE    = winex11.drv
+@@ -3,7 +3,7 @@ MODULE    = winex11.drv
+ UNIXLIB   = winex11.so
  IMPORTS   = uuid user32 gdi32 win32u
  DELAYIMPORTS = comctl32 ole32 shell32 imm32
 -EXTRAINCL = $(X_CFLAGS)
 +EXTRAINCL = $(X_CFLAGS) $(DRM_CFLAGS)
- EXTRALIBS = $(X_LIBS) $(X_EXTRA_LIBS) $(PTHREAD_LIBS)
+ EXTRALIBS = -lwin32u $(X_LIBS) $(X_EXTRA_LIBS) $(PTHREAD_LIBS) -lm
  
- EXTRADLLFLAGS = -mcygwin
+ C_SRCS = \
 diff --git a/dlls/winex11.drv/xrandr.c b/dlls/winex11.drv/xrandr.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/xrandr.c
 +++ b/dlls/winex11.drv/xrandr.c
-@@ -35,8 +35,20 @@ WINE_DECLARE_DEBUG_CHANNEL(winediag);
+@@ -39,8 +39,20 @@ WINE_DECLARE_DEBUG_CHANNEL(winediag);
  #ifdef SONAME_LIBXRANDR
  
  #include <assert.h>
@@ -129,7 +129,7 @@ index 11111111111..11111111111 100644
  #include <dlfcn.h>
  #include "x11drv.h"
  
-@@ -81,6 +93,25 @@ MAKE_FUNCPTR(XRRGetProviderInfo)
+@@ -84,6 +96,25 @@ MAKE_FUNCPTR(XRRGetProviderInfo)
  MAKE_FUNCPTR(XRRFreeProviderInfo)
  #endif
  
@@ -155,7 +155,7 @@ index 11111111111..11111111111 100644
  #undef MAKE_FUNCPTR
  
  static int load_xrandr(void)
-@@ -91,47 +122,72 @@ static int load_xrandr(void)
+@@ -94,47 +125,72 @@ static int load_xrandr(void)
          (xrandr_handle = dlopen(SONAME_LIBXRANDR, RTLD_NOW)))
      {
  
@@ -240,7 +240,9 @@ index 11111111111..11111111111 100644
 +            dri3_loaded = TRUE;
 +        }
 +#endif
-+
+ 
+-sym_not_found:
+-        if (!r)  TRACE("Unable to load function ptrs from XRandR library\n");
 +#ifdef SONAME_LIBDRM
 +        if ((drm_handle = dlopen(SONAME_LIBDRM, RTLD_NOW)))
 +        {
@@ -249,9 +251,7 @@ index 11111111111..11111111111 100644
 +            drm_loaded = TRUE;
 +        }
 +#endif
- 
--sym_not_found:
--        if (!r)  TRACE("Unable to load function ptrs from XRandR library\n");
++
 +#undef LOAD_SYMBOL
      }
 +
@@ -261,8 +261,8 @@ index 11111111111..11111111111 100644
      return r;
  }
  
-@@ -735,6 +791,181 @@ done:
-         vulkan_funcs->p_vkDestroyInstance( vk_instance, NULL );
+@@ -631,6 +687,181 @@ static BOOL is_crtc_primary( RECT primary, const XRRCrtcInfo *crtc )
+            crtc->y + crtc->height == primary.bottom;
  }
  
 +static int get_drm_device_from_provider( RRProvider provider )
@@ -443,7 +443,7 @@ index 11111111111..11111111111 100644
  VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDisplayKHR)
  
  static BOOL get_gpu_properties_from_vulkan( struct gdi_gpu *gpu, const XRRProviderInfo *provider_info )
-@@ -909,12 +1140,18 @@ static BOOL xrandr14_get_gpus2( struct gdi_gpu **new_gpus, int *count, BOOL get_
+@@ -809,11 +1040,17 @@ static BOOL xrandr14_get_gpus2( struct gdi_gpu **new_gpus, int *count, BOOL get_
          if (get_properties)
          {
              if (!get_gpu_properties_from_vulkan( &gpus[i], provider_info ))
@@ -456,7 +456,6 @@ index 11111111111..11111111111 100644
 +            }
          }
          pXRRFreeProviderInfo( provider_info );
-         gpu_count++;
 +
 +        TRACE("name:%s vendor id:0x%04x device id:0x%04x subsystem id:0x%08x revision id:0x%02x\n",
 +              wine_dbgstr_w(gpus[i].name), gpus[i].vendor_id, gpus[i].device_id, gpus[i].subsys_id, gpus[i].revision_id);

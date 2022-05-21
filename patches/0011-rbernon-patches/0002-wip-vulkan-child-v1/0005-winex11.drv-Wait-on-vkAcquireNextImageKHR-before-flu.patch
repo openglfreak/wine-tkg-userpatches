@@ -1,6 +1,6 @@
-From cbe10b6750df97eb808cefd9f117076084cf9d95 Mon Sep 17 00:00:00 2001
+From e65b5d8f779edd15e02646623648a6b575cabd87 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
-Date: Fri, 22 Oct 2021 00:49:09 +0200
+Date: Sat, 7 May 2022 01:00:23 +0200
 Subject: [PATCH 05/14] winex11.drv: Wait on vkAcquireNextImageKHR before
  flushing.
 MIME-Version: 1.0
@@ -20,7 +20,7 @@ diff --git a/dlls/winex11.drv/vulkan.c b/dlls/winex11.drv/vulkan.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/vulkan.c
 +++ b/dlls/winex11.drv/vulkan.c
-@@ -61,6 +61,7 @@ struct wine_vk_surface
+@@ -65,6 +65,7 @@ struct wine_vk_surface
      struct list entry;
      Window window;
      VkSurfaceKHR surface; /* native surface */
@@ -28,7 +28,7 @@ index 11111111111..11111111111 100644
      BOOL offscreen; /* drawable is offscreen */
      HDC hdc;
      HWND hwnd;
-@@ -97,6 +98,9 @@ static VkResult (*pvkGetPhysicalDeviceSurfaceSupportKHR)(VkPhysicalDevice, uint3
+@@ -101,6 +102,9 @@ static VkResult (*pvkGetPhysicalDeviceSurfaceSupportKHR)(VkPhysicalDevice, uint3
  static VkBool32 (*pvkGetPhysicalDeviceXlibPresentationSupportKHR)(VkPhysicalDevice, uint32_t, Display *, VisualID);
  static VkResult (*pvkGetSwapchainImagesKHR)(VkDevice, VkSwapchainKHR, uint32_t *, VkImage *);
  static VkResult (*pvkQueuePresentKHR)(VkQueue, const VkPresentInfoKHR *);
@@ -38,7 +38,7 @@ index 11111111111..11111111111 100644
  
  static void *X11DRV_get_vk_device_proc_addr(const char *name);
  static void *X11DRV_get_vk_instance_proc_addr(VkInstance instance, const char *name);
-@@ -150,6 +154,9 @@ static void wine_vk_init(void)
+@@ -154,6 +158,9 @@ static void wine_vk_init(void)
      LOAD_FUNCPTR(vkQueuePresentKHR);
      LOAD_OPTIONAL_FUNCPTR(vkGetDeviceGroupSurfacePresentModesKHR);
      LOAD_OPTIONAL_FUNCPTR(vkGetPhysicalDevicePresentRectanglesKHR);
@@ -48,7 +48,7 @@ index 11111111111..11111111111 100644
  #undef LOAD_FUNCPTR
  #undef LOAD_OPTIONAL_FUNCPTR
  
-@@ -338,9 +345,12 @@ static VkResult X11DRV_vkAcquireNextImageKHR(VkDevice device,
+@@ -342,9 +349,12 @@ static VkResult X11DRV_vkAcquireNextImageKHR(VkDevice device,
          VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore,
          VkFence fence, uint32_t *image_index)
  {
@@ -61,7 +61,7 @@ index 11111111111..11111111111 100644
      HDC hdc = 0;
  
      pthread_mutex_lock(&vulkan_mutex);
-@@ -351,15 +361,35 @@ static VkResult X11DRV_vkAcquireNextImageKHR(VkDevice device,
+@@ -355,15 +365,35 @@ static VkResult X11DRV_vkAcquireNextImageKHR(VkDevice device,
      }
      pthread_mutex_unlock(&vulkan_mutex);
  
@@ -88,7 +88,7 @@ index 11111111111..11111111111 100644
          escape.code = X11DRV_PRESENT_DRAWABLE;
          escape.drawable = surface->window;
          escape.flush = TRUE;
-         ExtEscape(hdc, X11DRV_ESCAPE, sizeof(escape), (char *)&escape, 0, NULL);
+         NtGdiExtEscape(hdc, NULL, 0, X11DRV_ESCAPE, sizeof(escape), (char *)&escape, 0, NULL);
 +        if (surface->present_mode == VK_PRESENT_MODE_MAILBOX_KHR)
 +            if (once++) FIXME("Application requires child window rendering with mailbox present mode, expect possible tearing!\n");
      }
@@ -97,7 +97,7 @@ index 11111111111..11111111111 100644
      if (surface) wine_vk_surface_release(surface);
      return result;
  }
-@@ -391,6 +421,11 @@ static VkResult X11DRV_vkCreateSwapchainKHR(VkDevice device,
+@@ -395,6 +425,11 @@ static VkResult X11DRV_vkCreateSwapchainKHR(VkDevice device,
      create_info_host = *create_info;
      create_info_host.surface = x11_surface->surface;
  
@@ -110,5 +110,5 @@ index 11111111111..11111111111 100644
      if (result == VK_SUCCESS)
      {
 -- 
-2.36.0
+2.36.1
 

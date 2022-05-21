@@ -1,0 +1,165 @@
+From 93aa7896702179ae88ff3d04b2659eee5771b168 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 17 Jan 2020 12:45:32 +0100
+Subject: [PATCH 03/22] winex11.drv: Rename EVENT_x11_time_to_win32_time to
+ x11drv_time_to_ticks.
+
+---
+ dlls/winex11.drv/event.c    | 11 +++++++----
+ dlls/winex11.drv/keyboard.c |  2 +-
+ dlls/winex11.drv/mouse.c    | 10 +++++-----
+ dlls/winex11.drv/wintab.c   |  6 +++---
+ dlls/winex11.drv/x11drv.h   |  2 +-
+ 5 files changed, 17 insertions(+), 14 deletions(-)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -508,12 +508,12 @@ NTSTATUS X11DRV_MsgWaitForMultipleObjectsEx( DWORD count, const HANDLE *handles,
+ }
+ 
+ /***********************************************************************
+- *           EVENT_x11_time_to_win32_time
++ *           x11drv_time_to_ticks
+  *
+  * Make our timer and the X timer line up as best we can
+  *  Pass 0 to retrieve the current adjustment value (times -1)
+  */
+-DWORD EVENT_x11_time_to_win32_time(Time time)
++DWORD x11drv_time_to_ticks( Time time )
+ {
+   static DWORD adjust = 0;
+   DWORD now = NtGetTickCount();
+@@ -574,10 +574,10 @@ static void set_input_focus( struct x11drv_win_data *data )
+ 
+     if (!data->whole_window) return;
+ 
+-    if (EVENT_x11_time_to_win32_time(0))
++    if (x11drv_time_to_ticks(0))
+         /* ICCCM says don't use CurrentTime, so try to use last message time if possible */
+         /* FIXME: this is not entirely correct */
+-        timestamp = NtUserGetThreadInfo()->message_time - EVENT_x11_time_to_win32_time(0);
++        timestamp = NtUserGetThreadInfo()->message_time - x11drv_time_to_ticks(0);
+     else
+         timestamp = CurrentTime;
+ 
+@@ -1385,6 +1385,9 @@ static BOOL X11DRV_PropertyNotify( HWND hwnd, XEvent *xev )
+ {
+     XPropertyEvent *event = &xev->xproperty;
+ 
++    /* sync with the X server time */
++    x11drv_time_to_ticks( event->time );
++
+     if (!hwnd) return FALSE;
+     if (event->atom == x11drv_atom(WM_STATE)) handle_wm_state_notify( hwnd, event, TRUE );
+     return TRUE;
+diff --git a/dlls/winex11.drv/keyboard.c b/dlls/winex11.drv/keyboard.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/keyboard.c
++++ b/dlls/winex11.drv/keyboard.c
+@@ -1335,7 +1335,7 @@ BOOL X11DRV_KeyEvent( HWND hwnd, XEvent *xev )
+     DWORD dwFlags;
+     int ascii_chars;
+     XIC xic = X11DRV_get_ic( hwnd );
+-    DWORD event_time = EVENT_x11_time_to_win32_time(event->time);
++    DWORD event_time = x11drv_time_to_ticks( event->time );
+     Status status = 0;
+ 
+     TRACE_(key)("type %d, window %lx, state 0x%04x, keycode %u\n",
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -1729,7 +1729,7 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
+     input.u.mi.dy          = event->y;
+     input.u.mi.mouseData   = button_down_data[buttonNum];
+     input.u.mi.dwFlags     = button_down_flags[buttonNum] | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
+-    input.u.mi.time        = EVENT_x11_time_to_win32_time( event->time );
++    input.u.mi.time        = x11drv_time_to_ticks( event->time );
+     input.u.mi.dwExtraInfo = 0;
+ 
+     update_user_time( event->time );
+@@ -1756,7 +1756,7 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
+     input.u.mi.dy          = event->y;
+     input.u.mi.mouseData   = button_up_data[buttonNum];
+     input.u.mi.dwFlags     = button_up_flags[buttonNum] | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
+-    input.u.mi.time        = EVENT_x11_time_to_win32_time( event->time );
++    input.u.mi.time        = x11drv_time_to_ticks( event->time );
+     input.u.mi.dwExtraInfo = 0;
+ 
+     map_event_coords( hwnd, event->window, event->root, event->x_root, event->y_root, &input );
+@@ -1780,7 +1780,7 @@ BOOL X11DRV_MotionNotify( HWND hwnd, XEvent *xev )
+     input.u.mi.dy          = event->y;
+     input.u.mi.mouseData   = 0;
+     input.u.mi.dwFlags     = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+-    input.u.mi.time        = EVENT_x11_time_to_win32_time( event->time );
++    input.u.mi.time        = x11drv_time_to_ticks( event->time );
+     input.u.mi.dwExtraInfo = 0;
+ 
+     if (!hwnd && is_old_motion_event( event->serial ))
+@@ -1812,7 +1812,7 @@ BOOL X11DRV_EnterNotify( HWND hwnd, XEvent *xev )
+     input.u.mi.dy          = event->y;
+     input.u.mi.mouseData   = 0;
+     input.u.mi.dwFlags     = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+-    input.u.mi.time        = EVENT_x11_time_to_win32_time( event->time );
++    input.u.mi.time        = x11drv_time_to_ticks( event->time );
+     input.u.mi.dwExtraInfo = 0;
+ 
+     if (is_old_motion_event( event->serial ))
+@@ -1932,7 +1932,7 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+     input.type = INPUT_MOUSE;
+     input.u.mi.mouseData   = 0;
+     input.u.mi.dwFlags     = MOUSEEVENTF_MOVE;
+-    input.u.mi.time        = EVENT_x11_time_to_win32_time( event->time );
++    input.u.mi.time        = x11drv_time_to_ticks( event->time );
+     input.u.mi.dwExtraInfo = 0;
+     input.u.mi.dx          = 0;
+     input.u.mi.dy          = 0;
+diff --git a/dlls/winex11.drv/wintab.c b/dlls/winex11.drv/wintab.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/wintab.c
++++ b/dlls/winex11.drv/wintab.c
+@@ -895,7 +895,7 @@ static BOOL motion_event( HWND hwnd, XEvent *event )
+ 
+     /* Set cursor to inverted if cursor is the eraser */
+     gMsgPacket.pkStatus = (cursor->TYPE  == CSR_TYPE_ERASER ? TPS_INVERT:0);
+-    gMsgPacket.pkTime = EVENT_x11_time_to_win32_time(motion->time);
++    gMsgPacket.pkTime = x11drv_time_to_ticks(motion->time);
+     gMsgPacket.pkSerialNumber = gSerial++;
+     gMsgPacket.pkCursor = curnum;
+     gMsgPacket.pkX = motion->axis_data[0];
+@@ -933,7 +933,7 @@ static BOOL button_event( HWND hwnd, XEvent *event )
+     /* Set cursor to inverted if cursor is the eraser */
+     gMsgPacket.pkStatus = (cursor->TYPE == CSR_TYPE_ERASER ? TPS_INVERT:0);
+     set_button_state(curnum, button->deviceid);
+-    gMsgPacket.pkTime = EVENT_x11_time_to_win32_time(button->time);
++    gMsgPacket.pkTime = x11drv_time_to_ticks(button->time);
+     gMsgPacket.pkSerialNumber = gSerial++;
+     gMsgPacket.pkCursor = curnum;
+ 
+@@ -990,7 +990,7 @@ static BOOL proximity_event( HWND hwnd, XEvent *event )
+     /* Set cursor to inverted if cursor is the eraser */
+     gMsgPacket.pkStatus = (cursor->TYPE == CSR_TYPE_ERASER ? TPS_INVERT:0);
+     gMsgPacket.pkStatus |= (event->type==proximity_out_type)?TPS_PROXIMITY:0;
+-    gMsgPacket.pkTime = EVENT_x11_time_to_win32_time(proximity->time);
++    gMsgPacket.pkTime = x11drv_time_to_ticks(proximity->time);
+     gMsgPacket.pkSerialNumber = gSerial++;
+     gMsgPacket.pkCursor = curnum;
+     gMsgPacket.pkX = proximity->axis_data[0];
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -562,7 +562,7 @@ extern int xinput2_opcode DECLSPEC_HIDDEN;
+ extern Bool (*pXGetEventData)( Display *display, XEvent /*XGenericEventCookie*/ *event ) DECLSPEC_HIDDEN;
+ extern void (*pXFreeEventData)( Display *display, XEvent /*XGenericEventCookie*/ *event ) DECLSPEC_HIDDEN;
+ 
+-extern DWORD EVENT_x11_time_to_win32_time(Time time) DECLSPEC_HIDDEN;
++extern DWORD x11drv_time_to_ticks(Time time) DECLSPEC_HIDDEN;
+ 
+ /* X11 driver private messages, must be in the range 0x80001000..0x80001fff */
+ enum x11drv_window_messages
+-- 
+2.36.1
+

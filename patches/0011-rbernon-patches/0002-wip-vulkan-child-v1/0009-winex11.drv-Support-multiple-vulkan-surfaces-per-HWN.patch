@@ -1,6 +1,6 @@
-From f65c48ff27abec6413b3c2a522e1c3b30721948e Mon Sep 17 00:00:00 2001
+From b41de3279b91b09c92939103aa329cfed6342a60 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
-Date: Fri, 22 Oct 2021 01:01:24 +0200
+Date: Sat, 7 May 2022 01:02:53 +0200
 Subject: [PATCH 09/14] winex11.drv: Support multiple vulkan surfaces per HWND.
 
 Fixes games failing to render after displaying a video, e.g. Age of
@@ -17,7 +17,7 @@ diff --git a/dlls/winex11.drv/vulkan.c b/dlls/winex11.drv/vulkan.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/vulkan.c
 +++ b/dlls/winex11.drv/vulkan.c
-@@ -48,7 +48,6 @@ WINE_DECLARE_DEBUG_CHANNEL(fps);
+@@ -52,7 +52,6 @@ WINE_DECLARE_DEBUG_CHANNEL(fps);
  
  static pthread_mutex_t vulkan_mutex;
  
@@ -25,7 +25,7 @@ index 11111111111..11111111111 100644
  static XContext vulkan_swapchain_context;
  
  #define VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR 1000004000
-@@ -160,7 +159,6 @@ static void wine_vk_init(void)
+@@ -164,7 +163,6 @@ static void wine_vk_init(void)
  #undef LOAD_FUNCPTR
  #undef LOAD_OPTIONAL_FUNCPTR
  
@@ -33,7 +33,7 @@ index 11111111111..11111111111 100644
      vulkan_swapchain_context = XUniqueContext();
  
      return;
-@@ -242,23 +240,30 @@ static void wine_vk_surface_release(struct wine_vk_surface *surface)
+@@ -246,23 +244,30 @@ static void wine_vk_surface_release(struct wine_vk_surface *surface)
      free(surface);
  }
  
@@ -46,7 +46,7 @@ index 11111111111..11111111111 100644
 +    XReparentWindow(gdi_display, surface->window, get_dummy_parent(), 0, 0);
 +    XSync(gdi_display, False);
  
-+    if (surface->hdc) ReleaseDC(surface->hwnd, surface->hdc);
++    if (surface->hdc) NtUserReleaseDC(surface->hwnd, surface->hdc);
 +    surface->hwnd_thread_id = 0;
 +    surface->hwnd = 0;
 +    surface->hdc = 0;
@@ -71,11 +71,11 @@ index 11111111111..11111111111 100644
      }
 -    XDeleteContext(gdi_display, (XID)hwnd, vulkan_hwnd_context);
      pthread_mutex_unlock(&vulkan_mutex);
--    if (hdc) ReleaseDC(hwnd, hdc);
+-    if (hdc) NtUserReleaseDC(hwnd, hdc);
  }
  
  static BOOL wine_vk_surface_set_offscreen(struct wine_vk_surface *surface, BOOL offscreen)
-@@ -290,8 +295,12 @@ void sync_vk_surface(HWND hwnd, BOOL known_child)
+@@ -294,8 +299,12 @@ void sync_vk_surface(HWND hwnd, BOOL known_child)
  {
      struct wine_vk_surface *surface;
      pthread_mutex_lock(&vulkan_mutex);
@@ -89,7 +89,7 @@ index 11111111111..11111111111 100644
      pthread_mutex_unlock(&vulkan_mutex);
  }
  
-@@ -305,11 +314,7 @@ void vulkan_thread_detach(void)
+@@ -309,11 +318,7 @@ void vulkan_thread_detach(void)
      {
          if (surface->hwnd_thread_id != thread_id)
              continue;
@@ -102,15 +102,15 @@ index 11111111111..11111111111 100644
      }
      pthread_mutex_unlock(&vulkan_mutex);
  }
-@@ -480,6 +485,7 @@ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
- 
-     if (create_info->hwnd && (NtUserGetWindowRelative( create_info->hwnd, GW_CHILD ) || NtUserGetAncestor( create_info->hwnd, GA_PARENT ) != NtUserGetDesktopWindow()))
+@@ -485,6 +490,7 @@ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
+     if (create_info->hwnd && (NtUserGetWindowRelative(create_info->hwnd, GW_CHILD) ||
+                               NtUserGetAncestor(create_info->hwnd, GA_PARENT) != NtUserGetDesktopWindow()))
      {
 +        TRACE("hwnd %p creating offscreen child window surface\n", x11_surface->hwnd);
          if (!wine_vk_surface_set_offscreen(x11_surface, TRUE))
          {
              res = VK_ERROR_INCOMPATIBLE_DRIVER;
-@@ -501,11 +507,6 @@ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
+@@ -506,11 +512,6 @@ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
      }
  
      pthread_mutex_lock(&vulkan_mutex);
@@ -126,7 +126,7 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -1790,7 +1790,7 @@ void X11DRV_DestroyWindow( HWND hwnd )
+@@ -1803,7 +1803,7 @@ void X11DRV_DestroyWindow( HWND hwnd )
      release_win_data( data );
      free( data );
      destroy_gl_drawable( hwnd );
@@ -139,7 +139,7 @@ diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -640,7 +640,7 @@ extern Window get_dummy_parent(void) DECLSPEC_HIDDEN;
+@@ -631,7 +631,7 @@ extern Window get_dummy_parent(void) DECLSPEC_HIDDEN;
  extern void sync_gl_drawable( HWND hwnd, BOOL known_child ) DECLSPEC_HIDDEN;
  extern void set_gl_drawable_parent( HWND hwnd, HWND parent ) DECLSPEC_HIDDEN;
  extern void destroy_gl_drawable( HWND hwnd ) DECLSPEC_HIDDEN;
@@ -149,5 +149,5 @@ index 11111111111..11111111111 100644
  extern void vulkan_thread_detach(void) DECLSPEC_HIDDEN;
  
 -- 
-2.36.0
+2.36.1
 

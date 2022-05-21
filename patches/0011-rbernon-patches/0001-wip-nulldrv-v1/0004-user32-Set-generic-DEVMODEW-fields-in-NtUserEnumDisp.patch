@@ -1,0 +1,509 @@
+From 956874bb64d35c23a22db784f6bee8efb3806a6b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sun, 17 Oct 2021 13:27:57 +0200
+Subject: [PATCH 04/12] user32: Set generic DEVMODEW fields in
+ NtUserEnumDisplaySettings.
+
+---
+ dlls/win32u/driver.c        |   4 +-
+ dlls/win32u/sysparams.c     | 146 +++++++++++++++++++++++++++++++++++-
+ dlls/wineandroid.drv/init.c |  10 +--
+ dlls/winemac.drv/display.c  |  66 ++--------------
+ dlls/winex11.drv/settings.c |  85 +++------------------
+ include/wine/gdi_driver.h   |   2 +-
+ 6 files changed, 166 insertions(+), 147 deletions(-)
+
+diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/driver.c
++++ b/dlls/win32u/driver.c
+@@ -759,9 +759,9 @@ static LONG nulldrv_ChangeDisplaySettingsEx( LPCWSTR name, LPDEVMODEW mode, HWND
+     return DISP_CHANGE_FAILED;
+ }
+ 
+-static BOOL nulldrv_EnumDisplaySettingsEx( LPCWSTR name, DWORD num, LPDEVMODEW mode, DWORD flags )
++static INT nulldrv_EnumDisplaySettingsEx( LPCWSTR name, DWORD num, LPDEVMODEW mode, DWORD flags )
+ {
+-    return FALSE;
++    return -1; /* use default implementation */
+ }
+ 
+ static void nulldrv_UpdateDisplayDevices( const struct gdi_device_manager *manager,
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -194,6 +194,52 @@ static const WCHAR guid_devinterface_monitorW[] =
+ 
+ #define NULLDRV_DEFAULT_HMONITOR ((HMONITOR)(UINT_PTR)(0x10000 + 1))
+ 
++static const WCHAR default_bits_per_pel_w[] =
++{
++    'D','e','f','a','u','l','t','S','e','t','t','i','n','g','s',
++    '.','B','i','t','s','P','e','r','P','e','l',0
++};
++static const WCHAR default_x_resolution_w[] =
++{
++    'D','e','f','a','u','l','t','S','e','t','t','i','n','g','s',
++    '.','X','R','e','s','o','l','u','t','i','o','n',0
++};
++static const WCHAR default_y_resolution_w[] =
++{
++    'D','e','f','a','u','l','t','S','e','t','t','i','n','g','s',
++    '.','Y','R','e','s','o','l','u','t','i','o','n',0
++};
++static const WCHAR default_v_refresh_w[] =
++{
++    'D','e','f','a','u','l','t','S','e','t','t','i','n','g','s',
++    '.','V','R','e','f','r','e','s','h',0
++};
++static const WCHAR default_flags_w[] =
++{
++    'D','e','f','a','u','l','t','S','e','t','t','i','n','g','s',
++    '.','F','l','a','g','s',0
++};
++static const WCHAR default_x_panning_w[] =
++{
++    'D','e','f','a','u','l','t','S','e','t','t','i','n','g','s',
++    '.','X','P','a','n','n','i','n','g',0
++};
++static const WCHAR default_y_panning_w[] =
++{
++    'D','e','f','a','u','l','t','S','e','t','t','i','n','g','s',
++    '.','Y','P','a','n','n','i','n','g',0
++};
++static const WCHAR default_orientation_w[] =
++{
++    'D','e','f','a','u','l','t','S','e','t','t','i','n','g','s',
++    '.','O','r','i','e','n','t','a','t','i','o','n',0
++};
++static const WCHAR default_fixed_output_w[] =
++{
++    'D','e','f','a','u','l','t','S','e','t','t','i','n','g','s',
++    '.','F','i','x','e','d','O','u','t','p','u','t',0
++};
++
+ /* Cached display device information */
+ struct display_device
+ {
+@@ -1822,6 +1868,82 @@ static BOOL is_detached_mode( const DEVMODEW *mode )
+            mode->dmPelsHeight == 0;
+ }
+ 
++static BOOL read_registry_settings( const WCHAR *path, DEVMODEW *dev_mode )
++{
++    char buffer[offsetof(KEY_VALUE_PARTIAL_INFORMATION, Data[sizeof(DWORD)])];
++    KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
++    BOOL ret = TRUE;
++    HANDLE mutex;
++    HKEY key;
++
++    mutex = get_display_device_init_mutex();
++
++    if (!config_key && !(config_key = reg_open_key( NULL, config_keyW, sizeof(config_keyW) )))
++        return FALSE;
++
++    if (!(key = reg_open_key( config_key, path, lstrlenW( path ) * sizeof(WCHAR) )))
++    {
++        release_display_device_init_mutex( mutex );
++        return FALSE;
++    }
++
++    if (ret && (ret = query_reg_value( key, default_bits_per_pel_w, value, sizeof(buffer) )) &&
++        value->Type == REG_DWORD && value->DataLength == sizeof(DWORD))
++    {
++        dev_mode->dmBitsPerPel = *(DWORD *)value->Data;
++        dev_mode->dmFields |= DM_BITSPERPEL;
++    }
++    if (ret && (ret = query_reg_value( key, default_x_resolution_w, value, sizeof(buffer) )) &&
++        value->Type == REG_DWORD && value->DataLength == sizeof(DWORD))
++    {
++        dev_mode->dmPelsWidth = *(DWORD *)value->Data;
++        dev_mode->dmFields |= DM_PELSWIDTH;
++    }
++    if (ret && (ret = query_reg_value( key, default_y_resolution_w, value, sizeof(buffer) )) &&
++        value->Type == REG_DWORD && value->DataLength == sizeof(DWORD))
++    {
++        dev_mode->dmPelsHeight = *(DWORD *)value->Data;
++        dev_mode->dmFields |= DM_PELSHEIGHT;
++    }
++    if (ret && (ret = query_reg_value( key, default_v_refresh_w, value, sizeof(buffer) )) &&
++        value->Type == REG_DWORD && value->DataLength == sizeof(DWORD))
++    {
++        dev_mode->dmDisplayFrequency = *(DWORD *)value->Data;
++        dev_mode->dmFields |= DM_DISPLAYFREQUENCY;
++    }
++    if (ret && (ret = query_reg_value( key, default_flags_w, value, sizeof(buffer) )) &&
++        value->Type == REG_DWORD && value->DataLength == sizeof(DWORD))
++    {
++        dev_mode->dmDisplayFlags = *(DWORD *)value->Data;
++        dev_mode->dmFields |= DM_DISPLAYFLAGS;
++    }
++    if (ret && (ret = query_reg_value( key, default_x_panning_w, value, sizeof(buffer) )) &&
++        value->Type == REG_DWORD && value->DataLength == sizeof(DWORD))
++    {
++        dev_mode->dmPosition.x = *(DWORD *)value->Data;
++        dev_mode->dmFields |= DM_POSITION;
++    }
++    if (ret && (ret = query_reg_value( key, default_y_panning_w, value, sizeof(buffer) )) &&
++        value->Type == REG_DWORD && value->DataLength == sizeof(DWORD))
++    {
++        dev_mode->dmPosition.y = *(DWORD *)value->Data;
++        dev_mode->dmFields |= DM_POSITION;
++    }
++    if (ret && (ret = query_reg_value( key, default_orientation_w, value, sizeof(buffer) )) &&
++        value->Type == REG_DWORD && value->DataLength == sizeof(DWORD))
++    {
++        dev_mode->dmDisplayOrientation = *(DWORD *)value->Data;
++        dev_mode->dmFields |= DM_DISPLAYORIENTATION;
++    }
++    if (ret && (ret = query_reg_value( key, default_fixed_output_w, value, sizeof(buffer) )) &&
++        value->Type == REG_DWORD && value->DataLength == sizeof(DWORD))
++        dev_mode->dmDisplayFixedOutput = *(DWORD *)value->Data;
++
++    NtClose( key );
++    release_display_device_init_mutex( mutex );
++    return ret;
++}
++
+ /***********************************************************************
+  *	     NtUserChangeDisplaySettingsExW    (win32u.@)
+  */
+@@ -1917,14 +2039,21 @@ LONG WINAPI NtUserChangeDisplaySettings( UNICODE_STRING *devname, DEVMODEW *devm
+ BOOL WINAPI NtUserEnumDisplaySettings( UNICODE_STRING *device, DWORD mode,
+                                        DEVMODEW *dev_mode, DWORD flags )
+ {
++    static const WCHAR wine_display_driver_w[] = {'W','i','n','e',' ','D','i','s','p','l','a','y',' ','D','r','i','v','e','r',0};
++
+     WCHAR device_name[CCHDEVICENAME];
++    WCHAR registry_path[MAX_PATH];
+     struct adapter *adapter;
+     BOOL ret;
+ 
+     TRACE( "%s %#x %p %#x\n", debugstr_us(device), mode, dev_mode, flags );
+ 
+     if (!lock_display_devices()) return FALSE;
+-    if ((adapter = find_adapter( device ))) lstrcpyW( device_name, adapter->dev.device_name );
++    if ((adapter = find_adapter( device )))
++    {
++        lstrcpyW( device_name, adapter->dev.device_name );
++        lstrcpynW( registry_path, adapter->config_key, MAX_PATH );
++    }
+     unlock_display_devices();
+     if (!adapter)
+     {
+@@ -1932,7 +2061,20 @@ BOOL WINAPI NtUserEnumDisplaySettings( UNICODE_STRING *device, DWORD mode,
+         return FALSE;
+     }
+ 
+-    ret = user_driver->pEnumDisplaySettingsEx( device_name, mode, dev_mode, flags );
++    /* Set generic fields */
++    dev_mode->dmSize = FIELD_OFFSET( DEVMODEW, dmICMMethod );
++    dev_mode->dmDriverExtra = 0;
++    dev_mode->dmSpecVersion = DM_SPECVERSION;
++    dev_mode->dmDriverVersion = DM_SPECVERSION;
++    lstrcpynW( dev_mode->dmDeviceName, wine_display_driver_w, ARRAY_SIZE(dev_mode->dmDeviceName) );
++    memset( &dev_mode->dmFields, 0, dev_mode->dmSize - FIELD_OFFSET( DEVMODEW, dmFields ) );
++
++    if ((ret = user_driver->pEnumDisplaySettingsEx( device_name, mode, dev_mode, flags )) < 0)
++    {
++        if (mode == ENUM_REGISTRY_SETTINGS) ret = read_registry_settings( registry_path, dev_mode );
++        else ret = FALSE;
++    }
++
+     if (ret)
+         TRACE( "device:%s mode index:%#x position:(%d,%d) resolution:%ux%u frequency:%uHz "
+                "depth:%ubits orientation:%#x.\n", debugstr_w(device_name), mode,
+diff --git a/dlls/wineandroid.drv/init.c b/dlls/wineandroid.drv/init.c
+index 11111111111..11111111111 100644
+--- a/dlls/wineandroid.drv/init.c
++++ b/dlls/wineandroid.drv/init.c
+@@ -222,16 +222,12 @@ void ANDROID_UpdateDisplayDevices( const struct gdi_device_manager *device_manag
+ /***********************************************************************
+  *           ANDROID_EnumDisplaySettingsEx
+  */
+-BOOL ANDROID_EnumDisplaySettingsEx( LPCWSTR name, DWORD n, LPDEVMODEW devmode, DWORD flags )
++INT ANDROID_EnumDisplaySettingsEx( const WCHAR *name, DWORD n, DEVMODEW *devmode, DWORD flags )
+ {
+     static const WCHAR dev_name[CCHDEVICENAME] =
+         { 'W','i','n','e',' ','A','n','d','r','o','i','d',' ','d','r','i','v','e','r',0 };
+ 
+-    devmode->dmSize = offsetof( DEVMODEW, dmICMMethod );
+-    devmode->dmSpecVersion = DM_SPECVERSION;
+-    devmode->dmDriverVersion = DM_SPECVERSION;
+     memcpy( devmode->dmDeviceName, dev_name, sizeof(dev_name) );
+-    devmode->dmDriverExtra = 0;
+     devmode->u2.dmDisplayFlags = 0;
+     devmode->dmDisplayFrequency = 0;
+     devmode->u1.s2.dmPosition.x = 0;
+@@ -250,11 +246,11 @@ BOOL ANDROID_EnumDisplaySettingsEx( LPCWSTR name, DWORD n, LPDEVMODEW devmode, D
+         TRACE( "mode %d -- %dx%d %d bpp @%d Hz\n", n,
+                devmode->dmPelsWidth, devmode->dmPelsHeight,
+                devmode->dmBitsPerPel, devmode->dmDisplayFrequency );
+-        return TRUE;
++        return 1;
+     }
+     TRACE( "mode %d -- not present\n", n );
+     SetLastError( ERROR_NO_MORE_FILES );
+-    return FALSE;
++    return 0;
+ }
+ 
+ 
+diff --git a/dlls/winemac.drv/display.c b/dlls/winemac.drv/display.c
+index 11111111111..11111111111 100644
+--- a/dlls/winemac.drv/display.c
++++ b/dlls/winemac.drv/display.c
+@@ -44,7 +44,7 @@ struct display_mode_descriptor
+ };
+ 
+ 
+-BOOL macdrv_EnumDisplaySettingsEx(LPCWSTR devname, DWORD mode, LPDEVMODEW devmode, DWORD flags);
++INT macdrv_EnumDisplaySettingsEx(const WCHAR *devname, DWORD mode, DEVMODEW *devmode, DWORD flags);
+ 
+ static const WCHAR initial_mode_keyW[] = {'I','n','i','t','i','a','l',' ','D','i','s','p','l','a','y',
+     ' ','M','o','d','e'};
+@@ -141,52 +141,6 @@ static BOOL query_display_setting(HKEY hkey, const char *name, DWORD *ret)
+ }
+ 
+ 
+-static BOOL read_registry_settings(const WCHAR *device_name, DEVMODEW *dm)
+-{
+-    HANDLE mutex;
+-    HKEY hkey;
+-    BOOL ret = TRUE;
+-
+-    dm->dmFields = 0;
+-
+-    mutex = get_display_device_init_mutex();
+-    if (!(hkey = get_display_device_reg_key(device_name)))
+-    {
+-        release_display_device_init_mutex(mutex);
+-        return FALSE;
+-    }
+-
+-    ret &= query_display_setting(hkey, "DefaultSettings.BitsPerPel", &dm->dmBitsPerPel);
+-    dm->dmFields |= DM_BITSPERPEL;
+-    ret &= query_display_setting(hkey, "DefaultSettings.XResolution", &dm->dmPelsWidth);
+-    dm->dmFields |= DM_PELSWIDTH;
+-    ret &= query_display_setting(hkey, "DefaultSettings.YResolution", &dm->dmPelsHeight);
+-    dm->dmFields |= DM_PELSHEIGHT;
+-    ret &= query_display_setting(hkey, "DefaultSettings.VRefresh", &dm->dmDisplayFrequency);
+-    dm->dmFields |= DM_DISPLAYFREQUENCY;
+-    ret &= query_display_setting(hkey, "DefaultSettings.Flags", &dm->dmDisplayFlags);
+-    dm->dmFields |= DM_DISPLAYFLAGS;
+-    ret &= query_display_setting(hkey, "DefaultSettings.XPanning", (DWORD *)&dm->dmPosition.x);
+-    ret &= query_display_setting(hkey, "DefaultSettings.YPanning", (DWORD *)&dm->dmPosition.y);
+-    dm->dmFields |= DM_POSITION;
+-    ret &= query_display_setting(hkey, "DefaultSettings.Orientation", &dm->dmDisplayOrientation);
+-    dm->dmFields |= DM_DISPLAYORIENTATION;
+-    ret &= query_display_setting(hkey, "DefaultSettings.FixedOutput", &dm->dmDisplayFixedOutput);
+-
+-    NtClose(hkey);
+-    release_display_device_init_mutex(mutex);
+-    return ret;
+-}
+-
+-
+-static BOOL set_setting_value(HKEY hkey, const char *name, DWORD val)
+-{
+-    WCHAR nameW[128];
+-    UNICODE_STRING str = { asciiz_to_unicode(nameW, name) - sizeof(WCHAR), sizeof(nameW), nameW };
+-    return !NtSetValueKey(hkey, &str, 0, REG_DWORD, &val, sizeof(val));
+-}
+-
+-
+ static BOOL write_registry_settings(const WCHAR *device_name, const DEVMODEW *dm)
+ {
+     HANDLE mutex;
+@@ -1037,7 +991,8 @@ better:
+  *              EnumDisplaySettingsEx  (MACDRV.@)
+  *
+  */
+-BOOL macdrv_EnumDisplaySettingsEx(LPCWSTR devname, DWORD mode, DEVMODEW *devmode, DWORD flags)
++INT macdrv_EnumDisplaySettingsEx(const WCHAR *devname, DWORD mode,
++                                 DEVMODEW *devmode, DWORD flags)
+ {
+     static const WCHAR dev_name[CCHDEVICENAME] =
+         { 'W','i','n','e',' ','M','a','c',' ','d','r','i','v','e','r',0 };
+@@ -1054,17 +1009,8 @@ BOOL macdrv_EnumDisplaySettingsEx(LPCWSTR devname, DWORD mode, DEVMODEW *devmode
+     init_original_display_mode();
+ 
+     memcpy(devmode->dmDeviceName, dev_name, sizeof(dev_name));
+-    devmode->dmSpecVersion = DM_SPECVERSION;
+-    devmode->dmDriverVersion = DM_SPECVERSION;
+-    devmode->dmSize = FIELD_OFFSET(DEVMODEW, dmICMMethod);
+-    devmode->dmDriverExtra = 0;
+-    memset(&devmode->dmFields, 0, devmode->dmSize - FIELD_OFFSET(DEVMODEW, dmFields));
+ 
+-    if (mode == ENUM_REGISTRY_SETTINGS)
+-    {
+-        TRACE("mode %d (registry) -- getting default mode\n", mode);
+-        return read_registry_settings(devname, devmode);
+-    }
++    if (mode == ENUM_REGISTRY_SETTINGS) return -1; /* use default implementation */
+ 
+     if (macdrv_get_displays(&displays, &num_displays))
+         goto failed;
+@@ -1225,13 +1171,13 @@ BOOL macdrv_EnumDisplaySettingsEx(LPCWSTR devname, DWORD mode, DEVMODEW *devmode
+         TRACE(" (synthesized)");
+     TRACE("\n");
+ 
+-    return TRUE;
++    return 1;
+ 
+ failed:
+     TRACE("mode %d -- not present\n", mode);
+     if (displays) macdrv_free_displays(displays);
+     SetLastError(ERROR_NO_MORE_FILES);
+-    return FALSE;
++    return 0;
+ }
+ 
+ 
+diff --git a/dlls/winex11.drv/settings.c b/dlls/winex11.drv/settings.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/settings.c
++++ b/dlls/winex11.drv/settings.c
+@@ -265,58 +265,6 @@ static HKEY get_display_device_reg_key( const WCHAR *device_name )
+     return reg_open_key( NULL, buffer, lstrlenW(buffer) * sizeof(WCHAR) );
+ }
+ 
+-static BOOL query_display_setting( HKEY hkey, const char *name, DWORD *ret )
+-{
+-    char buffer[1024];
+-    WCHAR nameW[128];
+-    KEY_VALUE_PARTIAL_INFORMATION *value = (void *)buffer;
+-
+-    asciiz_to_unicode( nameW, name );
+-    if (query_reg_value( hkey, nameW, value, sizeof(buffer) ) != sizeof(DWORD) ||
+-        value->Type != REG_DWORD)
+-        return FALSE;
+-
+-    *ret = *(DWORD *)value->Data;
+-    return TRUE;
+-}
+-
+-static BOOL read_registry_settings(const WCHAR *device_name, DEVMODEW *dm)
+-{
+-    HANDLE mutex;
+-    HKEY hkey;
+-    BOOL ret = TRUE;
+-
+-    dm->dmFields = 0;
+-
+-    mutex = get_display_device_init_mutex();
+-    if (!(hkey = get_display_device_reg_key( device_name )))
+-    {
+-        release_display_device_init_mutex(mutex);
+-        return FALSE;
+-    }
+-
+-    ret &= query_display_setting( hkey, "DefaultSettings.BitsPerPel", &dm->dmBitsPerPel );
+-    dm->dmFields |= DM_BITSPERPEL;
+-    ret &= query_display_setting( hkey, "DefaultSettings.XResolution", &dm->dmPelsWidth );
+-    dm->dmFields |= DM_PELSWIDTH;
+-    ret &= query_display_setting( hkey, "DefaultSettings.YResolution", &dm->dmPelsHeight );
+-    dm->dmFields |= DM_PELSHEIGHT;
+-    ret &= query_display_setting( hkey, "DefaultSettings.VRefresh", &dm->dmDisplayFrequency );
+-    dm->dmFields |= DM_DISPLAYFREQUENCY;
+-    ret &= query_display_setting( hkey, "DefaultSettings.Flags", &dm->u2.dmDisplayFlags );
+-    dm->dmFields |= DM_DISPLAYFLAGS;
+-    ret &= query_display_setting( hkey, "DefaultSettings.XPanning", (DWORD *)&dm->u1.s2.dmPosition.x );
+-    ret &= query_display_setting( hkey, "DefaultSettings.YPanning", (DWORD *)&dm->u1.s2.dmPosition.y );
+-    dm->dmFields |= DM_POSITION;
+-    ret &= query_display_setting( hkey, "DefaultSettings.Orientation", &dm->u1.s2.dmDisplayOrientation );
+-    dm->dmFields |= DM_DISPLAYORIENTATION;
+-    ret &= query_display_setting( hkey, "DefaultSettings.FixedOutput", &dm->u1.s2.dmDisplayFixedOutput );
+-
+-    NtClose( hkey );
+-    release_display_device_init_mutex(mutex);
+-    return ret;
+-}
+-
+ static BOOL set_setting_value( HKEY hkey, const char *name, DWORD val )
+ {
+     WCHAR nameW[128];
+@@ -470,36 +418,30 @@ static DWORD get_display_depth(ULONG_PTR display_id)
+  *		EnumDisplaySettingsEx  (X11DRV.@)
+  *
+  */
+-BOOL X11DRV_EnumDisplaySettingsEx( LPCWSTR name, DWORD n, LPDEVMODEW devmode, DWORD flags)
++INT X11DRV_EnumDisplaySettingsEx( const WCHAR *name, DWORD n, DEVMODEW *devmode, DWORD flags )
+ {
+     static const WCHAR dev_name[CCHDEVICENAME] =
+         { 'W','i','n','e',' ','X','1','1',' ','d','r','i','v','e','r',0 };
+-    DEVMODEW *modes;
++    DEVMODEW *modes, *cached;
+     UINT mode_count;
+     ULONG_PTR id;
+ 
+-    if (n == ENUM_REGISTRY_SETTINGS)
+-    {
+-        if (!read_registry_settings(name, devmode))
+-        {
+-            ERR("Failed to get %s registry display settings.\n", wine_dbgstr_w(name));
+-            return FALSE;
+-        }
+-        goto done;
+-    }
++    lstrcpyW( devmode->dmDeviceName, dev_name );
++
++    if (n == ENUM_REGISTRY_SETTINGS) return -1; /* use default implementation */
+ 
+     if (n == ENUM_CURRENT_SETTINGS)
+     {
+         if (!handler.get_id(name, &id) || !handler.get_current_mode(id, devmode))
+         {
+             ERR("Failed to get %s current display settings.\n", wine_dbgstr_w(name));
+-            return FALSE;
++            return 0;
+         }
+ 
+         if (!is_detached_mode(devmode))
+             devmode->dmBitsPerPel = get_display_depth(id);
+ 
+-        goto done;
++        return TRUE;
+     }
+ 
+     pthread_mutex_lock( &settings_mutex );
+@@ -527,19 +469,12 @@ BOOL X11DRV_EnumDisplaySettingsEx( LPCWSTR name, DWORD n, LPDEVMODEW devmode, DW
+         pthread_mutex_unlock( &settings_mutex );
+         WARN("handler:%s device:%s mode index:%#x not found.\n", handler.name, wine_dbgstr_w(name), n);
+         SetLastError(ERROR_NO_MORE_FILES);
+-        return FALSE;
++        return 0;
+     }
+ 
+-    memcpy(devmode, (BYTE *)cached_modes + (sizeof(*cached_modes) + cached_modes[0].dmDriverExtra) * n, sizeof(*devmode));
++    cached = (DEVMODEW *)((BYTE *)cached_modes + (sizeof(*cached_modes) + cached_modes[0].dmDriverExtra) * n);
++    memcpy( &devmode->dmFields, &cached->dmFields, devmode->dmSize - FIELD_OFFSET( DEVMODEW, dmFields ) );
+     pthread_mutex_unlock( &settings_mutex );
+-
+-done:
+-    /* Set generic fields */
+-    devmode->dmSize = FIELD_OFFSET(DEVMODEW, dmICMMethod);
+-    devmode->dmDriverExtra = 0;
+-    devmode->dmSpecVersion = DM_SPECVERSION;
+-    devmode->dmDriverVersion = DM_SPECVERSION;
+-    lstrcpyW(devmode->dmDeviceName, dev_name);
+     return TRUE;
+ }
+ 
+diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
+index 11111111111..11111111111 100644
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -294,7 +294,7 @@ struct user_driver_funcs
+     void    (*pUpdateClipboard)(void);
+     /* display modes */
+     LONG    (*pChangeDisplaySettingsEx)(LPCWSTR,LPDEVMODEW,HWND,DWORD,LPVOID);
+-    BOOL    (*pEnumDisplaySettingsEx)(LPCWSTR,DWORD,LPDEVMODEW,DWORD);
++    INT     (*pEnumDisplaySettingsEx)(LPCWSTR,DWORD,LPDEVMODEW,DWORD);
+     void    (*pUpdateDisplayDevices)(const struct gdi_device_manager *,BOOL,void*);
+     /* windowing functions */
+     BOOL    (*pCreateDesktopWindow)(HWND);
+-- 
+2.36.1
+

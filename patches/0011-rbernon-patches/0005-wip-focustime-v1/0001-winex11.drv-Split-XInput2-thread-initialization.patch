@@ -1,0 +1,117 @@
+From 68f22f6c7b99da121d99b49502d2188f48eb6b01 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 17 Jan 2020 16:33:11 +0100
+Subject: [PATCH 1/9] winex11.drv: Split XInput2 thread initialization.
+
+And rename the library and function loader to X11DRV_XInput2_Load.
+---
+ dlls/winex11.drv/mouse.c       | 42 ++++++++++++++++++++++------------
+ dlls/winex11.drv/x11drv.h      |  1 +
+ dlls/winex11.drv/x11drv_main.c |  4 +++-
+ 3 files changed, 31 insertions(+), 16 deletions(-)
+
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -280,6 +280,30 @@ static void update_relative_valuators(XIAnyClassInfo **valuators, int n_valuator
+ }
+ 
+ 
++/***********************************************************************
++ *              X11DRV_XInput2_Init
++ */
++void X11DRV_XInput2_Init(void)
++{
++#ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
++    struct x11drv_thread_data *data = x11drv_thread_data();
++    int major = 2, minor = 0;
++
++    if (xinput2_available &&
++        !pXIQueryVersion( data->display, &major, &minor ))
++    {
++        TRACE( "XInput2 %d.%d available\n", major, minor );
++        data->xi2_state = xi_disabled;
++    }
++    else
++    {
++        data->xi2_state = xi_unavailable;
++        WARN( "XInput 2.0 not available\n" );
++    }
++#endif
++}
++
++
+ /***********************************************************************
+  *              enable_xinput2
+  */
+@@ -291,19 +315,7 @@ static void enable_xinput2(void)
+     unsigned char mask_bits[XIMaskLen(XI_LASTEVENT)];
+     int count;
+ 
+-    if (!xinput2_available) return;
+-
+-    if (data->xi2_state == xi_unknown)
+-    {
+-        int major = 2, minor = 0;
+-        if (!pXIQueryVersion( data->display, &major, &minor )) data->xi2_state = xi_disabled;
+-        else
+-        {
+-            data->xi2_state = xi_unavailable;
+-            WARN( "X Input 2 not available\n" );
+-        }
+-    }
+-    if (data->xi2_state == xi_unavailable) return;
++    if (data->xi2_state != xi_disabled) return;
+     if (!pXIGetClientPointer( data->display, None, &data->xi2_core_pointer )) return;
+ 
+     mask.mask     = mask_bits;
+@@ -1946,9 +1958,9 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+ 
+ 
+ /***********************************************************************
+- *              X11DRV_XInput2_Init
++ *              X11DRV_XInput2_Load
+  */
+-void X11DRV_XInput2_Init(void)
++void X11DRV_XInput2_Load(void)
+ {
+ #if defined(SONAME_LIBXI) && defined(HAVE_X11_EXTENSIONS_XINPUT2_H)
+     int event, error;
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -255,6 +255,7 @@ extern void X11DRV_ThreadDetach(void) DECLSPEC_HIDDEN;
+ /* X11 driver internal functions */
+ 
+ extern void X11DRV_Xcursor_Init(void) DECLSPEC_HIDDEN;
++extern void X11DRV_XInput2_Load(void) DECLSPEC_HIDDEN;
+ extern void X11DRV_XInput2_Init(void) DECLSPEC_HIDDEN;
+ 
+ extern DWORD copy_image_bits( BITMAPINFO *info, BOOL is_r8g8b8, XImage *image,
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -875,7 +875,7 @@ static NTSTATUS x11drv_init( void *arg )
+ #ifdef SONAME_LIBXCOMPOSITE
+     X11DRV_XComposite_Init();
+ #endif
+-    X11DRV_XInput2_Init();
++    X11DRV_XInput2_Load();
+ 
+     x11drv_ewmh_init();
+ 
+@@ -973,6 +973,8 @@ struct x11drv_thread_data *x11drv_init_thread_data(void)
+ 
+     if (use_xim) X11DRV_SetupXIM();
+ 
++    X11DRV_XInput2_Init();
++
+     return data;
+ }
+ 
+-- 
+2.36.1
+

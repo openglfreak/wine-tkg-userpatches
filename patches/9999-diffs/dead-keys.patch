@@ -1,0 +1,46 @@
+https://bugs.winehq.org/show_bug.cgi?id=33368
+
+diff -ur a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -459,6 +459,10 @@ static BOOL process_events( Display *display, Bool (*filter)(Display*, XEvent*,X
+         count++;
+         if (XFilterEvent( &event, None ))
+         {
++            KeySym keysym = 0;
++            XLookupString(&event.xkey, NULL, 0, &keysym, NULL);
++            BOOL is_dead = (keysym >= XK_dead_grave && keysym <=XK_dead_semivoiced_sound);
++            
+             /*
+              * SCIM on linux filters key events strangely. It does not filter the
+              * KeyPress events for these keys however it does filter the
+@@ -467,13 +471,12 @@ static BOOL process_events( Display *display, Bool (*filter)(Display*, XEvent*,X
+              *
+              * We need to let those KeyRelease events be processed so that the
+              * keyboard state is correct.
++             *
++             * Moreover, let dead chars be processed or we will never have
++             * WM_DEADCHAR events
+              */
+-            if (event.type == KeyRelease)
++            if (event.type == KeyRelease || is_dead)
+             {
+-                KeySym keysym = 0;
+-                XKeyEvent *keyevent = &event.xkey;
+-
+-                XLookupString(keyevent, NULL, 0, &keysym, NULL);
+                 if (!(keysym == XK_Shift_L ||
+                     keysym == XK_Shift_R ||
+                     keysym == XK_Control_L ||
+@@ -481,7 +484,8 @@ static BOOL process_events( Display *display, Bool (*filter)(Display*, XEvent*,X
+                     keysym == XK_Alt_R ||
+                     keysym == XK_Alt_L ||
+                     keysym == XK_Meta_R ||
+-                    keysym == XK_Meta_L))
++                    keysym == XK_Meta_L ||
++                    is_dead))
+                         continue; /* not a key we care about, ignore it */
+             }
+             else

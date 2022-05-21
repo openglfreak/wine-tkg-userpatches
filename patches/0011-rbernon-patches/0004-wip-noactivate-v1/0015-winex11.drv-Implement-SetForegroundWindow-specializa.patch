@@ -1,0 +1,245 @@
+From 12a71eeb39b177ab1f230bfaeb2df10ef27ea07e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 22 Apr 2022 22:56:39 +0200
+Subject: [PATCH 15/22] winex11.drv: Implement SetForegroundWindow
+ specialization.
+
+SetForegroundWindow, when called from user cod, should not always
+succeed. It will fail if the X11 foreground window isn't a Wine window,
+and if its _NET_USER_TIME is more recent than ours.
+
+This will help Wine predict if a window can be set foreground and active
+and reduce the inconsistencies between Wine internal state and X11 WM
+state.
+
+CW-Bug-Id: #19553
+CW-Bug-Id: #19644
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=2155
+---
+ dlls/winex11.drv/event.c  | 78 +++++++++++++++++++++++++++++++++++++--
+ dlls/winex11.drv/init.c   |  1 +
+ dlls/winex11.drv/window.c | 36 ++++++++++++++++++
+ dlls/winex11.drv/x11drv.h |  3 ++
+ 4 files changed, 115 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -555,6 +555,37 @@ static inline BOOL can_activate_window( HWND hwnd )
+ }
+ 
+ 
++static int handle__net_active_window_error( Display *dpy, XErrorEvent *event, void *arg )
++{
++    return 1;
++}
++
++/***********************************************************************
++ *      get_foreground_window
++ */
++static HWND get_foreground_window( Display *display, Window *window )
++{
++    unsigned long count, remaining;
++    unsigned char *property = NULL;
++    Window active;
++    int format;
++    Atom type;
++
++    if (window) *window = None;
++    if (!ewmh.has__net_active_window) return NtUserGetForegroundWindow();
++
++    X11DRV_expect_error( display, handle__net_active_window_error, NULL );
++    if (XGetWindowProperty( display, DefaultRootWindow( display ), x11drv_atom( _NET_ACTIVE_WINDOW ), 0, ~0UL, False,
++                            XA_WINDOW, &type, &format, &count, &remaining, &property )) count = 0;
++    if (!X11DRV_check_error() && count && format == 32 && property) active = *(Window *)property;
++    else active = None;
++    XFree( property );
++
++    if (window) *window = active;
++    return get_hwnd_for_window( display, active );
++}
++
++
+ /**********************************************************************
+  *              set_input_focus
+  *
+@@ -622,6 +653,14 @@ static HWND find_activatable_window( HWND hwnd, Time time, BOOL check )
+     return hwnd;
+ }
+ 
++static void set_foreground_window( HWND hwnd )
++{
++    struct x11drv_thread_data *thread_data = x11drv_thread_data();
++    thread_data->activating_hwnd = hwnd;
++    NtUserSetForegroundWindow( hwnd, FALSE );
++    thread_data->activating_hwnd = 0;
++}
++
+ /**********************************************************************
+  *              set_focus
+  */
+@@ -635,7 +674,7 @@ static void set_focus( Display *display, HWND hwnd, Time time, BOOL check )
+ 
+     if (!(focus = find_activatable_window( hwnd, time, check ))) return;
+     TRACE( "setting foreground window to %p\n", focus );
+-    NtUserSetForegroundWindow( hwnd, FALSE );
++    set_foreground_window( focus );
+ 
+     /* Some applications expect that a being deactivated topmost window
+      * receives the WM_WINDOWPOSCHANGING/WM_WINDOWPOSCHANGED messages,
+@@ -865,7 +904,7 @@ static void focus_out( Display *display , HWND hwnd )
+         if (hwnd == NtUserGetForegroundWindow())
+         {
+             TRACE( "lost focus, setting fg to desktop\n" );
+-            NtUserSetForegroundWindow( NtUserGetDesktopWindow(), FALSE );
++            set_foreground_window( NtUserGetDesktopWindow() );
+         }
+     }
+  }
+@@ -1344,7 +1383,7 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event, BOOL updat
+                 TRACE( "restoring win %p/%lx\n", data->hwnd, data->whole_window );
+                 release_win_data( data );
+                 if ((style & (WS_MINIMIZE | WS_VISIBLE)) == (WS_MINIMIZE | WS_VISIBLE))
+-                    NtUserSetForegroundWindow( hwnd, FALSE );
++                    set_foreground_window( hwnd );
+                 send_message( hwnd, WM_SYSCOMMAND, SC_RESTORE, 0 );
+                 return;
+             }
+@@ -1492,6 +1531,39 @@ void X11DRV_SetFocus( HWND hwnd )
+ }
+ 
+ 
++/***********************************************************************
++ *      SetForegroundWindow  (X11DRV.@)
++ */
++BOOL X11DRV_SetForegroundWindow( HWND hwnd )
++{
++    struct x11drv_thread_data *thread_data;
++    Time window_time, foreground_time;
++    Window window, foreground;
++
++    if (is_virtual_desktop()) return TRUE;
++    if (!hwnd || hwnd == NtUserGetDesktopWindow()) return TRUE;
++    if (!(thread_data = x11drv_init_thread_data())) return TRUE;
++    if (thread_data->activating_hwnd == hwnd) return TRUE;
++
++    TRACE( "hwnd %p\n", hwnd );
++
++    if (!(window = X11DRV_get_whole_window( hwnd ))) return TRUE;
++    if (!get_foreground_window( thread_data->display, &foreground ))
++    {
++        /* If foreground X11 window is not a Wine window, check if we can expect the window to activate */
++        get_window_user_time( thread_data->display, window, &window_time );
++        if (!get_window_user_time( thread_data->display, foreground, &foreground_time )) return TRUE;
++        else if ((!window_time || window_time >= foreground_time)) return TRUE;
++
++        WARN( "refusing to set window %p/%lx time %lu foreground, foreground is %lx time %lu\n",
++              hwnd, window, window_time, foreground, foreground_time );
++        return FALSE;
++    }
++
++    return TRUE;
++}
++
++
+ static HWND find_drop_window( HWND hQueryWnd, LPPOINT lpPt )
+ {
+     RECT tempRect;
+diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/init.c
++++ b/dlls/winex11.drv/init.c
+@@ -439,6 +439,7 @@ static const struct user_driver_funcs x11drv_funcs =
+     .pSetActiveWindow = X11DRV_SetActiveWindow,
+     .pSetCapture = X11DRV_SetCapture,
+     .pSetFocus = X11DRV_SetFocus,
++    .pSetForegroundWindow = X11DRV_SetForegroundWindow,
+     .pSetLayeredWindowAttributes = X11DRV_SetLayeredWindowAttributes,
+     .pSetParent = X11DRV_SetParent,
+     .pSetWindowIcon = X11DRV_SetWindowIcon,
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -948,6 +948,11 @@ Window init_clip_window(void)
+ }
+ 
+ 
++static int handle__net_wm_user_time_error( Display *dpy, XErrorEvent *event, void *arg )
++{
++    return 1;
++}
++
+ /***********************************************************************
+  *     set_window_user_time
+  */
+@@ -962,6 +967,37 @@ void set_window_user_time( Display *display, Window window, Time time )
+                           PropModeReplace, (unsigned char *)&time, 1 );
+ }
+ 
++/***********************************************************************
++ *     get_window_user_time
++ */
++BOOL get_window_user_time( Display *display, Window window, Time *time )
++{
++    unsigned long count, remaining;
++    unsigned char *property = NULL;
++    int format;
++    Atom type;
++
++    *time = 0;
++    if (!window || window == root_window) return FALSE;
++
++    TRACE( "display %p, window %lx, time %p\n", display, window, time );
++
++    X11DRV_expect_error( display, handle__net_wm_user_time_error, NULL );
++    if (XGetWindowProperty( display, window, x11drv_atom(_NET_WM_USER_TIME_WINDOW), 0, ~0UL, False,
++                            XA_WINDOW, &type, &format, &count, &remaining, &property )) count = 0;
++    if (!X11DRV_check_error() && count && format == 32 && property) window = *(Window *)property;
++    XFree( property );
++
++    X11DRV_expect_error( display, handle__net_wm_user_time_error, NULL );
++    if (XGetWindowProperty( display, window, x11drv_atom(_NET_WM_USER_TIME), 0, ~0UL, False,
++                            XA_CARDINAL, &type, &format, &count, &remaining, &property )) count = 0;
++    if (!X11DRV_check_error() && count && format == 32 && property) *time = *(Time *)property;
++    else count = 0;
++    XFree( property );
++
++    return count;
++}
++
+ 
+ /***********************************************************************
+  *     update_net_wm_states
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -360,6 +360,7 @@ struct x11drv_thread_data
+     HWND     grab_hwnd;            /* window that currently grabs the mouse */
+     HWND     last_focus;           /* last window that had focus */
+     DWORD    activating_time;      /* time of the last SetActiveWindow call */
++    HWND     activating_hwnd;      /* window currently activating */
+     XIM      xim;                  /* input method */
+     HWND     last_xic_hwnd;        /* last xic window */
+     XFontSet font_set;             /* international text drawing font set */
+@@ -655,6 +656,7 @@ extern void vulkan_thread_detach(void) DECLSPEC_HIDDEN;
+ extern void wait_for_withdrawn_state( HWND hwnd, BOOL set ) DECLSPEC_HIDDEN;
+ extern Window init_clip_window(void) DECLSPEC_HIDDEN;
+ extern void set_window_user_time( Display *display, Window window, Time time ) DECLSPEC_HIDDEN;
++extern BOOL get_window_user_time( Display *display, Window window, Time *time ) DECLSPEC_HIDDEN;
+ extern void read_net_wm_states( Display *display, struct x11drv_win_data *data ) DECLSPEC_HIDDEN;
+ extern void update_net_wm_states( struct x11drv_win_data *data ) DECLSPEC_HIDDEN;
+ extern void make_window_embedded( struct x11drv_win_data *data ) DECLSPEC_HIDDEN;
+@@ -683,6 +685,7 @@ extern XContext winContext DECLSPEC_HIDDEN;
+ extern XContext cursor_context DECLSPEC_HIDDEN;
+ 
+ extern void X11DRV_SetFocus( HWND hwnd ) DECLSPEC_HIDDEN;
++extern BOOL X11DRV_SetForegroundWindow( HWND hwnd ) DECLSPEC_HIDDEN;
+ extern void set_window_cursor( Window window, HCURSOR handle ) DECLSPEC_HIDDEN;
+ extern void sync_window_cursor( Window window ) DECLSPEC_HIDDEN;
+ extern LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd ) DECLSPEC_HIDDEN;
+-- 
+2.36.1
+

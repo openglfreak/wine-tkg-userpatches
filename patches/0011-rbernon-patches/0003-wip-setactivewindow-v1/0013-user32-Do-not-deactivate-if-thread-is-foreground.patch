@@ -1,0 +1,64 @@
+From bc326d15abe2a20dc5cf52331adf5bc242a6f30d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 11 Mar 2022 22:05:37 +0100
+Subject: [PATCH 13/16] user32: Do not deactivate if thread is foreground.
+
+Instead of only checking that the window is foreground.
+---
+ dlls/user32/tests/msg.c | 14 +++++++-------
+ dlls/win32u/message.c   |  2 +-
+ 2 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/tests/msg.c
++++ b/dlls/user32/tests/msg.c
+@@ -15210,25 +15210,25 @@ static void test_interthread_set_foreground_window(struct test_set_foreground_wi
+     const struct test_set_foreground_window_desc test_sfw_tests[] =
+     {
+         { hwnd1, FALSE, FALSE, FALSE,  FALSE, WmEmptySeq, FALSE, WmEmptySeq, FALSE, sequence_2, FALSE, hwnd0 },
+-        { hwnd1, TRUE, FALSE, FALSE,   FALSE, WmEmptySeq,  TRUE, sequence_1,  TRUE, sequence_2,  TRUE, hwnd0 },
++        { hwnd1, TRUE, FALSE, FALSE,   FALSE, WmEmptySeq,  TRUE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+         { hwnd1, FALSE, TRUE, FALSE,   FALSE, WmEmptySeq, FALSE, WmEmptySeq, FALSE, sequence_2, FALSE, hwnd0 },
+-        { hwnd1, TRUE, TRUE, FALSE,    FALSE, WmEmptySeq,  TRUE, sequence_1,  TRUE, sequence_2,  TRUE, hwnd0 },
++        { hwnd1, TRUE, TRUE, FALSE,    FALSE, WmEmptySeq,  TRUE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+         { hwnd1, FALSE, FALSE, TRUE,   FALSE, WmEmptySeq, FALSE, WmEmptySeq, FALSE, sequence_2, FALSE, hwnd0 },
+-        { hwnd1, TRUE, FALSE, TRUE,    FALSE, WmEmptySeq,  TRUE, sequence_1,  TRUE, sequence_2,  TRUE, hwnd0 },
++        { hwnd1, TRUE, FALSE, TRUE,    FALSE, WmEmptySeq,  TRUE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+ 
+         { hwnd2, FALSE, FALSE, FALSE,  FALSE, WmEmptySeq, FALSE, sequence_3,  TRUE, sequence_0,  TRUE, hwnd1 },
+         { hwnd2, TRUE, FALSE, FALSE,   FALSE, WmEmptySeq, FALSE, sequence_3,  TRUE, sequence_0,  TRUE, hwnd1 },
+         { hwnd2, FALSE, TRUE, FALSE,   FALSE, sequence_3, FALSE, WmEmptySeq,  TRUE, sequence_0,  TRUE, hwnd1 },
+-        { hwnd2, TRUE, TRUE, FALSE,    FALSE, sequence_4,  TRUE, sequence_1,  TRUE, sequence_2,  TRUE, hwnd0 },
++        { hwnd2, TRUE, TRUE, FALSE,    FALSE, sequence_4,  TRUE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+         { hwnd2, FALSE, FALSE, TRUE,    TRUE, sequence_5, FALSE, WmEmptySeq,  TRUE, sequence_0,  TRUE, hwnd1 },
+-        { hwnd2, TRUE, FALSE, TRUE,     TRUE, sequence_6,  TRUE, sequence_1,  TRUE, sequence_2,  TRUE, hwnd0 },
++        { hwnd2, TRUE, FALSE, TRUE,     TRUE, sequence_6,  TRUE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+ 
+         { hwnd0, FALSE, FALSE, FALSE,  FALSE, WmEmptySeq, FALSE, sequence_3, FALSE, sequence_0, FALSE, hwnd1 },
+         { hwnd0, TRUE, FALSE, FALSE,   FALSE, WmEmptySeq, FALSE, sequence_3,  TRUE, sequence_0,  TRUE, hwnd1 },
+         { hwnd0, FALSE, TRUE, FALSE,   FALSE, sequence_3, FALSE, WmEmptySeq, FALSE, sequence_0, FALSE, hwnd1 },
+-        { hwnd0, TRUE, TRUE, FALSE,    FALSE, sequence_4,  TRUE, sequence_1,  TRUE, sequence_2, FALSE, hwnd0 },
++        { hwnd0, TRUE, TRUE, FALSE,    FALSE, sequence_4,  TRUE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+         { hwnd0, FALSE, FALSE, TRUE,    TRUE, sequence_5, FALSE, WmEmptySeq, FALSE, sequence_0, FALSE, hwnd1 },
+-        { hwnd0, TRUE, FALSE, TRUE,     TRUE, sequence_6,  TRUE, sequence_1,  TRUE, sequence_2, FALSE, hwnd0 },
++        { hwnd0, TRUE, FALSE, TRUE,     TRUE, sequence_6,  TRUE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+     };
+ 
+     DWORD i, res;
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -1101,7 +1101,7 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
+         if (is_desktop_window( hwnd )) return 0;
+         return set_window_style( hwnd, wparam, lparam );
+     case WM_WINE_SETACTIVEWINDOW:
+-        if (!wparam && NtUserGetForegroundWindow() == hwnd) return 0;
++        if (!wparam && get_window_thread( NtUserGetForegroundWindow(), NULL ) == GetCurrentThreadId()) return 0;
+         return (LRESULT)NtUserSetActiveWindow( (HWND)wparam );
+     case WM_WINE_KEYBOARD_LL_HOOK:
+     case WM_WINE_MOUSE_LL_HOOK:
+-- 
+2.36.1
+

@@ -1,0 +1,284 @@
+From 7b975f7a04de64e737752cc54c83561eba2649f4 Mon Sep 17 00:00:00 2001
+From: Zhiyi Zhang <zzhang@codeweavers.com>
+Date: Tue, 18 Jan 2022 14:38:23 +0800
+Subject: [PATCH 20/22] winex11.drv: Support _NET_WM_FULLSCREEN_MONITORS.
+
+Support _NET_WM_FULLSCREEN_MONITORS for fullscreen windows spanning multiple monitors.
+
+Fix Project Cars 2/3 incorrect game window size when the triple-screen mode is on.
+
+CW-Bug-Id: #19016
+Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
+---
+ dlls/user32/tests/win.c        |  1 -
+ dlls/winex11.drv/window.c      | 34 ++++++++++++++++++
+ dlls/winex11.drv/x11drv.h      |  2 ++
+ dlls/winex11.drv/x11drv_main.c |  1 +
+ dlls/winex11.drv/xinerama.c    | 64 ++++++++++++++++++++++++++++++++++
+ dlls/winex11.drv/xrandr.c      |  5 +++
+ 6 files changed, 106 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/tests/win.c
++++ b/dlls/user32/tests/win.c
+@@ -9366,7 +9366,6 @@ static void test_fullscreen(void)
+         flush_events(TRUE);
+ 
+         GetWindowRect(hwnd, &rc);
+-        todo_wine
+         ok(EqualRect(&rc, &virtual_rect), "Expected %s, got %s.\n",
+            wine_dbgstr_rect(&virtual_rect), wine_dbgstr_rect(&rc));
+         DestroyWindow(hwnd);
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -953,6 +953,38 @@ static int handle__net_wm_user_time_error( Display *dpy, XErrorEvent *event, voi
+     return 1;
+ }
+ 
++/* Update _NET_WM_FULLSCREEN_MONITORS when _NET_WM_STATE_FULLSCREEN is set to support fullscreen
++ * windows spanning multiple monitors */
++static void update_net_wm_fullscreen_monitors( struct x11drv_win_data *data )
++{
++    long monitors[4];
++    XEvent xev;
++
++    if (!(data->net_wm_state & (1 << NET_WM_STATE_FULLSCREEN)) || is_virtual_desktop())
++        return;
++
++    if (!data->mapped)
++    {
++        xinerama_get_fullscreen_monitors( &data->whole_rect, monitors );
++        XChangeProperty( data->display, data->whole_window, x11drv_atom(_NET_WM_FULLSCREEN_MONITORS),
++                         XA_CARDINAL, 32, PropModeReplace, (unsigned char *)monitors, 4 );
++    }
++    else
++    {
++        xev.xclient.type = ClientMessage;
++        xev.xclient.window = data->whole_window;
++        xev.xclient.message_type = x11drv_atom(_NET_WM_FULLSCREEN_MONITORS);
++        xev.xclient.serial = 0;
++        xev.xclient.display = data->display;
++        xev.xclient.send_event = True;
++        xev.xclient.format = 32;
++        xev.xclient.data.l[4] = 1;
++        xinerama_get_fullscreen_monitors( &data->whole_rect, xev.xclient.data.l );
++        XSendEvent( data->display, root_window, False,
++                    SubstructureRedirectMask | SubstructureNotifyMask, &xev );
++    }
++}
++
+ /***********************************************************************
+  *     set_window_user_time
+  */
+@@ -1079,6 +1111,7 @@ void update_net_wm_states( struct x11drv_win_data *data )
+         }
+     }
+     data->net_wm_state = new_state;
++    update_net_wm_fullscreen_monitors( data );
+ }
+ 
+ /***********************************************************************
+@@ -1176,6 +1209,7 @@ static void map_window( HWND hwnd, DWORD new_style )
+ 
+         data->mapped = TRUE;
+         data->iconic = (new_style & WS_MINIMIZE) != 0;
++        update_net_wm_fullscreen_monitors( data );
+     }
+     release_win_data( data );
+ }
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -487,6 +487,7 @@ enum x11drv_atoms
+     XATOM__NET_SYSTEM_TRAY_OPCODE,
+     XATOM__NET_SYSTEM_TRAY_S0,
+     XATOM__NET_SYSTEM_TRAY_VISUAL,
++    XATOM__NET_WM_FULLSCREEN_MONITORS,
+     XATOM__NET_WM_ICON,
+     XATOM__NET_WM_MOVERESIZE,
+     XATOM__NET_WM_NAME,
+@@ -710,6 +711,7 @@ extern POINT virtual_screen_to_root( INT x, INT y ) DECLSPEC_HIDDEN;
+ extern POINT root_to_virtual_screen( INT x, INT y ) DECLSPEC_HIDDEN;
+ extern RECT get_host_primary_monitor_rect(void) DECLSPEC_HIDDEN;
+ extern RECT get_work_area( const RECT *monitor_rect ) DECLSPEC_HIDDEN;
++extern void xinerama_get_fullscreen_monitors( const RECT *rect, long *indices ) DECLSPEC_HIDDEN;
+ extern void xinerama_init( unsigned int width, unsigned int height ) DECLSPEC_HIDDEN;
+ extern void init_recursive_mutex( pthread_mutex_t *mutex ) DECLSPEC_HIDDEN;
+ 
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -171,6 +171,7 @@ static const char * const atom_names[NB_XATOMS - FIRST_XATOM] =
+     "_NET_SYSTEM_TRAY_OPCODE",
+     "_NET_SYSTEM_TRAY_S0",
+     "_NET_SYSTEM_TRAY_VISUAL",
++    "_NET_WM_FULLSCREEN_MONITORS",
+     "_NET_WM_ICON",
+     "_NET_WM_MOVERESIZE",
+     "_NET_WM_NAME",
+diff --git a/dlls/winex11.drv/xinerama.c b/dlls/winex11.drv/xinerama.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/xinerama.c
++++ b/dlls/winex11.drv/xinerama.c
+@@ -45,6 +45,7 @@ static MONITORINFOEXW default_monitor =
+     { '\\','\\','.','\\','D','I','S','P','L','A','Y','1',0 }   /* szDevice */
+ };
+ 
++static pthread_mutex_t xinerama_section = PTHREAD_MUTEX_INITIALIZER;
+ static MONITORINFOEXW *monitors;
+ static int nb_monitors;
+ 
+@@ -122,6 +123,54 @@ static inline int query_screens(void)
+ 
+ #endif  /* SONAME_LIBXINERAMA */
+ 
++/* Get xinerama monitor indices required for _NET_WM_FULLSCREEN_MONITORS */
++void xinerama_get_fullscreen_monitors( const RECT *rect, long *indices )
++{
++    RECT window_rect, intersect, monitor_rect;
++    POINT offset;
++    INT i;
++
++    /* Convert window rectangle to root coordinates */
++    offset = virtual_screen_to_root( rect->left, rect->top );
++    window_rect.left = offset.x;
++    window_rect.top = offset.y;
++    window_rect.right = window_rect.left + rect->right - rect->left;
++    window_rect.bottom = window_rect.top + rect->bottom - rect->top;
++
++    /* Compare to xinerama monitor rectangles in root coordinates */
++    pthread_mutex_lock( &xinerama_section );
++    offset.x = INT_MAX;
++    offset.y = INT_MAX;
++    for (i = 0; i < nb_monitors; ++i)
++    {
++        offset.x = min( offset.x, monitors[i].rcMonitor.left );
++        offset.y = min( offset.y, monitors[i].rcMonitor.top );
++    }
++
++    memset( indices, -1, sizeof(*indices) * 4 );
++    for (i = 0; i < nb_monitors; ++i)
++    {
++        SetRect( &monitor_rect, monitors[i].rcMonitor.left - offset.x,
++                 monitors[i].rcMonitor.top - offset.y, monitors[i].rcMonitor.right - offset.x,
++                 monitors[i].rcMonitor.bottom - offset.y );
++        intersect_rect( &intersect, &window_rect, &monitor_rect );
++        if (EqualRect( &intersect, &monitor_rect ))
++        {
++            if (indices[0] == -1 || monitors[i].rcMonitor.top < monitors[indices[0]].rcMonitor.top)
++                indices[0] = i;
++            if (indices[1] == -1 || monitors[i].rcMonitor.bottom > monitors[indices[1]].rcMonitor.bottom)
++                indices[1] = i;
++            if (indices[2] == -1 || monitors[i].rcMonitor.left < monitors[indices[2]].rcMonitor.left)
++                indices[2] = i;
++            if (indices[3] == -1 || monitors[i].rcMonitor.right > monitors[indices[3]].rcMonitor.right)
++                indices[3] = i;
++        }
++    }
++
++    pthread_mutex_unlock( &xinerama_section );
++    TRACE( "fullsceen monitors: %ld,%ld,%ld,%ld.\n", indices[0], indices[1], indices[2], indices[3] );
++}
++
+ static BOOL xinerama_get_gpus( struct gdi_gpu **new_gpus, int *count )
+ {
+     static const WCHAR wine_adapterW[] = {'W','i','n','e',' ','A','d','a','p','t','e','r',0};
+@@ -157,9 +206,13 @@ static BOOL xinerama_get_adapters( ULONG_PTR gpu_id, struct gdi_adapter **new_ad
+         return FALSE;
+ 
+     /* Being lazy, actual adapter count may be less */
++    pthread_mutex_lock( &xinerama_section );
+     adapters = calloc( nb_monitors, sizeof(*adapters) );
+     if (!adapters)
++    {
++        pthread_mutex_unlock( &xinerama_section );
+         return FALSE;
++    }
+ 
+     primary_index = primary_monitor;
+     if (primary_index >= nb_monitors)
+@@ -204,6 +257,7 @@ static BOOL xinerama_get_adapters( ULONG_PTR gpu_id, struct gdi_adapter **new_ad
+ 
+     *new_adapters = adapters;
+     *count = index;
++    pthread_mutex_unlock( &xinerama_section );
+     return TRUE;
+ }
+ 
+@@ -223,6 +277,8 @@ static BOOL xinerama_get_monitors( ULONG_PTR adapter_id, struct gdi_monitor **ne
+     INT index = 0;
+     INT i;
+ 
++    pthread_mutex_lock( &xinerama_section );
++
+     for (i = first; i < nb_monitors; i++)
+     {
+         if (i == first
+@@ -233,7 +289,10 @@ static BOOL xinerama_get_monitors( ULONG_PTR adapter_id, struct gdi_monitor **ne
+ 
+     monitor = calloc( monitor_count, sizeof(*monitor) );
+     if (!monitor)
++    {
++        pthread_mutex_unlock( &xinerama_section );
+         return FALSE;
++    }
+ 
+     for (i = first; i < nb_monitors; i++)
+     {
+@@ -257,6 +316,7 @@ static BOOL xinerama_get_monitors( ULONG_PTR adapter_id, struct gdi_monitor **ne
+ 
+     *new_monitors = monitor;
+     *count = monitor_count;
++    pthread_mutex_unlock( &xinerama_section );
+     return TRUE;
+ }
+ 
+@@ -275,6 +335,8 @@ void xinerama_init( unsigned int width, unsigned int height )
+     if (is_virtual_desktop())
+         return;
+ 
++    pthread_mutex_lock( &xinerama_section );
++
+     SetRect( &rect, 0, 0, width, height );
+     if (!query_screens())
+     {
+@@ -298,6 +360,8 @@ void xinerama_init( unsigned int width, unsigned int height )
+                (monitors[i].dwFlags & MONITORINFOF_PRIMARY) ? " (primary)" : "" );
+     }
+ 
++    pthread_mutex_unlock( &xinerama_section );
++
+     handler.name = "Xinerama";
+     handler.priority = 100;
+     handler.get_gpus = xinerama_get_gpus;
+diff --git a/dlls/winex11.drv/xrandr.c b/dlls/winex11.drv/xrandr.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/xrandr.c
++++ b/dlls/winex11.drv/xrandr.c
+@@ -1180,6 +1180,8 @@ static void xrandr14_free_monitors( struct gdi_monitor *monitors, int count )
+ 
+ static BOOL xrandr14_device_change_handler( HWND hwnd, XEvent *event )
+ {
++    RECT rect;
++
+     xrandr14_invalidate_current_mode_cache();
+     if (hwnd == NtUserGetDesktopWindow() && NtUserGetWindowThread( hwnd, NULL ) == GetCurrentThreadId())
+     {
+@@ -1190,6 +1192,9 @@ static BOOL xrandr14_device_change_handler( HWND hwnd, XEvent *event )
+ 
+         init_registry_display_settings();
+     }
++    /* Update xinerama monitors for xinerama_get_fullscreen_monitors() */
++    rect = NtUserGetPrimaryMonitorRect();
++    xinerama_init( rect.right - rect.left, rect.bottom - rect.top );
+     return FALSE;
+ }
+ 
+-- 
+2.36.1
+

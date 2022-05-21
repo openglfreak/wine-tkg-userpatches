@@ -1,0 +1,131 @@
+From 1adb76a2457110fe317a25c7b8e49e48e9b0caf9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 17 Jan 2020 18:04:35 +0100
+Subject: [PATCH 8/9] winex11.drv: Add time parameter to focus events handlers.
+
+---
+ dlls/winex11.drv/event.c  | 44 ++++++++++++++++++++++++++-------------
+ dlls/winex11.drv/x11drv.h |  3 +++
+ 2 files changed, 32 insertions(+), 15 deletions(-)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -841,10 +841,7 @@ static const char * const focus_modes[] =
+     "NotifyWhileGrabbed"
+ };
+ 
+-/**********************************************************************
+- *              X11DRV_FocusIn
+- */
+-static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
++BOOL x11drv_handle_focus_in_event( HWND hwnd, XEvent *xev, Time time )
+ {
+     XFocusChangeEvent *event = &xev->xfocus;
+     XIC xic;
+@@ -881,14 +878,22 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
+         return TRUE;
+     }
+ 
+-    set_focus( event->display, event->window, hwnd, CurrentTime, FALSE );
++    set_focus( event->display, event->window, hwnd, time, FALSE );
+     return TRUE;
+ }
+ 
++/**********************************************************************
++ *              X11DRV_FocusIn
++ */
++static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
++{
++    return x11drv_handle_focus_in_event( hwnd, xev, CurrentTime );
++}
++
+ /**********************************************************************
+  *              focus_out
+  */
+-static void focus_out( Display *display , HWND hwnd )
++static void focus_out( Display *display , HWND hwnd, Time time )
+  {
+     Window focus_win;
+     int revert;
+@@ -925,12 +930,8 @@ static void focus_out( Display *display , HWND hwnd )
+     }
+  }
+ 
+-/**********************************************************************
+- *              X11DRV_FocusOut
+- *
+- * Note: only top-level windows get FocusOut events.
+- */
+-static BOOL X11DRV_FocusOut( HWND hwnd, XEvent *xev )
++
++BOOL x11drv_handle_focus_out_event( HWND hwnd, XEvent *xev, Time time )
+ {
+     XFocusChangeEvent *event = &xev->xfocus;
+ 
+@@ -967,11 +968,22 @@ static BOOL X11DRV_FocusOut( HWND hwnd, XEvent *xev )
+         return TRUE; /* ignore wm specific NotifyUngrab / NotifyGrab events w.r.t focus */
+     }
+ 
+-    focus_out( event->display, hwnd );
++    focus_out( event->display, hwnd, time );
+     return TRUE;
+ }
+ 
+ 
++/**********************************************************************
++ *              X11DRV_FocusOut
++ *
++ * Note: only top-level windows get FocusOut events.
++ */
++static BOOL X11DRV_FocusOut( HWND hwnd, XEvent *xev )
++{
++    return x11drv_handle_focus_out_event( hwnd, xev, CurrentTime );
++}
++
++
+ /***********************************************************************
+  *           X11DRV_Expose
+  */
+@@ -1804,6 +1816,8 @@ static void EVENT_DropURLs( HWND hWnd, XClientMessageEvent *event )
+  */
+ static void handle_xembed_protocol( HWND hwnd, XClientMessageEvent *event )
+ {
++    Time time = event->data.l[0];
++
+     switch (event->data.l[1])
+     {
+     case XEMBED_EMBEDDED_NOTIFY:
+@@ -1829,12 +1843,12 @@ static void handle_xembed_protocol( HWND hwnd, XClientMessageEvent *event )
+ 
+     case XEMBED_WINDOW_DEACTIVATE:
+         TRACE( "win %p/%lx XEMBED_WINDOW_DEACTIVATE message\n", hwnd, event->window );
+-        focus_out( event->display, NtUserGetAncestor( hwnd, GA_ROOT ) );
++        focus_out( event->display, NtUserGetAncestor( hwnd, GA_ROOT ), time );
+         break;
+ 
+     case XEMBED_FOCUS_OUT:
+         TRACE( "win %p/%lx XEMBED_FOCUS_OUT message\n", hwnd, event->window );
+-        focus_out( event->display, NtUserGetAncestor( hwnd, GA_ROOT ) );
++        focus_out( event->display, NtUserGetAncestor( hwnd, GA_ROOT ), time );
+         break;
+ 
+     case XEMBED_MODALITY_ON:
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -259,6 +259,9 @@ extern void X11DRV_XInput2_Load(void) DECLSPEC_HIDDEN;
+ extern void X11DRV_XInput2_Init(void) DECLSPEC_HIDDEN;
+ extern void X11DRV_XInput2_Enable( Display *display, Window window, long event_mask ) DECLSPEC_HIDDEN;
+ 
++BOOL x11drv_handle_focus_in_event( HWND hwnd, XEvent *xev, Time time );
++BOOL x11drv_handle_focus_out_event( HWND hwnd, XEvent *xev, Time time );
++
+ extern DWORD copy_image_bits( BITMAPINFO *info, BOOL is_r8g8b8, XImage *image,
+                               const struct gdi_image_bits *src_bits, struct gdi_image_bits *dst_bits,
+                               struct bitblt_coords *coords, const int *mapping, unsigned int zeropad_mask ) DECLSPEC_HIDDEN;
+-- 
+2.36.1
+

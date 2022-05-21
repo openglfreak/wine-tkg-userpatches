@@ -1,0 +1,127 @@
+From 2874a96bd177e09f7ad2d6d7d13d5f57c2363e16 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 24 Mar 2022 22:08:27 +0100
+Subject: [PATCH 03/16] user32/tests: Consistently ignore WM_MOUSEMOVE
+ messages.
+
+Unless explicitly tested.
+---
+ dlls/user32/tests/win.c | 52 ++++++++++++++++++++---------------------
+ 1 file changed, 26 insertions(+), 26 deletions(-)
+
+diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/tests/win.c
++++ b/dlls/user32/tests/win.c
+@@ -150,7 +150,7 @@ static void check_active_state_(const char *file, int line,
+     ok_(file, line)(focus == GetFocus(), "GetFocus() = %p\n", GetFocus());
+ }
+ 
+-static BOOL ignore_message( UINT message, HWND hwnd )
++static BOOL ignore_message( UINT message, HWND hwnd, BOOL ignore_moves )
+ {
+     WCHAR buffer[256];
+ 
+@@ -158,6 +158,12 @@ static BOOL ignore_message( UINT message, HWND hwnd )
+         !wcscmp( buffer, L"UserAdapterWindowClass" ))
+         return TRUE;
+ 
++    if (message == WM_MOUSEMOVE ||
++        message == WM_NCMOUSEMOVE)
++        return ignore_moves;
++    if (message == WM_PAINT)
++        return !ignore_moves;
++
+     /* these are always ignored */
+     return (message >= 0xc000 ||
+             message == WM_GETICON ||
+@@ -4336,7 +4342,7 @@ static BOOL peek_message( MSG *msg )
+     do
+     {
+         ret = PeekMessageA(msg, 0, 0, 0, PM_REMOVE);
+-    } while (ret && ignore_message(msg->message, msg->hwnd));
++    } while (ret && ignore_message(msg->message, msg->hwnd, TRUE));
+     return ret;
+ }
+ 
+@@ -4472,13 +4478,14 @@ static void test_mouse_input(HWND hwnd)
+     /* Check that setting the same position may generate WM_MOUSEMOVE */
+     SetCursorPos(x, y);
+     msg.message = 0;
+-    ret = peek_message(&msg);
+-    if (ret)
++    while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE))
+     {
+-        ok(msg.hwnd == popup && msg.message == WM_MOUSEMOVE, "hwnd %p message %04x\n",
+-           msg.hwnd, msg.message);
+-        ok(msg.pt.x == x && msg.pt.y == y, "wrong message coords (%d,%d)/(%ld,%ld)\n",
+-           x, y, msg.pt.x, msg.pt.y);
++        if (ignore_message(msg.message, msg.hwnd, FALSE)) continue;
++        ok(msg.message == WM_MOUSEMOVE, "got message %04x\n", msg.message);
++        ok(msg.hwnd == popup, "got hwnd %p\n", msg.hwnd);
++        ok(msg.pt.x == x, "got x %ld\n", msg.pt.x);
++        ok(msg.pt.y == y, "got y %ld\n", msg.pt.y);
++        DispatchMessageA(&msg);
+     }
+ 
+     /* force the system to update its internal queue mouse position,
+@@ -4493,9 +4500,9 @@ static void test_mouse_input(HWND hwnd)
+     /* FIXME: SetCursorPos in Wine generates additional WM_MOUSEMOVE message */
+     while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE))
+     {
+-        if (ignore_message(msg.message, msg.hwnd)) continue;
+-        ok(msg.hwnd == popup && msg.message == WM_MOUSEMOVE,
+-           "hwnd %p message %04x\n", msg.hwnd, msg.message);
++        if (ignore_message(msg.message, msg.hwnd, FALSE)) continue;
++        ok(msg.message == WM_MOUSEMOVE, "got message %04x\n", msg.message);
++        ok(msg.hwnd == popup, "got hwnd %p\n", msg.hwnd);
+         DispatchMessageA(&msg);
+     }
+     ret = peek_message(&msg);
+@@ -4503,9 +4510,14 @@ static void test_mouse_input(HWND hwnd)
+ 
+     mouse_event(MOUSEEVENTF_MOVE, -1, -1, 0, 0);
+     ShowWindow(popup, SW_HIDE);
+-    ret = wait_for_message( &msg );
+-    if (ret)
+-        ok(msg.hwnd == hwnd && msg.message == WM_MOUSEMOVE, "hwnd %p message %04x\n", msg.hwnd, msg.message);
++    while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE))
++    {
++        if (ignore_message(msg.message, msg.hwnd, FALSE)) continue;
++        ok(msg.message == WM_MOUSEMOVE, "got message %04x\n", msg.message);
++        ok(msg.hwnd == hwnd, "got hwnd %p\n", msg.hwnd);
++        DispatchMessageA(&msg);
++    }
++
+     flush_events( TRUE );
+ 
+     mouse_event(MOUSEEVENTF_MOVE, 1, 1, 0, 0);
+@@ -4534,12 +4546,6 @@ static void test_mouse_input(HWND hwnd)
+         skip( "simulating mouse click doesn't work, skipping mouse button tests\n" );
+         goto done;
+     }
+-    if (msg.message == WM_MOUSEMOVE)  /* win2k has an extra WM_MOUSEMOVE here */
+-    {
+-        ret = wait_for_message( &msg );
+-        ok(ret, "no message available\n");
+-    }
+-
+     ok(msg.hwnd == popup && msg.message == WM_LBUTTONDOWN, "hwnd %p/%p message %04x\n",
+        msg.hwnd, popup, msg.message);
+ 
+@@ -4614,12 +4620,6 @@ static void test_mouse_input(HWND hwnd)
+ 
+     ret = wait_for_message( &msg );
+     ok(ret, "no message available\n");
+-    if (msg.message == WM_NCMOUSEMOVE) /* not sent by Win10 1709+ */
+-    {
+-        ok(msg.hwnd == child, "expected %p, got %p\n", child, msg.hwnd);
+-        ret = wait_for_message( &msg );
+-        ok(ret, "no message available\n");
+-    }
+     ok(msg.hwnd == child && msg.message == WM_NCLBUTTONDOWN, "hwnd %p/%p message %04x\n",
+        msg.hwnd, child, msg.message);
+     ok(msg.wParam == HTSYSMENU, "wparam %Id\n", msg.wParam);
+-- 
+2.36.1
+

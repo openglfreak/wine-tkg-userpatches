@@ -1,6 +1,6 @@
-From 4394239f42539afde27bb3b144352e13eb6c6361 Mon Sep 17 00:00:00 2001
+From 933647432f5c8b23a7d5083d76524b9f979fd174 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
-Date: Fri, 12 Mar 2021 00:10:49 +0100
+Date: Sat, 7 May 2022 01:01:16 +0200
 Subject: [PATCH 07/14] winex11.drv: Move Xfixes extension query to
  process_attach.
 
@@ -18,7 +18,7 @@ diff --git a/dlls/winex11.drv/clipboard.c b/dlls/winex11.drv/clipboard.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/clipboard.c
 +++ b/dlls/winex11.drv/clipboard.c
-@@ -79,6 +79,7 @@
+@@ -83,6 +83,7 @@
  #include "ntstatus.h"
  #define WIN32_NO_STATUS
  #include "x11drv.h"
@@ -26,7 +26,7 @@ index 11111111111..11111111111 100644
  
  #ifdef HAVE_X11_EXTENSIONS_XFIXES_H
  #include <X11/extensions/Xfixes.h>
-@@ -196,7 +197,6 @@ static UINT rendered_formats;
+@@ -199,7 +200,6 @@ static UINT rendered_formats;
  static ULONG last_clipboard_update;
  static struct clipboard_format **current_x11_formats;
  static unsigned int nb_current_x11_formats;
@@ -34,7 +34,7 @@ index 11111111111..11111111111 100644
  
  Display *clipboard_display = NULL;
  
-@@ -2168,28 +2168,6 @@ static BOOL selection_notify_event( HWND hwnd, XEvent *event )
+@@ -2171,28 +2171,6 @@ static BOOL selection_notify_event( HWND hwnd, XEvent *event )
  static void xfixes_init(void)
  {
  #ifdef SONAME_LIBXFIXES
@@ -63,7 +63,7 @@ index 11111111111..11111111111 100644
      if (!use_xfixes) return;
  
      pXFixesSelectSelectionInput(clipboard_display, import_window, x11drv_atom(CLIPBOARD),
-@@ -2203,7 +2181,7 @@ static void xfixes_init(void)
+@@ -2206,7 +2184,7 @@ static void xfixes_init(void)
                  XFixesSelectionWindowDestroyNotifyMask |
                  XFixesSelectionClientCloseNotifyMask);
      }
@@ -76,7 +76,7 @@ diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -436,6 +436,7 @@ extern BOOL show_systray DECLSPEC_HIDDEN;
+@@ -424,6 +424,7 @@ extern BOOL show_systray DECLSPEC_HIDDEN;
  extern BOOL grab_pointer DECLSPEC_HIDDEN;
  extern BOOL grab_fullscreen DECLSPEC_HIDDEN;
  extern BOOL usexcomposite DECLSPEC_HIDDEN;
@@ -84,27 +84,27 @@ index 11111111111..11111111111 100644
  extern BOOL managed_mode DECLSPEC_HIDDEN;
  extern BOOL decorated_mode DECLSPEC_HIDDEN;
  extern BOOL private_color_map DECLSPEC_HIDDEN;
-@@ -443,6 +444,7 @@ extern int primary_monitor DECLSPEC_HIDDEN;
+@@ -431,6 +432,7 @@ extern int primary_monitor DECLSPEC_HIDDEN;
  extern int copy_default_colors DECLSPEC_HIDDEN;
  extern int alloc_system_colors DECLSPEC_HIDDEN;
  extern int xrender_error_base DECLSPEC_HIDDEN;
 +extern int xfixes_event_base DECLSPEC_HIDDEN;
- extern HMODULE x11drv_module DECLSPEC_HIDDEN;
  extern char *process_name DECLSPEC_HIDDEN;
  extern Display *clipboard_display DECLSPEC_HIDDEN;
+ extern WNDPROC client_foreign_window_proc;
 diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv_main.c
 +++ b/dlls/winex11.drv/x11drv_main.c
-@@ -47,6 +47,7 @@
+@@ -54,6 +54,7 @@
  
  #include "x11drv.h"
  #include "xcomposite.h"
 +#include "xfixes.h"
  #include "wine/server.h"
- #include "wine/unicode.h"
  #include "wine/debug.h"
-@@ -65,6 +66,7 @@ Window root_window;
+ #include "wine/list.h"
+@@ -74,6 +75,7 @@ Window root_window;
  BOOL usexvidmode = TRUE;
  BOOL usexrandr = TRUE;
  BOOL usexcomposite = TRUE;
@@ -112,15 +112,15 @@ index 11111111111..11111111111 100644
  BOOL use_xkb = TRUE;
  BOOL use_take_focus = TRUE;
  BOOL use_primary_selection = FALSE;
-@@ -82,6 +84,7 @@ BOOL shape_layered_windows = TRUE;
+@@ -91,6 +93,7 @@ BOOL shape_layered_windows = TRUE;
  int copy_default_colors = 128;
  int alloc_system_colors = 256;
  int xrender_error_base = 0;
 +int xfixes_event_base = 0;
  char *process_name = NULL;
+ WNDPROC client_foreign_window_proc = NULL;
  
- static x11drv_error_callback err_callback;   /* current callback for error */
-@@ -577,6 +580,63 @@ sym_not_found:
+@@ -606,6 +609,63 @@ sym_not_found:
  }
  #endif /* defined(SONAME_LIBXCOMPOSITE) */
  
@@ -184,7 +184,7 @@ index 11111111111..11111111111 100644
  static void init_visuals( Display *display, int screen )
  {
      int count;
-@@ -679,6 +739,9 @@ static NTSTATUS x11drv_init( void *arg )
+@@ -712,6 +772,9 @@ static NTSTATUS x11drv_init( void *arg )
      X11DRV_XF86VM_Init();
      /* initialize XRandR */
      X11DRV_XRandR_Init();
@@ -237,5 +237,5 @@ index 00000000000..11111111111
 +
 +#endif /* __WINE_XFIXES_H */
 -- 
-2.36.0
+2.36.1
 

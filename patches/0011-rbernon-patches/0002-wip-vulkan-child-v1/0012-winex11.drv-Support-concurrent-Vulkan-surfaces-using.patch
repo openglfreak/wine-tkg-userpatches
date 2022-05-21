@@ -1,4 +1,4 @@
-From 922209977fee1fbd7343776212da02f16dc79cc4 Mon Sep 17 00:00:00 2001
+From bd3db31d9d43d1d9f3c152e51b6391ea1f892427 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Fri, 22 Apr 2022 23:23:25 +0200
 Subject: [PATCH 12/14] winex11.drv: Support concurrent Vulkan surfaces using
@@ -12,7 +12,7 @@ diff --git a/dlls/winex11.drv/vulkan.c b/dlls/winex11.drv/vulkan.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/vulkan.c
 +++ b/dlls/winex11.drv/vulkan.c
-@@ -61,6 +61,7 @@ struct wine_vk_surface
+@@ -65,6 +65,7 @@ struct wine_vk_surface
      Window window;
      VkSurfaceKHR surface; /* native surface */
      VkPresentModeKHR present_mode;
@@ -20,7 +20,7 @@ index 11111111111..11111111111 100644
      BOOL offscreen; /* drawable is offscreen */
      HDC hdc;
      HWND hwnd;
-@@ -306,12 +307,21 @@ void resize_vk_surfaces(HWND hwnd, Window active, int mask, XWindowChanges *chan
+@@ -310,12 +311,21 @@ void resize_vk_surfaces(HWND hwnd, Window active, int mask, XWindowChanges *chan
  void sync_vk_surface(HWND hwnd, BOOL known_child)
  {
      struct wine_vk_surface *surface;
@@ -45,7 +45,7 @@ index 11111111111..11111111111 100644
      }
      pthread_mutex_unlock(&vulkan_mutex);
  }
-@@ -319,6 +329,7 @@ void sync_vk_surface(HWND hwnd, BOOL known_child)
+@@ -323,6 +333,7 @@ void sync_vk_surface(HWND hwnd, BOOL known_child)
  Window wine_vk_active_surface( HWND hwnd )
  {
      struct wine_vk_surface *surface, *active = NULL;
@@ -53,7 +53,7 @@ index 11111111111..11111111111 100644
      Window window;
  
      pthread_mutex_lock(&vulkan_mutex);
-@@ -326,9 +337,16 @@ Window wine_vk_active_surface( HWND hwnd )
+@@ -330,9 +341,16 @@ Window wine_vk_active_surface( HWND hwnd )
      {
          if (surface->hwnd != hwnd) continue;
          active = surface;
@@ -71,7 +71,7 @@ index 11111111111..11111111111 100644
      pthread_mutex_unlock(&vulkan_mutex);
  
      return window;
-@@ -480,7 +498,7 @@ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
+@@ -484,7 +502,7 @@ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
  {
      VkResult res;
      VkXlibSurfaceCreateInfoKHR create_info_host;
@@ -80,23 +80,23 @@ index 11111111111..11111111111 100644
  
      TRACE("%p %p %p %p\n", instance, create_info, allocator, surface);
  
-@@ -493,6 +511,7 @@ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
+@@ -497,6 +515,7 @@ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
  
      x11_surface->ref = 1;
      x11_surface->hwnd = create_info->hwnd;
 +    x11_surface->known_child = FALSE;
      if (x11_surface->hwnd)
      {
-         x11_surface->hdc = GetDC(create_info->hwnd);
-@@ -515,6 +534,7 @@ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
- 
-     if (create_info->hwnd && (NtUserGetWindowRelative( create_info->hwnd, GW_CHILD ) || NtUserGetAncestor( create_info->hwnd, GA_PARENT ) != NtUserGetDesktopWindow()))
+         x11_surface->hdc = NtUserGetDCEx(x11_surface->hwnd, 0, DCX_USESTYLE);
+@@ -520,6 +539,7 @@ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
+     if (create_info->hwnd && (NtUserGetWindowRelative(create_info->hwnd, GW_CHILD) ||
+                               NtUserGetAncestor(create_info->hwnd, GA_PARENT) != NtUserGetDesktopWindow()))
      {
 +        x11_surface->known_child = TRUE;
          TRACE("hwnd %p creating offscreen child window surface\n", x11_surface->hwnd);
          if (!wine_vk_surface_set_offscreen(x11_surface, TRUE))
          {
-@@ -537,6 +557,13 @@ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
+@@ -542,6 +562,13 @@ static VkResult X11DRV_vkCreateWin32SurfaceKHR(VkInstance instance,
      }
  
      pthread_mutex_lock(&vulkan_mutex);
@@ -111,5 +111,5 @@ index 11111111111..11111111111 100644
      pthread_mutex_unlock(&vulkan_mutex);
  
 -- 
-2.36.0
+2.36.1
 

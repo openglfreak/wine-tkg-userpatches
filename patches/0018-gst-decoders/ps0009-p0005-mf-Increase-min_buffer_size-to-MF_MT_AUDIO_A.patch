@@ -1,0 +1,37 @@
+From dc6a0dd83ec9458a767e9cd7ae26aaa6170dfbab Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 27 Jun 2022 14:12:43 +0200
+Subject: [PATCH 5/6] mf: Increase min_buffer_size to
+ MF_MT_AUDIO_AVG_BYTES_PER_SECOND.
+
+When it is specified. The Resampler transform exposes the block
+alignment in its output stream info cbSize, and the session then
+otherwise reads data one audio frame at a time.
+
+CW-Bug-Id: #20884
+---
+ dlls/mf/session.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/dlls/mf/session.c b/dlls/mf/session.c
+index 11111111111..11111111111 100644
+--- a/dlls/mf/session.c
++++ b/dlls/mf/session.c
+@@ -1438,6 +1438,7 @@ static HRESULT session_set_transform_stream_info(struct topo_node *node)
+     struct transform_stream *streams;
+     unsigned int block_alignment;
+     IMFMediaType *media_type;
++    UINT32 bytes_per_second;
+     GUID major = { 0 };
+     HRESULT hr;
+ 
+@@ -1479,6 +1480,8 @@ static HRESULT session_set_transform_stream_info(struct topo_node *node)
+                         && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, &block_alignment)))
+                 {
+                     streams[i].min_buffer_size = block_alignment;
++                    if (SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, &bytes_per_second)))
++                        streams[i].min_buffer_size = max(streams[i].min_buffer_size, bytes_per_second);
+                 }
+                 IMFMediaType_Release(media_type);
+             }
+

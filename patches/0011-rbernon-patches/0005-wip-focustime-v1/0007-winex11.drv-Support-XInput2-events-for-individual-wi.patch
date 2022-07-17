@@ -18,7 +18,7 @@ diff --git a/dlls/winex11.drv/desktop.c b/dlls/winex11.drv/desktop.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/desktop.c
 +++ b/dlls/winex11.drv/desktop.c
-@@ -363,6 +363,7 @@ NTSTATUS x11drv_create_desktop( void *arg )
+@@ -397,6 +397,7 @@ NTSTATUS x11drv_create_desktop( void *arg )
                           0, 0, params->width, params->height, 0, default_visual.depth, InputOutput,
                           default_visual.visual, CWEventMask | CWCursor | CWColormap, &win_attr );
      if (!win) return FALSE;
@@ -30,7 +30,7 @@ diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -243,6 +243,18 @@ static Bool filter_event( Display *display, XEvent *event, char *arg )
+@@ -237,6 +237,18 @@ static Bool filter_event( Display *display, XEvent *event, char *arg )
          return (mask & QS_MOUSEBUTTON) != 0;
  #ifdef GenericEvent
      case GenericEvent:
@@ -53,7 +53,7 @@ diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
-@@ -353,6 +353,7 @@ static void update_relative_valuators(XIAnyClassInfo **valuators, int n_valuator
+@@ -351,6 +351,7 @@ static void update_relative_valuators(XIAnyClassInfo **valuators, int n_valuator
      thread_data->x_valuator.value = 0;
      thread_data->y_valuator.value = 0;
  }
@@ -61,7 +61,7 @@ index 11111111111..11111111111 100644
  
  
  /***********************************************************************
-@@ -377,47 +378,48 @@ void X11DRV_XInput2_Init(void)
+@@ -375,47 +376,48 @@ void X11DRV_XInput2_Init(void)
  
  
  /***********************************************************************
@@ -136,7 +136,7 @@ index 11111111111..11111111111 100644
  #endif
  }
  
-@@ -463,7 +465,7 @@ static BOOL grab_clipping_window( const RECT *clip )
+@@ -461,7 +463,7 @@ static BOOL grab_clipping_window( const RECT *clip )
      }
  
      /* enable XInput2 unless we are already clipping */
@@ -145,7 +145,7 @@ index 11111111111..11111111111 100644
  
      TRACE( "clipping to %s win %lx\n", wine_dbgstr_rect(clip), clip_window );
  
-@@ -485,7 +487,7 @@ static BOOL grab_clipping_window( const RECT *clip )
+@@ -483,7 +485,7 @@ static BOOL grab_clipping_window( const RECT *clip )
  
      if (!clipping_cursor)
      {
@@ -154,7 +154,7 @@ index 11111111111..11111111111 100644
          NtUserDestroyWindow( msg_hwnd );
          return FALSE;
      }
-@@ -568,7 +570,7 @@ LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd )
+@@ -566,7 +568,7 @@ LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd )
          TRACE( "clip hwnd reset from %p\n", hwnd );
          data->clip_hwnd = 0;
          data->clip_reset = NtGetTickCount();
@@ -163,7 +163,7 @@ index 11111111111..11111111111 100644
          NtUserDestroyWindow( hwnd );
      }
      else if (prev_clip_hwnd)
-@@ -1971,6 +1973,52 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+@@ -1977,6 +1979,52 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
      return TRUE;
  }
  
@@ -216,7 +216,7 @@ index 11111111111..11111111111 100644
  #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
  
  /***********************************************************************
-@@ -2042,6 +2090,10 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+@@ -2048,6 +2096,10 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
      case XI_RawMotion:
          ret = X11DRV_RawMotion( event );
          break;
@@ -239,7 +239,7 @@ index 11111111111..11111111111 100644
      }
  }
  
-@@ -1701,6 +1702,7 @@ static void create_whole_window( struct x11drv_win_data *data )
+@@ -1702,6 +1703,7 @@ static void create_whole_window( struct x11drv_win_data *data )
                                          data->vis.visual, mask, &attr );
      if (!data->whole_window) goto done;
  
@@ -247,19 +247,19 @@ index 11111111111..11111111111 100644
      set_initial_wm_hints( data->display, data->whole_window );
      set_wm_hints( data );
  
-@@ -2028,6 +2030,7 @@ BOOL X11DRV_CreateWindow( HWND hwnd )
+@@ -2029,6 +2031,7 @@ BOOL X11DRV_CreateWindow( HWND hwnd )
          data->clip_window = XCreateWindow( data->display, root_window, 0, 0, 1, 1, 0, 0,
                                             InputOnly, default_visual.visual,
                                             CWOverrideRedirect | CWEventMask, &attr );
 +        X11DRV_XInput2_Enable( data->display, data->clip_window, attr.event_mask );
          XFlush( data->display );
          NtUserSetProp( hwnd, clip_window_prop, (HANDLE)data->clip_window );
-         x11drv_client_call( client_clipboard_init, 0 );
+         X11DRV_DisplayDevices_RegisterEventHandlers();
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -257,6 +257,7 @@ extern void X11DRV_ThreadDetach(void) DECLSPEC_HIDDEN;
+@@ -261,6 +261,7 @@ extern void X11DRV_ThreadDetach(void) DECLSPEC_HIDDEN;
  extern void X11DRV_Xcursor_Init(void) DECLSPEC_HIDDEN;
  extern void X11DRV_XInput2_Load(void) DECLSPEC_HIDDEN;
  extern void X11DRV_XInput2_Init(void) DECLSPEC_HIDDEN;
@@ -268,5 +268,5 @@ index 11111111111..11111111111 100644
  extern DWORD copy_image_bits( BITMAPINFO *info, BOOL is_r8g8b8, XImage *image,
                                const struct gdi_image_bits *src_bits, struct gdi_image_bits *dst_bits,
 -- 
-2.36.1
+2.37.1
 

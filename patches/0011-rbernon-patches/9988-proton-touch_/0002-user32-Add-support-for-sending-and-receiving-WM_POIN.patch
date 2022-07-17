@@ -1,0 +1,68 @@
+From 6e5030bce2ebf69b20608a458fc52292fec30b6c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 4 Oct 2021 20:57:55 +0200
+Subject: [PATCH 2/9] user32: Add support for sending and receiving WM_POINTER*
+ messages.
+
+CW-Bug-Id: #18214
+---
+ dlls/user32/misc.c    |  3 ++-
+ dlls/win32u/message.c | 16 ++++++++++++++++
+ 2 files changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/misc.c b/dlls/user32/misc.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/misc.c
++++ b/dlls/user32/misc.c
+@@ -518,7 +518,8 @@ BOOL WINAPI GetPointerType(UINT32 id, POINTER_INPUT_TYPE *type)
+         return FALSE;
+     }
+ 
+-    *type = PT_MOUSE;
++    if (id == 1) *type = PT_MOUSE;
++    else *type = PT_TOUCH;
+     return TRUE;
+ }
+ 
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -1312,6 +1312,16 @@ static void send_parent_notify( HWND hwnd, WORD event, WORD idChild, POINT pt )
+     }
+ }
+ 
++
++static BOOL process_pointer_message( MSG *msg, UINT hw_id, const struct hardware_msg_data *msg_data )
++{
++    msg->lParam = MAKELONG( msg_data->rawinput.mouse.x, msg_data->rawinput.mouse.y );
++    msg->wParam = msg_data->rawinput.mouse.data;
++    msg->pt = point_phys_to_win_dpi( msg->hwnd, msg->pt );
++    return TRUE;
++}
++
++
+ /***********************************************************************
+  *          process_keyboard_message
+  *
+@@ -1660,6 +1670,9 @@ static BOOL process_hardware_message( MSG *msg, UINT hw_id, const struct hardwar
+ 
+     if (msg->message == WM_INPUT || msg->message == WM_INPUT_DEVICE_CHANGE)
+         ret = user_callbacks && user_callbacks->process_rawinput_message( msg, hw_id, msg_data );
++    else if (msg->message == WM_POINTERDOWN || msg->message == WM_POINTERUP ||
++             msg->message == WM_POINTERUPDATE)
++        ret = process_pointer_message( msg, hw_id, msg_data );
+     else if (is_keyboard_message( msg->message ))
+         ret = process_keyboard_message( msg, hw_id, hwnd_filter, first, last, remove );
+     else if (is_mouse_message( msg->message ))
+@@ -2531,6 +2544,9 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
+             {
+             case WM_INPUT:
+             case WM_INPUT_DEVICE_CHANGE:
++            case WM_POINTERDOWN:
++            case WM_POINTERUP:
++            case WM_POINTERUPDATE:
+                 req->input.hw.rawinput.type = rawinput->header.dwType;
+                 switch (rawinput->header.dwType)
+                 {
+

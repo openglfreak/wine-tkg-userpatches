@@ -4,15 +4,19 @@ Date: Tue, 28 Sep 2021 10:55:20 +0200
 Subject: [PATCH 3/4] ntdll: Add CFI expressions for __wine_syscall_dispatcher.
 
 ---
- dlls/ntdll/unix/signal_i386.c   | 15 +++++++++++
- dlls/ntdll/unix/signal_x86_64.c | 45 +++++++++++++++++++++++++++++++++
- 2 files changed, 60 insertions(+)
+ dlls/ntdll/unix/signal_i386.c   | 16 ++++++++++++
+ dlls/ntdll/unix/signal_x86_64.c | 46 +++++++++++++++++++++++++++++++++
+ 2 files changed, 62 insertions(+)
 
 diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/signal_i386.c
 +++ b/dlls/ntdll/unix/signal_i386.c
-@@ -2587,10 +2587,15 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+@@ -2588,13 +2588,19 @@ __ASM_GLOBAL_FUNC( signal_exit_thread,
+  *           __wine_syscall_dispatcher
+  */
+ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
++                   /*__ASM_CFI(".cfi_signal_frame\n\t")*/
                     "movl %fs:0x1f8,%ecx\n\t"       /* x86_thread_data()->syscall_frame */
                     "movw $0,0x02(%ecx)\n\t"        /* frame->restore_flags */
                     "pushfl\n\t"
@@ -21,14 +25,14 @@ index 11111111111..11111111111 100644
 +                   __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t")
                     "popfl\n\t"
 +                   __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t")
-                    "popl 0x04(%ecx)\n"             /* frame->eflags */
+                    "popl 0x04(%ecx)\n\t"           /* frame->eflags */
 +                   __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t")
                     "popl 0x08(%ecx)\n\t"           /* frame->eip */
 +                   __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t")
+                    ".globl " __ASM_NAME("__wine_syscall_dispatcher_prolog_end") "\n"
                     __ASM_NAME("__wine_syscall_dispatcher_prolog_end") ":\n\t"
                     "movl %esp,0x0c(%ecx)\n\t"      /* frame->esp */
-                    "movw %cs,0x10(%ecx)\n\t"
-@@ -2605,6 +2610,16 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+@@ -2610,6 +2616,16 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                     "movl %esi,0x30(%ecx)\n\t"
                     "movl %ebp,0x34(%ecx)\n\t"
                     "leal 0x34(%ecx),%ebp\n\t"
@@ -49,7 +53,11 @@ diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
-@@ -3473,8 +3473,11 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+@@ -3600,11 +3600,15 @@ __ASM_GLOBAL_FUNC( signal_exit_thread,
+  *           __wine_syscall_dispatcher
+  */
+ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
++                   /*__ASM_CFI(".cfi_signal_frame\n\t")*/
                     "movq %gs:0x30,%rcx\n\t"
                     "movq 0x328(%rcx),%rcx\n\t"     /* amd64_thread_data()->syscall_frame */
                     "pushfq\n\t"
@@ -59,9 +67,9 @@ index 11111111111..11111111111 100644
                     "popq 0x70(%rcx)\n\t"           /* frame->rip */
 +                   __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
                     "movl $0,0x94(%rcx)\n\t"        /* frame->restore_flags */
+                    ".globl " __ASM_NAME("__wine_syscall_dispatcher_prolog_end") "\n"
                     __ASM_NAME("__wine_syscall_dispatcher_prolog_end") ":\n\t"
-                    "movq %rax,0x00(%rcx)\n\t"
-@@ -3494,6 +3497,20 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+@@ -3625,6 +3629,20 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                     "movw %ss,0x90(%rcx)\n\t"
                     "movw %gs,0x92(%rcx)\n\t"
                     "movq %rbp,0x98(%rcx)\n\t"
@@ -82,7 +90,7 @@ index 11111111111..11111111111 100644
                     /* Legends of Runeterra hooks the first system call return instruction, and
                      * depends on us returning to it. Adjust the return address accordingly. */
                     "subq $0xb,0x70(%rcx)\n\t"
-@@ -3532,6 +3549,20 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+@@ -3663,6 +3681,20 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                     "leaq -0x98(%rbp),%rcx\n"
                     "2:\n\t"
  #endif
@@ -103,7 +111,7 @@ index 11111111111..11111111111 100644
                     "leaq 0x28(%rsp),%rsi\n\t"      /* first argument */
                     "movq %rcx,%rsp\n\t"
                     "movq 0x00(%rcx),%rax\n\t"
-@@ -3560,6 +3591,20 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+@@ -3691,6 +3723,20 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                     "movq (%rbx),%r10\n\t"          /* table->ServiceTable */
                     "callq *(%r10,%rax,8)\n\t"
                     "leaq -0x98(%rbp),%rcx\n"
@@ -125,5 +133,5 @@ index 11111111111..11111111111 100644
  #ifdef __linux__
                     "testl $12,%r14d\n\t"           /* SYSCALL_HAVE_PTHREAD_TEB | SYSCALL_HAVE_WRFSGSBASE */
 -- 
-2.36.1
+2.37.1
 

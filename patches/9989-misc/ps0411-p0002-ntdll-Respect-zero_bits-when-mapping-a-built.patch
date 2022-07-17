@@ -1,40 +1,17 @@
+From: Brendan Shanks <wine@gitlab.winehq.org>
+Subject: [PATCH 2/2] ntdll: Respect zero_bits when mapping a builtin or native PE file.
+Message-Id: <wine-wine-mr269-v1-patch2@gitlab-mail-bridge>
+Date: Fri, 17 Jun 2022 19:37:02 +0000
+In-Reply-To: <wine-wine-mr269-v1@gitlab-mail-bridge>
+References: <merge_request_338@gitlab.winehq.org> <wine-wine-mr269-v1@gitlab-mail-bridge>
+
 From: Brendan Shanks <bshanks@codeweavers.com>
-Subject: [PATCH v3 2/2] ntdll: Respect zero_bits when mapping a builtin or native PE file.
-Message-Id: <20220504213111.25576-2-bshanks@codeweavers.com>
-Date: Wed,  4 May 2022 14:31:11 -0700
-In-Reply-To: <20220504213111.25576-1-bshanks@codeweavers.com>
-References: <20220504213111.25576-1-bshanks@codeweavers.com>
 
 Signed-off-by: Brendan Shanks <bshanks@codeweavers.com>
 ---
+ dlls/ntdll/unix/virtual.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
 
-v2: return CONFLICTING_ADDRESSES for map_view().
-
-The map_view() change fixes native DLLs, and virtual_map_section() for
-builtin DLLs. I wasn't sure how to test with a native DLL.
-
-This showed up under Wow64 when running the 64-bit Notepad++ installer
-(a 32-bit EXE), which runs 32-bit regsvr32 to register a 64-bit DLL.
-regsvr32 calls LoadLibraryExW() with LOAD_LIBRARY_AS_IMAGE_RESOURCE,
-which was returning a truncated pointer to the DLLs base address.
-Accessing this then crashed.
-
- dlls/ntdll/tests/virtual.c | 1 -
- dlls/ntdll/unix/virtual.c  | 5 ++++-
- 2 files changed, 4 insertions(+), 2 deletions(-)
-
-diff --git a/dlls/ntdll/tests/virtual.c b/dlls/ntdll/tests/virtual.c
-index 11111111111..11111111111 100644
---- a/dlls/ntdll/tests/virtual.c
-+++ b/dlls/ntdll/tests/virtual.c
-@@ -967,7 +967,6 @@ static void test_NtMapViewOfSection(void)
- 
-         ok(status == STATUS_SUCCESS || status == STATUS_IMAGE_NOT_AT_BASE, "NtMapViewOfSection returned %08lx\n", status);
-         ok(!((ULONG_PTR)ptr & 0xffff), "returned memory %p is not aligned to 64k\n", ptr);
--        todo_wine
-         ok(((UINT_PTR)ptr & ~get_zero_bits_mask(zero_bits)) == 0, "NtMapViewOfSection returned address %p\n", ptr);
- 
-         status = NtUnmapViewOfSection(process, ptr);
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/virtual.c
@@ -51,7 +28,7 @@ index 11111111111..11111111111 100644
 @@ -2672,7 +2674,8 @@ static NTSTATUS virtual_map_section( HANDLE handle, PVOID *addr_ptr, ULONG_PTR z
          filename = (WCHAR *)(image_info + 1);
          /* check if we can replace that mapping with the builtin */
-         res = load_builtin( image_info, filename, addr_ptr, size_ptr );
+         res = load_builtin( image_info, filename, addr_ptr, size_ptr, zero_bits );
 -        if (res == STATUS_IMAGE_ALREADY_LOADED)
 +        if (res == STATUS_IMAGE_ALREADY_LOADED ||
 +            is_beyond_limit( (void *)image_info->base, image_info->map_size, (void *)get_zero_bits_mask( zero_bits ) ))
@@ -59,6 +36,5 @@ index 11111111111..11111111111 100644
                                       alloc_type, image_info, filename, FALSE );
          if (shared_file) NtClose( shared_file );
 
--- 
-2.36.1
+
 

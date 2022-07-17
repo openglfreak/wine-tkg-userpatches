@@ -1,0 +1,130 @@
+From 9c2b5f7c44e560291d58d3ad83ede3629ca251b4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 7 Jun 2022 09:21:15 +0200
+Subject: [PATCH 27/30] winegstreamer: Support zero-copy
+ wg_parser_stream_read_data for wm_reader.
+
+---
+ dlls/winegstreamer/gst_private.h |  2 ++
+ dlls/winegstreamer/wg_sample.c   | 30 ++++++++++++++++++++++++++
+ dlls/winegstreamer/wm_reader.c   | 37 +++++---------------------------
+ 3 files changed, 37 insertions(+), 32 deletions(-)
+
+diff --git a/dlls/winegstreamer/gst_private.h b/dlls/winegstreamer/gst_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/gst_private.h
++++ b/dlls/winegstreamer/gst_private.h
+@@ -139,6 +139,8 @@ bool wg_sample_queue_find_mf(struct wg_sample_queue *queue, void *data,
+         struct wg_sample **wg_sample, IMFSample **mf_sample);
+ bool wg_sample_queue_find_qz(struct wg_sample_queue *queue, void *data,
+         struct wg_sample **wg_sample, IMediaSample **qz_sample);
++bool wg_sample_queue_find_wm(struct wg_sample_queue *queue, void *data,
++        struct wg_sample **wg_sample, INSSBuffer **wm_sample);
+ 
+ HRESULT wg_transform_push_mf(struct wg_transform *transform, struct wg_sample *sample,
+         struct wg_sample_queue *queue);
+diff --git a/dlls/winegstreamer/wg_sample.c b/dlls/winegstreamer/wg_sample.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wg_sample.c
++++ b/dlls/winegstreamer/wg_sample.c
+@@ -621,3 +621,33 @@ bool wg_sample_queue_find_qz(struct wg_sample_queue *queue, void *data,
+     LeaveCriticalSection(&queue->cs);
+     return !!*wg_sample;
+ }
++
++bool wg_sample_queue_find_wm(struct wg_sample_queue *queue, void *data,
++        struct wg_sample **wg_sample, INSSBuffer **wm_sample)
++{
++    struct sample *sample, *next;
++
++    *wg_sample = NULL;
++    EnterCriticalSection(&queue->cs);
++
++    LIST_FOR_EACH_ENTRY_SAFE(sample, next, &queue->samples, struct sample, entry)
++    {
++        if (sample->wg_sample.data != data)
++            continue;
++
++        if (sample->ops != &wm_sample_ops)
++        {
++            WARN_(wmvcore)("Invalid sample %p ops %p for data %p\n", sample->u.wm.sample, sample->ops, data);
++            break;
++        }
++
++        TRACE_(wmvcore)("Found sample %p for data %p\n", sample->u.wm.sample, data);
++        INSSBuffer_AddRef((*wm_sample = sample->u.wm.sample));
++        *wg_sample = &sample->wg_sample;
++        list_remove(&sample->entry);
++        break;
++    }
++
++    LeaveCriticalSection(&queue->cs);
++    return !!*wg_sample;
++}
+diff --git a/dlls/winegstreamer/wm_reader.c b/dlls/winegstreamer/wm_reader.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wm_reader.c
++++ b/dlls/winegstreamer/wm_reader.c
+@@ -1958,7 +1958,6 @@ static WORD get_earliest_buffer(struct wm_reader *reader, struct wg_parser_buffe
+ HRESULT wm_reader_get_stream_sample(struct wm_reader *reader, WORD stream_number,
+         INSSBuffer **ret_sample, QWORD *pts, QWORD *duration, DWORD *flags, WORD *ret_stream_number)
+ {
+-    IWMReaderCallbackAdvanced *callback_advanced = reader->callback_advanced;
+     struct wg_parser_stream *wg_stream;
+     struct wg_parser_buffer wg_buffer;
+     struct wg_sample *wg_sample;
+@@ -2008,46 +2007,20 @@ HRESULT wm_reader_get_stream_sample(struct wm_reader *reader, WORD stream_number
+ 
+         TRACE("Got buffer for '%s' stream %p.\n", get_major_type_string(stream->format.major_type), stream);
+ 
+-        if (callback_advanced && stream->read_compressed && stream->allocate_stream)
++        if (!wg_sample_queue_find_wm(reader->wg_sample_queue, wg_buffer.data, &wg_sample, &sample))
+         {
+-            if (FAILED(hr = IWMReaderCallbackAdvanced_AllocateForStream(callback_advanced,
+-                    stream->index + 1, wg_buffer.size, &sample, NULL)))
++            if (FAILED(hr = wm_allocate_sample(stream, wg_buffer.size, &sample)))
+             {
+                 ERR("Failed to allocate stream sample of %u bytes, hr %#lx.\n", wg_buffer.size, hr);
+                 return hr;
+             }
+-        }
+-        else if (callback_advanced && !stream->read_compressed && stream->allocate_output)
+-        {
+-            if (FAILED(hr = IWMReaderCallbackAdvanced_AllocateForOutput(callback_advanced,
+-                    stream->index, wg_buffer.size, &sample, NULL)))
++            if (FAILED(hr = wg_sample_create_wm(sample, &wg_sample)))
+             {
+-                ERR("Failed to allocate output sample of %u bytes, hr %#lx.\n", wg_buffer.size, hr);
++                ERR("Failed to create wg_sample, hr %#lx.\n", hr);
++                INSSBuffer_Release(sample);
+                 return hr;
+             }
+         }
+-        else
+-        {
+-            struct buffer *object;
+-
+-            /* FIXME: Should these be pooled? */
+-            if (!(object = calloc(1, offsetof(struct buffer, data[wg_buffer.size]))))
+-                return E_OUTOFMEMORY;
+-
+-            object->INSSBuffer_iface.lpVtbl = &buffer_vtbl;
+-            object->refcount = 1;
+-            object->capacity = wg_buffer.size;
+-
+-            TRACE("Created buffer %p.\n", object);
+-            sample = &object->INSSBuffer_iface;
+-        }
+-
+-        if (FAILED(hr = wg_sample_create_wm(sample, &wg_sample)))
+-        {
+-            ERR("Failed to create wg_sample, hr %#lx.\n", hr);
+-            INSSBuffer_Release(sample);
+-            return hr;
+-        }
+ 
+         success = wg_parser_stream_read_wm(wg_stream, wg_sample, pts, duration, flags);
+         wg_sample_release(wg_sample);
+-- 
+2.37.1
+

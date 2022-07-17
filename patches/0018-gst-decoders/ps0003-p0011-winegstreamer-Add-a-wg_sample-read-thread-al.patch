@@ -1,0 +1,290 @@
+From be676cc93f36b06b127ae6cfe6d12ce1a2028f6e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 6 Jun 2022 21:38:41 +0200
+Subject: [PATCH 11/30] winegstreamer: Add a wg_sample read thread allocation
+ request.
+
+---
+ dlls/winegstreamer/gst_private.h   |  2 +
+ dlls/winegstreamer/main.c          | 20 +++++++++
+ dlls/winegstreamer/media_source.c  |  4 ++
+ dlls/winegstreamer/quartz_parser.c |  4 ++
+ dlls/winegstreamer/unixlib.h       | 13 ++++++
+ dlls/winegstreamer/wg_parser.c     | 71 +++++++++++++++++++++++++++++-
+ dlls/winegstreamer/wm_reader.c     |  4 ++
+ 7 files changed, 116 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winegstreamer/gst_private.h b/dlls/winegstreamer/gst_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/gst_private.h
++++ b/dlls/winegstreamer/gst_private.h
+@@ -79,6 +79,8 @@ void wg_parser_disconnect(struct wg_parser *parser);
+ bool wg_parser_wait_request(struct wg_parser *parser, struct wg_request *request);
+ void wg_parser_push_data(struct wg_parser *parser, struct wg_sample *sample,
+         struct wg_sample_queue *queue);
++void wg_parser_done_alloc(struct wg_parser *parser, struct wg_sample *sample,
++        struct wg_sample_queue *queue);
+ 
+ uint32_t wg_parser_get_stream_count(struct wg_parser *parser);
+ struct wg_parser_stream *wg_parser_get_stream(struct wg_parser *parser, uint32_t index);
+diff --git a/dlls/winegstreamer/main.c b/dlls/winegstreamer/main.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/main.c
++++ b/dlls/winegstreamer/main.c
+@@ -142,6 +142,26 @@ void wg_parser_push_data(struct wg_parser *parser, struct wg_sample *sample,
+         wg_sample_queue_end_append(queue, sample);
+ }
+ 
++void wg_parser_done_alloc(struct wg_parser *parser, struct wg_sample *sample,
++        struct wg_sample_queue *queue)
++{
++    struct wg_parser_done_alloc_params params =
++    {
++        .parser = parser,
++        .sample = sample,
++    };
++
++    TRACE("parser %p, sample %p, queue %p.\n", parser, sample, queue);
++
++    if (sample)
++        wg_sample_queue_append(queue, sample);
++
++    __wine_unix_call(unix_handle, unix_wg_parser_done_alloc, &params);
++
++    if (sample)
++        wg_sample_queue_release(queue, sample, false);
++}
++
+ uint32_t wg_parser_get_stream_count(struct wg_parser *parser)
+ {
+     struct wg_parser_get_stream_count_params params =
+diff --git a/dlls/winegstreamer/media_source.c b/dlls/winegstreamer/media_source.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/media_source.c
++++ b/dlls/winegstreamer/media_source.c
+@@ -665,6 +665,10 @@ static DWORD CALLBACK read_thread(void *arg)
+                 break;
+             }
+ 
++            case WG_REQUEST_ALLOC:
++                wg_parser_done_alloc(source->wg_parser, NULL, NULL);
++                continue;
++
+             default:
+                 FIXME("Ingoring unknown request %u\n", request.type);
+                 continue;
+diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/quartz_parser.c
++++ b/dlls/winegstreamer/quartz_parser.c
+@@ -923,6 +923,10 @@ static DWORD CALLBACK read_thread(void *arg)
+                 break;
+             }
+ 
++            case WG_REQUEST_ALLOC:
++                wg_parser_done_alloc(filter->wg_parser, NULL, NULL);
++                continue;
++
+             default:
+                 FIXME("Ingoring unknown request %u\n", request.type);
+                 continue;
+diff --git a/dlls/winegstreamer/unixlib.h b/dlls/winegstreamer/unixlib.h
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/unixlib.h
++++ b/dlls/winegstreamer/unixlib.h
+@@ -141,6 +141,7 @@ struct wg_request
+     {
+         WG_REQUEST_NONE = 0,
+         WG_REQUEST_READ = 1,
++        WG_REQUEST_ALLOC = 2,
+     } type;
+ 
+     union
+@@ -150,6 +151,11 @@ struct wg_request
+             UINT32 size;
+             UINT64 offset;
+         } read;
++        struct
++        {
++            UINT32 size;
++            struct wg_parser_stream *stream;
++        } alloc;
+     } u;
+ };
+ 
+@@ -195,6 +201,12 @@ struct wg_parser_push_data_params
+     struct wg_sample *sample;
+ };
+ 
++struct wg_parser_done_alloc_params
++{
++    struct wg_parser *parser;
++    struct wg_sample *sample;
++};
++
+ struct wg_parser_get_stream_count_params
+ {
+     struct wg_parser *parser;
+@@ -295,6 +307,7 @@ enum unix_funcs
+ 
+     unix_wg_parser_wait_request,
+     unix_wg_parser_push_data,
++    unix_wg_parser_done_alloc,
+ 
+     unix_wg_parser_get_stream_count,
+     unix_wg_parser_get_stream,
+diff --git a/dlls/winegstreamer/wg_parser.c b/dlls/winegstreamer/wg_parser.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wg_parser.c
++++ b/dlls/winegstreamer/wg_parser.c
+@@ -97,6 +97,7 @@ struct wg_parser
+ struct wg_parser_stream
+ {
+     struct wg_parser *parser;
++    GstAllocator *allocator;
+ 
+     GstPad *their_src, *post_sink, *post_src, *my_sink;
+     GstElement *flip;
+@@ -153,6 +154,9 @@ static NTSTATUS wg_parser_wait_request(void *args)
+         case WG_REQUEST_READ:
+             params->request.u.read = entry->request.u.read;
+             break;
++        case WG_REQUEST_ALLOC:
++            params->request.u.alloc = entry->request.u.alloc;
++            break;
+     }
+ 
+     pthread_mutex_unlock(&parser->mutex);
+@@ -193,6 +197,26 @@ static NTSTATUS wg_parser_push_data(void *args)
+     return S_OK;
+ }
+ 
++static NTSTATUS wg_parser_done_alloc(void *args)
++{
++    const struct wg_parser_done_alloc_params *params = args;
++    struct wg_parser *parser = params->parser;
++    struct wg_sample *sample = params->sample;
++
++    if (sample)
++        InterlockedIncrement(&sample->refcount);
++
++    pthread_mutex_lock(&parser->mutex);
++    parser->request->result = GST_FLOW_OK;
++    parser->request->sample = sample;
++    parser->request->done = true;
++    parser->request = NULL;
++    pthread_mutex_unlock(&parser->mutex);
++    pthread_cond_signal(&parser->request_done_cond);
++
++    return S_OK;
++}
++
+ static NTSTATUS wg_parser_stream_get_preferred_format(void *args)
+ {
+     const struct wg_parser_stream_get_preferred_format_params *params = args;
+@@ -689,14 +713,16 @@ static gboolean sink_query_cb(GstPad *pad, GstObject *parent, GstQuery *query)
+             {
+                 gst_buffer_pool_config_set_params(config, caps,
+                         info.size, 0, 0);
++                gst_buffer_pool_config_set_allocator(config, stream->allocator, NULL);
+                 if (!gst_buffer_pool_set_config(pool, config))
+                     GST_ERROR("Failed to set pool %p config.", pool);
+             }
+ 
+             gst_query_add_allocation_pool(query, pool, info.size, 0, 0);
++            gst_query_add_allocation_param(query, stream->allocator, NULL);
+ 
+-            GST_INFO("Proposing pool %p, buffer size %#zx, for query %p.",
+-                    pool, info.size, query);
++            GST_INFO("Proposing pool %p, buffer size %#zx, allocator %p, for query %p.",
++                    pool, info.size, stream->allocator, query);
+ 
+             g_object_unref(pool);
+             return true;
+@@ -719,6 +745,43 @@ GstElement *create_element(const char *name, const char *plugin_set)
+     return element;
+ }
+ 
++static struct wg_sample *stream_request_sample(gsize size, void *context)
++{
++    struct wg_parser_stream *stream = context;
++    struct wg_parser *parser = stream->parser;
++    struct request_entry *entry;
++    struct wg_sample *sample;
++    GstFlowReturn result;
++
++    GST_LOG("stream %p, size %zu.", stream, size);
++
++    if (!(entry = calloc(1, sizeof(struct request_entry))))
++        return NULL;
++
++    pthread_mutex_lock(&parser->mutex);
++
++    entry->request.type = WG_REQUEST_ALLOC;
++    entry->request.u.alloc.size = size;
++    entry->request.u.alloc.stream = stream;
++    gst_atomic_queue_push(parser->request_queue, entry);
++    pthread_cond_signal(&parser->request_cond);
++    GST_INFO("Queued request %p", entry);
++
++    while (!entry->done)
++        pthread_cond_wait(&parser->request_done_cond, &parser->mutex);
++
++    result = entry->result;
++    sample = entry->sample;
++
++    pthread_mutex_unlock(&parser->mutex);
++
++    free(entry);
++
++    GST_LOG("Request returned %s.", gst_flow_get_name(result));
++
++    return sample;
++}
++
+ static struct wg_parser_stream *create_stream(struct wg_parser *parser)
+ {
+     struct wg_parser_stream *stream, **new_array;
+@@ -735,6 +798,7 @@ static struct wg_parser_stream *create_stream(struct wg_parser *parser)
+ 
+     stream->parser = parser;
+     stream->current_format.major_type = WG_MAJOR_TYPE_UNKNOWN;
++    stream->allocator = wg_allocator_create(stream_request_sample, stream);
+     pthread_cond_init(&stream->event_cond, NULL);
+     pthread_cond_init(&stream->event_empty_cond, NULL);
+ 
+@@ -751,6 +815,8 @@ static struct wg_parser_stream *create_stream(struct wg_parser *parser)
+ 
+ static void free_stream(struct wg_parser_stream *stream)
+ {
++    wg_allocator_destroy(stream->allocator);
++
+     if (stream->their_src)
+     {
+         if (stream->post_sink)
+@@ -1681,6 +1747,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
+ 
+     X(wg_parser_wait_request),
+     X(wg_parser_push_data),
++    X(wg_parser_done_alloc),
+ 
+     X(wg_parser_get_stream_count),
+     X(wg_parser_get_stream),
+diff --git a/dlls/winegstreamer/wm_reader.c b/dlls/winegstreamer/wm_reader.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wm_reader.c
++++ b/dlls/winegstreamer/wm_reader.c
+@@ -621,6 +621,10 @@ static DWORD CALLBACK read_thread(void *arg)
+                 break;
+             }
+ 
++            case WG_REQUEST_ALLOC:
++                wg_parser_done_alloc(reader->wg_parser, NULL, NULL);
++                continue;
++
+             default:
+                 FIXME("Ingoring unknown request %u\n", request.type);
+                 continue;
+-- 
+2.37.1
+

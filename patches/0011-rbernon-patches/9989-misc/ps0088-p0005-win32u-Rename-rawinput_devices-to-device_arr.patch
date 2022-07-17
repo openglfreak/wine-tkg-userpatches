@@ -1,0 +1,157 @@
+From c2d191b0d0a3b017c58f01fc2d80e293916c0f75 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 23 Dec 2021 11:28:39 +0100
+Subject: [PATCH 5/9] win32u: Rename rawinput_devices to device_array.
+
+And rawinput_devices_count (resp. rawinput_devices_max) to device_count,
+(resp. device_capacity).
+---
+ dlls/win32u/rawinput.c | 58 +++++++++++++++++++++---------------------
+ 1 file changed, 29 insertions(+), 29 deletions(-)
+
+diff --git a/dlls/win32u/rawinput.c b/dlls/win32u/rawinput.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/rawinput.c
++++ b/dlls/win32u/rawinput.c
+@@ -204,8 +204,8 @@ struct device
+     struct hid_preparsed_data *data;
+ };
+ 
+-static struct device *rawinput_devices;
+-static unsigned int rawinput_devices_count, rawinput_devices_max;
++static struct device *device_array;
++static unsigned int device_count, device_capacity;
+ 
+ static pthread_mutex_t rawinput_devices_mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
+@@ -341,10 +341,10 @@ static struct device *add_device( HKEY key, DWORD type )
+         break;
+     }
+ 
+-    for (i = 0; i < rawinput_devices_count && !device; ++i)
++    for (i = 0; i < device_count && !device; ++i)
+     {
+-        if (rawinput_devices[i].handle == UlongToHandle(handle))
+-            device = rawinput_devices + i;
++        if (device_array[i].handle == UlongToHandle(handle))
++            device = device_array + i;
+     }
+ 
+     if (device)
+@@ -354,10 +354,10 @@ static struct device *add_device( HKEY key, DWORD type )
+         NtClose( device->file );
+         free( device->path );
+     }
+-    else if (array_reserve( (void **)&rawinput_devices, &rawinput_devices_max,
+-                            rawinput_devices_count + 1, sizeof(*rawinput_devices) ))
++    else if (array_reserve( (void **)&device_array, &device_capacity,
++                            device_count + 1, sizeof(*device_array) ))
+     {
+-        device = &rawinput_devices[rawinput_devices_count++];
++        device = &device_array[device_count++];
+         TRACE( "Adding device %#x / %s.\n", handle, debugstr_w(path) );
+     }
+     else
+@@ -454,13 +454,13 @@ static void rawinput_update_device_list(void)
+     pthread_mutex_lock( &rawinput_devices_mutex );
+ 
+     /* destroy previous list */
+-    for (i = 0; i < rawinput_devices_count; ++i)
++    for (i = 0; i < device_count; ++i)
+     {
+-        free( rawinput_devices[i].data );
+-        NtClose( rawinput_devices[i].file );
+-        free( rawinput_devices[i].path );
++        free( device_array[i].data );
++        NtClose( device_array[i].file );
++        free( device_array[i].path );
+     }
+-    rawinput_devices_count = 0;
++    device_count = 0;
+ 
+     enumerate_devices( RIM_TYPEHID, guid_devinterface_hidW );
+     enumerate_devices( RIM_TYPEMOUSE, guid_devinterface_mouseW );
+@@ -473,18 +473,18 @@ static struct device *find_device_from_handle( HANDLE handle )
+ {
+     unsigned int i;
+ 
+-    for (i = 0; i < rawinput_devices_count; ++i)
++    for (i = 0; i < device_count; ++i)
+     {
+-        if (rawinput_devices[i].handle == handle)
+-            return rawinput_devices + i;
++        if (device_array[i].handle == handle)
++            return device_array + i;
+     }
+ 
+     rawinput_update_device_list();
+ 
+-    for (i = 0; i < rawinput_devices_count; ++i)
++    for (i = 0; i < device_count; ++i)
+     {
+-        if (rawinput_devices[i].handle == handle)
+-            return rawinput_devices + i;
++        if (device_array[i].handle == handle)
++            return device_array + i;
+     }
+     return NULL;
+ }
+@@ -506,12 +506,12 @@ BOOL rawinput_device_get_usages( HANDLE handle, USAGE *usage_page, USAGE *usage
+ /**********************************************************************
+  *         NtUserGetRawInputDeviceList   (win32u.@)
+  */
+-UINT WINAPI NtUserGetRawInputDeviceList( RAWINPUTDEVICELIST *devices, UINT *device_count, UINT size )
++UINT WINAPI NtUserGetRawInputDeviceList( RAWINPUTDEVICELIST *devices, UINT *count, UINT size )
+ {
+     static unsigned int last_check;
+     unsigned int i, ticks = NtGetTickCount();
+ 
+-    TRACE("devices %p, device_count %p, size %u.\n", devices, device_count, size);
++    TRACE("devices %p, count %p, size %u.\n", devices, count, size);
+ 
+     if (size != sizeof(*devices))
+     {
+@@ -519,7 +519,7 @@ UINT WINAPI NtUserGetRawInputDeviceList( RAWINPUTDEVICELIST *devices, UINT *devi
+         return ~0u;
+     }
+ 
+-    if (!device_count)
++    if (!count)
+     {
+         SetLastError( ERROR_NOACCESS );
+         return ~0u;
+@@ -533,24 +533,24 @@ UINT WINAPI NtUserGetRawInputDeviceList( RAWINPUTDEVICELIST *devices, UINT *devi
+ 
+     if (!devices)
+     {
+-        *device_count = rawinput_devices_count;
++        *count = device_count;
+         return 0;
+     }
+ 
+-    if (*device_count < rawinput_devices_count)
++    if (*count < device_count)
+     {
+         SetLastError( ERROR_INSUFFICIENT_BUFFER );
+-        *device_count = rawinput_devices_count;
++        *count = device_count;
+         return ~0u;
+     }
+ 
+-    for (i = 0; i < rawinput_devices_count; ++i)
++    for (i = 0; i < device_count; ++i)
+     {
+-        devices[i].hDevice = rawinput_devices[i].handle;
+-        devices[i].dwType = rawinput_devices[i].info.dwType;
++        devices[i].hDevice = device_array[i].handle;
++        devices[i].dwType = device_array[i].info.dwType;
+     }
+ 
+-    return rawinput_devices_count;
++    return device_count;
+ }
+ 
+ /**********************************************************************
+-- 
+2.37.1
+

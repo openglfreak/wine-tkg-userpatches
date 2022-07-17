@@ -1,0 +1,128 @@
+From 750b0c05ca81b10a0350b4372c9d2f0e3b264e5f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 5 Oct 2021 16:14:48 +0200
+Subject: [PATCH 6/9] winex11.drv: Send legacy and rawinput mouse messages on
+ touch input.
+
+CW-Bug-Id: #18214
+---
+ dlls/win32u/message.c    | 63 +++++++++++++++++++++-------------------
+ dlls/winex11.drv/mouse.c | 16 ++++++++++
+ server/queue.c           |  2 ++
+ 3 files changed, 51 insertions(+), 30 deletions(-)
+
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -1615,36 +1615,39 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+        in the WM_SETCURSOR message even if it's non-client mouse message */
+     send_message( msg->hwnd, WM_SETCURSOR, (WPARAM)msg->hwnd, MAKELONG( hittest, msg->message ));
+ 
+-    if (enable_mouse_in_pointer) switch (msg->message)
+-    {
+-    case WM_MOUSEMOVE:
+-    case WM_LBUTTONDOWN:
+-    case WM_LBUTTONUP:
+-    case WM_RBUTTONDOWN:
+-    case WM_RBUTTONUP:
+-    case WM_MBUTTONDOWN:
+-    case WM_MBUTTONUP:
+-    case WM_XBUTTONDOWN:
+-    case WM_XBUTTONUP:
+-    {
+-        WORD flags = POINTER_MESSAGE_FLAG_INRANGE|POINTER_MESSAGE_FLAG_INCONTACT|POINTER_MESSAGE_FLAG_PRIMARY;
+-        if (msg->message == WM_LBUTTONDOWN) flags |= POINTER_MESSAGE_FLAG_FIRSTBUTTON;
+-        if (msg->message == WM_RBUTTONDOWN) flags |= POINTER_MESSAGE_FLAG_SECONDBUTTON;
+-        if (msg->message == WM_MBUTTONDOWN) flags |= POINTER_MESSAGE_FLAG_THIRDBUTTON;
+-        if (msg->message == WM_XBUTTONDOWN && LOWORD( msg->wParam ) == MK_LBUTTON) flags |= POINTER_MESSAGE_FLAG_FIRSTBUTTON;
+-        if (msg->message == WM_XBUTTONDOWN && LOWORD( msg->wParam ) == MK_RBUTTON) flags |= POINTER_MESSAGE_FLAG_SECONDBUTTON;
+-        if (msg->message == WM_XBUTTONDOWN && LOWORD( msg->wParam ) == MK_MBUTTON) flags |= POINTER_MESSAGE_FLAG_THIRDBUTTON;
+-        if (msg->message == WM_XBUTTONDOWN && LOWORD( msg->wParam ) == MK_XBUTTON1) flags |= POINTER_MESSAGE_FLAG_FOURTHBUTTON;
+-        if (msg->message == WM_XBUTTONDOWN && LOWORD( msg->wParam ) == MK_XBUTTON2) flags |= POINTER_MESSAGE_FLAG_FIFTHBUTTON;
+-        send_message( msg->hwnd, WM_POINTERUPDATE, MAKELONG( 1, flags ), MAKELONG( msg->pt.x, msg->pt.y ) );
+-        break;
+-    }
+-    case WM_MOUSEWHEEL:
+-        send_message( msg->hwnd, WM_POINTERWHEEL, MAKELONG( 1, HIWORD( msg->wParam ) ), MAKELONG( msg->pt.x, msg->pt.y ) );
+-        break;
+-    case WM_MOUSEHWHEEL:
+-        send_message( msg->hwnd, WM_POINTERHWHEEL, MAKELONG( 1, HIWORD( msg->wParam ) ), MAKELONG( msg->pt.x, msg->pt.y ) );
+-        break;
++    if ((extra_info & 0xffffff00) != 0xff515700 && enable_mouse_in_pointer)
++    {
++        switch (msg->message)
++        {
++        case WM_MOUSEMOVE:
++        case WM_LBUTTONDOWN:
++        case WM_LBUTTONUP:
++        case WM_RBUTTONDOWN:
++        case WM_RBUTTONUP:
++        case WM_MBUTTONDOWN:
++        case WM_MBUTTONUP:
++        case WM_XBUTTONDOWN:
++        case WM_XBUTTONUP:
++        {
++            WORD flags = POINTER_MESSAGE_FLAG_INRANGE|POINTER_MESSAGE_FLAG_INCONTACT|POINTER_MESSAGE_FLAG_PRIMARY;
++            if (msg->message == WM_LBUTTONDOWN) flags |= POINTER_MESSAGE_FLAG_FIRSTBUTTON;
++            if (msg->message == WM_RBUTTONDOWN) flags |= POINTER_MESSAGE_FLAG_SECONDBUTTON;
++            if (msg->message == WM_MBUTTONDOWN) flags |= POINTER_MESSAGE_FLAG_THIRDBUTTON;
++            if (msg->message == WM_XBUTTONDOWN && LOWORD( msg->wParam ) == MK_LBUTTON) flags |= POINTER_MESSAGE_FLAG_FIRSTBUTTON;
++            if (msg->message == WM_XBUTTONDOWN && LOWORD( msg->wParam ) == MK_RBUTTON) flags |= POINTER_MESSAGE_FLAG_SECONDBUTTON;
++            if (msg->message == WM_XBUTTONDOWN && LOWORD( msg->wParam ) == MK_MBUTTON) flags |= POINTER_MESSAGE_FLAG_THIRDBUTTON;
++            if (msg->message == WM_XBUTTONDOWN && LOWORD( msg->wParam ) == MK_XBUTTON1) flags |= POINTER_MESSAGE_FLAG_FOURTHBUTTON;
++            if (msg->message == WM_XBUTTONDOWN && LOWORD( msg->wParam ) == MK_XBUTTON2) flags |= POINTER_MESSAGE_FLAG_FIFTHBUTTON;
++            send_message( msg->hwnd, WM_POINTERUPDATE, MAKELONG( 1, flags ), MAKELONG( msg->pt.x, msg->pt.y ) );
++            break;
++        }
++        case WM_MOUSEWHEEL:
++            send_message( msg->hwnd, WM_POINTERWHEEL, MAKELONG( 1, HIWORD( msg->wParam ) ), MAKELONG( msg->pt.x, msg->pt.y ) );
++            break;
++        case WM_MOUSEHWHEEL:
++            send_message( msg->hwnd, WM_POINTERHWHEEL, MAKELONG( 1, HIWORD( msg->wParam ) ), MAKELONG( msg->pt.x, msg->pt.y ) );
++            break;
++        }
+     }
+ 
+     msg->message = message;
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -2088,6 +2088,22 @@ static BOOL X11DRV_RawTouchEvent( XGenericEventCookie *xev )
+     rawinput.data.mouse.lLastX = pos.x;
+     rawinput.data.mouse.lLastY = pos.y;
+ 
++    __wine_send_input( 0, &input, &rawinput );
++    if (!(flags & POINTER_MESSAGE_FLAG_PRIMARY)) return TRUE;
++
++    input.type             = INPUT_MOUSE;
++    input.u.mi.mouseData   = 0;
++    input.u.mi.dwFlags     = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
++    if (event->evtype == XI_RawTouchBegin) input.u.mi.dwFlags |= MOUSEEVENTF_LEFTDOWN;
++    if (event->evtype == XI_RawTouchEnd) input.u.mi.dwFlags |= MOUSEEVENTF_LEFTUP;
++    input.u.mi.time        = x11drv_time_to_ticks( event->time );
++    input.u.mi.dx          = rawinput.data.mouse.lLastX;
++    input.u.mi.dy          = rawinput.data.mouse.lLastY;
++    input.u.mi.dwExtraInfo = 0xff515700;
++
++    rawinput.data.mouse.usFlags = input.u.mi.dwFlags;
++    rawinput.data.mouse.ulRawButtons = 0;
++
+     __wine_send_input( 0, &input, &rawinput );
+     return TRUE;
+ }
+diff --git a/server/queue.c b/server/queue.c
+index 11111111111..11111111111 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -2065,6 +2065,8 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
+         WM_MOUSEHWHEEL   /* 0x1000 = MOUSEEVENTF_HWHEEL */
+     };
+ 
++    if ((input->mouse.info & 0xffffff00) == 0xff515700) source.origin = IMDT_TOUCH;
++
+     update_desktop_cursor_pos( desktop, win, desktop->shared->cursor.x, desktop->shared->cursor.y ); /* Update last change time */
+     flags = input->mouse.flags;
+     time  = input->mouse.time;
+

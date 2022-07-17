@@ -1,0 +1,72 @@
+From: Zebediah Figura <wine@gitlab.winehq.org>
+Subject: [PATCH v2 1/1] ntdll: Do not use find_subheap() to find the subheap corresponding to an uncommitted region.
+Message-Id: <wine-wine-mr425-v2-patch1@gitlab-mail-bridge>
+Date: Mon, 11 Jul 2022 21:17:40 +0000
+In-Reply-To: <wine-wine-mr425-v2@gitlab-mail-bridge>
+References: <merge_request_507@gitlab.winehq.org> <wine-wine-mr425-v2@gitlab-mail-bridge>
+
+From: Zebediah Figura <zfigura@codeweavers.com>
+
+The commit end of a subheap may be equal to the beginning of another subheap, in
+which case find_subheap() will return that one, and we may effectively skip
+backwards in the subheap list.
+
+This fixes a hang on starting or loading a game with Bloodrayne: Terminal Cut.
+
+---
+
+There may be a more architecturally palatable way to solve this problem, but
+hopefully this is enough to at least demonstrate it.
+---
+ dlls/ntdll/heap.c | 23 +++++++++++++++++++++--
+ 1 file changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/heap.c b/dlls/ntdll/heap.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/heap.c
++++ b/dlls/ntdll/heap.c
+@@ -615,6 +615,20 @@ static SUBHEAP *find_subheap( const struct heap *heap, const struct block *block
+ }
+ 
+ 
++static SUBHEAP *find_subheap_by_commit_end( const struct heap *heap, const void *commit_end )
++{
++    SUBHEAP *subheap;
++
++    LIST_FOR_EACH_ENTRY( subheap, &heap->subheap_list, SUBHEAP, entry )
++    {
++        if (subheap_commit_end( subheap ) == commit_end)
++            return subheap;
++    }
++
++    return NULL;
++}
++
++
+ static inline BOOL subheap_commit( const struct heap *heap, SUBHEAP *subheap, const struct block *block, SIZE_T block_size )
+ {
+     const char *end = (char *)subheap_base( subheap ) + subheap_size( subheap ), *commit_end;
+@@ -1881,13 +1895,18 @@ static NTSTATUS heap_walk_blocks( const struct heap *heap, const SUBHEAP *subhea
+ 
+ static NTSTATUS heap_walk( const struct heap *heap, struct rtl_heap_entry *entry )
+ {
+-    const ARENA_LARGE *large;
++    const ARENA_LARGE *large = NULL;
+     const struct list *next;
+     const SUBHEAP *subheap;
+     NTSTATUS status;
+     char *base;
+ 
+-    if ((large = find_large_block( heap, entry->lpData )))
++    if (entry->wFlags & RTL_HEAP_ENTRY_UNCOMMITTED)
++    {
++        subheap = find_subheap_by_commit_end( heap, entry->lpData );
++        next = &subheap->entry;
++    }
++    else if ((large = find_large_block( heap, entry->lpData )))
+         next = &large->entry;
+     else if ((subheap = find_subheap( heap, entry->lpData, TRUE )))
+     {
+
+
+

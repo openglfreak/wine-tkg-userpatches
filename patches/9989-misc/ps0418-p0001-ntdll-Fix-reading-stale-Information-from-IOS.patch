@@ -1,0 +1,74 @@
+From: Jinoh Kang <wine@gitlab.winehq.org>
+Subject: [PATCH v2 1/1] ntdll: Fix reading stale Information from IOSB.
+Message-Id: <wine-wine-mr155-v2-patch1@gitlab-mail-bridge>
+Date: Mon, 30 May 2022 19:20:46 +0000
+In-Reply-To: <wine-wine-mr155-v2@gitlab-mail-bridge>
+References: <merge_request_219@gitlab.winehq.org> <wine-wine-mr155-v2@gitlab-mail-bridge>
+
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+
+Enforce proper atomic update so that other threads do not read stale
+data from IO_STATUS_BLOCK.
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ dlls/ntdll/unix/unix_private.h | 26 +++++++++++++++++++++++---
+ 1 file changed, 23 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -383,6 +383,8 @@ static inline BOOL in_wow64_call(void)
+ 
+ static inline void set_async_iosb( client_ptr_t iosb, NTSTATUS status, ULONG_PTR info )
+ {
++    NTSTATUS *status_ptr;
++
+     if (!iosb) return;
+ 
+     if (in_wow64_call())
+@@ -392,19 +394,37 @@ static inline void set_async_iosb( client_ptr_t iosb, NTSTATUS status, ULONG_PTR
+             NTSTATUS Status;
+             ULONG    Information;
+         } *io = wine_server_get_ptr( iosb );
+-        io->Status = status;
++        status_ptr = &io->Status;
+         io->Information = info;
+     }
+     else
+     {
+         IO_STATUS_BLOCK *io = wine_server_get_ptr( iosb );
+ #ifdef NONAMELESSUNION
+-        io->u.Status = status;
++        status_ptr = &io->u.Status;
+ #else
+-        io->Status = status;
++        status_ptr = &io->Status;
+ #endif
+         io->Information = info;
+     }
++
++    /* GetOverlappedResultEx() skips waiting for the event/file handle if the
++     * Status field indicates completion, and returns the result from the
++     * Information field.
++     *
++     * Hence, we have to ensure that writes to the Information field are seen
++     * from the other threads *before* writes to the Status field.
++     *
++     * Otherwise, a race condition results: if writing the Status field has
++     * been completed but the subsequent update to the Information field has
++     * not, the application may end up reading stale value from it.
++     *
++     * The race condition can be especially problematic with applications that
++     * use the HasOverlappedIoCompleted() macro in a tight loop to busy-wait
++     * for completion of overlapped I/O.
++     */
++    MemoryBarrier();  /* TODO: consider replacing with a store-release. */
++    *(volatile NTSTATUS *)status_ptr = status;
+ }
+ 
+ static inline client_ptr_t iosb_client_ptr( IO_STATUS_BLOCK *io )
+
+
+

@@ -1,0 +1,62 @@
+From 7d5d6f0f59bda37d06fe032b354ecf389f427895 Mon Sep 17 00:00:00 2001
+From: Connor McAdams <cmcadams@codeweavers.com>
+Date: Fri, 23 Jul 2021 13:46:32 -0400
+Subject: [PATCH] user32: Raise EVENT_OBJECT_FOCUS WinEvent when window
+ receives focus.
+
+Signed-off-by: Connor McAdams <cmcadams@codeweavers.com>
+CW-Bug-Id: #18351
+---
+ dlls/win32u/input.c | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -1560,7 +1560,7 @@ HWND get_focus(void)
+  *
+  * Change the focus window, sending the WM_SETFOCUS and WM_KILLFOCUS messages
+  */
+-static HWND set_focus_window( HWND hwnd, HWND last_focus )
++static HWND set_focus_window( HWND hwnd, HWND last_focus, BOOL from_active )
+ {
+     HWND previous = 0, ime_hwnd;
+     BOOL ret;
+@@ -1578,6 +1578,9 @@ static HWND set_focus_window( HWND hwnd, HWND last_focus )
+ 
+     if (previous)
+     {
++        if (!from_active && !is_window(hwnd))
++            NtUserNotifyWinEvent( EVENT_OBJECT_FOCUS, previous, OBJID_CLIENT, CHILDID_SELF );
++
+         send_message( previous, WM_KILLFOCUS, (WPARAM)hwnd, 0 );
+ 
+         ime_hwnd = get_default_ime_window( previous );
+@@ -1590,6 +1593,8 @@ static HWND set_focus_window( HWND hwnd, HWND last_focus )
+     if (is_window(hwnd))
+     {
+         user_driver->pSetFocus(hwnd);
++        if (!from_active)
++            NtUserNotifyWinEvent( EVENT_OBJECT_FOCUS, hwnd, OBJID_CLIENT, CHILDID_SELF );
+ 
+         ime_hwnd = get_default_ime_window( hwnd );
+         if (ime_hwnd)
+@@ -1750,7 +1755,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+         {
+             /* this line exists to keep this patch from applying in the wrong place */
+             if (!info.hwndFocus || !hwnd || NtUserGetAncestor( info.hwndFocus, GA_ROOT ) != hwnd)
+-                set_focus_window( hwnd, 0 );
++                set_focus_window( hwnd, 0, TRUE );
+         }
+     }
+ 
+@@ -1844,7 +1849,7 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
+     }
+ 
+     /* change focus and send messages */
+-    return set_focus_window( hwnd, previous );
++    return set_focus_window( hwnd, previous, FALSE );
+ }
+ 
+ /*******************************************************************

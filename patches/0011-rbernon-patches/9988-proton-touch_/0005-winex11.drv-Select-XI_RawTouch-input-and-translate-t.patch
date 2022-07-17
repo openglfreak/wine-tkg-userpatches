@@ -1,0 +1,172 @@
+From 81dd76db03ce3b5ece631611de5372d417df7e34 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 5 Oct 2021 16:11:24 +0200
+Subject: [PATCH 5/9] winex11.drv: Select XI_RawTouch* input and translate to
+ WM_POINTER*.
+
+CW-Bug-Id: #18214
+---
+ dlls/winex11.drv/event.c  |  3 ++
+ dlls/winex11.drv/mouse.c  | 78 +++++++++++++++++++++++++++++++++++++--
+ dlls/winex11.drv/x11drv.h |  2 +
+ 3 files changed, 79 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -240,6 +240,9 @@ static Bool filter_event( Display *display, XEvent *event, char *arg )
+             switch (event->xcookie.evtype)
+             {
+             case XI_RawMotion:
++            case XI_RawTouchBegin:
++            case XI_RawTouchUpdate:
++            case XI_RawTouchEnd:
+             case XI_DeviceChanged:
+                 return (mask & QS_INPUT) != 0;
+             case XI_FocusIn:
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -355,7 +355,7 @@ void X11DRV_XInput2_Init(void)
+ {
+ #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
+     struct x11drv_thread_data *data = x11drv_thread_data();
+-    int major = 2, minor = 1;
++    int major = 2, minor = 2;
+ 
+     if (xinput2_available && pXIQueryVersion( data->display, &major, &minor ) == Success &&
+         pXIGetClientPointer( data->display, None, &data->xi2_core_pointer ))
+@@ -363,7 +363,7 @@ void X11DRV_XInput2_Init(void)
+     else
+     {
+         data->xi2_core_pointer = 0;
+-        WARN( "XInput 2.1 not available\n" );
++        WARN( "XInput 2.2 not available\n" );
+     }
+ #endif
+ }
+@@ -397,6 +397,12 @@ void X11DRV_XInput2_Enable( Display *display, Window window, long event_mask )
+         event_mask &= ~PointerMotionMask;
+         XISetMask( mask_bits, XI_DeviceChanged );
+         XISetMask( mask_bits, raw ? XI_RawMotion : XI_Motion );
++        if (raw)
++        {
++            XISetMask( mask_bits, XI_RawTouchBegin );
++            XISetMask( mask_bits, XI_RawTouchUpdate );
++            XISetMask( mask_bits, XI_RawTouchEnd );
++        }
+     }
+     if (event_mask & ButtonPressMask)
+     {
+@@ -1777,7 +1783,7 @@ static BOOL map_raw_event_coords( XIRawEvent *event, INPUT *input, RAWINPUT *raw
+     if (x->mode == XIModeRelative && y->mode == XIModeRelative)
+         input->u.mi.dwFlags &= ~(MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK);
+     else if (x->mode == XIModeAbsolute && y->mode == XIModeAbsolute)
+-        input->u.mi.dwFlags |= MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
++        input->u.mi.dwFlags |= MOUSEEVENTF_ABSOLUTE;
+     else
+         FIXME( "Unsupported relative/absolute X/Y axis mismatch\n." );
+ 
+@@ -1844,7 +1850,7 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+ 
+     input.type = INPUT_MOUSE;
+     input.u.mi.mouseData   = 0;
+-    input.u.mi.dwFlags     = MOUSEEVENTF_MOVE;
++    input.u.mi.dwFlags     = MOUSEEVENTF_MOVE | MOUSEEVENTF_VIRTUALDESK;
+     input.u.mi.time        = x11drv_time_to_ticks( event->time );
+     input.u.mi.dwExtraInfo = 0;
+     input.u.mi.dx          = 0;
+@@ -2027,6 +2033,64 @@ void X11DRV_XInput2_Load(void)
+ #endif
+ }
+ 
++static BOOL X11DRV_RawTouchEvent( XGenericEventCookie *xev )
++{
++    struct x11drv_thread_data *thread_data = x11drv_thread_data();
++    XIRawEvent *event = xev->data;
++    RAWINPUT rawinput =
++    {
++        .header =
++        {
++            .dwType = RIM_TYPEMOUSE,
++            .dwSize = offsetof(RAWINPUT, data) + sizeof(RAWMOUSE),
++            .hDevice = ULongToHandle(1), /* WINE_MOUSE_HANDLE */
++            .wParam = RIM_INPUT,
++        },
++    };
++    INPUT input =
++    {
++        .type = INPUT_MOUSE,
++    };
++    DWORD flags = 0;
++    POINT pos;
++
++    if (!map_raw_event_coords( event, &input, &rawinput )) return FALSE;
++    if (!(input.u.mi.dwFlags & MOUSEEVENTF_ABSOLUTE)) return FALSE;
++    pos.x = input.u.mi.dx;
++    pos.y = input.u.mi.dy;
++
++    flags = POINTER_MESSAGE_FLAG_INRANGE | POINTER_MESSAGE_FLAG_INCONTACT;
++    if (!thread_data->xi2_active_touches) thread_data->xi2_primary_touchid = event->detail;
++    if (thread_data->xi2_primary_touchid == event->detail) flags |= POINTER_MESSAGE_FLAG_PRIMARY;
++
++    input.type = INPUT_HARDWARE;
++    switch (event->evtype)
++    {
++    case XI_RawTouchBegin:
++        input.u.hi.uMsg = WM_POINTERDOWN;
++        flags |= POINTER_MESSAGE_FLAG_NEW;
++        thread_data->xi2_active_touches++;
++        TRACE("XI_RawTouchBegin detail %u pos %dx%d, flags %#x\n", event->detail, pos.x, pos.y, flags);
++        break;
++    case XI_RawTouchEnd:
++        input.u.hi.uMsg = WM_POINTERUP;
++        thread_data->xi2_active_touches--;
++        TRACE("XI_RawTouchEnd detail %u pos %dx%d, flags %#x\n", event->detail, pos.x, pos.y, flags);
++        break;
++    case XI_RawTouchUpdate:
++        input.u.hi.uMsg = WM_POINTERUPDATE;
++        TRACE("XI_RawTouchUpdate detail %u pos %dx%d, flags %#x\n", event->detail, pos.x, pos.y, flags);
++        break;
++    }
++
++    rawinput.data.mouse.usFlags = 0;
++    rawinput.data.mouse.ulRawButtons = MAKELONG( event->detail, flags );
++    rawinput.data.mouse.lLastX = pos.x;
++    rawinput.data.mouse.lLastY = pos.y;
++
++    __wine_send_input( 0, &input, &rawinput );
++    return TRUE;
++}
+ 
+ #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
+ 
+@@ -2120,6 +2184,12 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+     case XI_ButtonRelease:
+         return X11DRV_XIDeviceEvent( event->data );
+ 
++    case XI_RawTouchBegin:
++    case XI_RawTouchUpdate:
++    case XI_RawTouchEnd:
++        ret = X11DRV_RawTouchEvent( event );
++        break;
++
+     default:
+         TRACE( "Unhandled event %#x\n", event->evtype );
+         break;
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -381,6 +381,8 @@ struct x11drv_thread_data
+     XIValuatorClassInfo y_valuator;
+     int      xi2_core_pointer;     /* XInput2 core pointer id */
+     int      xi2_rawinput_only;
++    int      xi2_active_touches;
++    int      xi2_primary_touchid;
+ #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
+ };
+ 
+

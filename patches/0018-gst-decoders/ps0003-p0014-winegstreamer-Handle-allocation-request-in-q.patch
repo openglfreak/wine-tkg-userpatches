@@ -1,0 +1,67 @@
+From 0dd04a732078840c0582657e10f8ad8faa9da09b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 6 Jun 2022 19:37:25 +0200
+Subject: [PATCH 14/30] winegstreamer: Handle allocation request in
+ quartz_parser.
+
+---
+ dlls/winegstreamer/quartz_parser.c | 36 +++++++++++++++++++++++++++++-
+ 1 file changed, 35 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/quartz_parser.c
++++ b/dlls/winegstreamer/quartz_parser.c
+@@ -891,6 +891,40 @@ static void handle_read_request(struct parser *filter, uint64_t offset, uint32_t
+     wg_parser_push_data(filter->wg_parser, wg_sample, filter->wg_sample_queue);
+ }
+ 
++static void handle_alloc_request(struct parser *filter, struct wg_parser_stream *wg_stream, UINT32 size)
++{
++    struct parser_source *source = NULL;
++    struct wg_sample *wg_sample = NULL;
++    IMediaSample *sample;
++    HRESULT hr = E_FAIL;
++    int i;
++
++    for (i = 0; i < filter->source_count && !source; ++i)
++        if (filter->sources[i]->wg_stream == wg_stream)
++            source = filter->sources[i];
++
++    if (!source)
++        WARN("No source found for wg_stream %p\n", wg_stream);
++    else if (!source->pin.pin.peer)
++        WARN("Source %p is not connected\n", source);
++    else if (!source->pin.pAllocator)
++        WARN("Source %p does not have any allocator\n", source);
++    else if (SUCCEEDED(hr = IMemAllocator_GetBuffer(source->pin.pAllocator, &sample, NULL, NULL, 0)))
++    {
++        hr = wg_sample_create_quartz(sample, &wg_sample);
++        IMediaSample_Release(sample);
++    }
++
++    if (FAILED(hr))
++    {
++        ERR("Failed to allocate sample, hr %#lx\n", hr);
++        wg_parser_done_alloc(filter->wg_parser, NULL, NULL);
++        return;
++    }
++
++    wg_parser_done_alloc(filter->wg_parser, wg_sample, filter->wg_sample_queue);
++}
++
+ static DWORD CALLBACK read_thread(void *arg)
+ {
+     struct parser *filter = arg;
+@@ -924,7 +958,7 @@ static DWORD CALLBACK read_thread(void *arg)
+             }
+ 
+             case WG_REQUEST_ALLOC:
+-                wg_parser_done_alloc(filter->wg_parser, NULL, NULL);
++                handle_alloc_request(filter, request.u.alloc.stream, request.u.alloc.size);
+                 continue;
+ 
+             default:
+-- 
+2.37.1
+

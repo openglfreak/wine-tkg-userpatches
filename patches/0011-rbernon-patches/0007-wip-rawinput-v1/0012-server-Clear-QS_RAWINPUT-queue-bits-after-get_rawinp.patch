@@ -13,16 +13,16 @@ diff --git a/dlls/user32/tests/input.c b/dlls/user32/tests/input.c
 index 11111111111..11111111111 100644
 --- a/dlls/user32/tests/input.c
 +++ b/dlls/user32/tests/input.c
-@@ -2129,7 +2129,7 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
+@@ -2143,7 +2143,7 @@ static int rawinput_buffer_mouse_x(void *buffer, size_t index)
+ 
+ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
  {
+-    UINT i, size, count, rawinput_size, iteration = rawinputbuffer_wndproc_count++;
++    UINT i, size, count, status, rawinput_size, iteration = rawinputbuffer_wndproc_count++;
      RAWINPUT ri;
      char buffer[16 * sizeof(RAWINPUT64)];
--    UINT size, count, rawinput_size, iteration = rawinputbuffer_wndproc_count++;
-+    UINT size, count, status, rawinput_size, iteration = rawinputbuffer_wndproc_count++;
      MSG message;
- 
-     if (is_wow64) rawinput_size = sizeof(RAWINPUT64);
-@@ -2145,6 +2145,9 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
+@@ -2163,6 +2163,9 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
          ok(count == 0, "GetRawInputBuffer returned %u\n", count);
          ok(size == rawinput_size, "GetRawInputBuffer returned unexpected size: %u\n", size);
  
@@ -32,7 +32,7 @@ index 11111111111..11111111111 100644
          size = sizeof(buffer);
          memset(buffer, 0, sizeof(buffer));
          count = GetRawInputBuffer((RAWINPUT*)buffer, &size, sizeof(RAWINPUTHEADER));
-@@ -2154,6 +2157,9 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
+@@ -2193,6 +2196,9 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
          ok(rawinput_buffer_mouse_x(buffer, 1) == 3, "Unexpected rawinput data: %d\n", rawinput_buffer_mouse_x(buffer, 1));
          ok(rawinput_buffer_mouse_x(buffer, 2) == 4, "Unexpected rawinput data: %d\n", rawinput_buffer_mouse_x(buffer, 2));
  
@@ -48,14 +48,14 @@ index 11111111111..11111111111 100644
 +++ b/server/queue.c
 @@ -3709,7 +3709,7 @@ DECL_HANDLER(get_rawinput_buffer)
      struct thread_input *input = current->queue->input;
-     data_size_t size = 0, next_size = 0;
-     char *buf, *cur, *tmp;
+     data_size_t size = 0, next_size = 0, pos = 0;
+     char *buf, *tmp;
 -    int count = 0, buf_size = 16 * sizeof(struct hardware_msg_data);
 +    int pending = 0, count = 0, buf_size = 16 * sizeof(struct hardware_msg_data);
      struct message *msg, *next;
  
      if (!req->buffer_size) buf = NULL;
-@@ -3721,6 +3721,7 @@ DECL_HANDLER(get_rawinput_buffer)
+@@ -3720,6 +3720,7 @@ DECL_HANDLER(get_rawinput_buffer)
          struct hardware_msg_data *data = msg->data;
          data_size_t extra_size = data->size - sizeof(*data);
          if (msg->msg != WM_INPUT) continue;
@@ -63,9 +63,9 @@ index 11111111111..11111111111 100644
  
          next_size = req->rawinput_size + extra_size;
          if (size + next_size > req->buffer_size) break;
-@@ -3744,8 +3745,11 @@ DECL_HANDLER(get_rawinput_buffer)
+@@ -3743,8 +3744,11 @@ DECL_HANDLER(get_rawinput_buffer)
          size += next_size;
-         cur += sizeof(*data);
+         pos += sizeof(*data);
          count++;
 +        pending--;
      }
@@ -74,7 +74,7 @@ index 11111111111..11111111111 100644
 +
      reply->next_size = next_size;
      reply->count = count;
-     set_reply_data_ptr( buf, cur - buf );
+     set_reply_data_ptr( buf, pos );
 -- 
-2.36.1
+2.37.1
 

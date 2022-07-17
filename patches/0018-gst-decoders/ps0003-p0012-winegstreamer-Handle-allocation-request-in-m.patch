@@ -1,0 +1,99 @@
+From 78d5fa0cf7ff03badea7d2757a5c0d2b324a538a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 6 Jun 2022 21:38:41 +0200
+Subject: [PATCH 12/30] winegstreamer: Handle allocation request in
+ media_source.
+
+---
+ dlls/winegstreamer/main.c         |  4 +--
+ dlls/winegstreamer/media_source.c | 41 ++++++++++++++++++++++++++++++-
+ 2 files changed, 42 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/winegstreamer/main.c b/dlls/winegstreamer/main.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/main.c
++++ b/dlls/winegstreamer/main.c
+@@ -154,12 +154,12 @@ void wg_parser_done_alloc(struct wg_parser *parser, struct wg_sample *sample,
+     TRACE("parser %p, sample %p, queue %p.\n", parser, sample, queue);
+ 
+     if (sample)
+-        wg_sample_queue_append(queue, sample);
++        wg_sample_queue_begin_append(queue, sample);
+ 
+     __wine_unix_call(unix_handle, unix_wg_parser_done_alloc, &params);
+ 
+     if (sample)
+-        wg_sample_queue_release(queue, sample, false);
++        wg_sample_queue_end_append(queue, sample);
+ }
+ 
+ uint32_t wg_parser_get_stream_count(struct wg_parser *parser)
+diff --git a/dlls/winegstreamer/media_source.c b/dlls/winegstreamer/media_source.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/media_source.c
++++ b/dlls/winegstreamer/media_source.c
+@@ -452,6 +452,23 @@ static void dispatch_end_of_presentation(struct media_source *source)
+     IMFMediaEventQueue_QueueEventParamVar(source->event_queue, MEEndOfPresentation, &GUID_NULL, S_OK, &empty);
+ }
+ 
++static HRESULT mf_allocate_sample(UINT32 size, IMFSample **sample)
++{
++    IMFMediaBuffer *buffer;
++    HRESULT hr;
++
++    if (FAILED(hr = MFCreateSample(sample)))
++        return hr;
++
++    if (SUCCEEDED(hr = MFCreateMemoryBuffer(size, &buffer)))
++    {
++        hr = IMFSample_AddBuffer(*sample, buffer);
++        IMFMediaBuffer_Release(buffer);
++    }
++
++    return hr;
++}
++
+ static void send_buffer(struct media_stream *stream, const struct wg_parser_buffer *wg_buffer, IUnknown *token)
+ {
+     IMFMediaBuffer *buffer;
+@@ -632,6 +649,28 @@ static void handle_read_request(struct media_source *source, IMFByteStream *byte
+     wg_parser_push_data(source->wg_parser, wg_sample, source->wg_sample_queue);
+ }
+ 
++static void handle_alloc_request(struct media_source *source, UINT32 size)
++{
++    struct wg_sample *wg_sample = NULL;
++    IMFSample *sample;
++    HRESULT hr;
++
++    if (SUCCEEDED(hr = mf_allocate_sample(size, &sample)))
++    {
++        hr = wg_sample_create_mf(sample, &wg_sample);
++        IMFSample_Release(sample);
++    }
++
++    if (FAILED(hr))
++    {
++        ERR("Failed to allocate sample, hr %#lx\n", hr);
++        wg_parser_done_alloc(source->wg_parser, NULL, NULL);
++        return;
++    }
++
++    wg_parser_done_alloc(source->wg_parser, wg_sample, source->wg_sample_queue);
++}
++
+ static DWORD CALLBACK read_thread(void *arg)
+ {
+     struct media_source *source = arg;
+@@ -666,7 +705,7 @@ static DWORD CALLBACK read_thread(void *arg)
+             }
+ 
+             case WG_REQUEST_ALLOC:
+-                wg_parser_done_alloc(source->wg_parser, NULL, NULL);
++                handle_alloc_request(source, request.u.alloc.size);
+                 continue;
+ 
+             default:
+-- 
+2.37.1
+

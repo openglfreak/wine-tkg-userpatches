@@ -1,0 +1,345 @@
+From 22d0f8868a1e641e04d886af93551c2060df71a8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 10 Jun 2022 09:42:49 +0200
+Subject: [PATCH 23/30] winegstreamer: Read quartz_parser stream data using
+ wg_sample struct.
+
+---
+ dlls/winegstreamer/gst_private.h   |   1 +
+ dlls/winegstreamer/quartz_parser.c | 177 +++++------------------------
+ dlls/winegstreamer/unixlib.h       |   1 +
+ dlls/winegstreamer/wg_sample.c     |  47 ++++++++
+ dlls/winegstreamer/wg_transform.c  |   4 +
+ 5 files changed, 80 insertions(+), 150 deletions(-)
+
+diff --git a/dlls/winegstreamer/gst_private.h b/dlls/winegstreamer/gst_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/gst_private.h
++++ b/dlls/winegstreamer/gst_private.h
+@@ -147,6 +147,7 @@ HRESULT wg_transform_read_mf(struct wg_transform *transform, struct wg_sample *s
+ HRESULT wg_transform_read_quartz(struct wg_transform *transform, struct wg_sample *sample);
+ 
+ bool wg_parser_stream_read_mf(struct wg_parser_stream *stream, struct wg_sample *sample);
++bool wg_parser_stream_read_qz(struct wg_parser_stream *stream, struct wg_sample *sample);
+ bool wg_parser_stream_read_wm(struct wg_parser_stream *stream, struct wg_sample *wg_sample,
+         QWORD *pts, QWORD *duration, DWORD *flags);
+ 
+diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/quartz_parser.c
++++ b/dlls/winegstreamer/quartz_parser.c
+@@ -652,127 +652,14 @@ bool amt_to_wg_format(const AM_MEDIA_TYPE *mt, struct wg_format *format)
+     return false;
+ }
+ 
+-/*
+- * scale_uint64() is based on gst_util_scale_int() from GStreamer, which is
+- * covered by the following license:
+- *
+- * GStreamer
+- * Copyright (C) 1999,2000 Erik Walthinsen <omega@cse.ogi.edu>
+- *                    2000 Wim Taymans <wtay@chello.be>
+- *                    2002 Thomas Vander Stichele <thomas@apestaart.org>
+- *                    2004 Wim Taymans <wim@fluendo.com>
+- *                    2015 Jan Schmidt <jan@centricular.com>
+- *
+- * gstutils.c: Utility functions
+- *
+- * This library is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU Library General Public
+- * License as published by the Free Software Foundation; either
+- * version 2 of the License, or (at your option) any later version.
+- *
+- * This library is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * Library General Public License for more details.
+- *
+- * You should have received a copy of the GNU Library General Public
+- * License along with this library; if not, write to the
+- * Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
+- * Boston, MA 02110-1301, USA.
+- */
+-static uint64_t scale_uint64(uint64_t value, uint32_t numerator, uint32_t denominator)
+-{
+-    ULARGE_INTEGER i, high, low;
+-
+-    if (!value)
+-        return 0;
+-
+-    i.QuadPart = value;
+-    low.QuadPart = (ULONGLONG)i.u.LowPart * numerator;
+-    high.QuadPart = (ULONGLONG)i.u.HighPart * numerator + low.u.HighPart;
+-    low.u.HighPart = 0;
+-
+-    if (high.u.HighPart >= denominator)
+-        return ULLONG_MAX;
+-
+-    low.QuadPart += (high.QuadPart % denominator) << 32;
+-    return ((high.QuadPart / denominator) << 32) + (low.QuadPart / denominator);
+-}
+-
+-/* Fill and send a single IMediaSample. */
+-static HRESULT send_sample(struct parser_source *pin, IMediaSample *sample,
+-        const struct wg_parser_buffer *buffer, uint32_t offset, uint32_t size, DWORD bytes_per_second)
+-{
+-    HRESULT hr;
+-    BYTE *ptr = NULL;
+-
+-    TRACE("offset %u, size %u, sample size %lu.\n", offset, size, IMediaSample_GetSize(sample));
+-
+-    hr = IMediaSample_SetActualDataLength(sample, size);
+-    if(FAILED(hr)){
+-        ERR("Failed to set sample size, hr %#lx.\n", hr);
+-        return hr;
+-    }
+-
+-    IMediaSample_GetPointer(sample, &ptr);
+-
+-    if (!wg_parser_stream_copy_buffer(pin->wg_stream, ptr, offset, size))
+-    {
+-        /* The GStreamer pin has been flushed. */
+-        return S_OK;
+-    }
+-
+-    if (buffer->has_pts)
+-    {
+-        REFERENCE_TIME start_pts = buffer->pts;
+-
+-        if (offset)
+-            start_pts += scale_uint64(offset, 10000000, bytes_per_second);
+-        start_pts -= pin->seek.llCurrent;
+-        start_pts *= pin->seek.dRate;
+-
+-        if (buffer->has_duration)
+-        {
+-            REFERENCE_TIME end_pts = buffer->pts + buffer->duration;
+-
+-            if (offset + size < buffer->size)
+-                end_pts = buffer->pts + scale_uint64(offset + size, 10000000, bytes_per_second);
+-            end_pts -= pin->seek.llCurrent;
+-            end_pts *= pin->seek.dRate;
+-
+-            IMediaSample_SetTime(sample, &start_pts, &end_pts);
+-            IMediaSample_SetMediaTime(sample, &start_pts, &end_pts);
+-        }
+-        else
+-        {
+-            IMediaSample_SetTime(sample, &start_pts, NULL);
+-            IMediaSample_SetMediaTime(sample, NULL, NULL);
+-        }
+-    }
+-    else
+-    {
+-        IMediaSample_SetTime(sample, NULL, NULL);
+-        IMediaSample_SetMediaTime(sample, NULL, NULL);
+-    }
+-
+-    IMediaSample_SetDiscontinuity(sample, !offset && buffer->discontinuity);
+-    IMediaSample_SetPreroll(sample, buffer->preroll);
+-    IMediaSample_SetSyncPoint(sample, !buffer->delta);
+-
+-    if (!pin->pin.pin.peer)
+-        return VFW_E_NOT_CONNECTED;
+-
+-    hr = IMemInputPin_Receive(pin->pin.pMemInputPin, sample);
+-    TRACE("Receive() returned hr %#lx.\n", hr);
+-    return hr;
+-}
+-
+ /* Send a single GStreamer buffer (splitting it into multiple IMediaSamples if
+  * necessary). */
+ static void send_buffer(struct parser_source *pin, const struct wg_parser_buffer *buffer)
+ {
+-    HRESULT hr;
++    bool success, incomplete = true;
++    struct wg_sample *wg_sample;
+     IMediaSample *sample;
++    HRESULT hr = S_OK;
+ 
+     if (pin->need_segment)
+     {
+@@ -782,50 +669,40 @@ static void send_buffer(struct parser_source *pin, const struct wg_parser_buffer
+         pin->need_segment = false;
+     }
+ 
+-    if (IsEqualGUID(&pin->pin.pin.mt.formattype, &FORMAT_WaveFormatEx)
+-            && (IsEqualGUID(&pin->pin.pin.mt.subtype, &MEDIASUBTYPE_PCM)
+-            || IsEqualGUID(&pin->pin.pin.mt.subtype, &MEDIASUBTYPE_IEEE_FLOAT)))
++    while (SUCCEEDED(hr) && incomplete)
+     {
+-        WAVEFORMATEX *format = (WAVEFORMATEX *)pin->pin.pin.mt.pbFormat;
+-        uint32_t offset = 0;
+-
+-        while (offset < buffer->size)
++        if (FAILED(hr = IMemAllocator_GetBuffer(pin->pin.pAllocator, &sample, NULL, NULL, 0)))
+         {
+-            uint32_t advance;
+-
+-            if (FAILED(hr = IMemAllocator_GetBuffer(pin->pin.pAllocator, &sample, NULL, NULL, 0)))
+-            {
+-                ERR("Failed to get a sample, hr %#lx.\n", hr);
+-                break;
+-            }
+-
+-            advance = min(IMediaSample_GetSize(sample), buffer->size - offset);
+-
+-            hr = send_sample(pin, sample, buffer, offset, advance, format->nAvgBytesPerSec);
+-
++            ERR("Failed to get a sample, hr %#lx.\n", hr);
++            break;
++        }
++        if (FAILED(hr = wg_sample_create_quartz(sample, &wg_sample)))
++        {
++            ERR("Failed to create sample, hr %#lx.\n", hr);
+             IMediaSample_Release(sample);
+-
+-            if (FAILED(hr))
+-                break;
+-
+-            offset += advance;
++            break;
+         }
+-    }
+-    else
+-    {
+-        if (FAILED(hr = IMemAllocator_GetBuffer(pin->pin.pAllocator, &sample, NULL, NULL, 0)))
++
++        if ((success = wg_parser_stream_read_qz(pin->wg_stream, wg_sample)))
+         {
+-            ERR("Failed to get a sample, hr %#lx.\n", hr);
++            /* update pts and duration to current seeking time and rate */
++            wg_sample->pts -= pin->seek.llCurrent;
++            wg_sample->pts *= pin->seek.dRate;
++            wg_sample->duration *= pin->seek.dRate;
++            incomplete = wg_sample->flags & WG_SAMPLE_FLAG_INCOMPLETE;
+         }
++        wg_sample_release(wg_sample);
++
++        if (!success || !pin->pin.pin.peer)
++            hr = E_FAIL;
+         else
+         {
+-            hr = send_sample(pin, sample, buffer, 0, buffer->size, 0);
+-
+-            IMediaSample_Release(sample);
++            hr = IMemInputPin_Receive(pin->pin.pMemInputPin, sample);
++            TRACE("Receive() returned hr %#lx.\n", hr);
+         }
+-    }
+ 
+-    wg_parser_stream_release_buffer(pin->wg_stream);
++        IMediaSample_Release(sample);
++    }
+ }
+ 
+ static DWORD CALLBACK stream_thread(void *arg)
+diff --git a/dlls/winegstreamer/unixlib.h b/dlls/winegstreamer/unixlib.h
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/unixlib.h
++++ b/dlls/winegstreamer/unixlib.h
+@@ -122,6 +122,7 @@ enum wg_sample_flag
+     WG_SAMPLE_FLAG_HAS_DURATION = 4,
+     WG_SAMPLE_FLAG_SYNC_POINT = 8,
+     WG_SAMPLE_FLAG_DISCONTINUITY = 0x10,
++    WG_SAMPLE_FLAG_PREROLL = 0x20,
+ };
+ 
+ struct wg_sample
+diff --git a/dlls/winegstreamer/wg_sample.c b/dlls/winegstreamer/wg_sample.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wg_sample.c
++++ b/dlls/winegstreamer/wg_sample.c
+@@ -419,6 +419,8 @@ HRESULT wg_transform_push_quartz(struct wg_transform *transform, struct wg_sampl
+         wg_sample->flags |= WG_SAMPLE_FLAG_SYNC_POINT;
+     if (IMediaSample_IsDiscontinuity(sample->u.quartz.sample) == S_OK)
+         wg_sample->flags |= WG_SAMPLE_FLAG_DISCONTINUITY;
++    if (IMediaSample_IsPreroll(sample->u.quartz.sample) == S_OK)
++        wg_sample->flags |= WG_SAMPLE_FLAG_PREROLL;
+ 
+     wg_sample_queue_begin_append(queue, wg_sample);
+     hr = wg_transform_push_data(transform, wg_sample);
+@@ -460,6 +462,8 @@ HRESULT wg_transform_read_quartz(struct wg_transform *transform, struct wg_sampl
+     IMediaSample_SetSyncPoint(sample->u.quartz.sample, value);
+     value = !!(wg_sample->flags & WG_SAMPLE_FLAG_DISCONTINUITY);
+     IMediaSample_SetDiscontinuity(sample->u.quartz.sample, value);
++    value = !!(wg_sample->flags & WG_SAMPLE_FLAG_PREROLL);
++    IMediaSample_SetPreroll(sample->u.quartz.sample, value);
+ 
+     return S_OK;
+ }
+@@ -486,6 +490,49 @@ bool wg_parser_stream_read_mf(struct wg_parser_stream *stream, struct wg_sample
+     return true;
+ }
+ 
++bool wg_parser_stream_read_qz(struct wg_parser_stream *stream, struct wg_sample *wg_sample)
++{
++    struct sample *sample = CONTAINING_RECORD(wg_sample, struct sample, wg_sample);
++    REFERENCE_TIME start_pts = wg_sample->pts, end_pts = start_pts + wg_sample->duration;
++    BOOL value;
++
++    if (sample->ops != &quartz_sample_ops)
++        return false;
++
++    if (!wg_parser_stream_read_data(stream, wg_sample))
++        return false;
++
++    IMediaSample_SetActualDataLength(sample->u.quartz.sample, wg_sample->size);
++
++    if (wg_sample->flags & WG_SAMPLE_FLAG_HAS_PTS)
++    {
++        if (wg_sample->flags & WG_SAMPLE_FLAG_HAS_DURATION)
++        {
++            IMediaSample_SetTime(sample->u.quartz.sample, &start_pts, &end_pts);
++            IMediaSample_SetMediaTime(sample->u.quartz.sample, &start_pts, &end_pts);
++        }
++        else
++        {
++            IMediaSample_SetTime(sample->u.quartz.sample, &start_pts, NULL);
++            IMediaSample_SetMediaTime(sample->u.quartz.sample, NULL, NULL);
++        }
++    }
++    else
++    {
++        IMediaSample_SetTime(sample->u.quartz.sample, NULL, NULL);
++        IMediaSample_SetMediaTime(sample->u.quartz.sample, NULL, NULL);
++    }
++
++    value = !!(wg_sample->flags & WG_SAMPLE_FLAG_SYNC_POINT);
++    IMediaSample_SetSyncPoint(sample->u.quartz.sample, value);
++    value = !!(wg_sample->flags & WG_SAMPLE_FLAG_DISCONTINUITY);
++    IMediaSample_SetDiscontinuity(sample->u.quartz.sample, value);
++    value = !!(wg_sample->flags & WG_SAMPLE_FLAG_PREROLL);
++    IMediaSample_SetPreroll(sample->u.quartz.sample, value);
++
++    return true;
++}
++
+ bool wg_parser_stream_read_wm(struct wg_parser_stream *stream, struct wg_sample *wg_sample,
+         QWORD *pts, QWORD *duration, DWORD *flags)
+ {
+diff --git a/dlls/winegstreamer/wg_transform.c b/dlls/winegstreamer/wg_transform.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wg_transform.c
++++ b/dlls/winegstreamer/wg_transform.c
+@@ -636,6 +636,8 @@ NTSTATUS wg_transform_push_data(void *args)
+         GST_BUFFER_FLAG_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
+     if (sample->flags & WG_SAMPLE_FLAG_DISCONTINUITY)
+         GST_BUFFER_FLAG_SET(buffer, GST_BUFFER_FLAG_DISCONT);
++    if (sample->flags & WG_SAMPLE_FLAG_PREROLL)
++        GST_BUFFER_FLAG_SET(buffer, GST_BUFFER_FLAG_LIVE);
+     gst_atomic_queue_push(transform->input_queue, buffer);
+ 
+     params->result = S_OK;
+@@ -771,6 +773,8 @@ NTSTATUS wg_sample_read_from_buffer(GstBuffer *buffer, GstCaps *caps, gsize plan
+         sample->flags |= WG_SAMPLE_FLAG_SYNC_POINT;
+     if (GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DISCONT))
+         sample->flags |= WG_SAMPLE_FLAG_DISCONTINUITY;
++    if (GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_LIVE))
++        sample->flags |= WG_SAMPLE_FLAG_PREROLL;
+ 
+     if (needs_copy)
+     {
+-- 
+2.37.1
+

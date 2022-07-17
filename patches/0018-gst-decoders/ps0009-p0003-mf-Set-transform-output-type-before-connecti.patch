@@ -1,0 +1,44 @@
+From 495a03e03d2a6a6f33e15089b96307908515eaad Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Mon, 27 Jun 2022 12:29:58 +0200
+Subject: [PATCH 3/6] mf: Set transform output type before connecting topology
+ nodes.
+
+It may fail, even if we enumerated available output types. This is the
+case for the Resampler transform, which enumerates audio types without
+any format attributes, but then requires the attributes to be set.
+
+CW-Bug-Id: #20884
+---
+ dlls/mf/topology.c | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/mf/topology.c b/dlls/mf/topology.c
+index 11111111111..11111111111 100644
+--- a/dlls/mf/topology.c
++++ b/dlls/mf/topology.c
+@@ -2126,7 +2126,9 @@ static HRESULT connect_to_sink(struct transform_output_type *output_type, struct
+     IMFTopologyNode *node;
+     HRESULT hr;
+ 
+-    if (FAILED(IMFMediaTypeHandler_IsMediaTypeSupported(context->sink_handler, output_type->type, NULL)))
++    if (FAILED(IMFMediaTypeHandler_IsMediaTypeSupported(context->sink_handler, output_type->type, NULL))
++            || FAILED(IMFMediaTypeHandler_SetCurrentMediaType(context->sink_handler, output_type->type))
++            || FAILED(IMFTransform_SetOutputType(output_type->transform, 0, output_type->type, 0)))
+         return MF_E_TRANSFORM_NOT_POSSIBLE_FOR_CURRENT_MEDIATYPE_COMBINATION;
+ 
+     if (FAILED(hr = topology_loader_create_transform(output_type, &node)))
+@@ -2138,11 +2140,7 @@ static HRESULT connect_to_sink(struct transform_output_type *output_type, struct
+ 
+     IMFTopologyNode_Release(node);
+ 
+-    hr = IMFMediaTypeHandler_SetCurrentMediaType(context->sink_handler, output_type->type);
+-    if (SUCCEEDED(hr))
+-        hr = IMFTransform_SetOutputType(output_type->transform, 0, output_type->type, 0);
+-
+-    return S_OK;
++    return IMFMediaTypeHandler_SetCurrentMediaType(context->sink_handler, output_type->type);
+ }
+ 
+ static HRESULT connect_to_converter(struct transform_output_type *output_type, struct connect_context *context)
+

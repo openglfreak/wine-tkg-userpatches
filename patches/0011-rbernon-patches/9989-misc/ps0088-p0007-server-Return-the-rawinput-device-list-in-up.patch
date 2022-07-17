@@ -5,43 +5,51 @@ Subject: [PATCH 7/9] server: Return the rawinput device list in
  update_rawinput_devices.
 
 ---
- dlls/user32/rawinput.c | 30 ++++++++++++++++++++----------
+ dlls/win32u/rawinput.c | 31 +++++++++++++++++++++----------
  server/protocol.def    |  6 +-----
  server/queue.c         | 14 ++++----------
- 3 files changed, 25 insertions(+), 25 deletions(-)
+ 3 files changed, 26 insertions(+), 25 deletions(-)
 
-diff --git a/dlls/user32/rawinput.c b/dlls/user32/rawinput.c
+diff --git a/dlls/win32u/rawinput.c b/dlls/win32u/rawinput.c
 index 11111111111..11111111111 100644
---- a/dlls/user32/rawinput.c
-+++ b/dlls/user32/rawinput.c
-@@ -59,7 +59,7 @@ static struct device *device_array;
+--- a/dlls/win32u/rawinput.c
++++ b/dlls/win32u/rawinput.c
+@@ -26,6 +26,7 @@
+ #include <stdbool.h>
+ #include <pthread.h>
+ 
++#include "ntstatus.h"
+ #include "win32u_private.h"
+ #include "ntuser_private.h"
+ #define WIN32_NO_STATUS
+@@ -208,7 +209,7 @@ static struct device *device_array;
  static unsigned int device_count, device_capacity;
  
  static struct rawinput_device *registered_array;
 -static unsigned int registered_capacity;
 +static unsigned int registered_count, registered_capacity;
  
- static CRITICAL_SECTION rawinput_devices_cs;
- static CRITICAL_SECTION_DEBUG rawinput_devices_cs_debug =
-@@ -477,8 +477,7 @@ UINT WINAPI GetRawInputDeviceList(RAWINPUTDEVICELIST *devices, UINT *count, UINT
+ static pthread_mutex_t rawinput_devices_mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
+@@ -808,8 +809,7 @@ BOOL process_rawinput_message( MSG *msg, UINT hw_id, const struct hardware_msg_d
   */
- BOOL WINAPI DECLSPEC_HOTPATCH RegisterRawInputDevices(const RAWINPUTDEVICE *devices, UINT device_count, UINT size)
+ BOOL WINAPI NtUserRegisterRawInputDevices( const RAWINPUTDEVICE *devices, UINT device_count, UINT size )
  {
 -    BOOL ret;
 -    UINT i;
 +    UINT i, status = 0;
  
-     TRACE("devices %p, device_count %u, size %u.\n", devices, device_count, size);
+     TRACE( "devices %p, device_count %u, size %u.\n", devices, device_count, size );
  
-@@ -514,6 +513,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH RegisterRawInputDevices(const RAWINPUTDEVICE *devi
-         LeaveCriticalSection( &rawinput_devices_cs );
+@@ -843,6 +843,7 @@ BOOL WINAPI NtUserRegisterRawInputDevices( const RAWINPUTDEVICE *devices, UINT d
+         pthread_mutex_unlock( &rawinput_devices_mutex );
          return FALSE;
      }
 +    registered_count = max(registered_count, device_count);
  
      for (i = 0; i < device_count; ++i)
      {
-@@ -529,16 +529,26 @@ BOOL WINAPI DECLSPEC_HOTPATCH RegisterRawInputDevices(const RAWINPUTDEVICE *devi
+@@ -858,16 +859,26 @@ BOOL WINAPI NtUserRegisterRawInputDevices( const RAWINPUTDEVICE *devices, UINT d
          registered_array[i].target = wine_server_user_handle( devices[i].hwndTarget );
      }
  
@@ -67,27 +75,27 @@ index 11111111111..11111111111 100644
 +            status = STATUS_NO_MEMORY;
 +    } while (status == STATUS_BUFFER_TOO_SMALL);
  
-     LeaveCriticalSection( &rawinput_devices_cs );
+     pthread_mutex_unlock( &rawinput_devices_mutex );
  
 -    return ret;
 +    return !status;
  }
  
- /***********************************************************************
-@@ -831,7 +841,7 @@ UINT WINAPI DECLSPEC_HOTPATCH GetRegisteredRawInputDevices(RAWINPUTDEVICE *devic
-     if (devices && !(buffer = HeapAlloc(GetProcessHeap(), 0, buffer_size)))
-         return ~0U;
+ static int compare_raw_input_devices( const void *ap, const void *bp )
+@@ -900,7 +911,7 @@ UINT WINAPI NtUserGetRegisteredRawInputDevices( RAWINPUTDEVICE *devices, UINT *d
+     if (devices && !(buffer = malloc( buffer_size )))
+         return ~0u;
  
 -    SERVER_START_REQ(get_rawinput_devices)
 +    SERVER_START_REQ(update_rawinput_devices)
      {
-         if (buffer) wine_server_set_reply(req, buffer, buffer_size);
+         if (buffer) wine_server_set_reply( req, buffer, buffer_size );
          status = wine_server_call_err(req);
 diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -3720,13 +3720,9 @@ struct handle_info
+@@ -3726,13 +3726,9 @@ struct handle_info
      VARARG(data,bytes);
  @END
  
@@ -106,7 +114,7 @@ diff --git a/server/queue.c b/server/queue.c
 index 11111111111..11111111111 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -3775,10 +3775,10 @@ DECL_HANDLER(get_rawinput_buffer)
+@@ -3774,10 +3774,10 @@ DECL_HANDLER(get_rawinput_buffer)
  
  DECL_HANDLER(update_rawinput_devices)
  {
@@ -119,7 +127,7 @@ index 11111111111..11111111111 100644
  
      for (i = 0; i < device_count; ++i)
      {
-@@ -3789,15 +3789,9 @@ DECL_HANDLER(update_rawinput_devices)
+@@ -3788,15 +3788,9 @@ DECL_HANDLER(update_rawinput_devices)
      current->process->rawinput_mouse = e ? &e->device : NULL;
      e = find_rawinput_device( current->process, 1, 6 );
      current->process->rawinput_kbd   = e ? &e->device : NULL;
@@ -138,5 +146,5 @@ index 11111111111..11111111111 100644
  
      /* no buffer provided, nothing else to do */
 -- 
-2.36.1
+2.37.1
 

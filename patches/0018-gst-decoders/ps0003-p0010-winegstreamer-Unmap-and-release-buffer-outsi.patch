@@ -1,0 +1,71 @@
+From 198e36a87088fdab675b7260374e34709533c457 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 7 Jun 2022 08:44:40 +0200
+Subject: [PATCH 10/30] winegstreamer: Unmap and release buffer outside of
+ wg_parser mutex.
+
+---
+ dlls/winegstreamer/wg_parser.c | 15 ++++++++++-----
+ 1 file changed, 10 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/winegstreamer/wg_parser.c b/dlls/winegstreamer/wg_parser.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wg_parser.c
++++ b/dlls/winegstreamer/wg_parser.c
+@@ -308,6 +308,7 @@ static NTSTATUS wg_parser_stream_copy_buffer(void *args)
+     uint32_t offset = params->offset;
+     uint32_t size = params->size;
+     GstMapInfo map_info;
++    GstBuffer *buffer;
+ 
+     pthread_mutex_lock(&parser->mutex);
+ 
+@@ -317,10 +318,13 @@ static NTSTATUS wg_parser_stream_copy_buffer(void *args)
+         return VFW_E_WRONG_STATE;
+     }
+ 
+-    if (!gst_buffer_map(stream->buffer, &map_info, GST_MAP_READ))
++    buffer = gst_buffer_ref(stream->buffer);
++    pthread_mutex_unlock(&parser->mutex);
++
++    if (!gst_buffer_map(buffer, &map_info, GST_MAP_READ))
+     {
+-        pthread_mutex_unlock(&parser->mutex);
+         GST_ERROR("Failed to map buffer.\n");
++        gst_buffer_unref(buffer);
+         return E_FAIL;
+     }
+ 
+@@ -330,7 +334,7 @@ static NTSTATUS wg_parser_stream_copy_buffer(void *args)
+ 
+     gst_buffer_unmap(stream->buffer, &map_info);
+ 
+-    pthread_mutex_unlock(&parser->mutex);
++    gst_buffer_unref(buffer);
+     return S_OK;
+ }
+ 
+@@ -338,17 +342,18 @@ static NTSTATUS wg_parser_stream_release_buffer(void *args)
+ {
+     struct wg_parser_stream *stream = args;
+     struct wg_parser *parser = stream->parser;
++    GstBuffer *buffer;
+ 
+     pthread_mutex_lock(&parser->mutex);
+ 
+     assert(stream->buffer);
+-
+-    gst_buffer_unref(stream->buffer);
++    buffer = stream->buffer;
+     stream->buffer = NULL;
+ 
+     pthread_mutex_unlock(&parser->mutex);
+     pthread_cond_signal(&stream->event_empty_cond);
+ 
++    gst_buffer_unref(buffer);
+     return S_OK;
+ }
+ 
+-- 
+2.37.1
+

@@ -1,0 +1,244 @@
+From: Kacper Raczy <gfw.kra@gmail.com>
+Subject: [PATCH v3] ntdll: Add RtlGetDeviceFamilyInfoEnum and RtlConvertDeviceFamilyInfoToString
+Message-Id: <20220623205610.438611-1-gfw.kra@gmail.com>
+Date: Thu, 23 Jun 2022 22:56:10 +0200
+
+APIs introduced in Windows 10 (NT10.0).
+Device form and family are hardcoded to Unknown and Windows.Desktop respectively.
+Unit tests included in dlls/ntdll/tests/version.c
+
+Signed-off-by: Kacper Raczy <gfw.kra@gmail.com>
+---
+ dlls/ntdll/ntdll.spec        |  2 +
+ dlls/ntdll/rtl.c             |  2 +-
+ dlls/ntdll/tests/Makefile.in |  3 +-
+ dlls/ntdll/tests/version.c   | 87 ++++++++++++++++++++++++++++++++++++
+ dlls/ntdll/version.c         | 48 +++++++++++++++++++-
+ include/winnt.h              | 13 ++++++
+ 6 files changed, 152 insertions(+), 3 deletions(-)
+ create mode 100644 dlls/ntdll/tests/version.c
+
+diff --git a/dlls/ntdll/ntdll.spec b/dlls/ntdll/ntdll.spec
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/ntdll.spec
++++ b/dlls/ntdll/ntdll.spec
+@@ -716,6 +716,8 @@
+ @ stdcall RtlGetCurrentProcessorNumberEx(ptr)
+ @ stdcall RtlGetCurrentTransaction()
+ @ stdcall RtlGetDaclSecurityDescriptor(ptr ptr ptr ptr)
++@ stdcall RtlGetDeviceFamilyInfoEnum(ptr ptr ptr)
++@ stdcall RtlConvertDeviceFamilyInfoToString(ptr ptr ptr ptr)
+ @ stdcall RtlGetElementGenericTable(ptr long)
+ # @ stub RtlGetElementGenericTableAvl
+ @ stdcall RtlGetEnabledExtendedFeatures(int64)
+diff --git a/dlls/ntdll/rtl.c b/dlls/ntdll/rtl.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/rtl.c
++++ b/dlls/ntdll/rtl.c
+@@ -2233,4 +2233,4 @@ char WINAPI RtlQueryProcessPlaceholderCompatibilityMode(void)
+ {
+     FIXME("stub\n");
+     return PHCM_APPLICATION_DEFAULT;
+-}
++}
+\ No newline at end of file
+diff --git a/dlls/ntdll/tests/Makefile.in b/dlls/ntdll/tests/Makefile.in
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/tests/Makefile.in
++++ b/dlls/ntdll/tests/Makefile.in
+@@ -27,5 +27,6 @@ C_SRCS = \
+ 	thread.c \
+ 	threadpool.c \
+ 	time.c \
++	version.c \
+ 	virtual.c \
+-	wow64.c
++	wow64.c
+\ No newline at end of file
+diff --git a/dlls/ntdll/tests/version.c b/dlls/ntdll/tests/version.c
+new file mode 100644
+index 00000000000..11111111111
+--- /dev/null
++++ b/dlls/ntdll/tests/version.c
+@@ -0,0 +1,87 @@
++/*
++ * Unit test suite for Rtl* Version API functions
++ *
++ * Copyright 2022 Kacper Rączy
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include "ntdll_test.h"
++#include "wine/test.h"
++
++static const WCHAR DeviceForms[][32] = {
++    L"Unknown", L"Phone", L"Tablet", L"Desktop", L"Notebook", 
++    L"Convertible", L"Detachable", L"All-in-One", L"Stick PC", L"Puck", 
++    L"Surface Hub", L"Head-mounted display", L"Industry handheld", L"Industry tablet", L"Banking", 
++    L"Building automation", L"Digital signage", L"Gaming", L"Home automation", L"Industrial automation",
++    L"Kiosk", L"Maker board", L"Medical", L"Networking", L"Point of Service", 
++    L"Printing", L"Thin client", L"Toy", L"Vending", L"Industry other"
++};
++
++static void test_RtlGetDeviceFamilyInfoEnum(void) 
++{
++    DWORD family, form;
++    ULONGLONG uap;
++    RTL_OSVERSIONINFOEXW version;
++    
++    RtlGetVersion(&version);
++    RtlGetDeviceFamilyInfoEnum(&uap, &family, &form);
++    ok( ((uap >> 48) & 0xffff) == version.dwMajorVersion, 
++        "First 16-bit chunk of UAP does not match major system version %llx\n", uap );
++    ok( ((uap >> 32) & 0xffff) == version.dwMinorVersion, 
++        "Second 16-bit chunk of UAP does not match minor system version %llx\n", uap );
++    ok( ((uap >> 16) & 0xffff) == version.dwBuildNumber, 
++        "Third 16-bit chunk of UAP does not match build number %llx\n", uap );
++    ok( family <= DEVICEFAMILYINFOENUM_MAX, 
++        "Device family is not valid: %lx\n", family );
++    ok( form <= DEVICEFAMILYDEVICEFORM_MAX, 
++        "Device form is not valid: %lx\n", form );
++}
++
++static void test_RtlConvertDeviceFamilyInfoToString(void) 
++{
++    DWORD family_bufsize = 0, form_bufsize = 0;
++    WCHAR *family, *form;
++    BOOL form_valid = FALSE;
++
++    RtlConvertDeviceFamilyInfoToString(&family_bufsize, &form_bufsize, NULL, NULL);
++    ok( family_bufsize == sizeof(WCHAR) * 16, /* Windows.Desktop length */
++        "Device family bufsize does not match: %lu\n", family_bufsize );
++    ok( form_bufsize > 0, "Device form bufsize is invalid: %lu\n", form_bufsize );
++
++    family = (WCHAR*)malloc(family_bufsize);
++    form = (WCHAR*)malloc(form_bufsize);
++    RtlConvertDeviceFamilyInfoToString(&family_bufsize, &form_bufsize, family, form);
++    ok( wcscmp(family, L"Windows.Desktop") == 0,
++        "Device family string is not equal to Windows.Desktop: %ls\n", family );
++    /* Device form depends on OEM setting in registry, 
++     * lets check all possible values to make it work on Windows */
++    for (int i = 0; i < sizeof(DeviceForms) / sizeof(WCHAR*); i++) {
++        if (wcscmp(form, DeviceForms[i]) == 0) {
++            form_valid = TRUE;
++            break;
++        }
++    }
++    ok( form_valid, "Device form string is not valid or known: %ls\n", form);
++
++    free(family);
++    free(form);
++}
++
++START_TEST(version) 
++{
++    test_RtlGetDeviceFamilyInfoEnum();
++    test_RtlConvertDeviceFamilyInfoToString();
++}
+diff --git a/dlls/ntdll/version.c b/dlls/ntdll/version.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/version.c
++++ b/dlls/ntdll/version.c
+@@ -609,7 +609,6 @@ void WINAPI RtlGetNtVersionNumbers( LPDWORD major, LPDWORD minor, LPDWORD build
+     if (build) *build = (0xF0000000 | current_version->dwBuildNumber);
+ }
+ 
+-
+ /******************************************************************************
+  *  RtlGetNtProductType   (NTDLL.@)
+  */
+@@ -760,6 +759,53 @@ NTSTATUS WINAPI RtlVerifyVersionInfo( const RTL_OSVERSIONINFOEXW *info,
+     return STATUS_SUCCESS;
+ }
+ 
++/*********************************************************************
++ *  RtlGetDeviceFamilyInfoEnum (NTDLL.@)
++ *
++ * NOTES
++ * Introduced in Windows 10 (NT10.0)
++ */
++void WINAPI RtlGetDeviceFamilyInfoEnum( ULONGLONG *uap_info, DWORD *device_family, DWORD *device_form )
++{
++    if (device_form)
++        *device_form = DEVICEFAMILYDEVICEFORM_UNKNOWN;
++    if (device_family)
++        *device_family = DEVICEFAMILYINFOENUM_DESKTOP;
++    if (!uap_info)
++        return;
++
++    /**
++     * UAP info is 64 bit unsigned integer which contains four 16-bit chunks:
++     * 1. os version major
++     * 2. os version minor
++     * 3. current build number
++     * 4. update build revision
++    */
++    *uap_info = 0;
++    *uap_info |= (((ULONGLONG)current_version->dwMajorVersion & 0xffff) << 48); /* os version major */
++    *uap_info |= (((ULONGLONG)current_version->dwMinorVersion & 0xffff) << 32); /* os version minor */
++    *uap_info |= (((ULONGLONG)current_version->dwBuildNumber & 0xffff) << 16); /* current build number */
++    /* UBR not available */
++}
++
++/*********************************************************************
++ *  RtlConvertDeviceFamilyInfoToString (NTDLL.@)
++ *
++ * NOTES
++ * Introduced in Windows 10 (NT10.0)
++ */
++void WINAPI RtlConvertDeviceFamilyInfoToString( DWORD *device_family_bufsize, DWORD *device_form_bufsize,
++                                                const WCHAR *device_family, const WCHAR *device_form) 
++{
++    DWORD device_family_len = (wcslen( L"Windows.Desktop" ) + 1) * sizeof(WCHAR);
++    DWORD device_form_len = (wcslen( L"Unknown" ) + 1) * sizeof(WCHAR);
++    if (*device_family_bufsize >= device_family_len)
++        wcscpy( device_family, L"Windows.Desktop" );
++    if (*device_form_bufsize >= device_form_len)
++        wcscpy( device_form, L"Unknown" );
++    *device_family_bufsize = device_family_len;
++    *device_form_bufsize = device_form_len;
++}
+ 
+ /******************************************************************************
+  *        VerSetConditionMask   (NTDLL.@)
+diff --git a/include/winnt.h b/include/winnt.h
+index 11111111111..11111111111 100644
+--- a/include/winnt.h
++++ b/include/winnt.h
+@@ -6236,6 +6236,19 @@ typedef struct _SYSTEM_CPU_SET_INFORMATION
+     } DUMMYUNIONNAME;
+ } SYSTEM_CPU_SET_INFORMATION, *PSYSTEM_CPU_SET_INFORMATION;
+ 
++/* Windows 10 Rtl apis */
++
++#define DEVICEFAMILYINFOENUM_DESKTOP                    0x00000003
++
++#define DEVICEFAMILYINFOENUM_MAX                        0x00000011
++
++#define DEVICEFAMILYDEVICEFORM_UNKNOWN                  0x00000000
++
++#define DEVICEFAMILYDEVICEFORM_MAX                      0x00000021
++
++NTSYSAPI VOID WINAPI RtlGetDeviceFamilyInfoEnum(ULONGLONG*, DWORD*, DWORD*);
++NTSYSAPI VOID WINAPI RtlConvertDeviceFamilyInfoToString(DWORD*, DWORD*, const WCHAR*, const WCHAR*);
++
+ /* Threadpool things */
+ typedef DWORD TP_VERSION,*PTP_VERSION;
+ 
+
+-- 
+2.37.1
+

@@ -1,0 +1,181 @@
+From 74bd2351b8dbc53044a0d35f09c3529d83ec8209 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 9 Nov 2021 02:30:41 +0100
+Subject: [PATCH 9/9] server: Continuously send pointer update messages while
+ it's down.
+
+CW-Bug-Id: #18214
+---
+ server/queue.c      | 83 +++++++++++++++++++++++++++++++++++++++++++++
+ server/user.h       |  2 ++
+ server/window.c     |  1 +
+ server/winstation.c |  2 ++
+ 4 files changed, 88 insertions(+)
+
+diff --git a/server/queue.c b/server/queue.c
+index 11111111111..11111111111 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -2289,6 +2289,58 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
+     return wait;
+ }
+ 
++struct touch
++{
++    struct list entry;
++    struct desktop *desktop;
++    user_handle_t win;
++    hw_input_t input;
++    struct timeout_user *timeout;
++};
++
++static void queue_touch_input_message( void *private )
++{
++    struct hw_msg_source source = { IMDT_UNAVAILABLE, IMDT_TOUCH };
++    struct touch *touch = private;
++    struct desktop *desktop = touch->desktop;
++    const hw_input_t *input = &touch->input;
++    user_handle_t win = touch->win;
++    struct hardware_msg_data *msg_data;
++    struct message *msg;
++
++    if (!(msg = alloc_hardware_message( 0, source, get_tick_count(), 0 ))) return;
++
++    msg_data = msg->data;
++    msg_data->info     = 0;
++    msg_data->size     = sizeof(*msg_data);
++    msg_data->flags    = input->hw.lparam;
++    msg_data->rawinput = input->hw.rawinput;
++
++    msg->win       = get_user_full_handle( win );
++    msg->msg       = input->hw.msg;
++    msg->wparam    = 0;
++    msg->lparam    = input->hw.lparam;
++    msg->x         = desktop->shared->cursor.x;
++    msg->y         = desktop->shared->cursor.y;
++
++    queue_hardware_message( desktop, msg, 1 );
++    touch->timeout = add_timeout_user( -160000, queue_touch_input_message, touch );
++}
++
++static struct touch *find_touch_input( struct desktop *desktop, unsigned int id )
++{
++    struct touch *touch;
++
++    LIST_FOR_EACH_ENTRY( touch, &desktop->touches, struct touch, entry )
++        if (LOWORD(touch->input.hw.rawinput.mouse.data) == id) return touch;
++
++    touch = mem_alloc( sizeof(struct touch) );
++    list_add_tail( &desktop->touches, &touch->entry );
++    touch->desktop = desktop;
++    touch->timeout = NULL;
++    return touch;
++}
++
+ /* queue a hardware message for a custom type of event */
+ static void queue_custom_hardware_message( struct desktop *desktop, user_handle_t win,
+                                            unsigned int origin, const hw_input_t *input )
+@@ -2296,6 +2348,7 @@ static void queue_custom_hardware_message( struct desktop *desktop, user_handle_
+     struct hw_msg_source source = { IMDT_UNAVAILABLE, origin };
+     struct hardware_msg_data *msg_data;
+     struct rawinput_message raw_msg;
++    struct touch *touch;
+     struct message *msg;
+     data_size_t report_size = 0;
+ 
+@@ -2347,6 +2400,21 @@ static void queue_custom_hardware_message( struct desktop *desktop, user_handle_
+         msg_data->size     = sizeof(*msg_data);
+         msg_data->flags    = input->hw.lparam;
+         msg_data->rawinput = input->hw.rawinput;
++        touch = find_touch_input( desktop, LOWORD(input->hw.rawinput.mouse.data) );
++        if (touch->timeout) remove_timeout_user( touch->timeout );
++        if (input->hw.msg != WM_POINTERUP)
++        {
++            touch->win = win;
++            touch->input = *input;
++            touch->input.hw.msg = WM_POINTERUPDATE;
++            touch->input.mouse.data &= ~(POINTER_MESSAGE_FLAG_NEW << 16);
++            touch->timeout = add_timeout_user( -160000, queue_touch_input_message, touch );
++        }
++        else
++        {
++            list_remove( &touch->entry );
++            free( touch );
++        }
+     }
+ 
+     msg->win       = get_user_full_handle( win );
+@@ -2667,6 +2735,21 @@ void post_win_event( struct thread *thread, unsigned int event,
+     }
+ }
+ 
++void free_touches( struct desktop *desktop, user_handle_t window )
++{
++    struct touch *touch, *next;
++
++    LIST_FOR_EACH_ENTRY_SAFE( touch, next, &desktop->touches, struct touch, entry )
++    {
++        if (!window || touch->win == window)
++        {
++            list_remove( &touch->entry );
++            if (touch->timeout) remove_timeout_user( touch->timeout );
++            free( touch );
++        }
++    }
++}
++
+ /* free all hotkeys on a desktop, optionally filtering by window */
+ void free_hotkeys( struct desktop *desktop, user_handle_t window )
+ {
+diff --git a/server/user.h b/server/user.h
+index 11111111111..11111111111 100644
+--- a/server/user.h
++++ b/server/user.h
+@@ -63,6 +63,7 @@ struct desktop
+     struct hook_table                     *global_hooks;     /* table of global hooks on this desktop */
+     struct list                            hotkeys;          /* list of registered hotkeys */
+     struct timeout_user                   *close_timeout;    /* timeout before closing the desktop */
++    struct list                            touches;          /* list of active touches */
+     struct thread_input                   *foreground_input; /* thread input of foreground thread */
+     unsigned int                           users;            /* processes and threads using this desktop */
+     unsigned int                           cursor_clip_msg;  /* message to post for cursor clip changes */
+@@ -121,6 +122,7 @@ extern void post_win_event( struct thread *thread, unsigned int event,
+                             const WCHAR *module, data_size_t module_size,
+                             user_handle_t handle );
+ extern void free_hotkeys( struct desktop *desktop, user_handle_t window );
++extern void free_touches( struct desktop *desktop, user_handle_t window );
+ extern void set_clip_rectangle( struct desktop *desktop, const rectangle_t *rect, int send_clip_msg );
+ 
+ /* region functions */
+diff --git a/server/window.c b/server/window.c
+index 11111111111..11111111111 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -2010,6 +2010,7 @@ void free_window_handle( struct window *win )
+     if (win == progman_window) progman_window = NULL;
+     if (win == taskman_window) taskman_window = NULL;
+     free_hotkeys( win->desktop, win->handle );
++    free_touches( win->desktop, win->handle );
+     cleanup_clipboard_window( win->desktop, win->handle );
+     destroy_properties( win );
+     if (is_desktop_window(win))
+diff --git a/server/winstation.c b/server/winstation.c
+index 11111111111..11111111111 100644
+--- a/server/winstation.c
++++ b/server/winstation.c
+@@ -262,6 +262,7 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned
+             desktop->last_press_alt = 0;
+             list_add_tail( &winstation->desktops, &desktop->entry );
+             list_init( &desktop->hotkeys );
++            list_init( &desktop->touches );
+             if (!init_desktop_mapping( desktop, name ))
+             {
+                 release_object( desktop );
+@@ -315,6 +316,7 @@ static void desktop_destroy( struct object *obj )
+     struct desktop *desktop = (struct desktop *)obj;
+ 
+     free_hotkeys( desktop, 0 );
++    free_touches( desktop, 0 );
+     if (desktop->top_window) free_window_handle( desktop->top_window );
+     if (desktop->msg_window) free_window_handle( desktop->msg_window );
+     if (desktop->global_hooks) release_object( desktop->global_hooks );

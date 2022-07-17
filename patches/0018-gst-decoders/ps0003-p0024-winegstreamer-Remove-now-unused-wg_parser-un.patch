@@ -1,0 +1,206 @@
+From 47bb45ae18d1ceeb772169a75dc6645a22913d60 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 16 Mar 2022 20:39:30 +0100
+Subject: [PATCH 24/30] winegstreamer: Remove now unused wg_parser unixlib
+ entry points.
+
+---
+ dlls/winegstreamer/gst_private.h |  3 --
+ dlls/winegstreamer/main.c        | 23 -----------
+ dlls/winegstreamer/unixlib.h     | 17 ++------
+ dlls/winegstreamer/wg_parser.c   | 66 +-------------------------------
+ 4 files changed, 4 insertions(+), 105 deletions(-)
+
+diff --git a/dlls/winegstreamer/gst_private.h b/dlls/winegstreamer/gst_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/gst_private.h
++++ b/dlls/winegstreamer/gst_private.h
+@@ -90,9 +90,6 @@ void wg_parser_stream_enable(struct wg_parser_stream *stream, const struct wg_fo
+ void wg_parser_stream_disable(struct wg_parser_stream *stream);
+ 
+ bool wg_parser_stream_get_buffer(struct wg_parser_stream *stream, struct wg_parser_buffer *buffer);
+-bool wg_parser_stream_copy_buffer(struct wg_parser_stream *stream,
+-        void *data, uint32_t offset, uint32_t size);
+-void wg_parser_stream_release_buffer(struct wg_parser_stream *stream);
+ bool wg_parser_stream_read_data(struct wg_parser_stream *stream, struct wg_sample *sample);
+ void wg_parser_stream_notify_qos(struct wg_parser_stream *stream,
+         bool underflow, double proportion, int64_t diff, uint64_t timestamp);
+diff --git a/dlls/winegstreamer/main.c b/dlls/winegstreamer/main.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/main.c
++++ b/dlls/winegstreamer/main.c
+@@ -237,29 +237,6 @@ bool wg_parser_stream_get_buffer(struct wg_parser_stream *stream, struct wg_pars
+     return !__wine_unix_call(unix_handle, unix_wg_parser_stream_get_buffer, &params);
+ }
+ 
+-bool wg_parser_stream_copy_buffer(struct wg_parser_stream *stream,
+-        void *data, uint32_t offset, uint32_t size)
+-{
+-    struct wg_parser_stream_copy_buffer_params params =
+-    {
+-        .stream = stream,
+-        .data = data,
+-        .offset = offset,
+-        .size = size,
+-    };
+-
+-    TRACE("stream %p, data %p, offset %u, size %u.\n", stream, data, offset, size);
+-
+-    return !__wine_unix_call(unix_handle, unix_wg_parser_stream_copy_buffer, &params);
+-}
+-
+-void wg_parser_stream_release_buffer(struct wg_parser_stream *stream)
+-{
+-    TRACE("stream %p.\n", stream);
+-
+-    __wine_unix_call(unix_handle, unix_wg_parser_stream_release_buffer, stream);
+-}
+-
+ bool wg_parser_stream_read_data(struct wg_parser_stream *stream, struct wg_sample *sample)
+ {
+     struct wg_parser_stream_read_data_params params =
+diff --git a/dlls/winegstreamer/unixlib.h b/dlls/winegstreamer/unixlib.h
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/unixlib.h
++++ b/dlls/winegstreamer/unixlib.h
+@@ -163,12 +163,11 @@ struct wg_request
+ 
+ struct wg_parser_buffer
+ {
+-    /* pts and duration are in 100-nanosecond units. */
+-    UINT64 pts, duration;
++    /* pts is in 100-nanosecond units. */
++    UINT64 pts;
+     UINT32 size;
+-    bool discontinuity, preroll, delta, has_pts, has_duration;
++    bool has_pts;
+ };
+-C_ASSERT(sizeof(struct wg_parser_buffer) == 32);
+ 
+ enum wg_parser_type
+ {
+@@ -240,14 +239,6 @@ struct wg_parser_stream_get_buffer_params
+     struct wg_parser_buffer *buffer;
+ };
+ 
+-struct wg_parser_stream_copy_buffer_params
+-{
+-    struct wg_parser_stream *stream;
+-    void *data;
+-    UINT32 offset;
+-    UINT32 size;
+-};
+-
+ struct wg_parser_stream_read_data_params
+ {
+     struct wg_parser_stream *stream;
+@@ -325,8 +316,6 @@ enum unix_funcs
+     unix_wg_parser_stream_disable,
+ 
+     unix_wg_parser_stream_get_buffer,
+-    unix_wg_parser_stream_copy_buffer,
+-    unix_wg_parser_stream_release_buffer,
+     unix_wg_parser_stream_read_data,
+     unix_wg_parser_stream_notify_qos,
+ 
+diff --git a/dlls/winegstreamer/wg_parser.c b/dlls/winegstreamer/wg_parser.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wg_parser.c
++++ b/dlls/winegstreamer/wg_parser.c
+@@ -309,11 +309,6 @@ static NTSTATUS wg_parser_stream_get_buffer(void *args)
+ 
+         if ((wg_buffer->has_pts = GST_BUFFER_PTS_IS_VALID(buffer)))
+             wg_buffer->pts = GST_BUFFER_PTS(buffer) / 100;
+-        if ((wg_buffer->has_duration = GST_BUFFER_DURATION_IS_VALID(buffer)))
+-            wg_buffer->duration = GST_BUFFER_DURATION(buffer) / 100;
+-        wg_buffer->discontinuity = GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DISCONT);
+-        wg_buffer->preroll = GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_LIVE);
+-        wg_buffer->delta = GST_BUFFER_FLAG_IS_SET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
+         wg_buffer->size = gst_buffer_get_size(buffer);
+ 
+         pthread_mutex_unlock(&parser->mutex);
+@@ -324,63 +319,6 @@ static NTSTATUS wg_parser_stream_get_buffer(void *args)
+     return S_FALSE;
+ }
+ 
+-static NTSTATUS wg_parser_stream_copy_buffer(void *args)
+-{
+-    const struct wg_parser_stream_copy_buffer_params *params = args;
+-    struct wg_parser_stream *stream = params->stream;
+-    struct wg_parser *parser = stream->parser;
+-    uint32_t offset = params->offset;
+-    uint32_t size = params->size;
+-    GstMapInfo map_info;
+-    GstBuffer *buffer;
+-
+-    pthread_mutex_lock(&parser->mutex);
+-
+-    if (!stream->buffer)
+-    {
+-        pthread_mutex_unlock(&parser->mutex);
+-        return VFW_E_WRONG_STATE;
+-    }
+-
+-    buffer = gst_buffer_ref(stream->buffer);
+-    pthread_mutex_unlock(&parser->mutex);
+-
+-    if (!gst_buffer_map(buffer, &map_info, GST_MAP_READ))
+-    {
+-        GST_ERROR("Failed to map buffer.\n");
+-        gst_buffer_unref(buffer);
+-        return E_FAIL;
+-    }
+-
+-    assert(offset < map_info.size);
+-    assert(offset + size <= map_info.size);
+-    memcpy(params->data, map_info.data + offset, size);
+-
+-    gst_buffer_unmap(stream->buffer, &map_info);
+-
+-    gst_buffer_unref(buffer);
+-    return S_OK;
+-}
+-
+-static NTSTATUS wg_parser_stream_release_buffer(void *args)
+-{
+-    struct wg_parser_stream *stream = args;
+-    struct wg_parser *parser = stream->parser;
+-    GstBuffer *buffer;
+-
+-    pthread_mutex_lock(&parser->mutex);
+-
+-    assert(stream->buffer);
+-    buffer = stream->buffer;
+-    stream->buffer = NULL;
+-
+-    pthread_mutex_unlock(&parser->mutex);
+-    pthread_cond_signal(&stream->event_empty_cond);
+-
+-    gst_buffer_unref(buffer);
+-    return S_OK;
+-}
+-
+ static NTSTATUS wg_parser_stream_read_data(void *args)
+ {
+     struct wg_parser_stream_read_data_params *params = args;
+@@ -638,7 +576,7 @@ static GstFlowReturn sink_chain_cb(GstPad *pad, GstObject *parent, GstBuffer *bu
+ 
+     /* The chain callback is given a reference to the buffer. Transfer that
+      * reference to the stream object, which will release it in
+-     * wg_parser_stream_release_buffer(). */
++     * wg_parser_stream_read_data(). */
+ 
+     GST_LOG("Buffer queued.");
+     return GST_FLOW_OK;
+@@ -1786,8 +1724,6 @@ const unixlib_entry_t __wine_unix_call_funcs[] =
+     X(wg_parser_stream_disable),
+ 
+     X(wg_parser_stream_get_buffer),
+-    X(wg_parser_stream_copy_buffer),
+-    X(wg_parser_stream_release_buffer),
+     X(wg_parser_stream_read_data),
+     X(wg_parser_stream_notify_qos),
+ 
+-- 
+2.37.1
+

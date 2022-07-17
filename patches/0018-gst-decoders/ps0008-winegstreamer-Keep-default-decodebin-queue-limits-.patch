@@ -1,0 +1,195 @@
+From 4f15ef77c49840796dd7fe8fc18e447ddf6246ff Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 15 Jun 2022 19:12:54 +0200
+Subject: [PATCH] winegstreamer: Keep default decodebin queue limits for
+ buffers and time.
+
+Only make size unlimited, which fixes problems with Persona 4 while
+keeping the memory usage lower.
+---
+ dlls/winegstreamer/gst_private.h   |  2 +-
+ dlls/winegstreamer/main.c          |  5 ++---
+ dlls/winegstreamer/media_source.c  | 10 ++--------
+ dlls/winegstreamer/quartz_parser.c |  8 ++++----
+ dlls/winegstreamer/unixlib.h       |  1 -
+ dlls/winegstreamer/wg_parser.c     | 17 ++---------------
+ dlls/winegstreamer/wm_reader.c     |  2 +-
+ 7 files changed, 12 insertions(+), 33 deletions(-)
+
+diff --git a/dlls/winegstreamer/gst_private.h b/dlls/winegstreamer/gst_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/gst_private.h
++++ b/dlls/winegstreamer/gst_private.h
+@@ -71,7 +71,7 @@ HRESULT wg_sample_queue_create(struct wg_sample_queue **out);
+ void wg_sample_queue_destroy(struct wg_sample_queue *queue);
+ void wg_sample_queue_flush(struct wg_sample_queue *queue, bool all);
+ 
+-struct wg_parser *wg_parser_create(enum wg_parser_type type, bool unlimited_buffering);
++struct wg_parser *wg_parser_create(enum wg_parser_type type);
+ void wg_parser_destroy(struct wg_parser *parser);
+ 
+ HRESULT wg_parser_connect(struct wg_parser *parser, uint64_t file_size, const WCHAR *uri);
+diff --git a/dlls/winegstreamer/main.c b/dlls/winegstreamer/main.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/main.c
++++ b/dlls/winegstreamer/main.c
+@@ -62,15 +62,14 @@ bool array_reserve(void **elements, size_t *capacity, size_t count, size_t size)
+     return TRUE;
+ }
+ 
+-struct wg_parser *wg_parser_create(enum wg_parser_type type, bool unlimited_buffering)
++struct wg_parser *wg_parser_create(enum wg_parser_type type)
+ {
+     struct wg_parser_create_params params =
+     {
+         .type = type,
+-        .unlimited_buffering = unlimited_buffering,
+     };
+ 
+-    TRACE("type %#x, unlimited_buffering %d.\n", type, unlimited_buffering);
++    TRACE("type %#x.\n", type);
+ 
+     if (__wine_unix_call(unix_handle, unix_wg_parser_create, &params))
+         return NULL;
+diff --git a/dlls/winegstreamer/media_source.c b/dlls/winegstreamer/media_source.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/media_source.c
++++ b/dlls/winegstreamer/media_source.c
+@@ -1545,7 +1545,7 @@ HRESULT winegstreamer_create_media_source_from_uri(const WCHAR *uri, IUnknown **
+         return hr;
+     }
+ 
+-    if (!(parser = wg_parser_create(WG_PARSER_URIDECODEBIN, true)))
++    if (!(parser = wg_parser_create(WG_PARSER_URIDECODEBIN)))
+     {
+         hr = E_OUTOFMEMORY;
+         goto fail;
+@@ -1594,13 +1594,7 @@ static HRESULT media_source_constructor(IMFByteStream *bytestream, struct media_
+         return hr;
+     }
+ 
+-    /* In Media Foundation, sources may read from any media source stream
+-     * without fear of blocking due to buffering limits on another. Trailmakers,
+-     * a Unity3D Engine game, only reads one sample from the audio stream (and
+-     * never deselects it). Remove buffering limits from decodebin in order to
+-     * account for this. Note that this does leak memory, but the same memory
+-     * leak occurs with native. */
+-    if (!(parser = wg_parser_create(WG_PARSER_DECODEBIN, true)))
++    if (!(parser = wg_parser_create(WG_PARSER_DECODEBIN)))
+     {
+         hr = E_OUTOFMEMORY;
+         goto fail;
+diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/quartz_parser.c
++++ b/dlls/winegstreamer/quartz_parser.c
+@@ -1172,7 +1172,7 @@ HRESULT decodebin_parser_create(IUnknown *outer, IUnknown **out)
+         return hr;
+     }
+ 
+-    if (!(object->wg_parser = wg_parser_create(WG_PARSER_DECODEBIN, false)))
++    if (!(object->wg_parser = wg_parser_create(WG_PARSER_DECODEBIN)))
+     {
+         free(object);
+         return E_OUTOFMEMORY;
+@@ -1698,7 +1698,7 @@ HRESULT wave_parser_create(IUnknown *outer, IUnknown **out)
+         return hr;
+     }
+ 
+-    if (!(object->wg_parser = wg_parser_create(WG_PARSER_WAVPARSE, false)))
++    if (!(object->wg_parser = wg_parser_create(WG_PARSER_WAVPARSE)))
+     {
+         free(object);
+         return E_OUTOFMEMORY;
+@@ -1790,7 +1790,7 @@ HRESULT avi_splitter_create(IUnknown *outer, IUnknown **out)
+         return hr;
+     }
+ 
+-    if (!(object->wg_parser = wg_parser_create(WG_PARSER_AVIDEMUX, false)))
++    if (!(object->wg_parser = wg_parser_create(WG_PARSER_AVIDEMUX)))
+     {
+         free(object);
+         return E_OUTOFMEMORY;
+@@ -1903,7 +1903,7 @@ HRESULT mpeg_splitter_create(IUnknown *outer, IUnknown **out)
+         return hr;
+     }
+ 
+-    if (!(object->wg_parser = wg_parser_create(WG_PARSER_MPEGAUDIOPARSE, false)))
++    if (!(object->wg_parser = wg_parser_create(WG_PARSER_MPEGAUDIOPARSE)))
+     {
+         free(object);
+         return E_OUTOFMEMORY;
+diff --git a/dlls/winegstreamer/unixlib.h b/dlls/winegstreamer/unixlib.h
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/unixlib.h
++++ b/dlls/winegstreamer/unixlib.h
+@@ -192,7 +192,6 @@ struct wg_parser_create_params
+ {
+     struct wg_parser *parser;
+     enum wg_parser_type type;
+-    bool unlimited_buffering;
+ };
+ 
+ struct wg_parser_connect_params
+diff --git a/dlls/winegstreamer/wg_parser.c b/dlls/winegstreamer/wg_parser.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wg_parser.c
++++ b/dlls/winegstreamer/wg_parser.c
+@@ -91,8 +91,6 @@ struct wg_parser
+     pthread_cond_t request_cond, request_done_cond;
+ 
+     bool sink_connected;
+-
+-    bool unlimited_buffering;
+ };
+ 
+ struct wg_parser_stream
+@@ -1545,13 +1543,7 @@ static BOOL decodebin_parser_init_gst(struct wg_parser *parser)
+     gst_bin_add(GST_BIN(parser->container), element);
+     parser->decodebin = element;
+ 
+-    if (parser->unlimited_buffering)
+-    {
+-        g_object_set(parser->decodebin, "max-size-buffers", G_MAXUINT, NULL);
+-        g_object_set(parser->decodebin, "max-size-time", G_MAXUINT64, NULL);
+-        g_object_set(parser->decodebin, "max-size-bytes", G_MAXUINT, NULL);
+-    }
+-
++    g_object_set(element, "max-size-bytes", G_MAXUINT, NULL);
+     g_signal_connect(element, "pad-added", G_CALLBACK(pad_added_cb), parser);
+     g_signal_connect(element, "pad-removed", G_CALLBACK(pad_removed_cb), parser);
+     g_signal_connect(element, "autoplug-select", G_CALLBACK(autoplug_select_cb), parser);
+@@ -1584,11 +1576,7 @@ static BOOL uridecodebin_parser_init_gst(struct wg_parser *parser)
+     gst_bin_add(GST_BIN(parser->container), element);
+     parser->decodebin = element;
+ 
+-    if (parser->unlimited_buffering)
+-    {
+-        g_object_set(parser->decodebin, "buffer-duration", G_MAXINT64, NULL);
+-        g_object_set(parser->decodebin, "buffer-size", G_MAXINT, NULL);
+-    }
++    g_object_set(parser->decodebin, "buffer-size", G_MAXINT, NULL);
+     g_object_set(parser->decodebin, "uri", parser->uri, NULL);
+ 
+     pthread_mutex_lock(&parser->mutex);
+@@ -1766,7 +1754,6 @@ static NTSTATUS wg_parser_create(void *args)
+     pthread_cond_init(&parser->request_cond, NULL);
+     pthread_cond_init(&parser->request_done_cond, NULL);
+     parser->init_gst = init_funcs[params->type];
+-    parser->unlimited_buffering = params->unlimited_buffering;
+ 
+     GST_DEBUG("Created winegstreamer parser %p.", parser);
+     params->parser = parser;
+diff --git a/dlls/winegstreamer/wm_reader.c b/dlls/winegstreamer/wm_reader.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wm_reader.c
++++ b/dlls/winegstreamer/wm_reader.c
+@@ -1539,7 +1539,7 @@ static HRESULT init_stream(struct wm_reader *reader, QWORD file_size)
+     HRESULT hr;
+     WORD i;
+ 
+-    if (!(wg_parser = wg_parser_create(WG_PARSER_DECODEBIN, false)))
++    if (!(wg_parser = wg_parser_create(WG_PARSER_DECODEBIN)))
+         return E_OUTOFMEMORY;
+ 
+     reader->wg_parser = wg_parser;

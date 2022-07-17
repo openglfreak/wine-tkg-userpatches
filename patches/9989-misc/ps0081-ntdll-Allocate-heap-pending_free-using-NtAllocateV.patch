@@ -10,14 +10,14 @@ This should fix the "HEAP_GetPtr Invalid heap 0000000000000000!" error.
 
 Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
 ---
- dlls/ntdll/heap.c | 12 +++++++++---
- 1 file changed, 9 insertions(+), 3 deletions(-)
+ dlls/ntdll/heap.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
 
 diff --git a/dlls/ntdll/heap.c b/dlls/ntdll/heap.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/heap.c
 +++ b/dlls/ntdll/heap.c
-@@ -1396,8 +1396,9 @@ static void heap_set_debug_flags( HANDLE handle )
+@@ -1331,8 +1331,9 @@ static void heap_set_debug_flags( HANDLE handle )
      if ((heap->flags & HEAP_GROWABLE) && !heap->pending_free &&
          ((flags & HEAP_FREE_CHECKING_ENABLED) || RUNNING_ON_VALGRIND))
      {
@@ -29,21 +29,21 @@ index 11111111111..11111111111 100644
          heap->pending_pos = 0;
      }
  
-@@ -1514,7 +1515,12 @@ HANDLE WINAPI RtlDestroyHeap( HANDLE heap )
-         NtFreeVirtualMemory( NtCurrentProcess(), &addr, &size, MEM_RELEASE );
+@@ -1427,11 +1428,12 @@ HANDLE WINAPI RtlDestroyHeap( HANDLE handle )
+ 
+     if ((pending = heap->pending_free))
+     {
++        SIZE_T pending_size = MAX_FREE_PENDING * sizeof(*pending);
+         heap->pending_free = NULL;
+         for (tmp = pending; *tmp && tmp != pending + MAX_FREE_PENDING; ++tmp)
+             if ((subheap = find_subheap( heap, *tmp, FALSE )))
+                 free_used_block( heap, subheap, *tmp );
+-        RtlFreeHeap( handle, 0, pending );
++        NtFreeVirtualMemory( NtCurrentProcess(), &pending, &pending_size, MEM_RELEASE );
      }
-     notify_free_all( &heapPtr->subheap );
--    RtlFreeHeap( GetProcessHeap(), 0, heapPtr->pending_free );
-+    if (heapPtr->pending_free)
-+    {
-+        size = 0;
-+        addr = heapPtr->pending_free;
-+        NtFreeVirtualMemory( NtCurrentProcess(), &addr, &size, MEM_RELEASE );
-+    }
-     size = 0;
-     addr = heapPtr->subheap.base;
-     NtFreeVirtualMemory( NtCurrentProcess(), &addr, &size, MEM_RELEASE );
+ 
 
+     if (heap == process_heap) return handle; /* cannot delete the main process heap */
 -- 
-2.36.1
+2.37.1
 

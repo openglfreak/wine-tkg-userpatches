@@ -9,12 +9,12 @@ Content-Transfer-Encoding: 8bit
 
 Signed-off-by: Rémi Bernon <rbernon@codeweavers.com>
 ---
- dlls/winegstreamer/wm_asyncreader.c | 196 +++++++++++++++++++---------
- dlls/wmvcore/tests/wmvcore.c        | 103 +++++----------
- 2 files changed, 166 insertions(+), 133 deletions(-)
+ dlls/winegstreamer/wm_asyncreader.c | 207 +++++++++++++++++++---------
+ dlls/wmvcore/tests/wmvcore.c        | 103 ++++----------
+ 2 files changed, 172 insertions(+), 138 deletions(-)
 
 diff --git a/dlls/winegstreamer/wm_asyncreader.c b/dlls/winegstreamer/wm_asyncreader.c
-index 9d8c2be45cb..033cda18dc4 100644
+index 11111111111..11111111111 100644
 --- a/dlls/winegstreamer/wm_asyncreader.c
 +++ b/dlls/winegstreamer/wm_asyncreader.c
 @@ -40,7 +40,12 @@ struct async_reader
@@ -44,11 +44,6 @@ index 9d8c2be45cb..033cda18dc4 100644
 -    IWMReaderCallback_AddRef(reader->callback = callback);
 -    reader->context = context;
 -    IWMReaderCallback_OnStatus(callback, WMT_OPENED, S_OK, WMT_TYPE_DWORD, (BYTE *)&zero, context);
--
--    if (FAILED(hr = IWMReaderCallback_QueryInterface(callback,
--            &IID_IWMReaderCallbackAdvanced, (void **)&reader->reader.callback_advanced)))
--        reader->reader.callback_advanced = NULL;
--    TRACE("Querying for IWMReaderCallbackAdvanced returned %#lx.\n", hr);
 +    switch (MAKELONG(reader->state, reader->next_state))
 +    {
 +        case MAKELONG(STATE_CLOSED, STATE_CLOSED):
@@ -59,7 +54,11 @@ index 9d8c2be45cb..033cda18dc4 100644
 +            break;
 +        case MAKELONG(STATE_CLOSED, STATE_RUNNING):
 +            break;
-+
+ 
+-    if (FAILED(hr = IWMReaderCallback_QueryInterface(callback,
+-            &IID_IWMReaderCallbackAdvanced, (void **)&reader->reader.callback_advanced)))
+-        reader->reader.callback_advanced = NULL;
+-    TRACE("Querying for IWMReaderCallbackAdvanced returned %#lx.\n", hr);
 +        case MAKELONG(STATE_STOPPED, STATE_CLOSED):
 +            IWMReaderCallback_OnStatus(reader->callback, WMT_CLOSED, S_OK,
 +                    WMT_TYPE_DWORD, (BYTE *)&zero, reader->context);
@@ -107,7 +106,7 @@ index 9d8c2be45cb..033cda18dc4 100644
      REFERENCE_TIME start_time;
      struct wm_stream *stream;
      static const DWORD zero;
-@@ -79,14 +126,7 @@ static DWORD WINAPI stream_thread(void *arg)
+@@ -85,14 +126,7 @@ static DWORD WINAPI stream_thread(void *arg)
  
      start_time = get_current_time(reader);
  
@@ -123,7 +122,7 @@ index 9d8c2be45cb..033cda18dc4 100644
      {
          hr = wm_reader_get_stream_sample(&reader->reader, 0, &sample, &pts, &duration, &flags, &stream_number);
          if (hr != S_OK)
-@@ -105,12 +145,12 @@ static DWORD WINAPI stream_thread(void *arg)
+@@ -111,12 +145,12 @@ static DWORD WINAPI stream_thread(void *arg)
                  EnterCriticalSection(&reader->stream_cs);
              }
  
@@ -138,7 +137,7 @@ index 9d8c2be45cb..033cda18dc4 100644
              {
                  REFERENCE_TIME current_time = get_current_time(reader);
  
-@@ -122,7 +162,7 @@ static DWORD WINAPI stream_thread(void *arg)
+@@ -128,7 +162,7 @@ static DWORD WINAPI stream_thread(void *arg)
              }
          }
  
@@ -147,7 +146,7 @@ index 9d8c2be45cb..033cda18dc4 100644
          {
              LeaveCriticalSection(&reader->stream_cs);
              if (stream->read_compressed)
-@@ -139,8 +179,6 @@ static DWORD WINAPI stream_thread(void *arg)
+@@ -145,8 +179,6 @@ static DWORD WINAPI stream_thread(void *arg)
          INSSBuffer_Release(sample);
      }
  
@@ -156,7 +155,7 @@ index 9d8c2be45cb..033cda18dc4 100644
      if (hr == NS_E_NO_MORE_SAMPLES)
      {
          IWMReaderCallback_OnStatus(callback, WMT_END_OF_STREAMING, S_OK,
-@@ -163,22 +201,75 @@ static DWORD WINAPI stream_thread(void *arg)
+@@ -169,22 +201,75 @@ static DWORD WINAPI stream_thread(void *arg)
      {
          ERR("Failed to get sample, hr %#lx.\n", hr);
      }
@@ -237,7 +236,7 @@ index 9d8c2be45cb..033cda18dc4 100644
          WaitForSingleObject(reader->stream_thread, INFINITE);
          CloseHandle(reader->stream_thread);
          reader->stream_thread = NULL;
-@@ -229,8 +313,9 @@ static HRESULT WINAPI WMReader_Open(IWMReader *iface, const WCHAR *url,
+@@ -235,8 +320,9 @@ static HRESULT WINAPI WMReader_Open(IWMReader *iface, const WCHAR *url,
          return E_UNEXPECTED;
      }
  
@@ -249,7 +248,7 @@ index 9d8c2be45cb..033cda18dc4 100644
  
      LeaveCriticalSection(&reader->reader.cs);
      return hr;
-@@ -239,22 +324,21 @@ static HRESULT WINAPI WMReader_Open(IWMReader *iface, const WCHAR *url,
+@@ -245,22 +331,21 @@ static HRESULT WINAPI WMReader_Open(IWMReader *iface, const WCHAR *url,
  static HRESULT WINAPI WMReader_Close(IWMReader *iface)
  {
      struct async_reader *reader = impl_from_IWMReader(iface);
@@ -277,7 +276,7 @@ index 9d8c2be45cb..033cda18dc4 100644
      reader->callback = NULL;
  
      LeaveCriticalSection(&reader->reader.cs);
-@@ -315,7 +399,6 @@ static HRESULT WINAPI WMReader_Start(IWMReader *iface,
+@@ -321,7 +406,6 @@ static HRESULT WINAPI WMReader_Start(IWMReader *iface,
          QWORD start, QWORD duration, float rate, void *context)
  {
      struct async_reader *reader = impl_from_IWMReader(iface);
@@ -285,7 +284,7 @@ index 9d8c2be45cb..033cda18dc4 100644
  
      TRACE("reader %p, start %s, duration %s, rate %.8e, context %p.\n",
              reader, debugstr_time(start), debugstr_time(duration), rate, context);
-@@ -332,24 +415,14 @@ static HRESULT WINAPI WMReader_Start(IWMReader *iface,
+@@ -338,24 +422,14 @@ static HRESULT WINAPI WMReader_Start(IWMReader *iface,
          return NS_E_INVALID_REQUEST;
      }
  
@@ -314,7 +313,7 @@ index 9d8c2be45cb..033cda18dc4 100644
  
      return S_OK;
  }
-@@ -357,7 +430,6 @@ static HRESULT WINAPI WMReader_Start(IWMReader *iface,
+@@ -363,7 +437,6 @@ static HRESULT WINAPI WMReader_Start(IWMReader *iface,
  static HRESULT WINAPI WMReader_Stop(IWMReader *iface)
  {
      struct async_reader *reader = impl_from_IWMReader(iface);
@@ -322,7 +321,7 @@ index 9d8c2be45cb..033cda18dc4 100644
  
      TRACE("reader %p.\n", reader);
  
-@@ -370,9 +442,10 @@ static HRESULT WINAPI WMReader_Stop(IWMReader *iface)
+@@ -376,9 +449,10 @@ static HRESULT WINAPI WMReader_Stop(IWMReader *iface)
          return E_UNEXPECTED;
      }
  
@@ -336,7 +335,7 @@ index 9d8c2be45cb..033cda18dc4 100644
      LeaveCriticalSection(&reader->reader.cs);
      return S_OK;
  }
-@@ -732,8 +805,9 @@ static HRESULT WINAPI WMReaderAdvanced2_OpenStream(IWMReaderAdvanced6 *iface,
+@@ -738,8 +812,9 @@ static HRESULT WINAPI WMReaderAdvanced2_OpenStream(IWMReaderAdvanced6 *iface,
          return E_UNEXPECTED;
      }
  
@@ -348,7 +347,7 @@ index 9d8c2be45cb..033cda18dc4 100644
  
      LeaveCriticalSection(&reader->reader.cs);
      return hr;
-@@ -1588,11 +1662,13 @@ static void async_reader_destroy(struct wm_reader *iface)
+@@ -1594,11 +1669,13 @@ static void async_reader_destroy(struct wm_reader *iface)
  
      TRACE("reader %p.\n", reader);
  
@@ -368,7 +367,7 @@ index 9d8c2be45cb..033cda18dc4 100644
      reader->stream_cs.DebugInfo->Spare[0] = 0;
      DeleteCriticalSection(&reader->stream_cs);
 diff --git a/dlls/wmvcore/tests/wmvcore.c b/dlls/wmvcore/tests/wmvcore.c
-index 987f5def75a..510b9d0bb5a 100644
+index 11111111111..11111111111 100644
 --- a/dlls/wmvcore/tests/wmvcore.c
 +++ b/dlls/wmvcore/tests/wmvcore.c
 @@ -1496,7 +1496,6 @@ static HRESULT WINAPI callback_OnStatus(IWMReaderCallback *iface, WMT_STATUS sta
@@ -572,6 +571,4 @@ index 987f5def75a..510b9d0bb5a 100644
  
      hr = IWMReader_Close(reader);
      ok(hr == S_OK, "Got hr %#lx.\n", hr);
--- 
-GitLab
 

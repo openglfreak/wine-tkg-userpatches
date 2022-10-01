@@ -1,0 +1,41 @@
+From 1c2c89b95206e6fec4d85bae849467fecf72a386 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Wed, 7 Sep 2022 16:10:53 +0200
+Subject: [PATCH 2/5] ntdll: Make server_select a memory barrier.
+
+---
+ dlls/ntdll/unix/server.c | 3 +++
+ server/thread.c          | 2 +-
+ 2 files changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 51a83f472e1..362c7793cbc 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -602,6 +602,9 @@ unsigned int server_select( const select_op_t *select_op, data_size_t size, UINT
+     sigset_t old_set;
+     int signaled;
+ 
++    /* ensure writes so far are visible to other threads */
++    MemoryBarrier();
++
+     memset( &result, 0, sizeof(result) );
+ 
+     do
+diff --git a/server/thread.c b/server/thread.c
+index 1f052092b56..ca5c1c51502 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -2112,7 +2112,7 @@ DECL_HANDLER(flush_process_write_buffers)
+         struct thread_apc *apc;
+         int success;
+ 
+-        if (thread == current || thread->state == TERMINATED) continue;
++        if (thread == current || thread->state == TERMINATED || thread->wait) continue;
+ 
+         if (!(apc = create_apc( &current->obj, &call ))) break;
+ 
+-- 
+GitLab
+
+

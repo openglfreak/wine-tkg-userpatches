@@ -1,0 +1,99 @@
+From ceee6622d2ca31187c1d9d29dc1f591f7be8f734 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Wed, 7 Sep 2022 16:10:53 +0200
+Subject: [PATCH 4/5] ntdll: Add sys_membarrier-based fast path to
+ NtFlushProcessWriteBuffers.
+
+Uses the MEMBARRIER_CMD_PRIVATE_EXPEDITED membarrier command introduced in Linux 4.14.
+---
+ dlls/ntdll/unix/virtual.c | 49 ++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 48 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 0f473dc0476..67d78fc3185 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -39,6 +39,9 @@
+ #ifdef HAVE_SYS_SYSINFO_H
+ # include <sys/sysinfo.h>
+ #endif
++#ifdef HAVE_SYS_SYSCALL_H
++# include <sys/syscall.h>
++#endif
+ #ifdef HAVE_SYS_SYSCTL_H
+ # include <sys/sysctl.h>
+ #endif
+@@ -214,10 +217,16 @@ struct range_entry
+ static struct range_entry *free_ranges;
+ static struct range_entry *free_ranges_end;
+ 
+-#if defined(__linux__) && (defined(__i386__) || defined(__x86_64__))
++#ifdef __linux__
++#ifdef __NR_membarrier
++static BOOL membarrier_exp_available;
++static pthread_once_t membarrier_init_once = PTHREAD_ONCE_INIT;
++#endif
++#if defined(__i386__) || defined(__x86_64__)
+ static void *dontneed_page;
+ static pthread_mutex_t dontneed_page_mutex = PTHREAD_MUTEX_INITIALIZER;
+ #endif
++#endif
+ 
+ 
+ static inline BOOL is_beyond_limit( const void *addr, size_t size, const void *limit )
+@@ -5020,6 +5029,42 @@ NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T
+ }
+ 
+ 
++#if defined(__linux__) && defined(__NR_membarrier)
++#define MEMBARRIER_CMD_QUERY                        0x00
++#define MEMBARRIER_CMD_PRIVATE_EXPEDITED            0x08
++#define MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED   0x10
++
++
++static int membarrier( int cmd, unsigned int flags, int cpu_id )
++{
++    return syscall( __NR_membarrier, cmd, flags, cpu_id );
++}
++
++
++static void membarrier_init( void )
++{
++    static const int exp_required_cmds =
++        MEMBARRIER_CMD_PRIVATE_EXPEDITED | MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED;
++    int available_cmds = membarrier( MEMBARRIER_CMD_QUERY, 0, 0 );
++    if (available_cmds == -1)
++        return;
++    if ((available_cmds & exp_required_cmds) == exp_required_cmds)
++        membarrier_exp_available = !membarrier( MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED, 0, 0 );
++}
++
++
++static int try_exp_membarrier( void )
++{
++    pthread_once(&membarrier_init_once, membarrier_init);
++    if (!membarrier_exp_available)
++        return 0;
++    return !membarrier( MEMBARRIER_CMD_PRIVATE_EXPEDITED, 0, 0 );
++}
++#else
++static int try_exp_membarrier( void ) { return 0; }
++#endif
++
++
+ #if defined(__linux__) && (defined(__i386__) || defined(__x86_64__))
+ static int try_madvise( void )
+ {
+@@ -5088,6 +5133,8 @@ static void do_apc_memorybarrier( void )
+  */
+ void WINAPI NtFlushProcessWriteBuffers(void)
+ {
++    if (try_exp_membarrier())
++        return;
+     if (try_madvise())
+         return;
+     do_apc_memorybarrier();
+-- 
+GitLab
+
+

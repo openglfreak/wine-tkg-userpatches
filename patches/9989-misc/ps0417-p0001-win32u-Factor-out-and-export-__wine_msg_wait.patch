@@ -13,7 +13,7 @@ diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/message.c
 +++ b/dlls/win32u/message.c
-@@ -2045,9 +2045,9 @@ static inline LARGE_INTEGER *get_nt_timeout( LARGE_INTEGER *time, DWORD timeout
+@@ -2042,9 +2042,9 @@ static inline LARGE_INTEGER *get_nt_timeout( LARGE_INTEGER *time, DWORD timeout
  }
  
  /* wait for message or signaled handle */
@@ -25,7 +25,7 @@ index 11111111111..11111111111 100644
      DWORD ret, lock;
      void *ret_ptr;
      ULONG ret_len;
-@@ -2055,14 +2055,13 @@ static DWORD wait_message( DWORD count, const HANDLE *handles, DWORD timeout, DW
+@@ -2052,14 +2052,13 @@ static DWORD wait_message( DWORD count, const HANDLE *handles, DWORD timeout, DW
      if (enable_thunk_lock)
          lock = KeUserModeCallback( NtUserThunkLock, NULL, 0, &ret_ptr, &ret_len );
  
@@ -34,7 +34,7 @@ index 11111111111..11111111111 100644
 +    ret = user_driver->pMsgWaitForMultipleObjectsEx( count, handles, timeout, mask, flags );
      if (HIWORD(ret))  /* is it an error code? */
      {
-         SetLastError( RtlNtStatusToDosError(ret) );
+         RtlSetLastWin32Error( RtlNtStatusToDosError(ret) );
          ret = WAIT_FAILED;
      }
 -    if (ret == WAIT_TIMEOUT && !count && !timeout) NtYieldExecution();
@@ -42,7 +42,7 @@ index 11111111111..11111111111 100644
      if ((mask & QS_INPUT) == QS_INPUT) get_user_thread_info()->message_count = 0;
  
      if (enable_thunk_lock)
-@@ -2076,7 +2075,7 @@ static DWORD wait_message( DWORD count, const HANDLE *handles, DWORD timeout, DW
+@@ -2073,7 +2072,7 @@ static DWORD wait_message( DWORD count, const HANDLE *handles, DWORD timeout, DW
   *
   * Wait for multiple objects including the server queue, with specific queue masks.
   */
@@ -51,7 +51,7 @@ index 11111111111..11111111111 100644
                             DWORD wake_mask, DWORD changed_mask, DWORD flags )
  {
      struct user_thread_info *thread_info = get_user_thread_info();
-@@ -2119,10 +2118,10 @@ static HANDLE normalize_std_handle( HANDLE handle )
+@@ -2116,10 +2115,10 @@ static HANDLE normalize_std_handle( HANDLE handle )
  }
  
  /***********************************************************************
@@ -65,7 +65,7 @@ index 11111111111..11111111111 100644
  {
      HANDLE wait_handles[MAXIMUM_WAIT_OBJECTS];
      DWORD i;
-@@ -2141,6 +2140,17 @@ DWORD WINAPI NtUserMsgWaitForMultipleObjectsEx( DWORD count, const HANDLE *handl
+@@ -2138,6 +2137,17 @@ DWORD WINAPI NtUserMsgWaitForMultipleObjectsEx( DWORD count, const HANDLE *handl
                           (flags & MWMO_INPUTAVAILABLE) ? mask : 0, mask, flags );
  }
  
@@ -83,7 +83,7 @@ index 11111111111..11111111111 100644
  /***********************************************************************
   *           NtUserWaitForInputIdle (win32u.@)
   */
-@@ -2198,6 +2208,7 @@ DWORD WINAPI NtUserWaitForInputIdle( HANDLE process, DWORD timeout, BOOL wow )
+@@ -2195,6 +2205,7 @@ DWORD WINAPI NtUserWaitForInputIdle( HANDLE process, DWORD timeout, BOOL wow )
   */
  BOOL WINAPI NtUserPeekMessage( MSG *msg_out, HWND hwnd, UINT first, UINT last, UINT flags )
  {
@@ -91,7 +91,7 @@ index 11111111111..11111111111 100644
      struct user_thread_info *thread_info = get_user_thread_info();
      MSG msg;
      int ret;
-@@ -2214,7 +2225,7 @@ BOOL WINAPI NtUserPeekMessage( MSG *msg_out, HWND hwnd, UINT first, UINT last, U
+@@ -2211,7 +2222,7 @@ BOOL WINAPI NtUserPeekMessage( MSG *msg_out, HWND hwnd, UINT first, UINT last, U
          if (thread_info->last_driver_time == NtGetTickCount()) return FALSE;
          thread_info->last_driver_time = NtGetTickCount();
          flush_window_surfaces( TRUE );
@@ -100,7 +100,7 @@ index 11111111111..11111111111 100644
          /* if we received driver events, check again for a pending message */
          if (ret == WAIT_TIMEOUT || peek_message( &msg, hwnd, first, last, flags, 0, TRUE ) <= 0) return FALSE;
      }
-@@ -2260,7 +2271,7 @@ BOOL WINAPI NtUserGetMessage( MSG *msg, HWND hwnd, UINT first, UINT last )
+@@ -2257,7 +2268,7 @@ BOOL WINAPI NtUserGetMessage( MSG *msg, HWND hwnd, UINT first, UINT last )
  
      while (!(ret = peek_message( msg, hwnd, first, last, PM_REMOVE | (mask << 16), mask, TRUE )))
      {
@@ -109,7 +109,7 @@ index 11111111111..11111111111 100644
      }
      if (ret < 0) return -1;
  
-@@ -2390,7 +2401,7 @@ static void wait_message_reply( UINT flags )
+@@ -2387,7 +2398,7 @@ static void wait_message_reply( UINT flags )
              continue;
          }
  
@@ -122,7 +122,7 @@ diff --git a/include/winuser.h b/include/winuser.h
 index 11111111111..11111111111 100644
 --- a/include/winuser.h
 +++ b/include/winuser.h
-@@ -4787,6 +4787,8 @@ WORD        WINAPI SYSTEM_KillSystemTimer( WORD );
+@@ -4765,6 +4765,8 @@ WORD        WINAPI SYSTEM_KillSystemTimer( WORD );
  #ifdef __WINESRC__
  WINUSERAPI BOOL CDECL __wine_send_input( HWND hwnd, const INPUT *input, const RAWINPUT *rawinput );
  WINUSERAPI BOOL CDECL __wine_set_foreground_window( HWND hwnd, DWORD time );
@@ -132,5 +132,5 @@ index 11111111111..11111111111 100644
  /* Uxtheme hook functions and struct */
  
 -- 
-2.37.1
+2.37.2
 

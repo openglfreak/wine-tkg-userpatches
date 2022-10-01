@@ -1,0 +1,190 @@
+From daf5189ad5289bfef5cade0ab968486dda94fa65 Mon Sep 17 00:00:00 2001
+From: Daniel Lehman <dlehman25@gmail.com>
+Date: Mon, 18 Apr 2022 22:40:41 -0700
+Subject: [PATCH 3/4] ntdll: Partially implement NtCancelSynchronousIoFile.
+
+Signed-off-by: Daniel Lehman <dlehman25@gmail.com>
+---
+ dlls/ntdll/tests/pipe.c | 16 +---------------
+ dlls/ntdll/unix/file.c  | 18 ++++++++++++++++--
+ server/async.c          | 34 ++++++++++++++++++++++++++++++++++
+ server/protocol.def     |  5 +++++
+ 4 files changed, 56 insertions(+), 17 deletions(-)
+
+diff --git a/dlls/ntdll/tests/pipe.c b/dlls/ntdll/tests/pipe.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/tests/pipe.c
++++ b/dlls/ntdll/tests/pipe.c
+@@ -645,18 +645,14 @@ static void test_cancelsynchronousio(void)
+ 
+     /* bogus values */
+     res = pNtCancelSynchronousIoFile((HANDLE)0xdeadbeef, NULL, &iosb);
+-    todo_wine
+     ok(res == STATUS_INVALID_HANDLE, "NtCancelSynchronousIoFile returned %lx\n", res);
+     res = pNtCancelSynchronousIoFile(GetCurrentThread(), NULL, NULL);
+-    todo_wine
+     ok(res == STATUS_ACCESS_VIOLATION, "NtCancelSynchronousIoFile returned %lx\n", res);
+     res = pNtCancelSynchronousIoFile(GetCurrentThread(), NULL, (IO_STATUS_BLOCK*)0xdeadbeef);
+-    todo_wine
+     ok(res == STATUS_ACCESS_VIOLATION, "NtCancelSynchronousIoFile returned %lx\n", res);
+     memset(&iosb, 0x55, sizeof(iosb));
+     res = pNtCancelSynchronousIoFile(GetCurrentThread(), (HANDLE)0xdeadbeef, &iosb);
+-    todo_wine
+-    ok(res == STATUS_ACCESS_VIOLATION || broken(res == STATUS_NOT_FOUND), /* Win<10 */
++    ok(res == STATUS_ACCESS_VIOLATION || res == STATUS_NOT_FOUND, /* Wine & Win < 10 */
+         "NtCancelSynchronousIoFile returned %lx\n", res);
+ 
+     /* synchronous i/o */
+@@ -672,13 +668,9 @@ static void test_cancelsynchronousio(void)
+     ok(ret == WAIT_TIMEOUT, "WaitForSingleObject returned %lu (error %lu)\n", ret, GetLastError());
+     memset(&iosb, 0x55, sizeof(iosb));
+     res = pNtCancelSynchronousIoFile(thread, NULL, &iosb);
+-    todo_wine {
+     ok(res == STATUS_SUCCESS, "Failed to cancel I/O\n");
+     ok(U(iosb).Status == STATUS_SUCCESS, "iosb.Status got changed to %lx\n", U(iosb).Status);
+     ok(U(iosb).Information == 0, "iosb.Information got changed to %Iu\n", U(iosb).Information);
+-    }
+-    if (res == STATUS_NOT_IMPLEMENTED)
+-        pNtCancelIoFileEx(ctx.pipe, NULL, &iosb);
+     ret = WaitForSingleObject(thread, 1000);
+     ok(ret == WAIT_OBJECT_0, "wait returned %lx\n", ret);
+     CloseHandle(thread);
+@@ -698,7 +690,6 @@ static void test_cancelsynchronousio(void)
+     ok(ret == WAIT_TIMEOUT, "WaitForSingleObject returned %lu (error %lu)\n", ret, GetLastError());
+     memset(&iosb, 0x55, sizeof(iosb));
+     res = pNtCancelSynchronousIoFile(thread, &iosb, &iosb);
+-    todo_wine {
+     ok(res == STATUS_NOT_FOUND, "NtCancelSynchronousIoFile returned %lx\n", res);
+     res = pNtCancelSynchronousIoFile(NULL, &ctx.iosb, &iosb);
+     ok(res == STATUS_INVALID_HANDLE, "NtCancelSynchronousIoFile returned %lx\n", res);
+@@ -708,15 +699,12 @@ static void test_cancelsynchronousio(void)
+     ok(U(iosb).Status == STATUS_SUCCESS || broken(U(iosb).Status == STATUS_NOT_FOUND) /* 32-bit */,
+         "iosb.Status got changed to %lx\n", U(iosb).Status);
+     ok(U(iosb).Information == 0, "iosb.Information got changed to %Iu\n", U(iosb).Information);
+-    }
+     if (res == STATUS_NOT_FOUND)
+     {
+         res = pNtCancelSynchronousIoFile(thread, NULL, &iosb);
+         ok(res == STATUS_SUCCESS, "Failed to cancel I/O\n");
+         ok(U(iosb).Status == STATUS_SUCCESS, "iosb.Status got changed to %lx\n", U(iosb).Status);
+     }
+-    if (res == STATUS_NOT_IMPLEMENTED)
+-        pNtCancelIoFileEx(ctx.pipe, NULL, &iosb);
+     ret = WaitForSingleObject(thread, 1000);
+     ok(ret == WAIT_OBJECT_0, "wait returned %lx\n", ret);
+     CloseHandle(thread);
+@@ -735,7 +723,6 @@ static void test_cancelsynchronousio(void)
+     ok(res == STATUS_PENDING, "NtFsControlFile returned %lx\n", res);
+     memset(&iosb, 0x55, sizeof(iosb));
+     res = pNtCancelSynchronousIoFile(GetCurrentThread(), NULL, &iosb);
+-    todo_wine {
+     ok(res == STATUS_NOT_FOUND, "NtCancelSynchronousIoFile returned %lx\n", res);
+     ok(U(iosb).Status == STATUS_NOT_FOUND, "iosb.Status got changed to %lx\n", U(iosb).Status);
+     ok(U(iosb).Information == 0, "iosb.Information got changed to %Iu\n", U(iosb).Information);
+@@ -744,7 +731,6 @@ static void test_cancelsynchronousio(void)
+     ok(res == STATUS_NOT_FOUND, "NtCancelSynchronousIoFile returned %lx\n", res);
+     ok(U(iosb).Status == STATUS_NOT_FOUND, "iosb.Status got changed to %lx\n", U(iosb).Status);
+     ok(U(iosb).Information == 0, "iosb.Information got changed to %Iu\n", U(iosb).Information);
+-    }
+     ret = WaitForSingleObject(event, 0);
+     ok(ret == WAIT_TIMEOUT, "wait returned %lx\n", ret);
+     client = CreateFileW(testpipe, GENERIC_READ | GENERIC_WRITE, 0, 0, OPEN_EXISTING,
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -7498,8 +7498,22 @@ NTSTATUS WINAPI NtCancelIoFileEx( HANDLE handle, IO_STATUS_BLOCK *io, IO_STATUS_
+  */
+ NTSTATUS WINAPI NtCancelSynchronousIoFile( HANDLE handle, IO_STATUS_BLOCK *io, IO_STATUS_BLOCK *io_status )
+ {
+-    FIXME( "(%p,%p,%p) stub\n", handle, io, io_status );
+-    return STATUS_NOT_IMPLEMENTED;
++    NTSTATUS status;
++
++    TRACE( "(%p %p %p)\n", handle, io, io_status );
++    if (io) FIXME("Unimplemented yet parameter\n");
++
++    SERVER_START_REQ( cancel_sync )
++    {
++        req->handle = wine_server_obj_handle( handle );
++        req->iosb   = wine_server_client_ptr( io );
++        status = wine_server_call( req );
++    }
++    SERVER_END_REQ;
++
++    io_status->u.Status = status;
++    io_status->Information = 0;
++    return status;
+ }
+ 
+ /******************************************************************
+diff --git a/server/async.c b/server/async.c
+index 11111111111..11111111111 100644
+--- a/server/async.c
++++ b/server/async.c
+@@ -591,6 +591,27 @@ restart:
+     return woken;
+ }
+ 
++static int cancel_blocking( struct process *process, struct thread *thread, client_ptr_t iosb )
++{
++    struct async *async;
++    int woken = 0;
++
++restart:
++    LIST_FOR_EACH_ENTRY( async, &process->asyncs, struct async, process_entry )
++    {
++        if (async->terminated || async->canceled) continue;
++        if (async->blocking && async->thread == thread &&
++            (!iosb || async->data.iosb == iosb))
++        {
++            async->canceled = 1;
++            fd_cancel_async( async->fd, async );
++            woken++;
++            goto restart;
++        }
++    }
++    return woken;
++}
++
+ void cancel_process_asyncs( struct process *process )
+ {
+     cancel_async( process, NULL, NULL, 0 );
+@@ -737,6 +758,19 @@ struct async *find_pending_async( struct async_queue *queue )
+     return NULL;
+ }
+ 
++/* cancels sync I/O on a thread */
++DECL_HANDLER(cancel_sync)
++{
++    struct thread *thread = get_thread_from_handle( req->handle, THREAD_TERMINATE );
++
++    if (thread)
++    {
++        if (!cancel_blocking( current->process, thread, req->iosb ))
++            set_error( STATUS_NOT_FOUND );
++        release_object( thread );
++    }
++}
++
+ /* cancels all async I/O */
+ DECL_HANDLER(cancel_async)
+ {
+diff --git a/server/protocol.def b/server/protocol.def
+index 11111111111..11111111111 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -2231,6 +2231,11 @@ enum message_type
+ #define SERIALINFO_PENDING_WRITE 0x04
+ #define SERIALINFO_PENDING_WAIT  0x08
+ 
++/* Cancel all sync io on a thread */
++@REQ(cancel_sync)
++    obj_handle_t handle;        /* thread handle on which to cancel io */
++    client_ptr_t iosb;          /* I/O status block (NULL=all) */
++@END
+ 
+ /* Create an async I/O */
+ @REQ(register_async)
+
+

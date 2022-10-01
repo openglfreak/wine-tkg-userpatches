@@ -26,8 +26,8 @@ diff --git a/dlls/win32u/gdiobj.c b/dlls/win32u/gdiobj.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/gdiobj.c
 +++ b/dlls/win32u/gdiobj.c
-@@ -1225,6 +1225,7 @@ static struct unix_funcs unix_funcs =
-     __wine_get_vulkan_driver,
+@@ -1151,6 +1151,7 @@ static struct unix_funcs unix_funcs =
+     __wine_get_icm_profile,
      __wine_get_wgl_driver,
      __wine_send_input,
 +    __wine_set_foreground_window,
@@ -38,7 +38,7 @@ diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/input.c
 +++ b/dlls/win32u/input.c
-@@ -1498,6 +1498,22 @@ BOOL WINAPI release_capture(void)
+@@ -1486,6 +1486,22 @@ BOOL WINAPI release_capture(void)
      return ret;
  }
  
@@ -79,8 +79,8 @@ diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/win32u_private.h
 +++ b/dlls/win32u/win32u_private.h
-@@ -303,6 +303,7 @@ struct unix_funcs
-     const struct vulkan_funcs * (CDECL *get_vulkan_driver)( UINT version );
+@@ -209,6 +209,7 @@ struct unix_funcs
+     BOOL (CDECL *get_icm_profile)( HDC hdc, BOOL allow_default, DWORD *size, WCHAR *filename );
      struct opengl_funcs * (CDECL *get_wgl_driver)( HDC hdc, UINT version );
      BOOL (CDECL *wine_send_input)( HWND hwnd, const INPUT *input, const RAWINPUT *rawinput );
 +    BOOL (CDECL *set_foreground_window)( HWND hwnd, DWORD time );
@@ -91,14 +91,14 @@ diff --git a/dlls/win32u/wrappers.c b/dlls/win32u/wrappers.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/wrappers.c
 +++ b/dlls/win32u/wrappers.c
-@@ -1245,6 +1245,12 @@ BOOL CDECL __wine_get_icm_profile( HDC hdc, BOOL allow_default, DWORD *size, WCH
+@@ -786,6 +786,12 @@ BOOL CDECL __wine_get_icm_profile( HDC hdc, BOOL allow_default, DWORD *size, WCH
      return unix_funcs->get_icm_profile( hdc, allow_default, size, filename );
  }
  
 +BOOL CDECL __wine_set_foreground_window( HWND hwnd, DWORD time )
 +{
 +    if (!unix_funcs) return FALSE;
-+    unix_funcs->set_foreground_window( hwnd, time );
++    return unix_funcs->set_foreground_window( hwnd, time );
 +}
 +
  BOOL CDECL __wine_get_brush_bitmap_info( HBRUSH handle, BITMAPINFO *info, void *bits, UINT *usage )
@@ -108,7 +108,7 @@ diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -701,11 +701,11 @@ static HWND find_activatable_window( HWND hwnd, Time time, BOOL check )
+@@ -699,11 +699,11 @@ static HWND find_activatable_window( HWND hwnd, Time time, BOOL check )
      return hwnd;
  }
  
@@ -122,7 +122,7 @@ index 11111111111..11111111111 100644
      thread_data->activating_hwnd = 0;
  }
  
-@@ -736,7 +736,7 @@ static void set_focus( XEvent *xev, HWND hwnd, Time time, BOOL check )
+@@ -734,7 +734,7 @@ static void set_focus( XEvent *xev, HWND hwnd, Time time, BOOL check )
  
      if (!(focus = find_activatable_window( focus, time, check ))) return;
      TRACE( "setting foreground window to %p\n", focus );
@@ -131,7 +131,7 @@ index 11111111111..11111111111 100644
  
      /* Some applications expect that a being deactivated topmost window
       * receives the WM_WINDOWPOSCHANGING/WM_WINDOWPOSCHANGED messages,
-@@ -978,7 +978,7 @@ static void focus_out( Display *display , HWND hwnd, Time time )
+@@ -976,7 +976,7 @@ static void focus_out( Display *display , HWND hwnd, Time time )
          if (hwnd == NtUserGetForegroundWindow())
          {
              TRACE( "lost focus, setting fg to desktop\n" );
@@ -140,7 +140,7 @@ index 11111111111..11111111111 100644
          }
      }
   }
-@@ -1447,7 +1447,7 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event, BOOL updat
+@@ -1445,7 +1445,7 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event, BOOL updat
                  TRACE( "restoring win %p/%lx\n", data->hwnd, data->whole_window );
                  release_win_data( data );
                  if ((style & (WS_MINIMIZE | WS_VISIBLE)) == (WS_MINIMIZE | WS_VISIBLE))
@@ -149,7 +149,7 @@ index 11111111111..11111111111 100644
                  send_message( hwnd, WM_SYSCOMMAND, SC_RESTORE, 0 );
                  return;
              }
-@@ -1478,8 +1478,7 @@ static BOOL X11DRV_PropertyNotify( HWND hwnd, XEvent *xev )
+@@ -1476,8 +1476,7 @@ static BOOL X11DRV_PropertyNotify( HWND hwnd, XEvent *xev )
  {
      XPropertyEvent *event = &xev->xproperty;
      HWND active_window;
@@ -159,7 +159,7 @@ index 11111111111..11111111111 100644
  
      if (event->atom == x11drv_atom(_NET_ACTIVE_WINDOW))
      {
-@@ -1489,12 +1488,12 @@ static BOOL X11DRV_PropertyNotify( HWND hwnd, XEvent *xev )
+@@ -1487,12 +1486,12 @@ static BOOL X11DRV_PropertyNotify( HWND hwnd, XEvent *xev )
  
          if (!(active_window = get_foreground_window( event->display, NULL )))
          {
@@ -178,7 +178,7 @@ diff --git a/include/winuser.h b/include/winuser.h
 index 11111111111..11111111111 100644
 --- a/include/winuser.h
 +++ b/include/winuser.h
-@@ -4786,6 +4786,7 @@ WORD        WINAPI SYSTEM_KillSystemTimer( WORD );
+@@ -4764,6 +4764,7 @@ WORD        WINAPI SYSTEM_KillSystemTimer( WORD );
  
  #ifdef __WINESRC__
  WINUSERAPI BOOL CDECL __wine_send_input( HWND hwnd, const INPUT *input, const RAWINPUT *rawinput );
@@ -187,5 +187,5 @@ index 11111111111..11111111111 100644
  /* Uxtheme hook functions and struct */
  
 -- 
-2.37.1
+2.37.2
 

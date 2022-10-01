@@ -121,17 +121,18 @@ index 11111111111..11111111111 100644
  /***********************************************************************
   *           get_full_path
   *
-@@ -4794,8 +4840,8 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
-         {
+@@ -4794,9 +4840,9 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
              FILE_RENAME_INFORMATION *info = ptr;
+             REPARSE_DATA_BUFFER *buffer = NULL;
              UNICODE_STRING name_str, redir;
 +            char *unix_name, *file_case;
              OBJECT_ATTRIBUTES attr;
+             ULONG buffer_len = 0;
 -            char *unix_name;
  
              name_str.Buffer = info->FileName;
              name_str.Length = info->FileNameLength;
-@@ -4806,20 +4852,24 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
+@@ -4806,24 +4852,28 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
              status = nt_to_unix_file_name( &attr, &unix_name, FILE_OPEN_IF );
              if (status == STATUS_SUCCESS || status == STATUS_NO_SUCH_FILE)
              {
@@ -151,11 +152,15 @@ index 11111111111..11111111111 100644
                  }
                  SERVER_END_REQ;
  
+                 /* rebuild reparse point in new location (if applicable) */
+                 if (buffer && status == STATUS_SUCCESS)
+                     status = create_reparse_point( handle, buffer );
+ 
                  free( unix_name );
 +                free( file_case );
              }
              free( redir.Buffer );
-         }
+             free( buffer );
 @@ -4831,8 +4881,8 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
          {
              FILE_LINK_INFORMATION *info = ptr;
@@ -360,7 +365,7 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -3678,9 +3678,11 @@ struct handle_info
+@@ -3679,9 +3679,11 @@ struct handle_info
      obj_handle_t handle;          /* handle to a file or directory */
      obj_handle_t rootdir;         /* root directory */
      data_size_t  namelen;         /* length of NT name in bytes */
@@ -374,5 +379,5 @@ index 11111111111..11111111111 100644
  
 
 -- 
-2.37.1
+2.37.2
 

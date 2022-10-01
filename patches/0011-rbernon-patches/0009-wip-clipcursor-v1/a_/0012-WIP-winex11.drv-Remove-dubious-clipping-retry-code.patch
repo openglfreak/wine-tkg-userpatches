@@ -1,0 +1,105 @@
+From 33d4181ac67730e6dda6d7b8227b4ea50e886549 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 22 Jan 2021 11:46:44 +0100
+Subject: [PATCH 12/13] WIP: winex11.drv: Remove dubious clipping retry code.
+
+---
+ dlls/winex11.drv/event.c  | 10 ++--------
+ dlls/winex11.drv/mouse.c  | 25 -------------------------
+ dlls/winex11.drv/x11drv.h |  1 -
+ 3 files changed, 2 insertions(+), 34 deletions(-)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -869,7 +869,7 @@ BOOL x11drv_handle_focus_in_event( HWND hwnd, XEvent *xev, Time time )
+         break;
+     case NotifyUngrab:
+         keyboard_grabbed = FALSE;
+-        retry_grab_clipping_window();
++        send_notify_message( NtUserGetDesktopWindow(), WM_X11DRV_DESKTOP_CLIP_CURSOR, FALSE, FALSE );
+         return TRUE; /* ignore wm specific NotifyUngrab / NotifyGrab events w.r.t focus */
+     }
+ 
+@@ -961,13 +961,7 @@ BOOL x11drv_handle_focus_out_event( HWND hwnd, XEvent *xev, Time time )
+         break;
+     case NotifyGrab:
+         keyboard_grabbed = TRUE;
+-
+-        /* This will do nothing due to keyboard_grabbed == TRUE, but it
+-         * will save the current clipping rect so we can restore it on
+-         * FocusIn with NotifyUngrab mode.
+-         */
+-        retry_grab_clipping_window();
+-
++        send_notify_message( NtUserGetDesktopWindow(), WM_X11DRV_DESKTOP_CLIP_CURSOR, FALSE, TRUE );
+         return TRUE; /* ignore wm specific NotifyUngrab / NotifyGrab events w.r.t focus */
+     }
+ 
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -126,9 +126,6 @@ static const UINT button_up_data[NB_BUTTONS] =
+ 
+ XContext cursor_context = 0;
+ 
+-static RECT last_clip_rect;
+-static HWND last_clip_foreground_window;
+-static BOOL last_clip_refused;
+ static RECT clip_rect;
+ static Cursor create_cursor( HANDLE handle );
+ 
+@@ -449,15 +446,8 @@ static BOOL grab_clipping_window( const RECT *clip )
+     if (keyboard_grabbed)
+     {
+         WARN( "refusing to clip to %s\n", wine_dbgstr_rect(clip) );
+-        last_clip_refused = TRUE;
+-        last_clip_foreground_window = NtUserGetForegroundWindow();
+-        last_clip_rect = *clip;
+         return FALSE;
+     }
+-    else
+-    {
+-        last_clip_refused = FALSE;
+-    }
+ 
+     /* enable XInput2 unless we are already clipping */
+     if (!clipping_cursor) X11DRV_XInput2_Enable( data->display, None, PointerMotionMask );
+@@ -531,20 +521,6 @@ void reset_clipping_window(void)
+     NtUserClipCursor( NULL );  /* make sure the clip rectangle is reset too */
+ }
+ 
+-/***********************************************************************
+- *      retry_grab_clipping_window
+- *
+- * Restore the current clip rectangle or retry the last one if it has
+- * been refused because of an active keyboard grab.
+- */
+-void retry_grab_clipping_window(void)
+-{
+-    if (clipping_cursor)
+-        NtUserClipCursor( &clip_rect );
+-    else if (last_clip_refused && NtUserGetForegroundWindow() == last_clip_foreground_window)
+-        NtUserClipCursor( &last_clip_rect );
+-}
+-
+ /***********************************************************************
+  *             clip_cursor_notify
+  *
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -701,7 +701,6 @@ extern void set_window_cursor( Window window, HCURSOR handle ) DECLSPEC_HIDDEN;
+ extern void x11drv_desktop_clip_cursor( BOOL fullscreen, BOOL reset ) DECLSPEC_HIDDEN;
+ extern void ungrab_clipping_window(void) DECLSPEC_HIDDEN;
+ extern void reset_clipping_window(void) DECLSPEC_HIDDEN;
+-extern void retry_grab_clipping_window(void) DECLSPEC_HIDDEN;
+ extern void move_resize_window( HWND hwnd, int dir ) DECLSPEC_HIDDEN;
+ extern void X11DRV_InitKeyboard( Display *display ) DECLSPEC_HIDDEN;
+ extern void X11DRV_InitMouse( Display *display ) DECLSPEC_HIDDEN;
+-- 
+2.37.2
+

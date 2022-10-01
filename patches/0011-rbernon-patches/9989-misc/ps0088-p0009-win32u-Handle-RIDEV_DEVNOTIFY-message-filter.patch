@@ -6,16 +6,16 @@ Subject: [PATCH 9/9] win32u: Handle RIDEV_DEVNOTIFY message filter on the
 
 ---
  dlls/win32u/message.c        |  3 ++-
- dlls/win32u/rawinput.c       | 31 +++++++++++++++++++++++++------
+ dlls/win32u/rawinput.c       | 14 +++++++++++++-
  dlls/win32u/win32u_private.h |  2 +-
  server/queue.c               |  2 --
- 4 files changed, 28 insertions(+), 10 deletions(-)
+ 4 files changed, 16 insertions(+), 5 deletions(-)
 
 diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/message.c
 +++ b/dlls/win32u/message.c
-@@ -2504,6 +2504,7 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
+@@ -2501,6 +2501,7 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
      int prev_x, prev_y, new_x, new_y;
      USAGE hid_usage_page, hid_usage;
      NTSTATUS ret;
@@ -23,7 +23,7 @@ index 11111111111..11111111111 100644
      BOOL wait;
  
      info.type     = MSG_HARDWARE;
-@@ -2521,7 +2522,7 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
+@@ -2518,7 +2519,7 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
              hid_usage = ((USAGE *)rawinput->data.hid.bRawData)[1];
          }
          if (input->hi.uMsg == WM_INPUT &&
@@ -36,7 +36,7 @@ diff --git a/dlls/win32u/rawinput.c b/dlls/win32u/rawinput.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/rawinput.c
 +++ b/dlls/win32u/rawinput.c
-@@ -493,18 +493,37 @@ static struct device *find_device_from_handle( HANDLE handle )
+@@ -454,7 +454,7 @@ static struct device *find_device_from_handle( HANDLE handle )
      return NULL;
  }
  
@@ -44,47 +44,33 @@ index 11111111111..11111111111 100644
 +BOOL rawinput_device_get_usages( HANDLE handle, USAGE *usage_page, USAGE *usage, DWORD *flags )
  {
      struct device *device;
-+    BOOL ret = TRUE;
-+    unsigned int i;
  
-     *usage_page = *usage = 0;
- 
--    if (!(device = find_device_from_handle( handle ))) return FALSE;
--    if (device->info.dwType != RIM_TYPEHID) return FALSE;
-+    pthread_mutex_lock( &rawinput_devices_mutex );
- 
--    *usage_page = device->info.hid.usUsagePage;
--    *usage = device->info.hid.usUsage;
--    return TRUE;
-+    if (!(device = find_device_from_handle(handle))) ret = FALSE;
-+    else if (device->info.dwType != RIM_TYPEHID) ret = FALSE;
-+    else
-+    {
-+        *usage_page = device->info.hid.usUsagePage;
-+        *usage = device->info.hid.usUsage;
+@@ -464,8 +464,20 @@ BOOL rawinput_device_get_usages( HANDLE handle, USAGE *usage_page, USAGE *usage
+         *usage_page = *usage = 0;
+     else
+     {
++        unsigned int i;
 +
-+        for (i = 0; i < registered_count; i++)
+         *usage_page = device->info.hid.usUsagePage;
+         *usage = device->info.hid.usUsage;
++
++        for (i = 0; i < registered_device_count; i++)
 +        {
-+            if (registered_array[i].usage_page == *usage_page &&
-+                registered_array[i].usage == *usage)
++            if (registered_devices[i].usUsagePage == *usage_page &&
++                registered_devices[i].usUsage == *usage)
 +            {
-+                *flags = registered_array[i].flags;
++                *flags = registered_devices[i].dwFlags;
 +                break;
 +            }
 +        }
-+    }
-+
-+    pthread_mutex_unlock( &rawinput_devices_mutex );
-+
-+    return ret;
- }
+     }
  
- /**********************************************************************
+     pthread_mutex_unlock( &rawinput_mutex );
 diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/win32u_private.h
 +++ b/dlls/win32u/win32u_private.h
-@@ -406,7 +406,7 @@ extern LRESULT send_message_timeout( HWND hwnd, UINT msg, WPARAM wparam, LPARAM
+@@ -312,7 +312,7 @@ extern LRESULT send_message_timeout( HWND hwnd, UINT msg, WPARAM wparam, LPARAM
  
  /* rawinput.c */
  extern BOOL process_rawinput_message( MSG *msg, UINT hw_id, const struct hardware_msg_data *msg_data ) DECLSPEC_HIDDEN;
@@ -97,8 +83,8 @@ diff --git a/server/queue.c b/server/queue.c
 index 11111111111..11111111111 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -1983,8 +1983,6 @@ static int queue_rawinput_message( struct process* process, void *arg )
-         device = &entry->device;
+@@ -1962,8 +1962,6 @@ static int queue_rawinput_message( struct process* process, void *arg )
+         device = find_rawinput_device( process, raw_msg->data.rawinput.hid.usage_page, raw_msg->data.rawinput.hid.usage );
      if (!device) return 0;
  
 -    if (raw_msg->message == WM_INPUT_DEVICE_CHANGE && !(device->flags & RIDEV_DEVNOTIFY)) return 0;
@@ -107,5 +93,5 @@ index 11111111111..11111111111 100644
      else if (!(desktop = get_desktop_obj( process, process->desktop, 0 ))) goto done;
  
 -- 
-2.37.1
+2.37.2
 

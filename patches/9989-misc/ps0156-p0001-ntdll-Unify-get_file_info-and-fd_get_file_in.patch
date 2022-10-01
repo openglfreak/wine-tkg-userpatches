@@ -37,7 +37,7 @@ diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/file.c
 +++ b/dlls/ntdll/unix/file.c
-@@ -1610,39 +1610,25 @@ static inline ULONG get_file_attributes( const struct stat *st )
+@@ -1610,39 +1610,24 @@ static inline ULONG get_file_attributes( const struct stat *st )
  }
  
  
@@ -71,7 +71,8 @@ index 11111111111..11111111111 100644
 -        *attr |= FILE_ATTRIBUTE_REPARSE_POINT;
 -        /* symbolic links always report size 0 */
 -        st->st_size = 0;
--        if (get_symlink_properties( fd, "", NULL, NULL, NULL, NULL, &is_dir ) == STATUS_SUCCESS)
+-        /* whether a reparse point is a file or a directory is stored inside the link target */
+-        if (is_reparse_dir( fd, "", &is_dir ) == 0)
 -            st->st_mode = (st->st_mode & ~S_IFMT) | (is_dir ? S_IFDIR : S_IFREG);
 +    if (fd == AT_FDCWD)
 +    {
@@ -80,7 +81,6 @@ index 11111111111..11111111111 100644
 +        strcat( parent_path, "/.." );
      }
 -    *attr |= get_file_attributes( st );
- 
 -    return ret;
 +    ret = fstatat( fd, parent_path ? parent_path : "..", &parent, 0 );
 +    if (parent_path) free( parent_path );
@@ -234,9 +234,9 @@ index 11111111111..11111111111 100644
          {
              FILE_ATTRIBUTE_TAG_INFORMATION *info = ptr;
 @@ -4626,7 +4604,7 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
-             info->ReparseTag = 0;
-             if (attr & FILE_ATTRIBUTE_REPARSE_POINT)
-                 get_symlink_properties( fd, "", NULL, NULL, &info->ReparseTag, NULL, NULL );
+                     free( buffer );
+                 }
+             }
 -            if ((options & FILE_OPEN_REPARSE_POINT) && fd_is_mount_point( fd, &st ))
 +            if ((options & FILE_OPEN_REPARSE_POINT) && is_mount_point( fd, "", &st ))
                  info->ReparseTag = IO_REPARSE_TAG_MOUNT_POINT;
@@ -244,5 +244,5 @@ index 11111111111..11111111111 100644
          break;
 
 -- 
-2.37.1
+2.37.2
 

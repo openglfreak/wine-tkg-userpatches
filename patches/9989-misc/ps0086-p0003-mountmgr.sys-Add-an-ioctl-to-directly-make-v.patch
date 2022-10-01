@@ -35,8 +35,8 @@ index 11111111111..11111111111 100644
  
 -static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
 +static NTSTATUS WINAPI fill_volume_info( FS_INFORMATION_CLASS info_class, enum fs_type fs_type,
-+                                         DWORD serial, WCHAR *label, void *buff, ULONG length,
-+                                         ULONG_PTR *size )
++                                         DWORD serial, WCHAR *label, char *unix_mount, void *buff,
++                                         ULONG length, ULONG_PTR *size )
  {
 -    IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
 -    int info_class = irpsp->Parameters.QueryVolume.FsInformationClass;
@@ -66,7 +66,7 @@ index 11111111111..11111111111 100644
  
          if (length < sizeof(FILE_FS_VOLUME_INFORMATION))
          {
-@@ -1676,20 +1662,20 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
+@@ -1676,44 +1662,44 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
          }
  
          info->VolumeCreationTime.QuadPart = 0; /* FIXME */
@@ -85,6 +85,33 @@ index 11111111111..11111111111 100644
          status = STATUS_SUCCESS;
          break;
      }
+     case FileFsSizeInformation:
+     {
+-        FILE_FS_SIZE_INFORMATION *info = irp->AssociatedIrp.SystemBuffer;
++        FILE_FS_SIZE_INFORMATION *info = buff;
+         struct size_info size_info = { 0, 0, 0, 0, 0 };
+-        struct get_volume_size_info_params params = { dev->unix_mount, &size_info };
++        struct get_volume_size_info_params params = { unix_mount, &size_info };
+ 
+         if (length < sizeof(FILE_FS_SIZE_INFORMATION))
+         {
+             status = STATUS_BUFFER_TOO_SMALL;
+             break;
+         }
+ 
+         if ((status = MOUNTMGR_CALL( get_volume_size_info, &params )) == STATUS_SUCCESS)
+         {
+             info->TotalAllocationUnits.QuadPart = size_info.total_allocation_units;
+             info->AvailableAllocationUnits.QuadPart = size_info.caller_available_allocation_units;
+             info->SectorsPerAllocationUnit = size_info.sectors_per_allocation_unit;
+             info->BytesPerSector = size_info.bytes_per_sector;
+-            io->Information = sizeof(*info);
++            *size = sizeof(*info);
+             status = STATUS_SUCCESS;
+         }
+ 
+         break;
+     }
      case FileFsAttributeInformation:
      {
 -        FILE_FS_ATTRIBUTE_INFORMATION *info = irp->AssociatedIrp.SystemBuffer;
@@ -94,7 +121,7 @@ index 11111111111..11111111111 100644
          const WCHAR *fsname;
  
          if (length < sizeof(FILE_FS_ATTRIBUTE_INFORMATION))
-@@ -1729,17 +1715,64 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
+@@ -1729,43 +1715,91 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
          }
          info->FileSystemNameLength = min( wcslen(fsname) * sizeof(WCHAR), length - offsetof( FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName ) );
          memcpy(info->FileSystemName, fsname, info->FileSystemNameLength);
@@ -103,6 +130,35 @@ index 11111111111..11111111111 100644
          status = STATUS_SUCCESS;
          break;
      }
+     case FileFsFullSizeInformation:
+     {
+-        FILE_FS_FULL_SIZE_INFORMATION *info = irp->AssociatedIrp.SystemBuffer;
++        FILE_FS_FULL_SIZE_INFORMATION *info = buff;
+         struct size_info size_info = { 0, 0, 0, 0, 0 };
+-        struct get_volume_size_info_params params = { dev->unix_mount, &size_info };
++        struct get_volume_size_info_params params = { unix_mount, &size_info };
+ 
+         if (length < sizeof(FILE_FS_FULL_SIZE_INFORMATION))
+         {
+             status = STATUS_BUFFER_TOO_SMALL;
+             break;
+         }
+ 
+         if ((status = MOUNTMGR_CALL( get_volume_size_info, &params )) == STATUS_SUCCESS)
+         {
+             info->TotalAllocationUnits.QuadPart = size_info.total_allocation_units;
+             info->CallerAvailableAllocationUnits.QuadPart = size_info.caller_available_allocation_units;
+             info->ActualAvailableAllocationUnits.QuadPart = size_info.actual_available_allocation_units;
+             info->SectorsPerAllocationUnit = size_info.sectors_per_allocation_unit;
+             info->BytesPerSector = size_info.bytes_per_sector;
+-            io->Information = sizeof(*info);
++            *size = sizeof(*info);
+             status = STATUS_SUCCESS;
+         }
+ 
+         break;
+     }
+ 
      default:
 -        FIXME("Unsupported volume query %x\n", irpsp->Parameters.QueryVolume.FsInformationClass);
 +        FIXME("Unsupported volume query %x\n", info_class);
@@ -130,8 +186,9 @@ index 11111111111..11111111111 100644
 +        volume = find_volume_by_unixdev( input->unix_dev );
 +    if (volume)
 +    {
++        char *unix_mount = volume->device ? volume->device->unix_mount : NULL;
 +        status = fill_volume_info( info_class, volume->fs_type, volume->serial, volume->label,
-+                                   buff, outsize, &iosb->Information );
++                                   unix_mount, buff, outsize, &iosb->Information );
 +        release_volume( volume );
 +    }
 +    LeaveCriticalSection( &device_section );
@@ -156,7 +213,7 @@ index 11111111111..11111111111 100644
 +    volume = dev->volume;
 +    if (volume)
 +        status = fill_volume_info( info_class, volume->fs_type, volume->serial, volume->label,
-+                                   buff, length, &io->Information );
++                                   dev->unix_mount, buff, length, &io->Information );
  
 -done:
      io->u.Status = status;
@@ -233,5 +290,5 @@ index 11111111111..11111111111 100644
  #define IOCTL_MOUNTMGR_DELETE_CREDENTIAL     CTL_CODE(MOUNTMGRCONTROLTYPE, 50, METHOD_BUFFERED, FILE_WRITE_ACCESS)
 
 -- 
-2.37.1
+2.37.2
 

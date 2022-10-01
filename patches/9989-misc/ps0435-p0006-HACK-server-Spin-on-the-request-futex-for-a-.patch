@@ -1,0 +1,37 @@
+From b7a8b42e4aa284288672c04ade38e5c50f918b52 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Mon, 15 Aug 2022 21:04:27 +0200
+Subject: [PATCH 6/6] HACK: server: Spin on the request futex for a little bit
+ after completing a request.
+
+---
+ server/thread.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/server/thread.c b/server/thread.c
+index 11111111111..11111111111 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -443,6 +443,7 @@ static void *request_shm_thread(void *param)
+     for (;;)
+     {
+         int val;
++        int spincount = 4000;
+ 
+         while ((val = request_shm->futex) != 1)
+         {
+@@ -450,7 +451,10 @@ static void *request_shm_thread(void *param)
+                 goto done;
+             else if (val != 0)
+                 fatal_protocol_error( thread, "unknown futex state %d\n", val );
+-            syscall( __NR_futex, &request_shm->futex, FUTEX_WAIT, val, NULL, NULL, 0 );
++            if (spincount == 0)
++                syscall( __NR_futex, &request_shm->futex, FUTEX_WAIT, val, NULL, NULL, 0 );
++            else
++                --spincount;
+         }
+ 
+         pthread_mutex_lock( &global_lock );
+-- 
+2.37.2
+

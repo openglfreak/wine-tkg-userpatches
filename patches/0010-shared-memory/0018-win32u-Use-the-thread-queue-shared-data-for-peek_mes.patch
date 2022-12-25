@@ -19,13 +19,13 @@ diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/message.c
 +++ b/dlls/win32u/message.c
-@@ -1652,12 +1652,14 @@ static BOOL process_hardware_message( MSG *msg, UINT hw_id, const struct hardwar
+@@ -1788,12 +1788,14 @@ static BOOL process_hardware_message( MSG *msg, UINT hw_id, const struct hardwar
  static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags, UINT changed_mask )
  {
      LRESULT result;
 +    volatile struct queue_shared_memory *shared = get_queue_shared_memory();
      struct user_thread_info *thread_info = get_user_thread_info();
-     INPUT_MESSAGE_SOURCE prev_source = thread_info->msg_source;
+     INPUT_MESSAGE_SOURCE prev_source = thread_info->client_info.msg_source;
      struct received_message_info info;
      unsigned int hw_id = 0;  /* id of previous hardware message */
      void *buffer;
@@ -34,7 +34,7 @@ index 11111111111..11111111111 100644
  
      if (!(buffer = malloc( buffer_size ))) return -1;
  
-@@ -1670,10 +1672,39 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -1806,10 +1808,39 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
          size_t size = 0;
          const message_data_t *msg_data = buffer;
          BOOL needs_unpack = FALSE;
@@ -48,7 +48,7 @@ index 11111111111..11111111111 100644
 +        if (filter & QS_INPUT) clear_bits |= QS_INPUT;
 +        if (filter & QS_PAINT) clear_bits |= QS_PAINT;
  
-         thread_info->msg_source = prev_source;
+         thread_info->client_info.msg_source = prev_source;
  
 -        SERVER_START_REQ( get_message )
 +        if (!shared) skip = FALSE;
@@ -79,7 +79,7 @@ diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/ntuser_private.h
 +++ b/dlls/win32u/ntuser_private.h
-@@ -157,6 +157,8 @@ struct user_thread_info
+@@ -136,6 +136,8 @@ struct user_thread_info
      UINT                          spy_indent;             /* Current spy indent */
      HANDLE                        desktop_shared_map;     /* HANDLE to server's desktop shared memory */
      struct desktop_shared_memory *desktop_shared_memory;  /* Ptr to server's desktop shared memory */
@@ -88,7 +88,7 @@ index 11111111111..11111111111 100644
  };
  
  C_ASSERT( sizeof(struct user_thread_info) <= sizeof(((TEB *)0)->Win32ClientInfo) );
-@@ -327,4 +329,24 @@ WND *get_win_ptr( HWND hwnd ) DECLSPEC_HIDDEN;
+@@ -258,4 +260,24 @@ WND *get_win_ptr( HWND hwnd ) DECLSPEC_HIDDEN;
  BOOL is_child( HWND parent, HWND child );
  BOOL is_window( HWND hwnd ) DECLSPEC_HIDDEN;
  
@@ -117,7 +117,7 @@ diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/sysparams.c
 +++ b/dlls/win32u/sysparams.c
-@@ -4667,6 +4667,13 @@ static void thread_detach(void)
+@@ -5417,6 +5417,13 @@ static void thread_detach(void)
          thread_info->desktop_shared_memory = NULL;
      }
  
@@ -131,30 +131,30 @@ index 11111111111..11111111111 100644
      exiting_thread_id = 0;
  }
  
-@@ -4698,6 +4705,9 @@ ULONG_PTR WINAPI NtUserCallNoParam( ULONG code )
+@@ -5463,6 +5470,9 @@ ULONG_PTR WINAPI NtUserCallNoParam( ULONG code )
          thread_detach();
          return 0;
  
 +    case NtUserGetQueueSharedMemory:
-+        return get_queue_shared_memory();
++        return (ULONG_PTR)get_queue_shared_memory();
 +
      default:
-         FIXME( "invalid code %u\n", code );
+         FIXME( "invalid code %u\n", (int)code );
          return 0;
 diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/win32u_private.h
 +++ b/dlls/win32u/win32u_private.h
-@@ -480,6 +480,7 @@ static inline void release_win_ptr( struct tagWND *ptr )
+@@ -416,6 +416,7 @@ static inline void release_win_ptr( struct tagWND *ptr )
  
  /* winstation.c */
  extern volatile struct desktop_shared_memory *get_desktop_shared_memory( void ) DECLSPEC_HIDDEN;
 +extern volatile struct queue_shared_memory *get_queue_shared_memory( void ) DECLSPEC_HIDDEN;
  
  extern void wrappers_init( unixlib_handle_t handle ) DECLSPEC_HIDDEN;
- extern NTSTATUS gdi_init(void) DECLSPEC_HIDDEN;
-@@ -672,24 +673,4 @@ static inline const char *debugstr_us( const UNICODE_STRING *us )
-     return debugstr_wn( us->Buffer, us->Length / sizeof(WCHAR) );
+ extern void gdi_init(void) DECLSPEC_HIDDEN;
+@@ -524,24 +525,4 @@ static inline const char *debugstr_color( COLORREF color )
+     return wine_dbg_sprintf( "RGB(%02x,%02x,%02x)", GetRValue(color), GetGValue(color), GetBValue(color) );
  }
  
 -#if defined(__i386__) || defined(__x86_64__)
@@ -182,7 +182,7 @@ diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/winstation.c
 +++ b/dlls/win32u/winstation.c
-@@ -571,13 +571,13 @@ static const WCHAR *get_default_desktop( void *buf, size_t buf_size )
+@@ -572,13 +572,13 @@ static const WCHAR *get_default_desktop( void *buf, size_t buf_size )
  }
  
  
@@ -198,7 +198,7 @@ index 11111111111..11111111111 100644
      section_str.MaximumLength = section_str.Length + sizeof(WCHAR);
      section_str.Buffer = (WCHAR *)name;
      InitializeObjectAttributes( &attr, &section_str, 0, root, NULL );
-@@ -628,7 +628,7 @@ volatile struct desktop_shared_memory *get_desktop_shared_memory( void )
+@@ -629,7 +629,7 @@ volatile struct desktop_shared_memory *get_desktop_shared_memory( void )
          if (i == 0) *(ptr - 1) = '\\';
      }
  
@@ -207,7 +207,7 @@ index 11111111111..11111111111 100644
                                 &thread_info->desktop_shared_map, (void **)&thread_info->desktop_shared_memory );
  
      NtClose( root );
-@@ -636,6 +636,23 @@ volatile struct desktop_shared_memory *get_desktop_shared_memory( void )
+@@ -637,6 +637,23 @@ volatile struct desktop_shared_memory *get_desktop_shared_memory( void )
  }
  
  
@@ -235,7 +235,7 @@ diff --git a/include/ntuser.h b/include/ntuser.h
 index 11111111111..11111111111 100644
 --- a/include/ntuser.h
 +++ b/include/ntuser.h
-@@ -691,6 +691,7 @@ enum
+@@ -918,6 +918,7 @@ enum
      /* temporary exports */
      NtUserExitingThread,
      NtUserThreadDetach,
@@ -247,7 +247,7 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -872,6 +872,10 @@ struct queue_shared_memory
+@@ -891,6 +891,10 @@ struct queue_shared_memory
  {
      unsigned int         seq;              /* sequence number - server updating if (seq_no & SEQUENCE_MASK) != 0 */
      int                  created;          /* queue has been created */
@@ -299,7 +299,7 @@ index 11111111111..11111111111 100644
      fast_reset_event( queue->fast_sync );
  }
  
-@@ -2621,12 +2637,22 @@ DECL_HANDLER(set_queue_mask)
+@@ -2597,12 +2613,22 @@ DECL_HANDLER(set_queue_mask)
          queue->changed_mask = req->changed_mask;
          reply->wake_bits    = queue->wake_bits;
          reply->changed_bits = queue->changed_bits;
@@ -322,7 +322,7 @@ index 11111111111..11111111111 100644
                  fast_reset_event( queue->fast_sync );
              }
              else
-@@ -2665,6 +2691,10 @@ DECL_HANDLER(get_queue_status)
+@@ -2641,6 +2667,10 @@ DECL_HANDLER(get_queue_status)
  
          if (do_esync() && !is_signaled( queue ))
              esync_clear( queue->esync_fd );
@@ -333,7 +333,7 @@ index 11111111111..11111111111 100644
      }
      else reply->wake_bits = reply->changed_bits = 0;
  }
-@@ -2848,6 +2878,10 @@ DECL_HANDLER(get_message)
+@@ -2824,6 +2854,10 @@ DECL_HANDLER(get_message)
      if (!is_signaled( queue ))
          fast_reset_event( queue->fast_sync );
  
@@ -344,7 +344,7 @@ index 11111111111..11111111111 100644
      /* then check for posted messages */
      if ((filter & QS_POSTMESSAGE) &&
          get_posted_message( queue, queue->ignore_post_msg, get_win, req->get_first, req->get_last, req->flags, reply ))
-@@ -2911,6 +2945,12 @@ DECL_HANDLER(get_message)
+@@ -2887,6 +2921,12 @@ DECL_HANDLER(get_message)
      if (get_win == -1 && current->process->idle_event) set_event( current->process->idle_event );
      queue->wake_mask = req->wake_mask;
      queue->changed_mask = req->changed_mask;

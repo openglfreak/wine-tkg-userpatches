@@ -7,14 +7,14 @@ Original concept by Richard Yao <ryao@gentoo.org>.
 
 Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
 ---
- dlls/ntdll/sync.c | 118 +++++++++++++++-------------------------------
- 1 file changed, 39 insertions(+), 79 deletions(-)
+ dlls/ntdll/sync.c | 134 +++++++++++++++++++---------------------------
+ 1 file changed, 54 insertions(+), 80 deletions(-)
 
 diff --git a/dlls/ntdll/sync.c b/dlls/ntdll/sync.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/sync.c
 +++ b/dlls/ntdll/sync.c
-@@ -539,34 +539,25 @@ void WINAPI RtlInitializeSRWLock( RTL_SRWLOCK *lock )
+@@ -545,34 +545,30 @@ void WINAPI RtlInitializeSRWLock( RTL_SRWLOCK *lock )
  void WINAPI RtlAcquireSRWLockExclusive( RTL_SRWLOCK *lock )
  {
      union { RTL_SRWLOCK *rtl; struct srw_lock *s; LONG *l; } u = { lock };
@@ -22,13 +22,15 @@ index 11111111111..11111111111 100644
  
      InterlockedIncrement16( &u.s->exclusive_waiters );
  
++    old.l = *u.l;
++    if (old.s.owners)
++        old.l = InterlockedOr( u.l, 0 );
      for (;;)
      {
 -        union { struct srw_lock s; LONG l; } old, new;
 -        BOOL wait;
 -
 -        do
-+        old.s = *u.s;
 +        if (old.s.owners)
          {
 -            old.s = *u.s;
@@ -47,6 +49,7 @@ index 11111111111..11111111111 100644
 -            }
 -        } while (InterlockedCompareExchange( u.l, new.l, old.l ) != old.l);
 +            RtlWaitOnAddress( &u.s->owners, &old.s.owners, sizeof(short), NULL );
++            old.l = *u.l;
 +            continue;
 +        }
  
@@ -56,24 +59,28 @@ index 11111111111..11111111111 100644
 +        new.s = old.s;
 +        new.s.owners = -1;
 +        --new.s.exclusive_waiters;
-+        if (InterlockedCompareExchange( u.l, new.l, old.l ) == old.l)
++        new.l = InterlockedCompareExchange( u.l, new.l, old.l );
++        if (new.l == old.l)
 +            break;
++        old.l = new.l;
      }
  }
  
-@@ -580,32 +571,23 @@ void WINAPI RtlAcquireSRWLockExclusive( RTL_SRWLOCK *lock )
+@@ -586,32 +582,28 @@ void WINAPI RtlAcquireSRWLockExclusive( RTL_SRWLOCK *lock )
  void WINAPI RtlAcquireSRWLockShared( RTL_SRWLOCK *lock )
  {
      union { RTL_SRWLOCK *rtl; struct srw_lock *s; LONG *l; } u = { lock };
 +    union { struct srw_lock s; LONG l; } old, new;
  
++    old.l = *u.l;
++    if (old.s.owners == -1 || old.s.exclusive_waiters)
++        old.l = InterlockedOr( u.l, 0 );
      for (;;)
      {
 -        union { struct srw_lock s; LONG l; } old, new;
 -        BOOL wait;
 -
 -        do
-+        old.s = *u.s;
 +        if (old.s.owners == -1 || old.s.exclusive_waiters)
          {
 -            old.s = *u.s;
@@ -92,6 +99,7 @@ index 11111111111..11111111111 100644
 -            }
 -        } while (InterlockedCompareExchange( u.l, new.l, old.l ) != old.l);
 +            RtlWaitOnAddress( u.s, &old.s, sizeof(struct srw_lock), NULL );
++            old.l = *u.l;
 +            continue;
 +        }
  
@@ -99,14 +107,16 @@ index 11111111111..11111111111 100644
 -        RtlWaitOnAddress( u.s, &new.s, sizeof(struct srw_lock), NULL );
 +        /* Not locked exclusive, and no exclusive waiters.
 +         * We can try to grab it. */
-+        new = old;
++        new.s = old.s;
 +        ++new.s.owners;
-+        if (InterlockedCompareExchange( u.l, new.l, old.l ) == old.l)
++        new.l = InterlockedCompareExchange( u.l, new.l, old.l );
++        if (new.l == old.l)
 +            break;
++        old.l = new.l;
      }
  }
  
-@@ -667,26 +649,15 @@ BOOLEAN WINAPI RtlTryAcquireSRWLockExclusive( RTL_SRWLOCK *lock )
+@@ -673,26 +665,17 @@ BOOLEAN WINAPI RtlTryAcquireSRWLockExclusive( RTL_SRWLOCK *lock )
  {
      union { RTL_SRWLOCK *rtl; struct srw_lock *s; LONG *l; } u = { lock };
      union { struct srw_lock s; LONG l; } old, new;
@@ -130,6 +140,8 @@ index 11111111111..11111111111 100644
 -    } while (InterlockedCompareExchange( u.l, new.l, old.l ) != old.l);
 +    old.s = *u.s;
 +    if (old.s.owners)
++        old.l = InterlockedOr( u.l, 0 );
++    if (old.s.owners)
 +        return FALSE;
  
 -    return ret;
@@ -140,7 +152,7 @@ index 11111111111..11111111111 100644
  }
  
  /***********************************************************************
-@@ -696,27 +667,16 @@ BOOLEAN WINAPI RtlTryAcquireSRWLockShared( RTL_SRWLOCK *lock )
+@@ -702,27 +685,18 @@ BOOLEAN WINAPI RtlTryAcquireSRWLockShared( RTL_SRWLOCK *lock )
  {
      union { RTL_SRWLOCK *rtl; struct srw_lock *s; LONG *l; } u = { lock };
      union { struct srw_lock s; LONG l; } old, new;
@@ -163,11 +175,14 @@ index 11111111111..11111111111 100644
 -            ret = FALSE;
 -        }
 -    } while (InterlockedCompareExchange( u.l, new.l, old.l ) != old.l);
+-
+-    return ret;
 +    old.s = *u.s;
 +    if (old.s.owners == -1 || old.s.exclusive_waiters)
++        old.l = InterlockedOr( u.l, 0 );
++    if (old.s.owners == -1 || old.s.exclusive_waiters)
 +        return FALSE;
- 
--    return ret;
++
 +    /* Not locked exclusive, and no exclusive waiters.
 +     * We can try to grab it. */
 +    new.s = old.s;
@@ -177,5 +192,5 @@ index 11111111111..11111111111 100644
  
  /***********************************************************************
 -- 
-2.36.1
+2.39.0
 

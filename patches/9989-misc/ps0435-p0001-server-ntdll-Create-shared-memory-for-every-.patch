@@ -1,0 +1,387 @@
+From 0ad5a65f071a1e759b852eb82da66ec1e18cc72b Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Sun, 31 Jul 2022 15:09:23 +0200
+Subject: [PATCH 1/4] server,ntdll: Create shared memory for every thread.
+
+---
+ dlls/ntdll/unix/server.c       | 65 +++++++++++++++++++++++++++++++++-
+ dlls/ntdll/unix/unix_private.h | 17 +++++++++
+ dlls/ntdll/unix/virtual.c      |  4 +++
+ server/file.h                  |  4 +++
+ server/mapping.c               | 16 +++++++++
+ server/protocol.def            |  4 +++
+ server/thread.c                | 27 ++++++++++++++
+ server/thread.h                | 17 +++++++++
+ 8 files changed, 153 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1560,6 +1560,13 @@ size_t server_init_process(void)
+     struct sigaction sig_act;
+     size_t info_size;
+     DWORD pid, tid;
++    sigset_t sigset;
++#ifdef __linux__
++    int has_request_shm = 0;
++    obj_handle_t fd_handle;
++    int request_shm_fd = -1;
++    void *request_shm = MAP_FAILED;
++#endif
+ 
+     server_pid = -1;
+     if (env_socket)
+@@ -1622,6 +1629,7 @@ size_t server_init_process(void)
+ 
+     reply_pipe = init_thread_pipe();
+ 
++    server_enter_uninterrupted_section( &fd_cache_mutex, &sigset );
+     SERVER_START_REQ( init_first_thread )
+     {
+         req->unix_pid    = getpid();
+@@ -1636,9 +1644,18 @@ size_t server_init_process(void)
+         peb->SessionId    = reply->session_id;
+         info_size         = reply->info_size;
+         server_start_time = reply->server_start;
++#ifdef __linux__
++        has_request_shm   = reply->has_request_shm;
++        if (has_request_shm)
++        {
++            request_shm_fd = receive_fd( &fd_handle );
++            assert( fd_handle == tid );
++        }
++#endif
+         supported_machines_count = wine_server_reply_size( reply ) / sizeof(*supported_machines);
+     }
+     SERVER_END_REQ;
++    server_leave_uninterrupted_section( &fd_cache_mutex, &sigset );
+     close( reply_pipe );
+ 
+     if (ret) server_protocol_error( "init_first_thread failed with status %x\n", ret );
+@@ -1670,9 +1687,25 @@ size_t server_init_process(void)
+     set_thread_id( NtCurrentTeb(), pid, tid );
+ 
+     for (i = 0; i < supported_machines_count; i++)
+-        if (supported_machines[i] == current_machine) return info_size;
++        if (supported_machines[i] == current_machine)
++            goto map_request_shm;
+ 
+     fatal_error( "wineserver doesn't support the %04x architecture\n", current_machine );
++
++map_request_shm:
++#ifdef __linux__
++    if (!has_request_shm) return info_size;
++
++    request_shm = mmap( NULL, REQUEST_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, request_shm_fd, 0 );
++    if (request_shm != MAP_FAILED)
++    {
++        ntdll_get_thread_data()->request_shm_fd = request_shm_fd;
++        ntdll_get_thread_data()->request_shm = request_shm;
++    }
++    else
++        close( request_shm_fd );
++#endif
++    return info_size;
+ }
+ 
+ 
+@@ -1735,10 +1768,18 @@ void server_init_thread( void *entry_point, BOOL *suspend )
+ {
+     void *teb;
+     int reply_pipe = init_thread_pipe();
++    sigset_t sigset;
++#ifdef __linux__
++    int has_request_shm = 0;
++    obj_handle_t fd_handle;
++    int request_shm_fd = -1;
++    void *request_shm;
++#endif
+ 
+     /* always send the native TEB */
+     if (!(teb = NtCurrentTeb64())) teb = NtCurrentTeb();
+ 
++    server_enter_uninterrupted_section( &fd_cache_mutex, &sigset );
+     SERVER_START_REQ( init_thread )
+     {
+         req->unix_tid  = get_unix_tid();
+@@ -1748,9 +1789,31 @@ void server_init_thread( void *entry_point, BOOL *suspend )
+         req->wait_fd   = ntdll_get_thread_data()->wait_fd[1];
+         wine_server_call( req );
+         *suspend = reply->suspend;
++#ifdef __linux__
++        has_request_shm = reply->has_request_shm;
++        if (has_request_shm)
++        {
++            request_shm_fd = receive_fd( &fd_handle );
++            assert( fd_handle == GetCurrentThreadId() );
++        }
++#endif
+     }
+     SERVER_END_REQ;
++    server_leave_uninterrupted_section( &fd_cache_mutex, &sigset );
+     close( reply_pipe );
++
++#ifdef __linux__
++    if (!has_request_shm) return;
++
++    request_shm = mmap( NULL, REQUEST_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, request_shm_fd, 0 );
++    if (request_shm != MAP_FAILED)
++    {
++        ntdll_get_thread_data()->request_shm_fd = request_shm_fd;
++        ntdll_get_thread_data()->request_shm = request_shm;
++    }
++    else
++        close( request_shm_fd );
++#endif
+ }
+ 
+ 
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -53,6 +53,19 @@ static inline BOOL is_machine_64bit( WORD machine )
+     return (machine == IMAGE_FILE_MACHINE_AMD64 || machine == IMAGE_FILE_MACHINE_ARM64);
+ }
+ 
++#ifdef __linux__
++struct request_shm
++{
++    int futex; /* signaling futex */
++    int pad;
++    union
++    {
++        union generic_request req;    /* request structure */
++        union generic_reply   reply;  /* reply structure */
++    } u;
++};
++#endif
++
+ /* thread private data, stored in NtCurrentTeb()->GdiTebBatch */
+ struct ntdll_thread_data
+ {
+@@ -63,6 +76,10 @@ struct ntdll_thread_data
+     int                request_fd;    /* fd for sending server requests */
+     int                reply_fd;      /* fd for receiving server replies */
+     int                wait_fd[2];    /* fd for sleeping server requests */
++#ifdef __linux__
++    int                request_shm_fd; /* request shared memory fd */
++    volatile struct request_shm *request_shm; /* shared memory for sending and receiving server requests/replies */
++#endif
+     pthread_t          pthread_id;    /* pthread thread id */
+     struct list        entry;         /* entry in TEB list */
+     PRTL_THREAD_START_ROUTINE start;  /* thread entry point */
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -3200,6 +3200,10 @@ static TEB *init_teb( void *ptr, BOOL is_wow )
+     thread_data->reply_fd   = -1;
+     thread_data->wait_fd[0] = -1;
+     thread_data->wait_fd[1] = -1;
++#ifdef __linux__
++    thread_data->request_shm_fd = -1;
++    thread_data->request_shm = NULL;
++#endif
+     list_add_head( &teb_list, &thread_data->entry );
+     return teb;
+ }
+diff --git a/server/file.h b/server/file.h
+index 11111111111..11111111111 100644
+--- a/server/file.h
++++ b/server/file.h
+@@ -30,6 +30,7 @@ struct fd;
+ struct mapping;
+ struct async_queue;
+ struct completion;
++struct request_shm;
+ 
+ /* server-side representation of I/O status block */
+ struct iosb
+@@ -210,6 +211,9 @@ extern struct object *create_hypervisor_data_mapping( struct object *root, const
+                                                       unsigned int attr, const struct security_descriptor *sd );
+ extern struct object *create_shared_mapping( struct object *root, const struct unicode_str *name,
+                                              mem_size_t size, const struct security_descriptor *sd, void **ptr );
++#ifdef __linux__
++extern int create_request_shm( int *fd, struct request_shm **ptr );
++#endif
+ 
+ /* device functions */
+ 
+diff --git a/server/mapping.c b/server/mapping.c
+index 11111111111..11111111111 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -1197,6 +1197,22 @@ struct object *create_shared_mapping( struct object *root, const struct unicode_
+     return &mapping->obj;
+ }
+ 
++#ifdef __linux__
++int create_request_shm( int *fd, struct request_shm **ptr )
++{
++    if ((*fd = create_temp_file( REQUEST_SHM_SIZE )) == -1) return 0;
++
++    *ptr = mmap( NULL, REQUEST_SHM_SIZE, PROT_WRITE, MAP_SHARED, *fd, 0 );
++    if (*ptr == MAP_FAILED)
++    {
++        *ptr = NULL;
++        set_error( STATUS_NO_MEMORY );
++        return 0;
++    }
++    return 1;
++}
++#endif
++
+ /* create a file mapping */
+ DECL_HANDLER(create_mapping)
+ {
+diff --git a/server/protocol.def b/server/protocol.def
+index 11111111111..11111111111 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -46,6 +46,8 @@ typedef unsigned __int64 client_ptr_t;
+ typedef unsigned __int64 affinity_t;
+ typedef client_ptr_t mod_handle_t;
+ 
++#define REQUEST_SHM_SIZE (1 * 1024 * 1024)
++
+ struct request_header
+ {
+     int          req;          /* request code */
+@@ -1027,6 +1029,7 @@ struct directory_entry
+     timeout_t    server_start; /* server start time */
+     unsigned int session_id;   /* process session id */
+     data_size_t  info_size;    /* total size of startup info */
++    int          has_request_shm; /* is request shared memory supported? */
+     VARARG(machines,ushorts);  /* array of supported machines */
+ @END
+ 
+@@ -1040,6 +1043,7 @@ struct directory_entry
+     client_ptr_t entry;        /* entry point (in thread address space) */
+ @REPLY
+     int          suspend;      /* is thread suspended? */
++    int          has_request_shm; /* is request shared memory supported? */
+ @END
+ 
+ 
+diff --git a/server/thread.c b/server/thread.c
+index 11111111111..11111111111 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -29,6 +29,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/types.h>
++#include <sys/mman.h>
+ #include <unistd.h>
+ #include <time.h>
+ #include <poll.h>
+@@ -377,6 +378,10 @@ static inline void init_thread_structure( struct thread *thread )
+     thread->request_fd      = NULL;
+     thread->reply_fd        = NULL;
+     thread->wait_fd         = NULL;
++#ifdef __linux__
++    thread->request_shm_fd  = -1;
++    thread->request_shm     = NULL;
++#endif
+     thread->state           = RUNNING;
+     thread->exit_code       = 0;
+     thread->priority        = 0;
+@@ -579,6 +584,14 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+         }
+     }
+ 
++#ifdef __linux__
++    if (!create_request_shm( &thread->request_shm_fd, (struct request_shm**)&thread->request_shm ))
++    {
++        release_object( thread );
++        return NULL;
++    }
++#endif
++
+     if (do_fsync())
+     {
+         thread->fsync_idx = fsync_alloc_shm( 0, 0 );
+@@ -656,6 +669,10 @@ static void cleanup_thread( struct thread *thread )
+     if (thread->request_fd) release_object( thread->request_fd );
+     if (thread->reply_fd) release_object( thread->reply_fd );
+     if (thread->wait_fd) release_object( thread->wait_fd );
++#ifdef __linux__
++    if (thread->request_shm_fd != -1) close( thread->request_shm_fd );
++    if (thread->request_shm) munmap( (void*)thread->request_shm, REQUEST_SHM_SIZE );
++#endif
+     cleanup_clipboard_thread(thread);
+     destroy_thread_windows( thread );
+     free_msg_queue( thread );
+@@ -679,6 +696,10 @@ static void cleanup_thread( struct thread *thread )
+     thread->request_fd = NULL;
+     thread->reply_fd = NULL;
+     thread->wait_fd = NULL;
++#ifdef __linux__
++    thread->request_shm_fd = -1;
++    thread->request_shm = NULL;
++#endif
+     thread->desktop = 0;
+     thread->desc = NULL;
+     thread->desc_len = 0;
+@@ -1988,8 +2009,11 @@ DECL_HANDLER(init_first_thread)
+     reply->session_id   = process->session_id;
+     reply->info_size    = get_process_startup_info_size( process );
+     reply->server_start = server_start_time;
++    reply->has_request_shm = current->request_shm_fd != -1;
+     set_reply_data( supported_machines,
+                     min( supported_machines_count * sizeof(unsigned short), get_reply_max_size() ));
++    if (reply->has_request_shm)
++        send_client_fd( current->process, current->request_shm_fd, reply->tid );
+ }
+ 
+ /* initialize a new thread */
+@@ -2016,6 +2040,9 @@ DECL_HANDLER(init_thread)
+         set_thread_affinity( current, current->affinity );
+ 
+     reply->suspend = (current->suspend || current->process->suspend || current->context != NULL);
++    reply->has_request_shm = current->request_shm_fd != -1;
++    if (reply->has_request_shm)
++        send_client_fd( current->process, current->request_shm_fd, get_thread_id( current ) );
+ }
+ 
+ /* terminate a thread */
+diff --git a/server/thread.h b/server/thread.h
+index 11111111111..11111111111 100644
+--- a/server/thread.h
++++ b/server/thread.h
+@@ -46,6 +46,19 @@ struct inflight_fd
+ };
+ #define MAX_INFLIGHT_FDS 16  /* max number of fds in flight per thread */
+ 
++#ifdef __linux__
++struct request_shm
++{
++    int futex; /* signaling futex */
++    int pad;
++    union
++    {
++        union generic_request req;    /* request structure */
++        union generic_reply   reply;  /* reply structure */
++    } u;
++};
++#endif
++
+ struct thread
+ {
+     struct object          obj;           /* object header */
+@@ -77,6 +90,10 @@ struct thread
+     struct fd             *request_fd;    /* fd for receiving client requests */
+     struct fd             *reply_fd;      /* fd to send a reply to a client */
+     struct fd             *wait_fd;       /* fd to use to wake a sleeping client */
++#ifdef __linux__
++    int                    request_shm_fd; /* request shared memory fd */
++    volatile struct request_shm *request_shm; /* shared memory for receiving and sending client requests/replies */
++#endif
+     enum run_state         state;         /* running state */
+     int                    exit_code;     /* thread exit code */
+     int                    unix_pid;      /* Unix pid of client */
+-- 
+2.39.0
+

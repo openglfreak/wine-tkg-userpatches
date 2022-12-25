@@ -1,0 +1,77 @@
+From: Paul Gofman <wine@gitlab.winehq.org>
+Subject: [PATCH 2/3] ntdll: Validate context xstate at once in NtGetContextThread().
+Message-Id: <wine-wine-mr260-v1-patch2@gitlab-mail-bridge>
+Date: Thu, 16 Jun 2022 19:08:46 +0000
+In-Reply-To: <wine-wine-mr260-v1@gitlab-mail-bridge>
+References: <merge_request_329@gitlab.winehq.org> <wine-wine-mr260-v1@gitlab-mail-bridge>
+
+From: Paul Gofman <pgofman@codeweavers.com>
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/ntdll/unix/signal_i386.c   | 4 ++--
+ dlls/ntdll/unix/signal_x86_64.c | 4 ++--
+ dlls/ntdll/unix/thread.c        | 2 ++
+ 3 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_i386.c
++++ b/dlls/ntdll/unix/signal_i386.c
+@@ -910,6 +910,8 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
+     }
+     else flags &= ~CONTEXT_XSTATE;
+ 
++    if (!validate_context_xstate( context )) return STATUS_INVALID_PARAMETER;
++
+     /* debug registers require a server call */
+     if (self && (flags & CONTEXT_DEBUG_REGISTERS))
+         self = (x86_thread_data()->dr0 == context->Dr0 &&
+@@ -1110,8 +1112,6 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
+             XSTATE *xstate = (XSTATE *)((char *)context_ex + context_ex->XState.Offset);
+             unsigned int mask;
+ 
+-            if (!validate_context_xstate( context )) return STATUS_INVALID_PARAMETER;
+-
+             mask = (xstate_compaction_enabled ? xstate->CompactionMask : xstate->Mask) & XSTATE_MASK_GSSE;
+             xstate->Mask = frame->xstate.Mask & mask;
+             xstate->CompactionMask = xstate_compaction_enabled ? (0x8000000000000000 | mask) : 0;
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -1001,6 +1001,8 @@ NTSTATUS WINAPI NtSetContextThread( HANDLE handle, const CONTEXT *context )
+     }
+     else flags &= ~CONTEXT_XSTATE;
+ 
++    if (!validate_context_xstate( context )) return STATUS_INVALID_PARAMETER;
++
+     /* debug registers require a server call */
+     if (self && (flags & CONTEXT_DEBUG_REGISTERS))
+         self = (amd64_thread_data()->dr0 == context->Dr0 &&
+@@ -1182,8 +1184,6 @@ NTSTATUS WINAPI NtGetContextThread( HANDLE handle, CONTEXT *context )
+         XSTATE *xstate = (XSTATE *)((char *)context_ex + context_ex->XState.Offset);
+         unsigned int mask;
+ 
+-        if (!validate_context_xstate( context )) return STATUS_INVALID_PARAMETER;
+-
+         mask = (xstate_compaction_enabled ? xstate->CompactionMask : xstate->Mask) & XSTATE_MASK_GSSE;
+         xstate->Mask = frame->xstate.Mask & mask;
+         xstate->CompactionMask = xstate_compaction_enabled ? (0x8000000000000000 | mask) : 0;
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -170,6 +170,8 @@ BOOL validate_context_xstate( CONTEXT *context )
+ {
+     CONTEXT_EX *context_ex;
+ 
++    if (!((context->ContextFlags & 0x40) && (cpu_info.ProcessorFeatureBits & CPU_FEATURE_AVX))) return TRUE;
++
+     context_ex = (CONTEXT_EX *)(context + 1);
+ 
+     if (context_ex->XState.Length < offsetof(XSTATE, YmmContext)
+
+
+
+

@@ -9,15 +9,13 @@ v2:
      - fix test failures on Win7.
 
  dlls/kernel32/tests/file.c | 75 ++++++++++++++++++++++++++++++++++----
- dlls/kernelbase/file.c     | 12 +++++-
- include/winbase.h          | 15 ++++++++
- 3 files changed, 93 insertions(+), 9 deletions(-)
+ 1 file changed, 68 insertions(+), 7 deletions(-)
 
 diff --git a/dlls/kernel32/tests/file.c b/dlls/kernel32/tests/file.c
 index 11111111111..11111111111 100644
 --- a/dlls/kernel32/tests/file.c
 +++ b/dlls/kernel32/tests/file.c
-@@ -4190,11 +4190,13 @@ static void test_CreateFile(void)
+@@ -4173,11 +4173,13 @@ static void test_CreateFile(void)
  static void test_GetFileInformationByHandleEx(void)
  {
      int i;
@@ -33,7 +31,7 @@ index 11111111111..11111111111 100644
      FILE_BASIC_INFO *basicInfo;
      FILE_STANDARD_INFO *standardInfo;
      FILE_NAME_INFO *nameInfo;
-@@ -4204,17 +4206,26 @@ static void test_GetFileInformationByHandleEx(void)
+@@ -4187,17 +4189,26 @@ static void test_GetFileInformationByHandleEx(void)
      FILE_DISPOSITION_INFO dispinfo;
      FILE_END_OF_FILE_INFO eofinfo;
      FILE_RENAME_INFO renameinfo;
@@ -63,7 +61,7 @@ index 11111111111..11111111111 100644
  
      if (!pGetFileInformationByHandleEx)
      {
-@@ -4241,10 +4252,17 @@ static void test_GetFileInformationByHandleEx(void)
+@@ -4224,10 +4235,17 @@ static void test_GetFileInformationByHandleEx(void)
      {
          SetLastError(0xdeadbeef);
          ret = pGetFileInformationByHandleEx(directory, checks[i].handleClass, checks[i].ptr, checks[i].size);
@@ -81,7 +79,7 @@ index 11111111111..11111111111 100644
      while (TRUE)
      {
          memset(buffer, 0xff, sizeof(buffer));
-@@ -4252,8 +4270,51 @@ static void test_GetFileInformationByHandleEx(void)
+@@ -4235,8 +4253,51 @@ static void test_GetFileInformationByHandleEx(void)
          if (!ret && GetLastError() == ERROR_NO_MORE_FILES)
              break;
          ok(ret, "GetFileInformationByHandleEx: failed to query for FileIdBothDirectoryInfo, got error %lu.\n", GetLastError());
@@ -135,75 +133,7 @@ index 11111111111..11111111111 100644
          bothDirInfo = (FILE_ID_BOTH_DIR_INFO *)buffer;
          while (TRUE)
          {
-diff --git a/dlls/kernelbase/file.c b/dlls/kernelbase/file.c
-index 11111111111..11111111111 100644
---- a/dlls/kernelbase/file.c
-+++ b/dlls/kernelbase/file.c
-@@ -3250,13 +3250,13 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetFileInformationByHandleEx( HANDLE handle, FILE_
-     NTSTATUS status;
-     IO_STATUS_BLOCK io;
- 
-+    TRACE( "%p, %u, %p, %u.\n", handle, class, info, size );
-+
-     switch (class)
-     {
-     case FileStreamInfo:
-     case FileCompressionInfo:
-     case FileRemoteProtocolInfo:
--    case FileFullDirectoryInfo:
--    case FileFullDirectoryRestartInfo:
-     case FileStorageInfo:
-     case FileAlignmentInfo:
-     case FileIdExtdDirectoryInfo:
-@@ -3265,6 +3265,13 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetFileInformationByHandleEx( HANDLE handle, FILE_
-         SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
-         return FALSE;
- 
-+    case FileFullDirectoryRestartInfo:
-+    case FileFullDirectoryInfo:
-+        status = NtQueryDirectoryFile( handle, NULL, NULL, NULL, &io, info, size,
-+                                       FileFullDirectoryInformation, FALSE, NULL,
-+                                       (class == FileFullDirectoryRestartInfo) );
-+        break;
-+
-     case FileAttributeTagInfo:
-         status = NtQueryInformationFile( handle, &io, info, size, FileAttributeTagInformation );
-         break;
-@@ -3298,6 +3305,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetFileInformationByHandleEx( HANDLE handle, FILE_
-     case FileIoPriorityHintInfo:
-     case FileEndOfFileInfo:
-     default:
-+        WARN( "class %u is not supported.\n", class );
-         SetLastError( ERROR_INVALID_PARAMETER );
-         return FALSE;
-     }
-diff --git a/include/winbase.h b/include/winbase.h
-index 11111111111..11111111111 100644
---- a/include/winbase.h
-+++ b/include/winbase.h
-@@ -823,6 +823,21 @@ typedef struct _FILE_ID_BOTH_DIR_INFO {
-     WCHAR         FileName[1];
- } FILE_ID_BOTH_DIR_INFO, *PFILE_ID_BOTH_DIR_INFO;
- 
-+typedef struct _FILE_FULL_DIR_INFO {
-+    ULONG         NextEntryOffset;
-+    ULONG         FileIndex;
-+    LARGE_INTEGER CreationTime;
-+    LARGE_INTEGER LastAccessTime;
-+    LARGE_INTEGER LastWriteTime;
-+    LARGE_INTEGER ChangeTime;
-+    LARGE_INTEGER EndOfFile;
-+    LARGE_INTEGER AllocationSize;
-+    ULONG         FileAttributes;
-+    ULONG         FileNameLength;
-+    ULONG         EaSize;
-+    WCHAR         FileName[1];
-+} FILE_FULL_DIR_INFO, *PFILE_FULL_DIR_INFO;
-+
- typedef struct _FILE_BASIC_INFO {
-     LARGE_INTEGER CreationTime;
-     LARGE_INTEGER LastAccessTime;
 
 -- 
-2.36.1
+2.39.0
 

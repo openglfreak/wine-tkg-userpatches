@@ -1,0 +1,165 @@
+From 50a1e01f2af43c2e8600bd0b16406b19a1e38909 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Sat, 6 Aug 2022 20:29:00 +0200
+Subject: [PATCH 3/4] server: Write reply data directly to shared memory if
+ possible.
+
+---
+ server/request.c | 35 ++++++++++++++++++++++++-----------
+ server/thread.c  | 28 ++++++++++++++++++++++++++--
+ server/thread.h  |  1 +
+ 3 files changed, 51 insertions(+), 13 deletions(-)
+
+diff --git a/server/request.c b/server/request.c
+index 11111111111..11111111111 100644
+--- a/server/request.c
++++ b/server/request.c
+@@ -162,10 +162,23 @@ void fatal_error( const char *err, ... )
+     exit(1);
+ }
+ 
++int reply_in_shm;
++
+ /* allocate the reply data */
+ void *set_reply_data_size( data_size_t size )
+ {
+     assert( size <= get_reply_max_size() );
++    if (current->request_shm && reply_in_shm)
++    {
++        char *data_ptr = (char*)(current->request_shm + 1) + current->req.request_header.request_size;
++        unsigned int size_limit = (char*)current->request_shm + REQUEST_SHM_SIZE - data_ptr;
++        if (size_limit >= size)
++        {
++            current->reply_data = data_ptr;
++            current->reply_size = size;
++            return current->reply_data;
++        }
++    }
+     if (size > current->rep_data_size)
+     {
+         if (current->rep_data) free(current->rep_data);
+@@ -247,8 +260,7 @@ void write_reply( struct thread *thread )
+     {
+         if (!(thread->reply_towrite -= ret))
+         {
+-            if (thread->reply_data != thread->rep_data) free( thread->reply_data );
+-            thread->reply_data = NULL;
++            cleanup_thread_reply_data( thread );
+             /* sent everything, can go back to waiting for requests */
+             set_fd_events( thread->request_fd, POLLIN );
+             set_fd_events( thread->reply_fd, 0 );
+@@ -272,11 +284,14 @@ void send_reply_shm( union generic_reply *reply, struct request_shm *request_shm
+     if (!current->reply_size)
+         return;
+ 
++    if ((char*)current->reply_data >= (char*)request_shm &&
++        (char*)current->reply_data < (char*)request_shm + REQUEST_SHM_SIZE)
++        return;
++
+     if (current->reply_size <= copy_limit)
+     {
+         memcpy( data_ptr, current->reply_data, current->reply_size );
+-        if (current->reply_data != current->rep_data) free( current->reply_data );
+-        current->reply_data = NULL;
++        cleanup_thread_reply_data( current );
+         return;
+     }
+ 
+@@ -288,10 +303,7 @@ void send_reply_shm( union generic_reply *reply, struct request_shm *request_shm
+                       current->reply_towrite )) >= 0)
+     {
+         if (!(current->reply_towrite -= ret))
+-        {
+-            if (current->reply_data != current->rep_data) free( current->reply_data );
+-            current->reply_data = NULL;
+-        }
++            cleanup_thread_reply_data( current );
+         else
+         {
+             /* couldn't write it all, wait for POLLOUT */
+@@ -352,10 +364,12 @@ void read_request_shm( struct thread *thread, struct request_shm *request_shm )
+     data_size = thread->req.request_header.request_size;
+     if (data_size)
+         thread->req_data = request_shm + 1;
++    reply_in_shm = 1;
+ 
+     call_req_handler_shm( thread, request_shm );
+ 
+-    if (data_size)
++    reply_in_shm = 0;
++    if (data_size && thread->req_data == request_shm + 1)
+         thread->req_data = orig_req_data;
+ }
+ 
+@@ -382,8 +396,7 @@ void send_reply( union generic_reply *reply )
+         return;
+     }
+ 
+-    if (current->reply_data != current->rep_data) free( current->reply_data );
+-    current->reply_data = NULL;
++    cleanup_thread_reply_data( current );
+     return;
+ 
+  error:
+diff --git a/server/thread.c b/server/thread.c
+index 11111111111..11111111111 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -746,6 +746,30 @@ static struct fast_sync *thread_get_fast_sync( struct object *obj )
+     return thread->fast_sync;
+ }
+ 
++void cleanup_thread_reply_data( struct thread *thread )
++{
++    if (thread->reply_data == thread->rep_data)
++        return;
++
++    if (thread->request_shm &&
++        (char*)thread->reply_data >= (char*)thread->request_shm &&
++        (char*)thread->reply_data < (char*)thread->request_shm + REQUEST_SHM_SIZE)
++        return;
++
++    free( thread->reply_data );
++    thread->reply_data = NULL;
++}
++
++void cleanup_thread_req_data( struct thread *thread )
++{
++    if (thread->request_shm &&
++        (char*)thread->req_data >= (char*)thread->request_shm &&
++        (char*)thread->req_data < (char*)thread->request_shm + REQUEST_SHM_SIZE)
++        return;
++
++    free( thread->req_data );
++}
++
+ /* cleanup everything that is no longer needed by a dead thread */
+ /* used by destroy_thread and kill_thread */
+ static void cleanup_thread( struct thread *thread )
+@@ -761,9 +785,9 @@ static void cleanup_thread( struct thread *thread )
+     }
+     clear_apc_queue( &thread->system_apc );
+     clear_apc_queue( &thread->user_apc );
+-    free( thread->req_data );
++    cleanup_thread_req_data( thread );
+     free( thread->rep_data );
+-    if (thread->reply_data != thread->rep_data) free( thread->reply_data );
++    cleanup_thread_reply_data( thread );
+     if (thread->request_fd) release_object( thread->request_fd );
+     if (thread->reply_fd) release_object( thread->reply_fd );
+     if (thread->wait_fd) release_object( thread->wait_fd );
+diff --git a/server/thread.h b/server/thread.h
+index 11111111111..11111111111 100644
+--- a/server/thread.h
++++ b/server/thread.h
+@@ -132,6 +132,7 @@ extern struct thread *current;
+ 
+ extern struct thread *create_thread( int fd, struct process *process,
+                                      const struct security_descriptor *sd );
++extern void cleanup_thread_reply_data( struct thread *thread );
+ extern struct thread *get_thread_from_id( thread_id_t id );
+ extern struct thread *get_thread_from_handle( obj_handle_t handle, unsigned int access );
+ extern struct thread *get_thread_from_tid( int tid );
+-- 
+2.39.0
+

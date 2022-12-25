@@ -12,8 +12,8 @@ diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/message.c
 +++ b/dlls/win32u/message.c
-@@ -1657,12 +1657,11 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
-     INPUT_MESSAGE_SOURCE prev_source = thread_info->msg_source;
+@@ -1793,12 +1793,11 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+     INPUT_MESSAGE_SOURCE prev_source = thread_info->client_info.msg_source;
      struct received_message_info info;
      unsigned int hw_id = 0;  /* id of previous hardware message */
 -    void *buffer;
@@ -27,7 +27,7 @@ index 11111111111..11111111111 100644
      if (!first && !last) last = ~0;
      if (hwnd == HWND_BROADCAST) hwnd = HWND_TOPMOST;
  
-@@ -1737,19 +1736,22 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -1873,19 +1872,22 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
  
          if (res)
          {
@@ -41,7 +41,7 @@ index 11111111111..11111111111 100644
              }
              if (res != STATUS_BUFFER_OVERFLOW)
              {
-                 SetLastError( RtlNtStatusToDosError(res) );
+                 RtlSetLastWin32Error( RtlNtStatusToDosError(res) );
 +                if (buffer != buffer_init) free( buffer );
                  return -1;
              }
@@ -52,7 +52,7 @@ index 11111111111..11111111111 100644
              continue;
          }
  
-@@ -1766,6 +1768,12 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -1902,6 +1904,12 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
              break;
          case MSG_NOTIFY:
              info.flags = ISMEX_NOTIFY;
@@ -65,7 +65,7 @@ index 11111111111..11111111111 100644
              if (!unpack_message( info.msg.hwnd, info.msg.message, &info.msg.wParam,
                                   &info.msg.lParam, &buffer, size ))
                  continue;
-@@ -1841,6 +1849,12 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -1981,6 +1989,12 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
              continue;
          case MSG_OTHER_PROCESS:
              info.flags = ISMEX_SEND;
@@ -78,16 +78,16 @@ index 11111111111..11111111111 100644
              if (!unpack_message( info.msg.hwnd, info.msg.message, &info.msg.wParam,
                                   &info.msg.lParam, &buffer, size ))
              {
-@@ -1864,7 +1878,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -2004,7 +2018,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
                  thread_info->client_info.message_pos   = MAKELONG( info.msg.pt.x, info.msg.pt.y );
                  thread_info->client_info.message_time  = info.msg.time;
                  thread_info->client_info.message_extra = msg_data->hardware.info;
 -                free( buffer );
 +                if (buffer != buffer_init) free( buffer );
-                 call_hooks( WH_GETMESSAGE, HC_ACTION, flags & PM_REMOVE, (LPARAM)msg, TRUE );
+                 call_hooks( WH_GETMESSAGE, HC_ACTION, flags & PM_REMOVE, (LPARAM)msg, sizeof(*msg) );
                  return 1;
              }
-@@ -1879,7 +1893,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -2019,7 +2033,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
                      /* if this is a nested call return right away */
                      if (first == info.msg.message && last == info.msg.message)
                      {
@@ -96,13 +96,13 @@ index 11111111111..11111111111 100644
                          return 0;
                      }
                  }
-@@ -1900,7 +1914,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
+@@ -2058,7 +2072,7 @@ static int peek_message( MSG *msg, HWND hwnd, UINT first, UINT last, UINT flags,
              thread_info->client_info.message_time  = info.msg.time;
              thread_info->client_info.message_extra = 0;
-             thread_info->msg_source = msg_source_unavailable;
+             thread_info->client_info.msg_source = msg_source_unavailable;
 -            free( buffer );
 +            if (buffer != buffer_init) free( buffer );
-             call_hooks( WH_GETMESSAGE, HC_ACTION, flags & PM_REMOVE, (LPARAM)msg, TRUE );
+             call_hooks( WH_GETMESSAGE, HC_ACTION, flags & PM_REMOVE, (LPARAM)msg, sizeof(*msg) );
              return 1;
          }
 

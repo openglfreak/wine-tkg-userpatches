@@ -1,0 +1,46 @@
+From 54f0bc366057866a15b1cd8f900a1a87bc8b5f42 Mon Sep 17 00:00:00 2001
+From: Zhiyi Zhang <zzhang@codeweavers.com>
+Date: Fri, 12 Aug 2022 11:32:54 +0800
+Subject: [PATCH] winex11.drv: Restore iconic state if a window doesn't want to
+ be restored.
+
+Fix Excel 2007 and 2010 showing small black windows after clicking their taskbar icons when opening
+multiple documents in one instance.
+
+Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
+---
+ dlls/winex11.drv/event.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+#diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
+#index 8b99d244702..1a941886ab6 100644
+#--- a/dlls/user32/tests/msg.c
+#+++ b/dlls/user32/tests/msg.c
+#@@ -19487,7 +19487,6 @@ static void test_taskbar_messages(void)
+#     }
+#     /* The background window rectangle is (100, 100, 200, 200). If hwnd gets unminimized, it will
+#      * end up obscuring the background window. */
+#-    todo_wine_if(color != 0xffffff)
+#     ok(color == 0xffffff, "Expected color %#x, got %#lx.\n", 0xffffff, color);
+# 
+#     ReleaseDC(0, hdc);
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -1488,6 +1488,12 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event, BOOL updat
+                     NtUserSetProp( hwnd, restore_window_propW, (HANDLE) TRUE );
+                 else
+                     send_message( hwnd, WM_SYSCOMMAND, SC_RESTORE, 0 );
++                /* The window doesn't want to unminimize, restore iconic state */
++                if (NtUserGetWindowLongW( data->hwnd, GWL_STYLE ) & WS_MINIMIZE)
++                {
++                    data->iconic = TRUE;
++                    XIconifyWindow( data->display, data->whole_window, data->vis.screen );
++                }
+                 return;
+             }
+             TRACE( "not restoring win %p/%lx style %08x\n", data->hwnd, data->whole_window, style );
+-- 
+2.39.0
+

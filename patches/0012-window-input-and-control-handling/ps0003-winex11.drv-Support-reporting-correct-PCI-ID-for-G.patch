@@ -14,27 +14,26 @@ diff --git a/configure.ac b/configure.ac
 index 11111111111..11111111111 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -29,6 +29,7 @@ AC_ARG_WITH(coreaudio, AS_HELP_STRING([--without-coreaudio],[do not use the Core
-             [if test "x$withval" = "xno"; then ac_cv_header_CoreAudio_CoreAudio_h=no; fi])
+@@ -29,6 +29,7 @@ AC_ARG_WITH(capi,      AS_HELP_STRING([--without-capi],[do not use CAPI (ISDN su
+ AC_ARG_WITH(coreaudio, AS_HELP_STRING([--without-coreaudio],[do not use the CoreAudio sound support]))
  AC_ARG_WITH(cups,      AS_HELP_STRING([--without-cups],[do not use CUPS]))
  AC_ARG_WITH(dbus,      AS_HELP_STRING([--without-dbus],[do not use DBus (dynamic device support)]))
 +AC_ARG_WITH(drm,       AS_HELP_STRING([--without-drm],[do not use DRM (Direct Rendering Manager support)]))
  AC_ARG_WITH(float-abi, AS_HELP_STRING([--with-float-abi=abi],[specify the ABI (soft|softfp|hard) for ARM platforms]))
  AC_ARG_WITH(fontconfig,AS_HELP_STRING([--without-fontconfig],[do not use fontconfig]))
  AC_ARG_WITH(freetype,  AS_HELP_STRING([--without-freetype],[do not use the FreeType library]))
-@@ -65,7 +66,11 @@ AC_ARG_WITH(unwind,    AS_HELP_STRING([--without-unwind],[do not use the libunwi
+@@ -60,6 +61,10 @@ AC_ARG_WITH(unwind,    AS_HELP_STRING([--without-unwind],[do not use the libunwi
  AC_ARG_WITH(usb,       AS_HELP_STRING([--without-usb],[do not use the libusb library]))
  AC_ARG_WITH(v4l2,      AS_HELP_STRING([--without-v4l2],[do not use v4l2 (video capture)]))
  AC_ARG_WITH(vulkan,    AS_HELP_STRING([--without-vulkan],[do not use Vulkan]))
 +AC_ARG_WITH(x11-xcb,   AS_HELP_STRING([--without-x11-xcb],[do not use Xlib XCB support]),
 +            [if test "x$withval" = "xno"; then ac_cv_header_X11_Xlib_xcb_h=no; fi])
- AC_ARG_WITH(xattr,     AS_HELP_STRING([--without-xattr],[do not use xattr (security attributes support)]))
 +AC_ARG_WITH(xcb-dri3,  AS_HELP_STRING([--without-xcb-dri3],[do not use XCB DRI3 support]),
 +            [if test "x$withval" = "xno"; then ac_cv_header_xcb_dri3_h=no; fi])
  AC_ARG_WITH(xcomposite,AS_HELP_STRING([--without-xcomposite],[do not use the Xcomposite extension]),
              [if test "x$withval" = "xno"; then ac_cv_header_X11_extensions_Xcomposite_h=no; fi])
  AC_ARG_WITH(xcursor,   AS_HELP_STRING([--without-xcursor],[do not use the Xcursor extension]),
-@@ -1199,6 +1204,7 @@ then
+@@ -1177,6 +1182,7 @@ then
  
      dnl *** All of the following tests require X11/Xlib.h
      AC_CHECK_HEADERS([X11/Xlib.h \
@@ -42,7 +41,7 @@ index 11111111111..11111111111 100644
                        X11/XKBlib.h \
                        X11/Xutil.h \
                        X11/Xcursor/Xcursor.h \
-@@ -1307,6 +1313,48 @@ then
+@@ -1285,6 +1291,48 @@ then
          WINE_NOTICE_WITH(xrandr,[test "x$ac_cv_lib_soname_Xrandr" = "x"],
                           [libxrandr ${notice_platform}development files not found, XRandr won't be supported.])
  
@@ -95,20 +94,20 @@ diff --git a/dlls/winex11.drv/Makefile.in b/dlls/winex11.drv/Makefile.in
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/Makefile.in
 +++ b/dlls/winex11.drv/Makefile.in
-@@ -3,7 +3,7 @@ MODULE    = winex11.drv
+@@ -2,7 +2,7 @@ MODULE    = winex11.drv
  UNIXLIB   = winex11.so
  IMPORTS   = uuid user32 gdi32 win32u
  DELAYIMPORTS = comctl32 ole32 shell32 imm32
--EXTRAINCL = $(X_CFLAGS)
-+EXTRAINCL = $(X_CFLAGS) $(DRM_CFLAGS)
- EXTRALIBS = -lwin32u $(X_LIBS) $(X_EXTRA_LIBS) $(PTHREAD_LIBS) -lm
+-UNIX_CFLAGS  = $(X_CFLAGS)
++UNIX_CFLAGS  = $(X_CFLAGS) $(DRM_CFLAGS)
+ UNIX_LIBS    = -lwin32u $(X_LIBS) $(X_EXTRA_LIBS) $(PTHREAD_LIBS) -lm
  
  C_SRCS = \
 diff --git a/dlls/winex11.drv/xrandr.c b/dlls/winex11.drv/xrandr.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/xrandr.c
 +++ b/dlls/winex11.drv/xrandr.c
-@@ -39,8 +39,20 @@ WINE_DECLARE_DEBUG_CHANNEL(winediag);
+@@ -36,8 +36,20 @@ WINE_DEFAULT_DEBUG_CHANNEL(xrandr);
  #ifdef SONAME_LIBXRANDR
  
  #include <assert.h>
@@ -129,7 +128,7 @@ index 11111111111..11111111111 100644
  #include <dlfcn.h>
  #include "x11drv.h"
  
-@@ -84,6 +96,25 @@ MAKE_FUNCPTR(XRRGetProviderInfo)
+@@ -81,6 +93,25 @@ MAKE_FUNCPTR(XRRGetProviderInfo)
  MAKE_FUNCPTR(XRRFreeProviderInfo)
  #endif
  
@@ -155,7 +154,7 @@ index 11111111111..11111111111 100644
  #undef MAKE_FUNCPTR
  
  static int load_xrandr(void)
-@@ -94,47 +125,72 @@ static int load_xrandr(void)
+@@ -91,47 +122,72 @@ static int load_xrandr(void)
          (xrandr_handle = dlopen(SONAME_LIBXRANDR, RTLD_NOW)))
      {
  
@@ -261,7 +260,7 @@ index 11111111111..11111111111 100644
      return r;
  }
  
-@@ -631,6 +687,181 @@ static BOOL is_crtc_primary( RECT primary, const XRRCrtcInfo *crtc )
+@@ -614,6 +670,181 @@ static BOOL is_crtc_primary( RECT primary, const XRRCrtcInfo *crtc )
             crtc->y + crtc->height == primary.bottom;
  }
  
@@ -442,11 +441,11 @@ index 11111111111..11111111111 100644
 +
  VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDisplayKHR)
  
- static BOOL get_gpu_properties_from_vulkan( struct gdi_gpu *gpu, const XRRProviderInfo *provider_info )
-@@ -809,11 +1040,17 @@ static BOOL xrandr14_get_gpus2( struct gdi_gpu **new_gpus, int *count, BOOL get_
+ static BOOL get_gpu_properties_from_vulkan( struct gdi_gpu *gpu, const XRRProviderInfo *provider_info,
+@@ -807,11 +1038,17 @@ static BOOL xrandr14_get_gpus2( struct gdi_gpu **new_gpus, int *count, BOOL get_
          if (get_properties)
          {
-             if (!get_gpu_properties_from_vulkan( &gpus[i], provider_info ))
+             if (!get_gpu_properties_from_vulkan( &gpus[i], provider_info, gpus, i ))
 +            {
 +                if (!get_gpu_pci_id( &gpus[i], i ))
 +                    WARN("Failed to get PCI ID for GPU %s\n", wine_dbgstr_w(gpus[i].name));

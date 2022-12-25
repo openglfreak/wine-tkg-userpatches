@@ -1,4 +1,4 @@
-From b944da627e622d489fcd56e8912b406cb88a59e8 Mon Sep 17 00:00:00 2001
+From f04c5918809e8923880669c3d25e892c95d68aaa Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Mon, 25 Jan 2021 15:39:56 +0100
 Subject: [PATCH 09/13] winex11.drv: Request clipping through the desktop
@@ -6,39 +6,17 @@ Subject: [PATCH 09/13] winex11.drv: Request clipping through the desktop
 
 Which will forward the requests to the foreground window for now.
 ---
- dlls/winex11.drv/display.c | 10 ++---
- dlls/winex11.drv/event.c   |  2 +-
- dlls/winex11.drv/mouse.c   | 80 +++++++++++++++++++-------------------
- dlls/winex11.drv/window.c  |  3 ++
- dlls/winex11.drv/x11drv.h  |  3 +-
- 5 files changed, 48 insertions(+), 50 deletions(-)
+ dlls/winex11.drv/event.c  |  2 +-
+ dlls/winex11.drv/mouse.c  | 80 +++++++++++++++++++--------------------
+ dlls/winex11.drv/window.c |  3 ++
+ dlls/winex11.drv/x11drv.h |  3 +-
+ 4 files changed, 45 insertions(+), 43 deletions(-)
 
-diff --git a/dlls/winex11.drv/display.c b/dlls/winex11.drv/display.c
-index 11111111111..11111111111 100644
---- a/dlls/winex11.drv/display.c
-+++ b/dlls/winex11.drv/display.c
-@@ -225,13 +225,9 @@ void X11DRV_DisplayDevices_Update(BOOL send_display_change)
- 
-     free( list );
- 
--    /* forward clip_fullscreen_window request to the foreground window */
--    if ((foreground = NtUserGetForegroundWindow()) &&
--        (tid = NtUserGetWindowThread( foreground, &pid )) && pid == GetCurrentProcessId())
--    {
--        if (tid == GetCurrentThreadId()) clip_fullscreen_window( foreground, TRUE );
--        else send_notify_message( foreground, WM_X11DRV_CLIP_CURSOR_REQUEST, TRUE, TRUE );
--    }
-+    /* forward clip_fullscreen_window request to the desktop window */
-+    if ((foreground = NtUserGetForegroundWindow()) && (tid = NtUserGetWindowThread( foreground, &pid )) && pid == GetCurrentProcessId())
-+        send_notify_message( foreground, WM_X11DRV_CLIP_CURSOR_REQUEST, TRUE, TRUE );
- }
- 
- static BOOL force_display_devices_refresh;
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -883,7 +883,7 @@ BOOL x11drv_handle_focus_in_event( HWND hwnd, XEvent *xev, Time time )
+@@ -878,7 +878,7 @@ BOOL x11drv_handle_focus_in_event( HWND hwnd, XEvent *xev, Time time )
      if ((xic = X11DRV_get_ic( hwnd ))) XSetICFocus( xic );
      if (use_take_focus)
      {
@@ -51,7 +29,7 @@ diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
-@@ -605,7 +605,7 @@ LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd )
+@@ -613,7 +613,7 @@ LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd )
   *
   * Turn on clipping if the active window is fullscreen.
   */
@@ -60,7 +38,7 @@ index 11111111111..11111111111 100644
  {
      struct x11drv_win_data *data;
      struct x11drv_thread_data *thread_data;
-@@ -733,7 +733,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
+@@ -745,7 +745,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
      {
          hwnd = NtUserGetAncestor( hwnd, GA_ROOT );
          if ((input->u.mi.dwFlags & (MOUSEEVENTF_LEFTDOWN|MOUSEEVENTF_RIGHTDOWN)) && hwnd == NtUserGetForegroundWindow())
@@ -69,7 +47,7 @@ index 11111111111..11111111111 100644
      }
  
      /* update the wine server Z-order */
-@@ -1605,44 +1605,20 @@ BOOL X11DRV_GetCursorPos(LPPOINT pos)
+@@ -1625,44 +1625,20 @@ BOOL X11DRV_GetCursorPos(LPPOINT pos)
   */
  BOOL X11DRV_ClipCursor( LPCRECT clip )
  {
@@ -97,12 +75,12 @@ index 11111111111..11111111111 100644
 -        {
 -            if (grab_clipping_window( clip )) return TRUE;
 -        }
--        else /* if currently clipping, check if we should switch to fullscreen clipping */
+-        else /* check if we should switch to fullscreen clipping */
 -        {
 -            struct x11drv_thread_data *data = x11drv_thread_data();
--            if (data && data->clip_hwnd)
+-            if (data)
 -            {
--                if (EqualRect( clip, &clip_rect ) || clip_fullscreen_window( foreground, TRUE ))
+-                if ((data->clip_hwnd && EqualRect( clip, &clip_rect ) && !EqualRect(&clip_rect, &virtual_rect)) || clip_fullscreen_window( foreground, TRUE ))
 -                    return TRUE;
 -            }
 -        }
@@ -125,7 +103,7 @@ index 11111111111..11111111111 100644
  /***********************************************************************
   *             clip_cursor_request
   *
-@@ -1650,18 +1626,40 @@ BOOL X11DRV_ClipCursor( LPCRECT clip )
+@@ -1670,18 +1646,40 @@ BOOL X11DRV_ClipCursor( LPCRECT clip )
   */
  LRESULT clip_cursor_request( HWND hwnd, BOOL fullscreen, BOOL reset )
  {
@@ -156,12 +134,12 @@ index 11111111111..11111111111 100644
 +        {
 +            if (grab_clipping_window( &clip )) return 0;
 +        }
-+        else /* if currently clipping, check if we should switch to fullscreen clipping */
++        else /* check if we should switch to fullscreen clipping */
 +        {
 +            struct x11drv_thread_data *data = x11drv_thread_data();
-+            if (data && data->clip_hwnd)
++            if (data)
 +            {
-+                if (EqualRect( &clip, &clip_rect ) || clip_fullscreen_window( foreground, TRUE ))
++                if ((data->clip_hwnd && EqualRect( &clip, &clip_rect ) && !EqualRect(&clip_rect, &virtual_rect)) || clip_fullscreen_window( foreground, TRUE ))
 +                    return 0;
 +            }
 +        }
@@ -174,9 +152,9 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -3198,6 +3198,9 @@ LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
+@@ -3289,6 +3289,9 @@ LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
      case WM_X11DRV_DESKTOP_SET_WINDOW_CURSOR:
-         send_notify_message( (HWND)wp, WM_X11DRV_SET_CURSOR, 0, lp );
+         send_notify_message( (HWND)wp, WM_X11DRV_SET_CURSOR, GetCurrentThreadId(), lp );
          return 0;
 +    case WM_X11DRV_DESKTOP_CLIP_CURSOR:
 +        x11drv_desktop_clip_cursor( (BOOL)wp, (BOOL)lp );
@@ -188,7 +166,7 @@ diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -594,6 +594,7 @@ enum x11drv_window_messages
+@@ -605,6 +605,7 @@ enum x11drv_window_messages
      WM_X11DRV_SET_CURSOR,
      WM_X11DRV_DESKTOP_SET_HICON_CURSOR,
      WM_X11DRV_DESKTOP_SET_WINDOW_CURSOR,
@@ -196,7 +174,7 @@ index 11111111111..11111111111 100644
      WM_X11DRV_CLIP_CURSOR_NOTIFY,
      WM_X11DRV_CLIP_CURSOR_REQUEST,
      WM_X11DRV_DELETE_TAB,
-@@ -699,10 +700,10 @@ extern BOOL X11DRV_SetForegroundWindow( HWND hwnd ) DECLSPEC_HIDDEN;
+@@ -712,10 +713,10 @@ extern BOOL X11DRV_SetForegroundWindow( HWND hwnd ) DECLSPEC_HIDDEN;
  extern void set_window_cursor( Window window, HCURSOR handle ) DECLSPEC_HIDDEN;
  extern LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd ) DECLSPEC_HIDDEN;
  extern LRESULT clip_cursor_request( HWND hwnd, BOOL fullscreen, BOOL reset ) DECLSPEC_HIDDEN;
@@ -209,5 +187,5 @@ index 11111111111..11111111111 100644
  extern void X11DRV_InitKeyboard( Display *display ) DECLSPEC_HIDDEN;
  extern void X11DRV_InitMouse( Display *display ) DECLSPEC_HIDDEN;
 -- 
-2.36.1
+2.39.0
 

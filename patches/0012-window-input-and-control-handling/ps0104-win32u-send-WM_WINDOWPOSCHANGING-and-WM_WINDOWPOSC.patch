@@ -6,14 +6,15 @@ Subject: [PATCH] win32u: send WM_WINDOWPOSCHANGING and WM_WINDOWPOSCHANGED on ac
 #winex11.drv: now activates windows without simulating a mouse click on HTMENU
 
 ---
- dlls/win32u/input.c | 22 ++++++++++++++++++++++
- 1 file changed, 22 insertions(+)
+ dlls/win32u/input.c      | 22 ++++++++++++++++++++++
+ dlls/winex11.drv/event.c | 20 ++++++--------------
+ 2 files changed, 28 insertions(+), 14 deletions(-)
 
 diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/input.c
 +++ b/dlls/win32u/input.c
-@@ -1623,6 +1623,28 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+@@ -1618,6 +1618,28 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
          }
      }
  
@@ -42,72 +43,72 @@ index 11111111111..11111111111 100644
      old_thread = previous ? get_window_thread( previous, NULL ) : 0;
      new_thread = hwnd ? get_window_thread( hwnd, NULL ) : 0;
  
-#diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
-#index 11111111111..11111111111 100644
-#--- a/dlls/winex11.drv/event.c
-#+++ b/dlls/winex11.drv/event.c
-#@@ -670,7 +670,7 @@ static void set_input_focus( struct x11drv_win_data *data )
-# }
-# 
-# 
-#-static HWND find_activatable_window( HWND hwnd, Time time, BOOL check )
-#+static HWND find_activatable_window( HWND hwnd, Time time )
-# {
-#     struct x11drv_thread_data *thread_data = x11drv_thread_data();
-#     int time_since_activation = x11drv_time_to_ticks( time ) - thread_data->activating_time;
-#@@ -684,15 +684,7 @@ static HWND find_activatable_window( HWND hwnd, Time time, BOOL check )
-#     thread_data->activating_time = 0;
-# 
-#     if (can_activate_window( hwnd ))
-#-    {
-#-        if (!check) return hwnd;
-#-
-#-        /* simulate a mouse click on the menu to find out
-#-         * whether the window wants to be activated */
-#-        result = send_message( hwnd, WM_MOUSEACTIVATE, (WPARAM)NtUserGetAncestor( hwnd, GA_ROOT ),
-#-                               MAKELONG( HTMENU, WM_LBUTTONDOWN ) );
-#-        if (result != MA_NOACTIVATEANDEAT && result != MA_NOACTIVATE) return hwnd;
-#-    }
-#+        return hwnd;
-# 
-#     if (hwnd == NtUserGetDesktopWindow()) hwnd = NtUserGetForegroundWindow();
-#     else
-#@@ -720,7 +712,7 @@ static void set_foreground_window( HWND hwnd, DWORD time )
-# /**********************************************************************
-#  *              set_focus
-#  */
-#-static void set_focus( XEvent *xev, HWND hwnd, Time time, BOOL check )
-#+static void set_focus( XEvent *xev, HWND hwnd, Time time )
-# {
-#     Display *display = xev->xany.display;
-#     Window window = xev->xany.window;
-#@@ -742,7 +734,7 @@ static void set_focus( XEvent *xev, HWND hwnd, Time time, BOOL check )
-#     if (!get_window_user_time( display, window, &user_time ) || user_time) focus = hwnd;
-#     else focus = old_active;
-# 
-#-    if (!(focus = find_activatable_window( focus, time, check ))) return;
-#+    if (!(focus = find_activatable_window( focus, time ))) return;
-# 
-#     if (focus != hwnd)
-#     {
-#@@ -866,7 +858,7 @@ static void handle_wm_protocols( HWND hwnd, XEvent *xev )
-#                hwnd, NtUserIsWindowEnabled(hwnd), NtUserIsWindowVisible(hwnd), NtUserGetWindowLongW(hwnd, GWL_STYLE),
-#                get_focus(), get_active_window(), NtUserGetForegroundWindow(), last_focus );
-# 
-#-        set_focus( xev, hwnd, event_time, TRUE );
-#+        set_focus( xev, hwnd, event_time );
-#     }
-#     else if (protocol == x11drv_atom(_NET_WM_PING))
-#     {
-#@@ -937,7 +929,7 @@ BOOL x11drv_handle_focus_in_event( HWND hwnd, XEvent *xev, Time time )
-#         return TRUE;
-#     }
-# 
-#-    set_focus( xev, hwnd, time, FALSE );
-#+    set_focus( xev, hwnd, time );
-#     return TRUE;
-# }
-# 
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -671,7 +671,7 @@ static void set_input_focus( struct x11drv_win_data *data )
+ }
+ 
+ 
+-static HWND find_activatable_window( HWND hwnd, Time time, BOOL check )
++static HWND find_activatable_window( HWND hwnd, Time time )
+ {
+     struct x11drv_thread_data *thread_data = x11drv_thread_data();
+     int time_since_activation = x11drv_time_to_ticks( time ) - thread_data->activating_time;
+@@ -683,15 +683,7 @@ static HWND find_activatable_window( HWND hwnd, Time time, BOOL check )
+     thread_data->activating_time = 0;
+ 
+     if (can_activate_window( hwnd ))
+-    {
+-        if (!check) return hwnd;
+-
+-        /* simulate a mouse click on the menu to find out
+-         * whether the window wants to be activated */
+-        result = send_message( hwnd, WM_MOUSEACTIVATE, (WPARAM)NtUserGetAncestor( hwnd, GA_ROOT ),
+-                               MAKELONG( HTMENU, WM_LBUTTONDOWN ) );
+-        if (result != MA_NOACTIVATEANDEAT && result != MA_NOACTIVATE) return hwnd;
+-    }
++        return hwnd;
+ 
+     if (hwnd == NtUserGetDesktopWindow()) hwnd = NtUserGetForegroundWindow();
+     else
+@@ -719,7 +711,7 @@ static void set_foreground_window( HWND hwnd, DWORD time )
+ /**********************************************************************
+  *              set_focus
+  */
+-static void set_focus( XEvent *xev, HWND hwnd, Time time, BOOL check )
++static void set_focus( XEvent *xev, HWND hwnd, Time time )
+ {
+     Display *display = xev->xany.display;
+     Window window = xev->xany.window;
+@@ -741,7 +733,7 @@ static void set_focus( XEvent *xev, HWND hwnd, Time time, BOOL check )
+     if (!get_window_user_time( display, window, &user_time ) || user_time) focus = hwnd;
+     else focus = old_active;
+ 
+-    if (!(focus = find_activatable_window( focus, time, check ))) return;
++    if (!(focus = find_activatable_window( focus, time ))) return;
+ 
+     if (focus != hwnd)
+     {
+@@ -875,7 +867,7 @@ static void handle_wm_protocols( HWND hwnd, XEvent *xev )
+                (int)NtUserGetWindowLongW(hwnd, GWL_STYLE),
+                get_focus(), get_active_window(), NtUserGetForegroundWindow(), last_focus );
+ 
+-        set_focus( xev, hwnd, event_time, TRUE );
++        set_focus( xev, hwnd, event_time );
+     }
+     else if (protocol == x11drv_atom(_NET_WM_PING))
+     {
+@@ -946,7 +938,7 @@ BOOL x11drv_handle_focus_in_event( HWND hwnd, XEvent *xev, Time time )
+         return TRUE;
+     }
+ 
+-    set_focus( xev, hwnd, time, FALSE );
++    set_focus( xev, hwnd, time );
+     return TRUE;
+ }
+ 
 -- 
-2.36.1
+2.39.0
 

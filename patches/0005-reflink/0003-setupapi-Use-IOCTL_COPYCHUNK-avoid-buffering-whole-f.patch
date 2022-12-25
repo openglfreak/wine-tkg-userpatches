@@ -176,7 +176,7 @@ index 11111111111..11111111111 100644
      return ret;
  }
  
-@@ -415,12 +434,11 @@ static const WCHAR *enum_load_path( unsigned int idx )
+@@ -430,12 +449,11 @@ static const WCHAR *enum_load_path( unsigned int idx )
  }
  
  /* try to load a pre-compiled fake dll */
@@ -187,10 +187,10 @@ index 11111111111..11111111111 100644
      const WCHAR *path;
      WCHAR *file, *ptr;
 -    void *data = NULL;
-     unsigned int i, pos, len, namelen, maxlen = 0;
+     unsigned int i, pos, len, maxlen = 0;
      WCHAR *p;
      int res = 0;
-@@ -433,7 +451,7 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
+@@ -448,7 +466,7 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
      while ((path = enum_load_path( i++ ))) maxlen = max( maxlen, lstrlenW(path) );
      maxlen += ARRAY_SIZE(pe_dir) + len + 1;
  
@@ -199,25 +199,22 @@ index 11111111111..11111111111 100644
  
      pos = maxlen - len - 1;
      lstrcpyW( file + pos, name );
-@@ -449,7 +467,7 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
-         ptr = prepend( ptr, ptr, namelen );
-         ptr = prepend( ptr, L"\\dlls", 5 );
-         ptr = prepend( ptr, build_dir, lstrlenW(build_dir) );
+@@ -459,12 +477,12 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
+         /* try as a dll */
+         file[pos + len + 1] = 0;
+         ptr = prepend_build_dir_path( file + pos, L".dll", pe_dir, L"\\dlls", build_dir );
 -        if ((res = read_file( ptr, &data, size ))) goto done;
 +        if ((res = read_file( ptr, h ))) goto done;
  
          /* now as a program */
-         ptr = file + pos;
-@@ -459,7 +477,7 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
-         ptr = prepend( ptr, ptr, namelen );
-         ptr = prepend( ptr, L"\\programs", 9 );
-         ptr = prepend( ptr, build_dir, lstrlenW(build_dir) );
+         file[pos + len + 1] = 0;
+         ptr = prepend_build_dir_path( file + pos, L".exe", pe_dir, L"\\programs", build_dir );
 -        if ((res = read_file( ptr, &data, size ))) goto done;
 +        if ((res = read_file( ptr, h ))) goto done;
      }
  
      file[pos + len + 1] = 0;
-@@ -467,15 +485,14 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
+@@ -472,15 +490,14 @@ static void *load_fake_dll( const WCHAR *name, SIZE_T *size )
      {
          ptr = prepend( file + pos, pe_dir, lstrlenW(pe_dir) );
          ptr = prepend( ptr, path, lstrlenW(path) );
@@ -236,7 +233,7 @@ index 11111111111..11111111111 100644
  }
  
  /* create the fake dll destination file */
-@@ -505,7 +522,7 @@ static HANDLE create_dest_file( const WCHAR *name, BOOL delete )
+@@ -510,7 +527,7 @@ static HANDLE create_dest_file( const WCHAR *name, BOOL delete )
      {
          if (GetLastError() == ERROR_PATH_NOT_FOUND) create_directories( name );
  
@@ -245,7 +242,7 @@ index 11111111111..11111111111 100644
          if (h == INVALID_HANDLE_VALUE)
              ERR( "failed to create %s (error=%lu)\n", debugstr_w(name), GetLastError() );
      }
-@@ -838,23 +855,30 @@ static BOOL CALLBACK register_resource( HMODULE module, LPCWSTR type, LPWSTR nam
+@@ -843,23 +860,30 @@ static BOOL CALLBACK register_resource( HMODULE module, LPCWSTR type, LPWSTR nam
      return TRUE;
  }
  
@@ -279,7 +276,7 @@ index 11111111111..11111111111 100644
  
      if (!registrar)
      {
-@@ -869,7 +893,7 @@ static void register_fake_dll( const WCHAR *name, const void *data, size_t size,
+@@ -874,7 +898,7 @@ static void register_fake_dll( const WCHAR *name, const void *data, size_t size,
          if (!registrar)
          {
              ERR( "failed to create IRegistrar: %lx\n", hr );
@@ -288,7 +285,7 @@ index 11111111111..11111111111 100644
          }
      }
  
-@@ -880,22 +904,24 @@ static void register_fake_dll( const WCHAR *name, const void *data, size_t size,
+@@ -885,22 +909,24 @@ static void register_fake_dll( const WCHAR *name, const void *data, size_t size,
      IRegistrar_AddReplacement( registrar, L"SystemRoot", buffer );
      EnumResourceNamesW( module, L"WINE_REGISTRY", register_resource, (LONG_PTR)&hr );
      if (FAILED(hr)) ERR( "failed to register %s: %lx\n", debugstr_w(name), hr );
@@ -317,7 +314,7 @@ index 11111111111..11111111111 100644
          *end = 0;
          return 0;
      }
-@@ -913,13 +939,14 @@ static int install_fake_dll( WCHAR *dest, WCHAR *file, BOOL delete, struct list
+@@ -918,13 +944,14 @@ static int install_fake_dll( WCHAR *dest, WCHAR *file, BOOL delete, struct list
          {
              TRACE( "%s -> %s\n", debugstr_w(file), debugstr_w(dest) );
  
@@ -335,7 +332,7 @@ index 11111111111..11111111111 100644
      *destname = 0;  /* restore it for next file */
      *end = 0;
      return ret;
-@@ -928,30 +955,25 @@ static int install_fake_dll( WCHAR *dest, WCHAR *file, BOOL delete, struct list
+@@ -933,30 +960,25 @@ static int install_fake_dll( WCHAR *dest, WCHAR *file, BOOL delete, struct list
  static void delay_copy_files( struct list *delay_copy )
  {
      struct delay_copy *copy, *next;
@@ -372,7 +369,7 @@ index 11111111111..11111111111 100644
          HeapFree( GetProcessHeap(), 0, copy );
      }
  }
-@@ -1041,11 +1063,9 @@ static BOOL create_wildcard_dlls( const WCHAR *dirname, const WCHAR *wildcard, B
+@@ -1049,11 +1071,9 @@ static BOOL create_wildcard_dlls( const WCHAR *dirname, const WCHAR *wildcard, B
  BOOL create_fake_dll( const WCHAR *name, const WCHAR *source )
  {
      struct list delay_copy = LIST_INIT( delay_copy );
@@ -385,7 +382,7 @@ index 11111111111..11111111111 100644
      BOOL delete = !wcscmp( source, L"-" );  /* '-' source means delete the file */
  
      if (!(filename = wcsrchr( name, '\\' ))) filename = name;
-@@ -1064,12 +1084,10 @@ BOOL create_fake_dll( const WCHAR *name, const WCHAR *source )
+@@ -1072,12 +1092,10 @@ BOOL create_fake_dll( const WCHAR *name, const WCHAR *source )
      if (!(h = create_dest_file( name, delete ))) return TRUE;  /* not a fake dll */
      if (h == INVALID_HANDLE_VALUE) return FALSE;
  
@@ -401,7 +398,7 @@ index 11111111111..11111111111 100644
          else ERR( "failed to write to %s (error=%lu)\n", debugstr_w(name), GetLastError() );
      }
      else
-@@ -1078,7 +1096,9 @@ BOOL create_fake_dll( const WCHAR *name, const WCHAR *source )
+@@ -1086,7 +1104,9 @@ BOOL create_fake_dll( const WCHAR *name, const WCHAR *source )
          ret = build_fake_dll( h, name );
      }
  
@@ -411,7 +408,7 @@ index 11111111111..11111111111 100644
      if (!ret) DeleteFileW( name );
  
      delay_copy_files( &delay_copy );
-@@ -1091,8 +1111,6 @@ BOOL create_fake_dll( const WCHAR *name, const WCHAR *source )
+@@ -1099,8 +1119,6 @@ BOOL create_fake_dll( const WCHAR *name, const WCHAR *source )
   */
  void cleanup_fake_dlls(void)
  {
@@ -422,5 +419,5 @@ index 11111111111..11111111111 100644
      handled_count = handled_total = 0;
 
 -- 
-2.36.1
+2.39.0
 

@@ -1,0 +1,446 @@
+From 1b00d3b4add0672ebcbd764917dd7277e95c8e22 Mon Sep 17 00:00:00 2001
+From: Yuxuan Shui <yshuiv7@gmail.com>
+Date: Wed, 13 Apr 2022 02:09:06 +0100
+Subject: [PATCH 2/3] winegstreamer: create media source from uri
+
+Supported by gstreamer's uridecodebin.
+
+Signed-off-by: Yuxuan Shui <yshuiv7@gmail.com>
+---
+ dlls/winegstreamer/gst_private.h   |   2 +-
+ dlls/winegstreamer/main.c          |   3 +-
+ dlls/winegstreamer/media_source.c  | 128 +++++++++++++++++++----------
+ dlls/winegstreamer/quartz_parser.c |   2 +-
+ dlls/winegstreamer/unixlib.h       |   2 +
+ dlls/winegstreamer/wg_parser.c     |  76 ++++++++++++++---
+ dlls/winegstreamer/wm_reader.c     |   2 +-
+ 7 files changed, 158 insertions(+), 57 deletions(-)
+
+diff --git a/dlls/winegstreamer/gst_private.h b/dlls/winegstreamer/gst_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/gst_private.h
++++ b/dlls/winegstreamer/gst_private.h
+@@ -72,7 +72,7 @@ void wg_sample_queue_flush(struct wg_sample_queue *queue, bool all);
+ struct wg_parser *wg_parser_create(enum wg_parser_type type, bool unlimited_buffering);
+ void wg_parser_destroy(struct wg_parser *parser);
+ 
+-HRESULT wg_parser_connect(struct wg_parser *parser, uint64_t file_size);
++HRESULT wg_parser_connect(struct wg_parser *parser, uint64_t file_size, const WCHAR *uri);
+ void wg_parser_disconnect(struct wg_parser *parser);
+ 
+ bool wg_parser_get_next_read_offset(struct wg_parser *parser, uint64_t *offset, uint32_t *size);
+diff --git a/dlls/winegstreamer/main.c b/dlls/winegstreamer/main.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/main.c
++++ b/dlls/winegstreamer/main.c
+@@ -93,12 +93,13 @@ void wg_parser_destroy(struct wg_parser *parser)
+     WINE_UNIX_CALL(unix_wg_parser_destroy, parser);
+ }
+ 
+-HRESULT wg_parser_connect(struct wg_parser *parser, uint64_t file_size)
++HRESULT wg_parser_connect(struct wg_parser *parser, uint64_t file_size, const WCHAR *uri)
+ {
+     struct wg_parser_connect_params params =
+     {
+         .parser = parser,
+         .file_size = file_size,
++        .uri = uri,
+     };
+ 
+     TRACE("parser %p, file_size %I64u.\n", parser, file_size);
+diff --git a/dlls/winegstreamer/media_source.c b/dlls/winegstreamer/media_source.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/media_source.c
++++ b/dlls/winegstreamer/media_source.c
+@@ -1345,7 +1345,8 @@ static HRESULT WINAPI media_source_Shutdown(IMFMediaSource *iface)
+ 
+     IMFPresentationDescriptor_Release(source->pres_desc);
+     IMFMediaEventQueue_Shutdown(source->event_queue);
+-    IMFByteStream_Release(source->byte_stream);
++    if (source->byte_stream)
++        IMFByteStream_Release(source->byte_stream);
+ 
+     for (i = 0; i < source->stream_count; i++)
+     {
+@@ -1386,45 +1387,21 @@ static const IMFMediaSourceVtbl IMFMediaSource_vtbl =
+     media_source_Shutdown,
+ };
+ 
+-static HRESULT media_source_constructor(IMFByteStream *bytestream, struct media_source **out_media_source)
++static HRESULT media_source_init_from_parser(struct wg_parser *parser, uint64_t file_size, const WCHAR *uri, struct media_source *object)
+ {
+     BOOL video_selected = FALSE, audio_selected = FALSE;
+     IMFStreamDescriptor **descriptors = NULL;
+     unsigned int stream_count = UINT_MAX;
+-    struct media_source *object;
+     UINT64 total_pres_time = 0;
+-    struct wg_parser *parser;
+-    DWORD bytestream_caps;
+-    uint64_t file_size;
+     unsigned int i;
+     HRESULT hr;
+ 
+-    if (FAILED(hr = IMFByteStream_GetCapabilities(bytestream, &bytestream_caps)))
+-        return hr;
+-
+-    if (!(bytestream_caps & MFBYTESTREAM_IS_SEEKABLE))
+-    {
+-        FIXME("Non-seekable bytestreams not supported.\n");
+-        return MF_E_BYTESTREAM_NOT_SEEKABLE;
+-    }
+-
+-    if (FAILED(hr = IMFByteStream_GetLength(bytestream, &file_size)))
+-    {
+-        FIXME("Failed to get byte stream length, hr %#lx.\n", hr);
+-        return hr;
+-    }
+-
+-    if (!(object = calloc(1, sizeof(*object))))
+-        return E_OUTOFMEMORY;
+-
+     object->IMFMediaSource_iface.lpVtbl = &IMFMediaSource_vtbl;
+     object->IMFGetService_iface.lpVtbl = &media_source_get_service_vtbl;
+     object->IMFRateSupport_iface.lpVtbl = &media_source_rate_support_vtbl;
+     object->IMFRateControl_iface.lpVtbl = &media_source_rate_control_vtbl;
+     object->async_commands_callback.lpVtbl = &source_async_commands_callback_vtbl;
+     object->ref = 1;
+-    object->byte_stream = bytestream;
+-    IMFByteStream_AddRef(bytestream);
+     object->rate = 1.0f;
+ 
+     if (FAILED(hr = MFCreateEventQueue(&object->event_queue)))
+@@ -1433,24 +1410,9 @@ static HRESULT media_source_constructor(IMFByteStream *bytestream, struct media_
+     if (FAILED(hr = MFAllocateWorkQueue(&object->async_commands_queue)))
+         goto fail;
+ 
+-    /* In Media Foundation, sources may read from any media source stream
+-     * without fear of blocking due to buffering limits on another. Trailmakers,
+-     * a Unity3D Engine game, only reads one sample from the audio stream (and
+-     * never deselects it). Remove buffering limits from decodebin in order to
+-     * account for this. Note that this does leak memory, but the same memory
+-     * leak occurs with native. */
+-    if (!(parser = wg_parser_create(WG_PARSER_DECODEBIN, true)))
+-    {
+-        hr = E_OUTOFMEMORY;
+-        goto fail;
+-    }
+-    object->wg_parser = parser;
+-
+-    object->read_thread = CreateThread(NULL, 0, read_thread, object, 0, NULL);
+-
+     object->state = SOURCE_OPENING;
+ 
+-    if (FAILED(hr = wg_parser_connect(parser, file_size)))
++    if (FAILED(hr = wg_parser_connect(parser, file_size, uri)))
+         goto fail;
+ 
+     stream_count = wg_parser_get_stream_count(parser);
+@@ -1556,7 +1518,6 @@ static HRESULT media_source_constructor(IMFByteStream *bytestream, struct media_
+ 
+     object->state = SOURCE_STOPPED;
+ 
+-    *out_media_source = object;
+     return S_OK;
+ 
+     fail:
+@@ -1593,6 +1554,87 @@ static HRESULT media_source_constructor(IMFByteStream *bytestream, struct media_
+         MFUnlockWorkQueue(object->async_commands_queue);
+     if (object->event_queue)
+         IMFMediaEventQueue_Release(object->event_queue);
++    return hr;
++}
++
++HRESULT winegstreamer_create_media_source_from_uri(const WCHAR *uri, IUnknown **out_media_source)
++{
++    struct media_source *object;
++    struct wg_parser *parser;
++    HRESULT hr;
++
++    if (!(object = calloc(1, sizeof(*object))))
++        return E_OUTOFMEMORY;
++
++    if (!(parser = wg_parser_create(WG_PARSER_URIDECODEBIN, true)))
++    {
++        hr = E_OUTOFMEMORY;
++        goto fail;
++    }
++    object->wg_parser = parser;
++
++    if (FAILED(hr = media_source_init_from_parser(parser, 0, uri, object)))
++        goto fail;
++
++    *out_media_source = (IUnknown *)&object->IMFMediaSource_iface;
++    return S_OK;
++
++    fail:
++    free(object);
++    return hr;
++}
++
++static HRESULT media_source_constructor(IMFByteStream *bytestream, struct media_source **out_media_source)
++{
++    struct wg_parser *parser;
++    struct media_source *object;
++    DWORD bytestream_caps;
++    uint64_t file_size;
++    HRESULT hr;
++
++    if (FAILED(hr = IMFByteStream_GetCapabilities(bytestream, &bytestream_caps)))
++        return hr;
++
++    if (!(bytestream_caps & MFBYTESTREAM_IS_SEEKABLE))
++    {
++        FIXME("Non-seekable bytestreams not supported.\n");
++        return MF_E_BYTESTREAM_NOT_SEEKABLE;
++    }
++
++    if (FAILED(hr = IMFByteStream_GetLength(bytestream, &file_size)))
++    {
++        FIXME("Failed to get byte stream length, hr %#lx.\n", hr);
++        return hr;
++    }
++
++    if (!(object = calloc(1, sizeof(*object))))
++        return E_OUTOFMEMORY;
++
++    /* In Media Foundation, sources may read from any media source stream
++     * without fear of blocking due to buffering limits on another. Trailmakers,
++     * a Unity3D Engine game, only reads one sample from the audio stream (and
++     * never deselects it). Remove buffering limits from decodebin in order to
++     * account for this. Note that this does leak memory, but the same memory
++     * leak occurs with native. */
++    if (!(parser = wg_parser_create(WG_PARSER_DECODEBIN, true)))
++    {
++        hr = E_OUTOFMEMORY;
++        goto fail;
++    }
++    object->wg_parser = parser;
++
++    object->byte_stream = bytestream;
++    IMFByteStream_AddRef(bytestream);
++
++    object->read_thread = CreateThread(NULL, 0, read_thread, object, 0, NULL);
++
++    if (FAILED(hr = media_source_init_from_parser(parser, file_size, NULL, object)))
++        goto fail;
++
++    *out_media_source = object;
++    return S_OK;
++
++    fail:
+     IMFByteStream_Release(object->byte_stream);
+     free(object);
+     return hr;
+diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_parser.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/quartz_parser.c
++++ b/dlls/winegstreamer/quartz_parser.c
+@@ -1223,7 +1223,7 @@ static HRESULT parser_sink_connect(struct strmbase_sink *iface, IPin *peer, cons
+     filter->sink_connected = true;
+     filter->read_thread = CreateThread(NULL, 0, read_thread, filter, 0, NULL);
+ 
+-    if (FAILED(hr = wg_parser_connect(filter->wg_parser, file_size)))
++    if (FAILED(hr = wg_parser_connect(filter->wg_parser, file_size, NULL)))
+         goto err;
+ 
+     if (!filter->init_gst(filter))
+diff --git a/dlls/winegstreamer/unixlib.h b/dlls/winegstreamer/unixlib.h
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/unixlib.h
++++ b/dlls/winegstreamer/unixlib.h
+@@ -170,6 +170,7 @@ C_ASSERT(sizeof(struct wg_parser_buffer) == 32);
+ enum wg_parser_type
+ {
+     WG_PARSER_DECODEBIN,
++    WG_PARSER_URIDECODEBIN,
+     WG_PARSER_AVIDEMUX,
+     WG_PARSER_MPEGAUDIOPARSE,
+     WG_PARSER_WAVPARSE,
+@@ -187,6 +188,7 @@ struct wg_parser_create_params
+ struct wg_parser_connect_params
+ {
+     struct wg_parser *parser;
++    const WCHAR *uri;
+     UINT64 file_size;
+ };
+ 
+diff --git a/dlls/winegstreamer/wg_parser.c b/dlls/winegstreamer/wg_parser.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wg_parser.c
++++ b/dlls/winegstreamer/wg_parser.c
+@@ -71,6 +71,7 @@ struct wg_parser
+ 
+     guint64 file_size, start_offset, next_offset, stop_offset;
+     guint64 next_pull_offset;
++    gchar *uri;
+ 
+     pthread_t push_thread;
+ 
+@@ -1322,10 +1323,21 @@ static void query_tags(struct wg_parser_stream *stream)
+     gst_event_unref(tag_event);
+ }
+ 
+-static NTSTATUS wg_parser_connect(void *args)
++static void wg_parser_create_my_src(struct wg_parser *parser)
+ {
+     GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE("quartz_src",
+             GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS_ANY);
++
++    parser->my_src = gst_pad_new_from_static_template(&src_template, "quartz-src");
++    gst_pad_set_getrange_function(parser->my_src, src_getrange_cb);
++    gst_pad_set_query_function(parser->my_src, src_query_cb);
++    gst_pad_set_activatemode_function(parser->my_src, src_activate_mode_cb);
++    gst_pad_set_event_function(parser->my_src, src_event_cb);
++    gst_pad_set_element_private(parser->my_src, parser);
++}
++
++static NTSTATUS wg_parser_connect(void *args)
++{
+     const struct wg_parser_connect_params *params = args;
+     struct wg_parser *parser = params->parser;
+     unsigned int i;
+@@ -1333,6 +1345,16 @@ static NTSTATUS wg_parser_connect(void *args)
+ 
+     parser->file_size = params->file_size;
+     parser->sink_connected = true;
++    if (params->uri)
++    {
++        size_t len = wcslen(params->uri);
++        parser->uri = malloc(len * 3 + 1);
++        ntdll_wcstoumbs(params->uri, len + 1, parser->uri, len * 3 + 1, FALSE);
++    }
++    else
++    {
++        parser->uri = NULL;
++    }
+ 
+     if (!parser->bus)
+     {
+@@ -1343,13 +1365,6 @@ static NTSTATUS wg_parser_connect(void *args)
+     parser->container = gst_bin_new(NULL);
+     gst_element_set_bus(parser->container, parser->bus);
+ 
+-    parser->my_src = gst_pad_new_from_static_template(&src_template, "quartz-src");
+-    gst_pad_set_getrange_function(parser->my_src, src_getrange_cb);
+-    gst_pad_set_query_function(parser->my_src, src_query_cb);
+-    gst_pad_set_activatemode_function(parser->my_src, src_activate_mode_cb);
+-    gst_pad_set_event_function(parser->my_src, src_event_cb);
+-    gst_pad_set_element_private(parser->my_src, parser);
+-
+     parser->start_offset = parser->next_offset = parser->stop_offset = 0;
+     parser->next_pull_offset = 0;
+     parser->error = false;
+@@ -1505,8 +1520,10 @@ static NTSTATUS wg_parser_disconnect(void *args)
+     pthread_mutex_unlock(&parser->mutex);
+ 
+     gst_element_set_state(parser->container, GST_STATE_NULL);
+-    gst_object_unref(parser->my_src);
+-    gst_object_unref(parser->their_sink);
++    if (parser->my_src)
++        gst_object_unref(parser->my_src);
++    if (parser->their_sink)
++        gst_object_unref(parser->their_sink);
+     parser->my_src = parser->their_sink = NULL;
+ 
+     pthread_mutex_lock(&parser->mutex);
+@@ -1557,6 +1574,8 @@ static BOOL decodebin_parser_init_gst(struct wg_parser *parser)
+     parser->no_more_pads = false;
+     pthread_mutex_unlock(&parser->mutex);
+ 
++    wg_parser_create_my_src(parser);
++
+     if ((ret = gst_pad_link(parser->my_src, parser->their_sink)) < 0)
+     {
+         GST_ERROR("Failed to link pads, error %d.", ret);
+@@ -1566,6 +1585,35 @@ static BOOL decodebin_parser_init_gst(struct wg_parser *parser)
+     return TRUE;
+ }
+ 
++static BOOL uridecodebin_parser_init_gst(struct wg_parser *parser)
++{
++    GstElement *element;
++
++    if (!(element = create_element("uridecodebin", "base")))
++        return FALSE;
++
++    gst_bin_add(GST_BIN(parser->container), element);
++    parser->decodebin = element;
++
++    if (parser->unlimited_buffering)
++    {
++        g_object_set(parser->decodebin, "buffer-duration", G_MAXINT64, NULL);
++        g_object_set(parser->decodebin, "buffer-size", G_MAXINT, NULL);
++    }
++    g_object_set(parser->decodebin, "uri", parser->uri, NULL);
++
++    pthread_mutex_lock(&parser->mutex);
++    parser->no_more_pads = false;
++    pthread_mutex_unlock(&parser->mutex);
++
++    g_signal_connect(element, "pad-added", G_CALLBACK(pad_added_cb), parser);
++    g_signal_connect(element, "pad-removed", G_CALLBACK(pad_removed_cb), parser);
++    g_signal_connect(element, "autoplug-select", G_CALLBACK(autoplug_select_cb), parser);
++    g_signal_connect(element, "no-more-pads", G_CALLBACK(no_more_pads_cb), parser);
++
++    return TRUE;
++}
++
+ static BOOL avi_parser_init_gst(struct wg_parser *parser)
+ {
+     GstElement *element;
+@@ -1586,6 +1634,8 @@ static BOOL avi_parser_init_gst(struct wg_parser *parser)
+     parser->no_more_pads = false;
+     pthread_mutex_unlock(&parser->mutex);
+ 
++    wg_parser_create_my_src(parser);
++
+     if ((ret = gst_pad_link(parser->my_src, parser->their_sink)) < 0)
+     {
+         GST_ERROR("Failed to link pads, error %d.", ret);
+@@ -1616,6 +1666,8 @@ static BOOL mpeg_audio_parser_init_gst(struct wg_parser *parser)
+     if (!(stream = create_stream(parser)))
+         return FALSE;
+ 
++    wg_parser_create_my_src(parser);
++
+     gst_object_ref(stream->their_src = gst_element_get_static_pad(element, "src"));
+     if ((ret = gst_pad_link(stream->their_src, stream->my_sink)) < 0)
+     {
+@@ -1640,6 +1692,8 @@ static BOOL wave_parser_init_gst(struct wg_parser *parser)
+ 
+     gst_bin_add(GST_BIN(parser->container), element);
+ 
++    wg_parser_create_my_src(parser);
++
+     parser->their_sink = gst_element_get_static_pad(element, "sink");
+     if ((ret = gst_pad_link(parser->my_src, parser->their_sink)) < 0)
+     {
+@@ -1698,6 +1752,7 @@ static NTSTATUS wg_parser_create(void *args)
+     static const init_gst_cb init_funcs[] =
+     {
+         [WG_PARSER_DECODEBIN] = decodebin_parser_init_gst,
++        [WG_PARSER_URIDECODEBIN] = uridecodebin_parser_init_gst,
+         [WG_PARSER_AVIDEMUX] = avi_parser_init_gst,
+         [WG_PARSER_MPEGAUDIOPARSE] = mpeg_audio_parser_init_gst,
+         [WG_PARSER_WAVPARSE] = wave_parser_init_gst,
+@@ -1740,6 +1795,7 @@ static NTSTATUS wg_parser_destroy(void *args)
+     pthread_cond_destroy(&parser->read_cond);
+     pthread_cond_destroy(&parser->read_done_cond);
+ 
++    free(parser->uri);
+     free(parser);
+     return S_OK;
+ }
+diff --git a/dlls/winegstreamer/wm_reader.c b/dlls/winegstreamer/wm_reader.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wm_reader.c
++++ b/dlls/winegstreamer/wm_reader.c
+@@ -1466,7 +1466,7 @@ static HRESULT init_stream(struct wm_reader *reader, QWORD file_size)
+         goto out_destroy_parser;
+     }
+ 
+-    if (FAILED(hr = wg_parser_connect(reader->wg_parser, file_size)))
++    if (FAILED(hr = wg_parser_connect(reader->wg_parser, file_size, NULL)))
+     {
+         ERR("Failed to connect parser, hr %#lx.\n", hr);
+         goto out_shutdown_thread;

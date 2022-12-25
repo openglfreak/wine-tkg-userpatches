@@ -1,0 +1,3120 @@
+From a282244e70f833e3045b7a2dd4ffdadcf955d7ca Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Fri, 4 Nov 2022 03:33:38 +0100
+Subject: [PATCH 2/2] treewide: Convert most exception handling to SEH
+ exceptions.
+
+---
+ dlls/advapi32/crypt.c               | 46 ++++++++++-----------
+ dlls/combase/stubmanager.c          | 14 +++----
+ dlls/comctl32/imagelist.c           | 18 ++++----
+ dlls/comctl32/listbox.c             |  8 ++--
+ dlls/comctl32/treeview.c            | 12 +++---
+ dlls/concrt140/details.c            | 14 +++----
+ dlls/crypt32/msg.c                  | 10 ++---
+ dlls/ddraw/ddraw.c                  | 32 +++++++--------
+ dlls/ddraw/main.c                   |  8 ++--
+ dlls/kernel32/atom.c                | 10 ++---
+ dlls/kernel32/computername.c        |  8 ++--
+ dlls/kernel32/debugger.c            |  8 ++--
+ dlls/kernel32/resource.c            |  8 ++--
+ dlls/kernel32/virtual.c             | 64 ++++++++++++++---------------
+ dlls/kernelbase/console.c           |  8 ++--
+ dlls/kernelbase/debug.c             |  8 ++--
+ dlls/kernelbase/file.c              |  8 ++--
+ dlls/kernelbase/loader.c            | 52 +++++++++++------------
+ dlls/kernelbase/memory.c            | 24 +++++------
+ dlls/kernelbase/path.c              | 16 ++++----
+ dlls/kernelbase/string.c            | 48 +++++++++++-----------
+ dlls/kernelbase/sync.c              |  8 ++--
+ dlls/kernelbase/thread.c            |  8 ++--
+ dlls/msvcrt/concurrency.c           |  6 +--
+ dlls/msvcrt/cpp.c                   | 35 ++++++++--------
+ dlls/msvcrt/except_x86_64.c         | 24 +++++------
+ dlls/ntdll/actctx.c                 |  8 ++--
+ dlls/ntdll/exception.c              | 16 ++++----
+ dlls/ntdll/loader.c                 | 38 ++++++++---------
+ dlls/ntdll/process.c                | 16 ++++----
+ dlls/ntdll/relay.c                  | 10 ++---
+ dlls/ntdll/resource.c               | 26 ++++++------
+ dlls/ntdll/rtl.c                    | 22 +++++-----
+ dlls/ntdll/sec.c                    | 16 ++++----
+ dlls/ntdll/signal_x86_64.c          |  8 ++--
+ dlls/ntoskrnl.exe/pnp.c             |  8 ++--
+ dlls/user32/cursoricon.c            | 12 +++---
+ dlls/user32/listbox.c               |  8 ++--
+ dlls/user32/message.c               | 18 ++++----
+ dlls/user32/win.c                   | 16 ++++----
+ dlls/vcruntime140_1/except_x86_64.c | 20 ++++-----
+ dlls/wininet/http.c                 | 14 +++----
+ dlls/winmm/driver.c                 | 12 +++---
+ dlls/winmm/lolvldrv.c               | 10 ++---
+ programs/winedbg/dbg.y              | 16 ++++----
+ programs/winedbg/tgt_minidump.c     | 16 ++++----
+ 46 files changed, 409 insertions(+), 406 deletions(-)
+
+diff --git a/dlls/advapi32/crypt.c b/dlls/advapi32/crypt.c
+index 11111111111..11111111111 100644
+--- a/dlls/advapi32/crypt.c
++++ b/dlls/advapi32/crypt.c
+@@ -58,19 +58,19 @@ static HWND crypt_hWindow;
+ #define CRYPT_Alloc(size) (LocalAlloc(LMEM_ZEROINIT, size))
+ #define CRYPT_Free(buffer) (LocalFree(buffer))
+ 
+-static void *pointer_from_handle(UINT_PTR handle, DWORD magic)
++static void *__USES_SEH pointer_from_handle(UINT_PTR handle, DWORD magic)
+ {
+     void *ret = NULL;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         if (handle && *(DWORD *)handle == magic)
+             ret = (void *)handle;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ 
+     if (!ret)
+         SetLastError(ERROR_INVALID_PARAMETER);
+@@ -351,7 +351,7 @@ void WINAPI CloseEncryptedFileRaw(PVOID context)
+  *  dwProvType   [I] Crypto provider type to get a handle.
+  *  dwFlags      [I] flags for the operation
+  *
+- * RETURNS 
++ * RETURNS
+  *  TRUE on success, FALSE on failure.
+  */
+ BOOL WINAPI CryptAcquireContextW (HCRYPTPROV *phProv, LPCWSTR pszContainer,
+@@ -372,7 +372,7 @@ BOOL WINAPI CryptAcquireContextW (HCRYPTPROV *phProv, LPCWSTR pszContainer,
+ 		SetLastError(NTE_BAD_PROV_TYPE);
+ 		return FALSE;
+ 	}
+-	
++
+ 	if (!phProv)
+ 	{
+ 		SetLastError(ERROR_INVALID_PARAMETER);
+@@ -1142,10 +1142,10 @@ BOOL WINAPI CryptEnumProvidersW (DWORD dwIndex, DWORD *pdwReserved,
+ 	{
+ 		DWORD numkeys;
+ 		WCHAR *provNameW;
+-		
++
+ 		RegQueryInfoKeyW(hKey, NULL, NULL, NULL, &numkeys, pcbProvName,
+ 				 NULL, NULL, NULL, NULL, NULL, NULL);
+-		
++
+ 		if (!(provNameW = CRYPT_Alloc(*pcbProvName * sizeof(WCHAR))))
+ 		{
+ 			SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+@@ -1167,7 +1167,7 @@ BOOL WINAPI CryptEnumProvidersW (DWORD dwIndex, DWORD *pdwReserved,
+ 		DWORD size = sizeof(DWORD);
+ 		DWORD result;
+ 		HKEY subkey;
+-		
++
+ 		result = RegEnumKeyW(hKey, dwIndex, pszProvName, *pcbProvName / sizeof(WCHAR));
+ 		if (result)
+ 		{
+@@ -1303,7 +1303,7 @@ BOOL WINAPI CryptEnumProviderTypesW (DWORD dwIndex, DWORD *pdwReserved,
+ 	*pdwProvType += (*(--ch) - '0') * 10;
+ 	*pdwProvType += (*(--ch) - '0') * 100;
+ 	CRYPT_Free(keyname);
+-	
++
+ 	result = RegQueryValueExW(hSubkey, L"TypeName", NULL, &dwType, (LPBYTE)pszTypeName, pcbTypeName);
+ 	if (result)
+ 	{
+@@ -1356,7 +1356,7 @@ BOOL WINAPI CryptEnumProviderTypesA (DWORD dwIndex, DWORD *pdwReserved,
+ 
+ /******************************************************************************
+  * CryptExportKey (ADVAPI32.@)
+- * 
++ *
+  * Exports a cryptographic key from a CSP.
+  *
+  * PARAMS
+@@ -1504,7 +1504,7 @@ BOOL WINAPI CryptGetDefaultProviderW (DWORD dwProvType, DWORD *pdwReserved,
+ 		return FALSE;
+ 	}
+ 	CRYPT_Free(keyname);
+-	
++
+ 	result = RegQueryValueExW(hKey, L"Name", NULL, NULL, (LPBYTE)pszProvName, pcbProvName);
+ 	RegCloseKey(hKey);
+ 
+@@ -1514,10 +1514,10 @@ BOOL WINAPI CryptGetDefaultProviderW (DWORD dwProvType, DWORD *pdwReserved,
+ 			SetLastError(NTE_PROV_TYPE_ENTRY_BAD);
+ 		else
+ 			SetLastError(result);
+-		
++
+ 		return FALSE;
+ 	}
+-	
++
+ 	return TRUE;
+ }
+ 
+@@ -1762,7 +1762,7 @@ BOOL WINAPI CryptHashData (HCRYPTHASH hHash, const BYTE *pbData, DWORD dwDataLen
+  *
+  * Compute the cryptographic hash of a session key object.
+  *
+- * PARAMS 
++ * PARAMS
+  *  hHash   [I] Handle to the hash object.
+  *  hKey    [I] Handle to the key to be hashed.
+  *  dwFlags [I] Can be CRYPT_LITTLE_ENDIAN.
+@@ -2072,7 +2072,7 @@ BOOL WINAPI CryptSetProviderExW (LPCWSTR pszProvName, DWORD dwProvType, DWORD *p
+ 		return FALSE;
+ 	}
+ 	CRYPT_Free(keyname);
+-	
++
+ 	if (dwFlags & CRYPT_DELETE_DEFAULT)
+ 	{
+ 		RegDeleteValueW(hTypeKey, L"Name");
+@@ -2094,7 +2094,7 @@ BOOL WINAPI CryptSetProviderExW (LPCWSTR pszProvName, DWORD dwProvType, DWORD *p
+ 			return FALSE;
+ 		}
+ 		CRYPT_Free(keyname);
+-		
++
+ 		if (RegSetValueExW(hTypeKey, L"Name", 0, REG_SZ, (const BYTE *)pszProvName,
+ 			(lstrlenW(pszProvName) + 1)*sizeof(WCHAR)))
+ 		{
+@@ -2102,7 +2102,7 @@ BOOL WINAPI CryptSetProviderExW (LPCWSTR pszProvName, DWORD dwProvType, DWORD *p
+ 			RegCloseKey(hProvKey);
+ 			return FALSE;
+ 		}
+-		
++
+ 		RegCloseKey(hProvKey);
+ 	}
+ 	RegCloseKey(hTypeKey);
+@@ -2191,7 +2191,7 @@ BOOL WINAPI CryptSetProvParam (HCRYPTPROV hProv, DWORD dwParam, const BYTE *pbDa
+  * RETURNS
+  *  Success: TRUE
+  *  Failure: FALSE
+- * 
++ *
+  * NOTES
+  *  Because of security flaws sDescription should not be used and should thus be
+  *  NULL. It is supported only for compatibility with Microsoft's Cryptographic
+@@ -2219,7 +2219,7 @@ BOOL WINAPI CryptVerifySignatureW (HCRYPTHASH hHash, const BYTE *pbSignature, DW
+ 		SetLastError(ERROR_INVALID_PARAMETER);
+ 		return FALSE;
+ 	}
+-		
++
+ 	prov = hash->pProvider;
+ 	return prov->pFuncs->pCPVerifySignature(prov->hPrivate, hash->hPrivate, pbSignature, dwSigLen,
+ 		key->hPrivate, sDescription, dwFlags);
+@@ -2463,10 +2463,10 @@ BOOLEAN WINAPI SystemFunction036( void *buffer, ULONG len )
+  *  memory [I/O] Pointer to memory to encrypt.
+  *  length [I] Length of region to encrypt in bytes.
+  *  flags  [I] Control whether other processes are able to decrypt the memory.
+- *    RTL_ENCRYPT_OPTION_SAME_PROCESS 
+- *    RTL_ENCRYPT_OPTION_CROSS_PROCESS 
++ *    RTL_ENCRYPT_OPTION_SAME_PROCESS
++ *    RTL_ENCRYPT_OPTION_CROSS_PROCESS
+  *    RTL_ENCRYPT_OPTION_SAME_LOGON
+- *    
++ *
+  * RETURNS
+  *  Success: STATUS_SUCCESS
+  *  Failure: NTSTATUS error code
+diff --git a/dlls/combase/stubmanager.c b/dlls/combase/stubmanager.c
+index 11111111111..11111111111 100644
+--- a/dlls/combase/stubmanager.c
++++ b/dlls/combase/stubmanager.c
+@@ -235,7 +235,7 @@ static struct stub_manager *new_stub_manager(struct apartment *apt, IUnknown *ob
+     LeaveCriticalSection(&apt->cs);
+ 
+     TRACE("Created new stub manager (oid=%s) at %p for object with IUnknown %p\n", wine_dbgstr_longlong(sm->oid), sm, object);
+-    
++
+     return sm;
+ }
+ 
+@@ -255,7 +255,7 @@ void stub_manager_disconnect(struct stub_manager *m)
+ }
+ 
+ /* caller must remove stub manager from apartment prior to calling this function */
+-static void stub_manager_delete(struct stub_manager *m)
++static void __USES_SEH stub_manager_delete(struct stub_manager *m)
+ {
+     struct list *cursor;
+ 
+@@ -275,15 +275,15 @@ static void stub_manager_delete(struct stub_manager *m)
+ 
+     /* Some broken apps crash in object destructors. We have a test showing
+      * that on winxp+ those crashes are caught and ignored. */
+-    __TRY
++    __TRY_SEH
+     {
+         IUnknown_Release(m->object);
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         ERR("Got page fault when releasing stub!\n");
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ 
+     m->lock.DebugInfo->Spare[0] = 0;
+     DeleteCriticalSection(&m->lock);
+@@ -372,7 +372,7 @@ struct stub_manager * get_stub_manager_from_object(struct apartment *apt, IUnkno
+     }
+ 
+     IUnknown_Release(object);
+-    return result;    
++    return result;
+ }
+ 
+ /* gets the stub manager associated with an object id - caller must have
+@@ -605,7 +605,7 @@ void stub_manager_release_marshal_data(struct stub_manager *m, ULONG refs, const
+ BOOL stub_manager_is_table_marshaled(struct stub_manager *m, const IPID *ipid)
+ {
+     struct ifstub *ifstub = stub_manager_ipid_to_ifstub(m, ipid);
+- 
++
+     assert(ifstub);
+ 
+     return ifstub->flags & (MSHLFLAGS_TABLESTRONG | MSHLFLAGS_TABLEWEAK);
+diff --git a/dlls/comctl32/imagelist.c b/dlls/comctl32/imagelist.c
+index 11111111111..11111111111 100644
+--- a/dlls/comctl32/imagelist.c
++++ b/dlls/comctl32/imagelist.c
+@@ -1090,7 +1090,7 @@ ImageList_DragMove (INT x, INT y)
+ 	BitBlt(hdcBg, 0, 0, InternalDrag.himl->cx, InternalDrag.himl->cy,
+ 	       hdcOffScreen, origNewX - origRegX, origNewY - origRegY, SRCCOPY);
+ 	/* draw the image */
+-	ImageList_InternalDragDraw(hdcOffScreen, origNewX - origRegX, 
++	ImageList_InternalDragDraw(hdcOffScreen, origNewX - origRegX,
+ 				   origNewY - origRegY);
+ 	/* draw the update region to the screen */
+ 	BitBlt(hdcDrag, origRegX, origRegY, sizeRegX, sizeRegY,
+@@ -1132,7 +1132,7 @@ ImageList_DragShowNolock (BOOL bShow)
+ 
+     if (!is_valid(InternalDrag.himl))
+         return FALSE;
+-    
++
+     TRACE("bShow=0x%X!\n", bShow);
+ 
+     /* DragImage is already visible/hidden */
+@@ -1201,7 +1201,7 @@ ImageList_DragShowNolock (BOOL bShow)
+ BOOL WINAPI
+ ImageList_Draw (HIMAGELIST himl, INT i, HDC hdc, INT x, INT y, UINT fStyle)
+ {
+-    return ImageList_DrawEx (himl, i, hdc, x, y, 0, 0, 
++    return ImageList_DrawEx (himl, i, hdc, x, y, 0, 0,
+ 		             CLR_DEFAULT, CLR_DEFAULT, fStyle);
+ }
+ 
+@@ -1457,9 +1457,9 @@ ImageList_DrawIndirect (IMAGELISTDRAWPARAMS *pimldp)
+     if (!hImageListDC || !hImageDC || !hImageBmp ||
+ 	(bBlend && !hBlendMaskBmp) || (himl->hbmMask && !hMaskListDC))
+ 	goto cleanup;
+-    
++
+     hOldImageBmp = SelectObject(hImageDC, hImageBmp);
+-  
++
+     /*
+      * To obtain a transparent look, background color should be set
+      * to white and foreground color to black when blitting the
+@@ -3803,18 +3803,18 @@ static const IImageList2Vtbl ImageListImpl_Vtbl = {
+     ImageListImpl_ReplaceFromImageList
+ };
+ 
+-static BOOL is_valid(HIMAGELIST himl)
++static BOOL __USES_SEH is_valid(HIMAGELIST himl)
+ {
+     BOOL valid;
+-    __TRY
++    __TRY_SEH
+     {
+         valid = himl && himl->IImageList2_iface.lpVtbl == &ImageListImpl_Vtbl;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         valid = FALSE;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return valid;
+ }
+ 
+diff --git a/dlls/comctl32/listbox.c b/dlls/comctl32/listbox.c
+index 11111111111..11111111111 100644
+--- a/dlls/comctl32/listbox.c
++++ b/dlls/comctl32/listbox.c
+@@ -840,7 +840,7 @@ static BOOL LISTBOX_SetTabStops( LB_DESCR *descr, INT count, LPINT tabs )
+ /***********************************************************************
+  *           LISTBOX_GetText
+  */
+-static LRESULT LISTBOX_GetText( LB_DESCR *descr, INT index, LPWSTR buffer, BOOL unicode )
++static LRESULT __USES_SEH LISTBOX_GetText( LB_DESCR *descr, INT index, LPWSTR buffer, BOOL unicode )
+ {
+     DWORD len;
+ 
+@@ -859,18 +859,18 @@ static LRESULT LISTBOX_GetText( LB_DESCR *descr, INT index, LPWSTR buffer, BOOL
+ 
+         TRACE("index %d (0x%04x) %s\n", index, index, debugstr_w(str));
+ 
+-        __TRY  /* hide a Delphi bug that passes a read-only buffer */
++        __TRY_SEH  /* hide a Delphi bug that passes a read-only buffer */
+         {
+             lstrcpyW(buffer, str);
+             len = lstrlenW(buffer);
+         }
+-        __EXCEPT_PAGE_FAULT
++        __EXCEPT_PAGE_FAULT_SEH
+         {
+             WARN( "got an invalid buffer (Delphi bug?)\n" );
+             SetLastError( ERROR_INVALID_PARAMETER );
+             return LB_ERR;
+         }
+-        __ENDTRY
++        __ENDTRY_SEH
+     } else
+     {
+         if (buffer)
+diff --git a/dlls/comctl32/treeview.c b/dlls/comctl32/treeview.c
+index 11111111111..11111111111 100644
+--- a/dlls/comctl32/treeview.c
++++ b/dlls/comctl32/treeview.c
+@@ -2083,7 +2083,7 @@ TREEVIEW_GetVisibleCount(const TREEVIEW_INFO *infoPtr)
+ }
+ 
+ 
+-static LRESULT
++static LRESULT __USES_SEH
+ TREEVIEW_GetItemT(const TREEVIEW_INFO *infoPtr, LPTVITEMEXW tvItem, BOOL isW)
+ {
+     TREEVIEW_ITEM *item = tvItem->hItem;
+@@ -2093,16 +2093,16 @@ TREEVIEW_GetItemT(const TREEVIEW_INFO *infoPtr, LPTVITEMEXW tvItem, BOOL isW)
+         BOOL valid_item = FALSE;
+         if (!item) return FALSE;
+ 
+-        __TRY
++        __TRY_SEH
+         {
+             infoPtr = item->infoPtr;
+             TRACE("got item from different tree %p, called from %p\n", item->infoPtr, infoPtr);
+             valid_item = TREEVIEW_ValidItem(infoPtr, item);
+         }
+-        __EXCEPT_PAGE_FAULT
++        __EXCEPT_PAGE_FAULT_SEH
+         {
+         }
+-        __ENDTRY
++        __ENDTRY_SEH
+         if (!valid_item) return FALSE;
+     }
+ 
+@@ -2475,7 +2475,7 @@ TREEVIEW_DrawItemLines(const TREEVIEW_INFO *infoPtr, HDC hdc, const TREEVIEW_ITE
+                 {
+                     MoveToEx(hdc, centerx - plussize + 1, centery, NULL);
+                     LineTo(hdc, centerx + plussize, centery);
+-    
++
+                     if (!(item->state & TVIS_EXPANDED) ||
+                          (item->state & TVIS_EXPANDPARTIAL))
+                     {
+@@ -5224,7 +5224,7 @@ TREEVIEW_Create(HWND hwnd, const CREATESTRUCTW *lpcs)
+     /* Make sure actual scrollbar state is consistent with uInternalStatus */
+     ShowScrollBar(hwnd, SB_VERT, FALSE);
+     ShowScrollBar(hwnd, SB_HORZ, FALSE);
+-    
++
+     OpenThemeData (hwnd, themeClass);
+ 
+     return 0;
+diff --git a/dlls/concrt140/details.c b/dlls/concrt140/details.c
+index 11111111111..11111111111 100644
+--- a/dlls/concrt140/details.c
++++ b/dlls/concrt140/details.c
+@@ -199,7 +199,7 @@ static void CALLBACK queue_push_finally(BOOL normal, void *ctx)
+     InterlockedIncrementSizeT(&queue->tail_pos);
+ }
+ 
+-static void threadsafe_queue_push(threadsafe_queue *queue, size_t id,
++static void __USES_SEH threadsafe_queue_push(threadsafe_queue *queue, size_t id,
+         void *e, _Concurrent_queue_base_v4 *parent, BOOL copy)
+ {
+     size_t page_id = id & ~(parent->alloc_count-1);
+@@ -232,7 +232,7 @@ static void threadsafe_queue_push(threadsafe_queue *queue, size_t id,
+         p = queue->tail;
+     }
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         if(copy)
+             call__Concurrent_queue_base_v4__Copy_item(parent, p, id-page_id, e);
+@@ -240,7 +240,7 @@ static void threadsafe_queue_push(threadsafe_queue *queue, size_t id,
+             call__Concurrent_queue_base_v4__Move_item(parent, p, id-page_id, e);
+         p->_Mask |= 1 << (id - page_id);
+     }
+-    __FINALLY_CTX(queue_push_finally, queue);
++    __FINALLY_CTX_SEH(queue_push_finally, queue);
+ }
+ 
+ static BOOL threadsafe_queue_pop(threadsafe_queue *queue, size_t id,
+@@ -467,7 +467,7 @@ static size_t InterlockedCompareExchangeSize(size_t volatile *dest, size_t excha
+ 
+ #define SEGMENT_ALLOC_MARKER ((void*)1)
+ 
+-static void concurrent_vector_alloc_segment(_Concurrent_vector_base_v4 *this,
++static void __USES_SEH concurrent_vector_alloc_segment(_Concurrent_vector_base_v4 *this,
+         size_t seg, size_t element_size)
+ {
+     int spin;
+@@ -480,7 +480,7 @@ static void concurrent_vector_alloc_segment(_Concurrent_vector_base_v4 *this,
+         if(!InterlockedCompareExchangeSizeT((this->segment + seg),
+                     SEGMENT_ALLOC_MARKER, 0))
+         {
+-            __TRY
++            __TRY_SEH
+             {
+                 if(seg == 0)
+                     this->segment[seg] = this->allocator(this, element_size * (1 << this->first_block));
+@@ -490,12 +490,12 @@ static void concurrent_vector_alloc_segment(_Concurrent_vector_base_v4 *this,
+                 else
+                     this->segment[seg] = this->allocator(this, element_size * (1 << seg));
+             }
+-            __EXCEPT_ALL
++            __EXCEPT_ALL_SEH
+             {
+                 this->segment[seg] = NULL;
+                 _CxxThrowException(NULL, NULL);
+             }
+-            __ENDTRY
++            __ENDTRY_SEH
+             if(!this->segment[seg])
+                 _vector_base_v4__Internal_throw_exception(this, 2);
+         }
+diff --git a/dlls/crypt32/msg.c b/dlls/crypt32/msg.c
+index 11111111111..11111111111 100644
+--- a/dlls/crypt32/msg.c
++++ b/dlls/crypt32/msg.c
+@@ -185,8 +185,8 @@ static BOOL CRYPT_EncodeDataContentInfoHeader(const CDataEncodeMsg *msg,
+     return ret;
+ }
+ 
+-static BOOL CDataEncodeMsg_Update(HCRYPTMSG hCryptMsg, const BYTE *pbData,
+- DWORD cbData, BOOL fFinal)
++static BOOL __USES_SEH CDataEncodeMsg_Update(HCRYPTMSG hCryptMsg,
++ const BYTE *pbData, DWORD cbData, BOOL fFinal)
+ {
+     CDataEncodeMsg *msg = hCryptMsg;
+     BOOL ret = FALSE;
+@@ -195,7 +195,7 @@ static BOOL CDataEncodeMsg_Update(HCRYPTMSG hCryptMsg, const BYTE *pbData,
+         SetLastError(CRYPT_E_MSG_ERROR);
+     else if (msg->base.streamed)
+     {
+-        __TRY
++        __TRY_SEH
+         {
+             if (msg->base.state != MsgStateUpdated)
+             {
+@@ -256,12 +256,12 @@ static BOOL CDataEncodeMsg_Update(HCRYPTMSG hCryptMsg, const BYTE *pbData,
+                      msg->base.stream_info.pvArg, (BYTE *)pbData, cbData, TRUE);
+             }
+         }
+-        __EXCEPT_PAGE_FAULT
++        __EXCEPT_PAGE_FAULT_SEH
+         {
+             SetLastError(STATUS_ACCESS_VIOLATION);
+             ret = FALSE;
+         }
+-        __ENDTRY;
++        __ENDTRY_SEH;
+     }
+     else
+     {
+diff --git a/dlls/ddraw/ddraw.c b/dlls/ddraw/ddraw.c
+index 11111111111..11111111111 100644
+--- a/dlls/ddraw/ddraw.c
++++ b/dlls/ddraw/ddraw.c
+@@ -2848,7 +2848,7 @@ static HRESULT WINAPI ddraw7_StartModeTest(IDirectDraw7 *iface, SIZE *Modes, DWO
+     return DD_OK;
+ }
+ 
+-static HRESULT WINAPI ddraw7_CreateSurface(IDirectDraw7 *iface, DDSURFACEDESC2 *surface_desc,
++static HRESULT WINAPI __USES_SEH ddraw7_CreateSurface(IDirectDraw7 *iface, DDSURFACEDESC2 *surface_desc,
+         IDirectDrawSurface7 **surface, IUnknown *outer_unknown)
+ {
+     struct ddraw *ddraw = impl_from_IDirectDraw7(iface);
+@@ -2874,17 +2874,17 @@ static HRESULT WINAPI ddraw7_CreateSurface(IDirectDraw7 *iface, DDSURFACEDESC2 *
+         return DDERR_INVALIDPARAMS;
+     }
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         *surface = NULL;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         WARN("Surface pointer %p is invalid.\n", surface);
+         wined3d_mutex_unlock();
+         return DDERR_INVALIDPARAMS;
+     }
+-    __ENDTRY;
++    __ENDTRY_SEH;
+ 
+     if(surface_desc->ddsCaps.dwCaps & (DDSCAPS_FRONTBUFFER | DDSCAPS_BACKBUFFER))
+     {
+@@ -2911,7 +2911,7 @@ static HRESULT WINAPI ddraw7_CreateSurface(IDirectDraw7 *iface, DDSURFACEDESC2 *
+     return hr;
+ }
+ 
+-static HRESULT WINAPI ddraw4_CreateSurface(IDirectDraw4 *iface,
++static HRESULT WINAPI __USES_SEH ddraw4_CreateSurface(IDirectDraw4 *iface,
+         DDSURFACEDESC2 *surface_desc, IDirectDrawSurface4 **surface, IUnknown *outer_unknown)
+ {
+     struct ddraw *ddraw = impl_from_IDirectDraw4(iface);
+@@ -2937,17 +2937,17 @@ static HRESULT WINAPI ddraw4_CreateSurface(IDirectDraw4 *iface,
+         return DDERR_INVALIDPARAMS;
+     }
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         *surface = NULL;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         WARN("Surface pointer %p is invalid.\n", surface);
+         wined3d_mutex_unlock();
+         return DDERR_INVALIDPARAMS;
+     }
+-    __ENDTRY;
++    __ENDTRY_SEH;
+ 
+     if(surface_desc->ddsCaps.dwCaps & (DDSCAPS_FRONTBUFFER | DDSCAPS_BACKBUFFER))
+     {
+@@ -2974,7 +2974,7 @@ static HRESULT WINAPI ddraw4_CreateSurface(IDirectDraw4 *iface,
+     return hr;
+ }
+ 
+-static HRESULT WINAPI ddraw2_CreateSurface(IDirectDraw2 *iface,
++static HRESULT WINAPI __USES_SEH ddraw2_CreateSurface(IDirectDraw2 *iface,
+         DDSURFACEDESC *surface_desc, IDirectDrawSurface **surface, IUnknown *outer_unknown)
+ {
+     struct ddraw *ddraw = impl_from_IDirectDraw2(iface);
+@@ -3001,17 +3001,17 @@ static HRESULT WINAPI ddraw2_CreateSurface(IDirectDraw2 *iface,
+         return DDERR_INVALIDPARAMS;
+     }
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         *surface = NULL;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         WARN("Surface pointer %p is invalid.\n", surface);
+         wined3d_mutex_unlock();
+         return DDERR_INVALIDPARAMS;
+     }
+-    __ENDTRY;
++    __ENDTRY_SEH;
+ 
+     DDSD_to_DDSD2(surface_desc, &surface_desc2);
+     if(surface_desc->ddsCaps.dwCaps & (DDSCAPS_FRONTBUFFER | DDSCAPS_BACKBUFFER))
+@@ -3038,7 +3038,7 @@ static HRESULT WINAPI ddraw2_CreateSurface(IDirectDraw2 *iface,
+     return hr;
+ }
+ 
+-static HRESULT WINAPI ddraw1_CreateSurface(IDirectDraw *iface,
++static HRESULT WINAPI __USES_SEH ddraw1_CreateSurface(IDirectDraw *iface,
+         DDSURFACEDESC *surface_desc, IDirectDrawSurface **surface, IUnknown *outer_unknown)
+ {
+     struct ddraw *ddraw = impl_from_IDirectDraw(iface);
+@@ -3065,17 +3065,17 @@ static HRESULT WINAPI ddraw1_CreateSurface(IDirectDraw *iface,
+         return DDERR_INVALIDPARAMS;
+     }
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         *surface = NULL;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         WARN("Surface pointer %p is invalid.\n", surface);
+         wined3d_mutex_unlock();
+         return DDERR_INVALIDPARAMS;
+     }
+-    __ENDTRY;
++    __ENDTRY_SEH;
+ 
+     if ((surface_desc->ddsCaps.dwCaps & (DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER))
+             == (DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER)
+diff --git a/dlls/ddraw/main.c b/dlls/ddraw/main.c
+index 11111111111..11111111111 100644
+--- a/dlls/ddraw/main.c
++++ b/dlls/ddraw/main.c
+@@ -438,7 +438,7 @@ HRESULT WINAPI DirectDrawEnumerateA(LPDDENUMCALLBACKA callback, void *context)
+  * The Flag member is not supported right now.
+  *
+  ***********************************************************************/
+-HRESULT WINAPI DirectDrawEnumerateExA(LPDDENUMCALLBACKEXA callback, void *context, DWORD flags)
++HRESULT WINAPI __USES_SEH DirectDrawEnumerateExA(LPDDENUMCALLBACKEXA callback, void *context, DWORD flags)
+ {
+     struct wined3d *wined3d;
+ 
+@@ -464,7 +464,7 @@ HRESULT WINAPI DirectDrawEnumerateExA(LPDDENUMCALLBACKEXA callback, void *contex
+         WARN("Created a wined3d object without 3D support.\n");
+     }
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         /* QuickTime expects the description "DirectDraw HAL" */
+         static CHAR driver_desc[] = "DirectDraw HAL",
+@@ -478,12 +478,12 @@ HRESULT WINAPI DirectDrawEnumerateExA(LPDDENUMCALLBACKEXA callback, void *contex
+         if (cont_enum && (flags & DDENUM_ATTACHEDSECONDARYDEVICES))
+             ddraw_enumerate_secondary_devices(wined3d, callback, context);
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         wined3d_decref(wined3d);
+         return DDERR_INVALIDPARAMS;
+     }
+-    __ENDTRY;
++    __ENDTRY_SEH;
+ 
+     wined3d_decref(wined3d);
+     TRACE("End of enumeration\n");
+diff --git a/dlls/kernel32/atom.c b/dlls/kernel32/atom.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernel32/atom.c
++++ b/dlls/kernel32/atom.c
+@@ -103,10 +103,10 @@ static inline BOOL check_integral_atom( const void* ptr, ATOM* patom)
+  *	Success: The atom allocated to str.
+  *	Failure: 0.
+  */
+-ATOM WINAPI GlobalAddAtomA( LPCSTR str /* [in] String to add */ )
++ATOM WINAPI __USES_SEH GlobalAddAtomA( LPCSTR str /* [in] String to add */ )
+ {
+     ATOM atom = 0;
+-    __TRY
++    __TRY_SEH
+     {
+         if (!check_integral_atom( str, &atom ))
+ 	{
+@@ -118,12 +118,12 @@ ATOM WINAPI GlobalAddAtomA( LPCSTR str /* [in] String to add */ )
+ 	    else if (!set_ntstatus( NtAddAtom( buffer, len * sizeof(WCHAR), &atom ))) atom = 0;
+ 	}
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         SetLastError( ERROR_INVALID_PARAMETER );
+         atom = 0;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return atom;
+ }
+ 
+@@ -178,7 +178,7 @@ ATOM WINAPI GlobalAddAtomW( LPCWSTR str )
+ /***********************************************************************
+  *           AddAtomW   (KERNEL32.@)
+  *
+- * Unicode version of AddAtomA.          
++ * Unicode version of AddAtomA.
+  */
+ ATOM WINAPI AddAtomW( LPCWSTR str )
+ {
+diff --git a/dlls/kernel32/computername.c b/dlls/kernel32/computername.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernel32/computername.c
++++ b/dlls/kernel32/computername.c
+@@ -49,7 +49,7 @@ BOOL WINAPI GetComputerNameW(LPWSTR name,LPDWORD size)
+ /***********************************************************************
+  *              GetComputerNameA         (KERNEL32.@)
+  */
+-BOOL WINAPI GetComputerNameA(LPSTR name, LPDWORD size)
++BOOL WINAPI __USES_SEH GetComputerNameA(LPSTR name, LPDWORD size)
+ {
+     WCHAR nameW[ MAX_COMPUTERNAME_LENGTH + 1 ];
+     DWORD sizeW = MAX_COMPUTERNAME_LENGTH + 1;
+@@ -60,7 +60,7 @@ BOOL WINAPI GetComputerNameA(LPSTR name, LPDWORD size)
+ 
+     len = WideCharToMultiByte ( CP_ACP, 0, nameW, -1, NULL, 0, NULL, 0 );
+     /* for compatibility with Win9x */
+-    __TRY
++    __TRY_SEH
+     {
+         if ( *size < len )
+         {
+@@ -75,12 +75,12 @@ BOOL WINAPI GetComputerNameA(LPSTR name, LPDWORD size)
+             ret = TRUE;
+         }
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         SetLastError( ERROR_INVALID_PARAMETER );
+         ret = FALSE;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ 
+     return ret;
+ }
+diff --git a/dlls/kernel32/debugger.c b/dlls/kernel32/debugger.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernel32/debugger.c
++++ b/dlls/kernel32/debugger.c
+@@ -47,7 +47,7 @@ static LONG WINAPI debug_exception_handler( EXCEPTION_POINTERS *eptr )
+  *
+  * Duplicate since IMVU doesn't like it if we call kernelbase.OutputDebugStringA.
+  */
+-void WINAPI DECLSPEC_HOTPATCH OutputDebugStringA( LPCSTR str )
++void WINAPI DECLSPEC_HOTPATCH __USES_SEH OutputDebugStringA( LPCSTR str )
+ {
+     static HANDLE DBWinMutex = NULL;
+     static BOOL mutex_inited = FALSE;
+@@ -57,18 +57,18 @@ void WINAPI DECLSPEC_HOTPATCH OutputDebugStringA( LPCSTR str )
+     WARN( "%s\n", debugstr_a(str) );
+ 
+     /* raise exception, WaitForDebugEvent() will generate a corresponding debug event */
+-    __TRY
++    __TRY_SEH
+     {
+         ULONG_PTR args[2];
+         args[0] = strlen(str) + 1;
+         args[1] = (ULONG_PTR)str;
+         RaiseException( DBG_PRINTEXCEPTION_C, 0, 2, args );
+     }
+-    __EXCEPT(debug_exception_handler)
++    __EXCEPT_SEH(debug_exception_handler)
+     {
+         caught_by_dbg = FALSE;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     if (caught_by_dbg) return;
+ 
+     /* send string to a system-wide monitor */
+diff --git a/dlls/kernel32/resource.c b/dlls/kernel32/resource.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernel32/resource.c
++++ b/dlls/kernel32/resource.c
+@@ -83,7 +83,7 @@ static NTSTATUS get_res_nameW( LPCWSTR name, UNICODE_STRING *str )
+ /**********************************************************************
+  *	    FindResourceExA  (KERNEL32.@)
+  */
+-HRSRC WINAPI FindResourceExA( HMODULE module, LPCSTR type, LPCSTR name, WORD lang )
++HRSRC WINAPI __USES_SEH FindResourceExA( HMODULE module, LPCSTR type, LPCSTR name, WORD lang )
+ {
+     NTSTATUS status;
+     UNICODE_STRING nameW, typeW;
+@@ -95,18 +95,18 @@ HRSRC WINAPI FindResourceExA( HMODULE module, LPCSTR type, LPCSTR name, WORD lan
+     nameW.Buffer = NULL;
+     typeW.Buffer = NULL;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         if (!(status = get_res_nameA( name, &nameW )) && !(status = get_res_nameA( type, &typeW )))
+             ret = FindResourceExW( module, typeW.Buffer, nameW.Buffer, lang );
+         else
+             SetLastError( RtlNtStatusToDosError(status) );
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         SetLastError( ERROR_INVALID_PARAMETER );
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ 
+     if (!IS_INTRESOURCE(nameW.Buffer)) HeapFree( GetProcessHeap(), 0, nameW.Buffer );
+     if (!IS_INTRESOURCE(typeW.Buffer)) HeapFree( GetProcessHeap(), 0, typeW.Buffer );
+diff --git a/dlls/kernel32/virtual.c b/dlls/kernel32/virtual.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernel32/virtual.c
++++ b/dlls/kernel32/virtual.c
+@@ -71,11 +71,11 @@ static LONG WINAPI badptr_handler( EXCEPTION_POINTERS *eptr )
+  *  Success: TRUE.
+  *	Failure: FALSE. Process has read access to entire block.
+  */
+-BOOL WINAPI IsBadReadPtr( LPCVOID ptr, UINT_PTR size )
++BOOL WINAPI __USES_SEH IsBadReadPtr( LPCVOID ptr, UINT_PTR size )
+ {
+     if (!size) return FALSE;  /* handle 0 size case w/o reference */
+     if (!ptr) return TRUE;
+-    __TRY
++    __TRY_SEH
+     {
+         volatile const char *p = ptr;
+         char dummy __attribute__((unused));
+@@ -90,12 +90,12 @@ BOOL WINAPI IsBadReadPtr( LPCVOID ptr, UINT_PTR size )
+         dummy = p[0];
+         dummy = p[count - 1];
+     }
+-    __EXCEPT( badptr_handler )
++    __EXCEPT_SEH( badptr_handler )
+     {
+         TRACE("%p caused page fault during read\n", ptr);
+         return TRUE;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return FALSE;
+ }
+ 
+@@ -113,11 +113,11 @@ BOOL WINAPI IsBadReadPtr( LPCVOID ptr, UINT_PTR size )
+  *  Success: TRUE.
+  *	Failure: FALSE. Process has write access to entire block.
+  */
+-BOOL WINAPI IsBadWritePtr( LPVOID ptr, UINT_PTR size )
++BOOL WINAPI __USES_SEH IsBadWritePtr( LPVOID ptr, UINT_PTR size )
+ {
+     if (!size) return FALSE;  /* handle 0 size case w/o reference */
+     if (!ptr) return TRUE;
+-    __TRY
++    __TRY_SEH
+     {
+         volatile char *p = ptr;
+         UINT_PTR count = size;
+@@ -131,12 +131,12 @@ BOOL WINAPI IsBadWritePtr( LPVOID ptr, UINT_PTR size )
+         p[0] |= 0;
+         p[count - 1] |= 0;
+     }
+-    __EXCEPT( badptr_handler )
++    __EXCEPT_SEH( badptr_handler )
+     {
+         TRACE("%p caused page fault during write\n", ptr);
+         return TRUE;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return FALSE;
+ }
+ 
+@@ -210,21 +210,21 @@ BOOL WINAPI IsBadCodePtr( FARPROC ptr )
+  *	Success: TRUE.
+  *	Failure: FALSE. Read access to all bytes in string.
+  */
+-BOOL WINAPI IsBadStringPtrA( LPCSTR str, UINT_PTR max )
++BOOL WINAPI __USES_SEH IsBadStringPtrA( LPCSTR str, UINT_PTR max )
+ {
+     if (!str) return TRUE;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         volatile const char *p = str;
+         while (p != str + max) if (!*p++) break;
+     }
+-    __EXCEPT( badptr_handler )
++    __EXCEPT_SEH( badptr_handler )
+     {
+         TRACE("%p caused page fault during read\n", str);
+         return TRUE;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return FALSE;
+ }
+ 
+@@ -234,39 +234,39 @@ BOOL WINAPI IsBadStringPtrA( LPCSTR str, UINT_PTR max )
+  *
+  * See IsBadStringPtrA.
+  */
+-BOOL WINAPI IsBadStringPtrW( LPCWSTR str, UINT_PTR max )
++BOOL WINAPI __USES_SEH IsBadStringPtrW( LPCWSTR str, UINT_PTR max )
+ {
+     if (!str) return TRUE;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         volatile const WCHAR *p = str;
+         while (p != str + max) if (!*p++) break;
+     }
+-    __EXCEPT( badptr_handler )
++    __EXCEPT_SEH( badptr_handler )
+     {
+         TRACE("%p caused page fault during read\n", str);
+         return TRUE;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return FALSE;
+ }
+ /***********************************************************************
+  *           lstrcatA   (KERNEL32.@)
+  *           lstrcat    (KERNEL32.@)
+  */
+-LPSTR WINAPI lstrcatA( LPSTR dst, LPCSTR src )
++LPSTR WINAPI __USES_SEH lstrcatA( LPSTR dst, LPCSTR src )
+ {
+-    __TRY
++    __TRY_SEH
+     {
+         strcat( dst, src );
+     }
+-    __EXCEPT( badptr_handler )
++    __EXCEPT_SEH( badptr_handler )
+     {
+         SetLastError( ERROR_INVALID_PARAMETER );
+         return NULL;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return dst;
+ }
+ 
+@@ -274,18 +274,18 @@ LPSTR WINAPI lstrcatA( LPSTR dst, LPCSTR src )
+ /***********************************************************************
+  *           lstrcatW   (KERNEL32.@)
+  */
+-LPWSTR WINAPI lstrcatW( LPWSTR dst, LPCWSTR src )
++LPWSTR WINAPI __USES_SEH lstrcatW( LPWSTR dst, LPCWSTR src )
+ {
+-    __TRY
++    __TRY_SEH
+     {
+         wcscat( dst, src );
+     }
+-    __EXCEPT( badptr_handler )
++    __EXCEPT_SEH( badptr_handler )
+     {
+         SetLastError( ERROR_INVALID_PARAMETER );
+         return NULL;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return dst;
+ }
+ 
+@@ -294,19 +294,19 @@ LPWSTR WINAPI lstrcatW( LPWSTR dst, LPCWSTR src )
+  *           lstrcpyA   (KERNEL32.@)
+  *           lstrcpy    (KERNEL32.@)
+  */
+-LPSTR WINAPI lstrcpyA( LPSTR dst, LPCSTR src )
++LPSTR WINAPI __USES_SEH lstrcpyA( LPSTR dst, LPCSTR src )
+ {
+-    __TRY
++    __TRY_SEH
+     {
+         /* this is how Windows does it */
+         memmove( dst, src, strlen(src)+1 );
+     }
+-    __EXCEPT( badptr_handler )
++    __EXCEPT_SEH( badptr_handler )
+     {
+         SetLastError( ERROR_INVALID_PARAMETER );
+         return NULL;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return dst;
+ }
+ 
+@@ -314,17 +314,17 @@ LPSTR WINAPI lstrcpyA( LPSTR dst, LPCSTR src )
+ /***********************************************************************
+  *           lstrcpyW   (KERNEL32.@)
+  */
+-LPWSTR WINAPI lstrcpyW( LPWSTR dst, LPCWSTR src )
++LPWSTR WINAPI __USES_SEH lstrcpyW( LPWSTR dst, LPCWSTR src )
+ {
+-    __TRY
++    __TRY_SEH
+     {
+         wcscpy( dst, src );
+     }
+-    __EXCEPT( badptr_handler )
++    __EXCEPT_SEH( badptr_handler )
+     {
+         SetLastError( ERROR_INVALID_PARAMETER );
+         return NULL;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return dst;
+ }
+diff --git a/dlls/kernelbase/console.c b/dlls/kernelbase/console.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernelbase/console.c
++++ b/dlls/kernelbase/console.c
+@@ -491,7 +491,7 @@ HANDLE WINAPI DECLSPEC_HOTPATCH CreateConsoleScreenBuffer( DWORD access, DWORD s
+ /******************************************************************************
+  *	CtrlRoutine   (kernelbase.@)
+  */
+-DWORD WINAPI CtrlRoutine( void *arg )
++DWORD WINAPI __USES_SEH CtrlRoutine( void *arg )
+ {
+     DWORD_PTR event = (DWORD_PTR)arg;
+     struct ctrl_handler *handler;
+@@ -503,15 +503,15 @@ DWORD WINAPI CtrlRoutine( void *arg )
+          * If it continues, there's nothing more to do
+          * Otherwise, we need to send the ctrl-C event to the handlers
+          */
+-        __TRY
++        __TRY_SEH
+         {
+             RaiseException( DBG_CONTROL_C, 0, 0, NULL );
+         }
+-        __EXCEPT_ALL
++        __EXCEPT_ALL_SEH
+         {
+             caught_by_dbg = FALSE;
+         }
+-        __ENDTRY
++        __ENDTRY_SEH
+         if (caught_by_dbg) return 0;
+     }
+ 
+diff --git a/dlls/kernelbase/debug.c b/dlls/kernelbase/debug.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernelbase/debug.c
++++ b/dlls/kernelbase/debug.c
+@@ -176,7 +176,7 @@ static LONG WINAPI debug_exception_handler( EXCEPTION_POINTERS *eptr )
+ /***********************************************************************
+  *           OutputDebugStringA   (kernelbase.@)
+  */
+-void WINAPI DECLSPEC_HOTPATCH OutputDebugStringA( LPCSTR str )
++void WINAPI DECLSPEC_HOTPATCH __USES_SEH OutputDebugStringA( LPCSTR str )
+ {
+     static HANDLE DBWinMutex = NULL;
+     static BOOL mutex_inited = FALSE;
+@@ -186,18 +186,18 @@ void WINAPI DECLSPEC_HOTPATCH OutputDebugStringA( LPCSTR str )
+     WARN( "%s\n", debugstr_a(str) );
+ 
+     /* raise exception, WaitForDebugEvent() will generate a corresponding debug event */
+-    __TRY
++    __TRY_SEH
+     {
+         ULONG_PTR args[2];
+         args[0] = strlen(str) + 1;
+         args[1] = (ULONG_PTR)str;
+         RaiseException( DBG_PRINTEXCEPTION_C, 0, 2, args );
+     }
+-    __EXCEPT(debug_exception_handler)
++    __EXCEPT_SEH(debug_exception_handler)
+     {
+         caught_by_dbg = FALSE;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     if (caught_by_dbg) return;
+ 
+     /* for some unknown reason Windows sends the exception a second time, if a
+diff --git a/dlls/kernelbase/file.c b/dlls/kernelbase/file.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernelbase/file.c
++++ b/dlls/kernelbase/file.c
+@@ -1728,7 +1728,7 @@ BOOL WINAPI FindNextStreamW( HANDLE handle, void *data )
+ /******************************************************************************
+  *	FindClose   (kernelbase.@)
+  */
+-BOOL WINAPI DECLSPEC_HOTPATCH FindClose( HANDLE handle )
++BOOL WINAPI DECLSPEC_HOTPATCH __USES_SEH FindClose( HANDLE handle )
+ {
+     FIND_FIRST_INFO *info = handle;
+ 
+@@ -1738,7 +1738,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH FindClose( HANDLE handle )
+         return FALSE;
+     }
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         if (info->magic == FIND_FIRST_MAGIC)
+         {
+@@ -1758,13 +1758,13 @@ BOOL WINAPI DECLSPEC_HOTPATCH FindClose( HANDLE handle )
+             }
+         }
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         WARN( "illegal handle %p\n", handle );
+         SetLastError( ERROR_INVALID_HANDLE );
+         return FALSE;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ 
+     return TRUE;
+ }
+diff --git a/dlls/kernelbase/loader.c b/dlls/kernelbase/loader.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernelbase/loader.c
++++ b/dlls/kernelbase/loader.c
+@@ -648,9 +648,9 @@ static NTSTATUS get_res_nameW( LPCWSTR name, UNICODE_STRING *str )
+ /**********************************************************************
+  *	EnumResourceLanguagesExA	(kernelbase.@)
+  */
+-BOOL WINAPI DECLSPEC_HOTPATCH EnumResourceLanguagesExA( HMODULE module, LPCSTR type, LPCSTR name,
+-                                                        ENUMRESLANGPROCA func, LONG_PTR param,
+-                                                        DWORD flags, LANGID lang )
++BOOL WINAPI DECLSPEC_HOTPATCH __USES_SEH EnumResourceLanguagesExA( HMODULE module, LPCSTR type, LPCSTR name,
++                                                                   ENUMRESLANGPROCA func, LONG_PTR param,
++                                                                   DWORD flags, LANGID lang )
+ {
+     int i;
+     BOOL ret = FALSE;
+@@ -683,7 +683,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH EnumResourceLanguagesExA( HMODULE module, LPCSTR t
+         goto done;
+ 
+     et = (const IMAGE_RESOURCE_DIRECTORY_ENTRY *)(resdir + 1);
+-    __TRY
++    __TRY_SEH
+     {
+         for (i = 0; i < resdir->NumberOfNamedEntries + resdir->NumberOfIdEntries; i++)
+         {
+@@ -691,12 +691,12 @@ BOOL WINAPI DECLSPEC_HOTPATCH EnumResourceLanguagesExA( HMODULE module, LPCSTR t
+             if (!ret) break;
+         }
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         ret = FALSE;
+         status = STATUS_ACCESS_VIOLATION;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ done:
+     if (!IS_INTRESOURCE(typeW.Buffer)) HeapFree( GetProcessHeap(), 0, typeW.Buffer );
+     if (!IS_INTRESOURCE(nameW.Buffer)) HeapFree( GetProcessHeap(), 0, nameW.Buffer );
+@@ -708,9 +708,9 @@ done:
+ /**********************************************************************
+  *	EnumResourceLanguagesExW	(kernelbase.@)
+  */
+-BOOL WINAPI DECLSPEC_HOTPATCH EnumResourceLanguagesExW( HMODULE module, LPCWSTR type, LPCWSTR name,
+-                                                        ENUMRESLANGPROCW func, LONG_PTR param,
+-                                                        DWORD flags, LANGID lang )
++BOOL WINAPI DECLSPEC_HOTPATCH __USES_SEH EnumResourceLanguagesExW( HMODULE module, LPCWSTR type, LPCWSTR name,
++                                                                   ENUMRESLANGPROCW func, LONG_PTR param,
++                                                                   DWORD flags, LANGID lang )
+ {
+     int i;
+     BOOL ret = FALSE;
+@@ -743,7 +743,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH EnumResourceLanguagesExW( HMODULE module, LPCWSTR
+         goto done;
+ 
+     et = (const IMAGE_RESOURCE_DIRECTORY_ENTRY *)(resdir + 1);
+-    __TRY
++    __TRY_SEH
+     {
+         for (i = 0; i < resdir->NumberOfNamedEntries + resdir->NumberOfIdEntries; i++)
+         {
+@@ -751,12 +751,12 @@ BOOL WINAPI DECLSPEC_HOTPATCH EnumResourceLanguagesExW( HMODULE module, LPCWSTR
+             if (!ret) break;
+         }
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         ret = FALSE;
+         status = STATUS_ACCESS_VIOLATION;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ done:
+     if (!IS_INTRESOURCE(typeW.Buffer)) HeapFree( GetProcessHeap(), 0, typeW.Buffer );
+     if (!IS_INTRESOURCE(nameW.Buffer)) HeapFree( GetProcessHeap(), 0, nameW.Buffer );
+@@ -768,8 +768,8 @@ done:
+ /**********************************************************************
+  *	EnumResourceNamesExA	(kernelbase.@)
+  */
+-BOOL WINAPI DECLSPEC_HOTPATCH EnumResourceNamesExA( HMODULE module, LPCSTR type, ENUMRESNAMEPROCA func,
+-                                                    LONG_PTR param, DWORD flags, LANGID lang )
++BOOL WINAPI DECLSPEC_HOTPATCH __USES_SEH EnumResourceNamesExA( HMODULE module, LPCSTR type, ENUMRESNAMEPROCA func,
++                                                               LONG_PTR param, DWORD flags, LANGID lang )
+ {
+     int i;
+     BOOL ret = FALSE;
+@@ -801,7 +801,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH EnumResourceNamesExA( HMODULE module, LPCSTR type,
+         goto done;
+ 
+     et = (const IMAGE_RESOURCE_DIRECTORY_ENTRY *)(resdir + 1);
+-    __TRY
++    __TRY_SEH
+     {
+         for (i = 0; i < resdir->NumberOfNamedEntries+resdir->NumberOfIdEntries; i++)
+         {
+@@ -830,12 +830,12 @@ BOOL WINAPI DECLSPEC_HOTPATCH EnumResourceNamesExA( HMODULE module, LPCSTR type,
+             if (!ret) break;
+         }
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         ret = FALSE;
+         status = STATUS_ACCESS_VIOLATION;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ 
+ done:
+     HeapFree( GetProcessHeap(), 0, name );
+@@ -848,8 +848,8 @@ done:
+ /**********************************************************************
+  *	EnumResourceNamesExW	(kernelbase.@)
+  */
+-BOOL WINAPI DECLSPEC_HOTPATCH EnumResourceNamesExW( HMODULE module, LPCWSTR type, ENUMRESNAMEPROCW func,
+-                                                    LONG_PTR param, DWORD flags, LANGID lang )
++BOOL WINAPI DECLSPEC_HOTPATCH __USES_SEH EnumResourceNamesExW( HMODULE module, LPCWSTR type, ENUMRESNAMEPROCW func,
++                                                               LONG_PTR param, DWORD flags, LANGID lang )
+ {
+     int i, len = 0;
+     BOOL ret = FALSE;
+@@ -880,7 +880,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH EnumResourceNamesExW( HMODULE module, LPCWSTR type
+         goto done;
+ 
+     et = (const IMAGE_RESOURCE_DIRECTORY_ENTRY *)(resdir + 1);
+-    __TRY
++    __TRY_SEH
+     {
+         for (i = 0; i < resdir->NumberOfNamedEntries+resdir->NumberOfIdEntries; i++)
+         {
+@@ -908,12 +908,12 @@ BOOL WINAPI DECLSPEC_HOTPATCH EnumResourceNamesExW( HMODULE module, LPCWSTR type
+             if (!ret) break;
+         }
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         ret = FALSE;
+         status = STATUS_ACCESS_VIOLATION;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ done:
+     HeapFree( GetProcessHeap(), 0, name );
+     if (!IS_INTRESOURCE(typeW.Buffer)) HeapFree( GetProcessHeap(), 0, typeW.Buffer );
+@@ -1038,7 +1038,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH EnumResourceTypesExW( HMODULE module, ENUMRESTYPEP
+ /**********************************************************************
+  *	    FindResourceExW  (kernelbase.@)
+  */
+-HRSRC WINAPI DECLSPEC_HOTPATCH FindResourceExW( HMODULE module, LPCWSTR type, LPCWSTR name, WORD lang )
++HRSRC WINAPI DECLSPEC_HOTPATCH __USES_SEH FindResourceExW( HMODULE module, LPCWSTR type, LPCWSTR name, WORD lang )
+ {
+     NTSTATUS status;
+     UNICODE_STRING nameW, typeW;
+@@ -1050,7 +1050,7 @@ HRSRC WINAPI DECLSPEC_HOTPATCH FindResourceExW( HMODULE module, LPCWSTR type, LP
+     if (!module) module = GetModuleHandleW( 0 );
+     nameW.Buffer = typeW.Buffer = NULL;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         if ((status = get_res_nameW( name, &nameW )) != STATUS_SUCCESS) goto done;
+         if ((status = get_res_nameW( type, &typeW )) != STATUS_SUCCESS) goto done;
+@@ -1061,11 +1061,11 @@ HRSRC WINAPI DECLSPEC_HOTPATCH FindResourceExW( HMODULE module, LPCWSTR type, LP
+     done:
+         if (status != STATUS_SUCCESS) SetLastError( RtlNtStatusToDosError(status) );
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         SetLastError( ERROR_INVALID_PARAMETER );
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ 
+     if (!IS_INTRESOURCE(nameW.Buffer)) HeapFree( GetProcessHeap(), 0, nameW.Buffer );
+     if (!IS_INTRESOURCE(typeW.Buffer)) HeapFree( GetProcessHeap(), 0, typeW.Buffer );
+diff --git a/dlls/kernelbase/memory.c b/dlls/kernelbase/memory.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernelbase/memory.c
++++ b/dlls/kernelbase/memory.c
+@@ -534,37 +534,37 @@ BOOL WINAPI DECLSPEC_HOTPATCH WriteProcessMemory( HANDLE process, void *addr, co
+ 
+ 
+ /* IsBadStringPtrA replacement for kernelbase, to catch exception in debug traces. */
+-BOOL WINAPI IsBadStringPtrA( LPCSTR str, UINT_PTR max )
++BOOL WINAPI __USES_SEH IsBadStringPtrA( LPCSTR str, UINT_PTR max )
+ {
+     if (!str) return TRUE;
+-    __TRY
++    __TRY_SEH
+     {
+         volatile const char *p = str;
+         while (p != str + max) if (!*p++) break;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         return TRUE;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return FALSE;
+ }
+ 
+ 
+ /* IsBadStringPtrW replacement for kernelbase, to catch exception in debug traces. */
+-BOOL WINAPI IsBadStringPtrW( LPCWSTR str, UINT_PTR max )
++BOOL WINAPI __USES_SEH IsBadStringPtrW( LPCWSTR str, UINT_PTR max )
+ {
+     if (!str) return TRUE;
+-    __TRY
++    __TRY_SEH
+     {
+         volatile const WCHAR *p = str;
+         while (p != str + max) if (!*p++) break;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         return TRUE;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return FALSE;
+ }
+ 
+@@ -941,7 +941,7 @@ HLOCAL WINAPI DECLSPEC_HOTPATCH LocalFree( HLOCAL handle )
+ /***********************************************************************
+  *           LocalLock   (kernelbase.@)
+  */
+-LPVOID WINAPI DECLSPEC_HOTPATCH LocalLock( HLOCAL handle )
++LPVOID WINAPI DECLSPEC_HOTPATCH __USES_SEH LocalLock( HLOCAL handle )
+ {
+     HANDLE heap = GetProcessHeap();
+     struct mem_entry *mem;
+@@ -952,16 +952,16 @@ LPVOID WINAPI DECLSPEC_HOTPATCH LocalLock( HLOCAL handle )
+     if (!handle) return NULL;
+     if ((ret = unsafe_ptr_from_HLOCAL( handle )))
+     {
+-        __TRY
++        __TRY_SEH
+         {
+             volatile char *p = ret;
+             *p |= 0;
+         }
+-        __EXCEPT_PAGE_FAULT
++        __EXCEPT_PAGE_FAULT_SEH
+         {
+             return NULL;
+         }
+-        __ENDTRY
++        __ENDTRY_SEH
+         return ret;
+     }
+ 
+diff --git a/dlls/kernelbase/path.c b/dlls/kernelbase/path.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernelbase/path.c
++++ b/dlls/kernelbase/path.c
+@@ -4927,36 +4927,36 @@ HRESULT WINAPI HashData(const unsigned char *src, DWORD src_len, unsigned char *
+     return S_OK;
+ }
+ 
+-HRESULT WINAPI UrlHashA(const char *url, unsigned char *dest, DWORD dest_len)
++HRESULT WINAPI __USES_SEH UrlHashA(const char *url, unsigned char *dest, DWORD dest_len)
+ {
+-    __TRY
++    __TRY_SEH
+     {
+         HashData((const BYTE *)url, (int)strlen(url), dest, dest_len);
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         return E_INVALIDARG;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return S_OK;
+ }
+ 
+-HRESULT WINAPI UrlHashW(const WCHAR *url, unsigned char *dest, DWORD dest_len)
++HRESULT WINAPI __USES_SEH UrlHashW(const WCHAR *url, unsigned char *dest, DWORD dest_len)
+ {
+     char urlA[MAX_PATH];
+ 
+     TRACE("%s, %p, %ld\n", debugstr_w(url), dest, dest_len);
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         WideCharToMultiByte(CP_ACP, 0, url, -1, urlA, MAX_PATH, NULL, NULL);
+         HashData((const BYTE *)urlA, (int)strlen(urlA), dest, dest_len);
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         return E_INVALIDARG;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return S_OK;
+ }
+ 
+diff --git a/dlls/kernelbase/string.c b/dlls/kernelbase/string.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernelbase/string.c
++++ b/dlls/kernelbase/string.c
+@@ -87,7 +87,7 @@ int WINAPI lstrcmpiW(LPCWSTR str1, LPCWSTR str2)
+     return CompareStringW( GetThreadLocale(), NORM_IGNORECASE, str1, -1, str2, -1 ) - 2;
+ }
+ 
+-LPSTR WINAPI KERNELBASE_lstrcpynA( LPSTR dst, LPCSTR src, INT n )
++LPSTR WINAPI __USES_SEH KERNELBASE_lstrcpynA( LPSTR dst, LPCSTR src, INT n )
+ {
+     /* Note: this function differs from the UNIX strncpy, it _always_ writes
+      * a terminating \0.
+@@ -95,7 +95,7 @@ LPSTR WINAPI KERNELBASE_lstrcpynA( LPSTR dst, LPCSTR src, INT n )
+      * Note: n is an INT but Windows treats it as unsigned, and will happily
+      * copy a gazillion chars if n is negative.
+      */
+-    __TRY
++    __TRY_SEH
+     {
+         LPSTR d = dst;
+         LPCSTR s = src;
+@@ -108,16 +108,16 @@ LPSTR WINAPI KERNELBASE_lstrcpynA( LPSTR dst, LPCSTR src, INT n )
+         }
+         if (count) *d = 0;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         SetLastError( ERROR_INVALID_PARAMETER );
+         return 0;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return dst;
+ }
+ 
+-LPWSTR WINAPI KERNELBASE_lstrcpynW( LPWSTR dst, LPCWSTR src, INT n )
++LPWSTR WINAPI __USES_SEH KERNELBASE_lstrcpynW( LPWSTR dst, LPCWSTR src, INT n )
+ {
+     /* Note: this function differs from the UNIX strncpy, it _always_ writes
+      * a terminating \0
+@@ -125,7 +125,7 @@ LPWSTR WINAPI KERNELBASE_lstrcpynW( LPWSTR dst, LPCWSTR src, INT n )
+      * Note: n is an INT but Windows treats it as unsigned, and will happily
+      * copy a gazillion chars if n is negative.
+      */
+-    __TRY
++    __TRY_SEH
+     {
+         LPWSTR d = dst;
+         LPCWSTR s = src;
+@@ -138,44 +138,44 @@ LPWSTR WINAPI KERNELBASE_lstrcpynW( LPWSTR dst, LPCWSTR src, INT n )
+         }
+         if (count) *d = 0;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         SetLastError( ERROR_INVALID_PARAMETER );
+         return 0;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return dst;
+ }
+ 
+-INT WINAPI KERNELBASE_lstrlenA( LPCSTR str )
++INT WINAPI __USES_SEH KERNELBASE_lstrlenA( LPCSTR str )
+ {
+     INT ret;
+-    __TRY
++    __TRY_SEH
+     {
+         ret = strlen(str);
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         SetLastError( ERROR_INVALID_PARAMETER );
+         return 0;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return ret;
+ }
+ 
+-INT WINAPI KERNELBASE_lstrlenW( LPCWSTR str )
++INT WINAPI __USES_SEH KERNELBASE_lstrlenW( LPCWSTR str )
+ {
+     INT ret;
+-    __TRY
++    __TRY_SEH
+     {
+         ret = wcslen(str);
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         SetLastError( ERROR_INVALID_PARAMETER );
+         return 0;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return ret;
+ }
+ 
+@@ -1040,7 +1040,7 @@ WCHAR * WINAPI StrCpyNXW(WCHAR *dst, const WCHAR *src, int len)
+     return dst;
+ }
+ 
+-LPSTR WINAPI CharLowerA(char *str)
++LPSTR WINAPI __USES_SEH CharLowerA(char *str)
+ {
+     if (IS_INTRESOURCE(str))
+     {
+@@ -1049,16 +1049,16 @@ LPSTR WINAPI CharLowerA(char *str)
+         return (LPSTR)(UINT_PTR)(BYTE)ch;
+     }
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         CharLowerBuffA( str, strlen(str) );
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         SetLastError( ERROR_INVALID_PARAMETER );
+         return NULL;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return str;
+ }
+ 
+@@ -1153,7 +1153,7 @@ LPWSTR WINAPI CharPrevW(const WCHAR *start, const WCHAR *x)
+     else return (LPWSTR)x;
+ }
+ 
+-LPSTR WINAPI CharUpperA(LPSTR str)
++LPSTR WINAPI __USES_SEH CharUpperA(LPSTR str)
+ {
+     if (IS_INTRESOURCE(str))
+     {
+@@ -1162,16 +1162,16 @@ LPSTR WINAPI CharUpperA(LPSTR str)
+         return (LPSTR)(UINT_PTR)(BYTE)ch;
+     }
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         CharUpperBuffA(str, strlen(str));
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         SetLastError(ERROR_INVALID_PARAMETER);
+         return NULL;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return str;
+ }
+ 
+diff --git a/dlls/kernelbase/sync.c b/dlls/kernelbase/sync.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernelbase/sync.c
++++ b/dlls/kernelbase/sync.c
+@@ -449,7 +449,7 @@ HANDLE WINAPI DECLSPEC_HOTPATCH CreateEventExA( SECURITY_ATTRIBUTES *sa, LPCSTR
+ /***********************************************************************
+  *           CreateEventExW    (kernelbase.@)
+  */
+-HANDLE WINAPI DECLSPEC_HOTPATCH CreateEventExW( SECURITY_ATTRIBUTES *sa, LPCWSTR name,
++HANDLE WINAPI DECLSPEC_HOTPATCH __USES_SEH CreateEventExW( SECURITY_ATTRIBUTES *sa, LPCWSTR name,
+                                                 DWORD flags, DWORD access )
+ {
+     HANDLE ret = 0;
+@@ -460,16 +460,16 @@ HANDLE WINAPI DECLSPEC_HOTPATCH CreateEventExW( SECURITY_ATTRIBUTES *sa, LPCWSTR
+     /* one buggy program needs this
+      * ("Van Dale Groot woordenboek der Nederlandse taal")
+      */
+-    __TRY
++    __TRY_SEH
+     {
+         get_create_object_attributes( &attr, &nameW, sa, name );
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         SetLastError( ERROR_INVALID_PARAMETER);
+         return 0;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ 
+     status = NtCreateEvent( &ret, access, &attr,
+                             (flags & CREATE_EVENT_MANUAL_RESET) ? NotificationEvent : SynchronizationEvent,
+diff --git a/dlls/kernelbase/thread.c b/dlls/kernelbase/thread.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernelbase/thread.c
++++ b/dlls/kernelbase/thread.c
+@@ -910,21 +910,21 @@ void WINAPI switch_fiber( CONTEXT *old, CONTEXT *new )
+ #endif
+ 
+ /* call the fiber initial function once we have switched stack */
+-static void CDECL start_fiber(void)
++static void CDECL __USES_SEH start_fiber(void)
+ {
+     struct fiber_data *fiber = NtCurrentTeb()->Tib.u.FiberData;
+     LPFIBER_START_ROUTINE start = fiber->start;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         start( fiber->param );
+         RtlExitUserThread( 1 );
+     }
+-    __EXCEPT(UnhandledExceptionFilter)
++    __EXCEPT_SEH(UnhandledExceptionFilter)
+     {
+         TerminateThread( GetCurrentThread(), GetExceptionCode() );
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ }
+ 
+ static void init_fiber_context( struct fiber_data *fiber )
+diff --git a/dlls/msvcrt/concurrency.c b/dlls/msvcrt/concurrency.c
+index 11111111111..11111111111 100644
+--- a/dlls/msvcrt/concurrency.c
++++ b/dlls/msvcrt/concurrency.c
+@@ -2026,13 +2026,13 @@ static void CALLBACK chore_wrapper_finally(BOOL normal, void *data)
+     RtlWakeAddressSingle((LONG*)ptr);
+ }
+ 
+-static void __cdecl chore_wrapper(_UnrealizedChore *chore)
++static void __cdecl __USES_SEH chore_wrapper(_UnrealizedChore *chore)
+ {
+-    __TRY
++    __TRY_SEH
+     {
+         execute_chore(chore, chore->task_collection);
+     }
+-    __FINALLY_CTX(chore_wrapper_finally, chore)
++    __FINALLY_CTX_SEH(chore_wrapper_finally, chore)
+ }
+ 
+ static BOOL pick_and_execute_chore(ThreadScheduler *scheduler)
+diff --git a/dlls/msvcrt/cpp.c b/dlls/msvcrt/cpp.c
+index 11111111111..11111111111 100644
+--- a/dlls/msvcrt/cpp.c
++++ b/dlls/msvcrt/cpp.c
+@@ -789,7 +789,7 @@ const type_info* CDECL __RTtypeid(void *cppobj)
+ 
+ #else
+ 
+-const type_info* CDECL __RTtypeid(void *cppobj)
++const type_info* CDECL __USES_SEH __RTtypeid(void *cppobj)
+ {
+     const type_info *ret;
+ 
+@@ -800,7 +800,7 @@ const type_info* CDECL __RTtypeid(void *cppobj)
+         _CxxThrowException( &e, &bad_typeid_exception_type );
+     }
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         const rtti_object_locator *obj_locator = get_obj_locator( cppobj );
+         char *base;
+@@ -812,13 +812,14 @@ const type_info* CDECL __RTtypeid(void *cppobj)
+ 
+         ret = (type_info*)(base + obj_locator->type_descriptor);
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         __non_rtti_object e;
+         __non_rtti_object_ctor( &e, "Bad read pointer - no RTTI data!" );
+         _CxxThrowException( &e, &__non_rtti_object_exception_type );
++        switch (0) { DEFAULT_UNREACHABLE; }
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return ret;
+ }
+ #endif
+@@ -910,7 +911,7 @@ void* CDECL __RTDynamicCast(void *cppobj, int unknown,
+ 
+ #else
+ 
+-void* CDECL __RTDynamicCast(void *cppobj, int unknown,
++void* CDECL __USES_SEH __RTDynamicCast(void *cppobj, int unknown,
+         type_info *src, type_info *dst,
+         int do_throw)
+ {
+@@ -921,7 +922,7 @@ void* CDECL __RTDynamicCast(void *cppobj, int unknown,
+     TRACE("obj: %p unknown: %d src: %p %s dst: %p %s do_throw: %d)\n",
+             cppobj, unknown, src, dbgstr_type_info(src), dst, dbgstr_type_info(dst), do_throw);
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         int i;
+         const rtti_object_locator *obj_locator = get_obj_locator( cppobj );
+@@ -960,13 +961,14 @@ void* CDECL __RTDynamicCast(void *cppobj, int unknown,
+             _CxxThrowException( &e, &bad_cast_exception_type );
+         }
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         __non_rtti_object e;
+         __non_rtti_object_ctor( &e, "Access violation - no RTTI data!" );
+         _CxxThrowException( &e, &__non_rtti_object_exception_type );
++        switch (0) { DEFAULT_UNREACHABLE; }
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return ret;
+ }
+ #endif
+@@ -988,24 +990,25 @@ void* CDECL __RTDynamicCast(void *cppobj, int unknown,
+  *  This function is usually called by compiler generated code as a result
+  *  of using one of the C++ dynamic cast statements.
+  */
+-void* CDECL __RTCastToVoid(void *cppobj)
++void* CDECL __USES_SEH __RTCastToVoid(void *cppobj)
+ {
+     void *ret;
+ 
+     if (!cppobj) return NULL;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         const rtti_object_locator *obj_locator = get_obj_locator( cppobj );
+         ret = (char *)cppobj - obj_locator->base_class_offset;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         __non_rtti_object e;
+         __non_rtti_object_ctor( &e, "Access violation - no RTTI data!" );
+         _CxxThrowException( &e, &__non_rtti_object_exception_type );
++        switch (0) { DEFAULT_UNREACHABLE; }
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return ret;
+ }
+ 
+@@ -1081,13 +1084,13 @@ int __cdecl _is_exception_typeof(const type_info *ti, EXCEPTION_POINTERS *ep)
+     return ret;
+ }
+ #else
+-int __cdecl _is_exception_typeof(const type_info *ti, EXCEPTION_POINTERS *ep)
++int __cdecl __USES_SEH _is_exception_typeof(const type_info *ti, EXCEPTION_POINTERS *ep)
+ {
+     int ret = -1;
+ 
+     TRACE("(%p %p)\n", ti, ep);
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         EXCEPTION_RECORD *rec = ep->ExceptionRecord;
+ 
+@@ -1114,8 +1117,8 @@ int __cdecl _is_exception_typeof(const type_info *ti, EXCEPTION_POINTERS *ep)
+                 ret = 0;
+         }
+     }
+-    __EXCEPT_PAGE_FAULT
+-    __ENDTRY
++    __EXCEPT_PAGE_FAULT_SEH
++    __ENDTRY_SEH
+ 
+     if(ret == -1)
+         terminate();
+diff --git a/dlls/msvcrt/except_x86_64.c b/dlls/msvcrt/except_x86_64.c
+index 11111111111..11111111111 100644
+--- a/dlls/msvcrt/except_x86_64.c
++++ b/dlls/msvcrt/except_x86_64.c
+@@ -323,7 +323,7 @@ static void CALLBACK cxx_catch_cleanup(BOOL normal, void *c)
+     __CxxUnregisterExceptionObject(&ctx->frame_info, ctx->rethrow);
+ }
+ 
+-static void* WINAPI call_catch_block(EXCEPTION_RECORD *rec)
++static void* WINAPI __USES_SEH call_catch_block(EXCEPTION_RECORD *rec)
+ {
+     ULONG64 frame = rec->ExceptionInformation[1];
+     const cxx_function_descr *descr = (void*)rec->ExceptionInformation[2];
+@@ -342,13 +342,13 @@ static void* WINAPI call_catch_block(EXCEPTION_RECORD *rec)
+     ctx.prev_rec = prev_rec;
+     __CxxRegisterExceptionObject(&ep, &ctx.frame_info);
+     msvcrt_get_thread_data()->processing_throw--;
+-    __TRY
++    __TRY_SEH
+     {
+-        __TRY
++        __TRY_SEH
+         {
+             ret_addr = handler(0, frame);
+         }
+-        __EXCEPT_CTX(cxx_rethrow_filter, &ctx)
++        __EXCEPT_CTX_SEH(cxx_rethrow_filter, &ctx)
+         {
+             TRACE("detect rethrow: exception code: %lx\n", prev_rec->ExceptionCode);
+             ctx.rethrow = TRUE;
+@@ -365,9 +365,9 @@ static void* WINAPI call_catch_block(EXCEPTION_RECORD *rec)
+                         prev_rec->NumberParameters, prev_rec->ExceptionInformation);
+             }
+         }
+-        __ENDTRY
++        __ENDTRY_SEH
+     }
+-    __FINALLY_CTX(cxx_catch_cleanup, &ctx)
++    __FINALLY_CTX_SEH(cxx_catch_cleanup, &ctx)
+ 
+     unwind_help[0] = -2;
+     unwind_help[1] = -1;
+@@ -510,9 +510,9 @@ static void check_noexcept( PEXCEPTION_RECORD rec,
+     }
+ }
+ 
+-static DWORD cxx_frame_handler(EXCEPTION_RECORD *rec, ULONG64 frame,
+-                               CONTEXT *context, DISPATCHER_CONTEXT *dispatch,
+-                               const cxx_function_descr *descr)
++static DWORD __USES_SEH cxx_frame_handler(EXCEPTION_RECORD *rec, ULONG64 frame,
++                                          CONTEXT *context, DISPATCHER_CONTEXT *dispatch,
++                                          const cxx_function_descr *descr)
+ {
+     int trylevel = ip_to_state(rva_to_ptr(descr->ipmap, dispatch->ImageBase),
+             descr->ipmap_count, dispatch->ControlPc-dispatch->ImageBase);
+@@ -613,16 +613,16 @@ static DWORD cxx_frame_handler(EXCEPTION_RECORD *rec, ULONG64 frame,
+             ctx.seh_rec    = rec;
+             ctx.dispatch   = dispatch;
+             ctx.descr      = descr;
+-            __TRY
++            __TRY_SEH
+             {
+                 except_ptrs.ExceptionRecord = rec;
+                 except_ptrs.ContextRecord = context;
+                 data->se_translator(rec->ExceptionCode, &except_ptrs);
+             }
+-            __EXCEPT_CTX(se_translation_filter, &ctx)
++            __EXCEPT_CTX_SEH(se_translation_filter, &ctx)
+             {
+             }
+-            __ENDTRY
++            __ENDTRY_SEH
+         }
+     }
+ 
+diff --git a/dlls/ntdll/actctx.c b/dlls/ntdll/actctx.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/actctx.c
++++ b/dlls/ntdll/actctx.c
+@@ -1073,19 +1073,19 @@ static WCHAR *build_assembly_id( const struct assembly_identity *ai )
+     return ret;
+ }
+ 
+-static ACTIVATION_CONTEXT *check_actctx( HANDLE h )
++static ACTIVATION_CONTEXT *__USES_SEH check_actctx( HANDLE h )
+ {
+     ACTIVATION_CONTEXT *ret = NULL, *actctx = h;
+ 
+     if (!h || h == INVALID_HANDLE_VALUE) return NULL;
+-    __TRY
++    __TRY_SEH
+     {
+         if (actctx->magic == ACTCTX_MAGIC) ret = actctx;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return ret;
+ }
+ 
+diff --git a/dlls/ntdll/exception.c b/dlls/ntdll/exception.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/exception.c
++++ b/dlls/ntdll/exception.c
+@@ -657,19 +657,19 @@ void __cdecl __wine_spec_unimplemented_stub( const char *module, const char *fun
+  *
+  * IsBadStringPtrA replacement for ntdll, to catch exception in debug traces.
+  */
+-BOOL WINAPI IsBadStringPtrA( LPCSTR str, UINT_PTR max )
++BOOL WINAPI __USES_SEH IsBadStringPtrA( LPCSTR str, UINT_PTR max )
+ {
+     if (!str) return TRUE;
+-    __TRY
++    __TRY_SEH
+     {
+         volatile const char *p = str;
+         while (p != str + max) if (!*p++) break;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         return TRUE;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return FALSE;
+ }
+ __ASM_STDCALL_IMPORT(IsBadStringPtrA,8)
+@@ -679,19 +679,19 @@ __ASM_STDCALL_IMPORT(IsBadStringPtrA,8)
+  *
+  * IsBadStringPtrW replacement for ntdll, to catch exception in debug traces.
+  */
+-BOOL WINAPI IsBadStringPtrW( LPCWSTR str, UINT_PTR max )
++BOOL WINAPI __USES_SEH IsBadStringPtrW( LPCWSTR str, UINT_PTR max )
+ {
+     if (!str) return TRUE;
+-    __TRY
++    __TRY_SEH
+     {
+         volatile const WCHAR *p = str;
+         while (p != str + max) if (!*p++) break;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         return TRUE;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return FALSE;
+ }
+ __ASM_STDCALL_IMPORT(IsBadStringPtrW,8)
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -1077,7 +1077,7 @@ static FARPROC find_ordinal_export( HMODULE module, const IMAGE_EXPORT_DIRECTORY
+     proc = get_rva( module, functions[ordinal] );
+ 
+     /* if the address falls into the export dir, it's a forward */
+-    if (((const char *)proc >= (const char *)exports) && 
++    if (((const char *)proc >= (const char *)exports) &&
+         ((const char *)proc < (const char *)exports + exp_size))
+         return find_forwarded_export( module, (const char *)proc, load_path );
+ 
+@@ -1675,7 +1675,7 @@ static NTSTATUS alloc_thread_tls(void)
+ /*************************************************************************
+  *              call_tls_callbacks
+  */
+-static void call_tls_callbacks( HMODULE module, UINT reason )
++static void __USES_SEH call_tls_callbacks( HMODULE module, UINT reason )
+ {
+     const IMAGE_TLS_DIRECTORY *dir;
+     const PIMAGE_TLS_CALLBACK *callback;
+@@ -1690,17 +1690,17 @@ static void call_tls_callbacks( HMODULE module, UINT reason )
+     {
+         TRACE_(relay)("\1Call TLS callback (proc=%p,module=%p,reason=%s,reserved=0)\n",
+                       *callback, module, reason_names[reason] );
+-        __TRY
++        __TRY_SEH
+         {
+             call_dll_entry_point( (DLLENTRYPROC)*callback, module, reason, NULL );
+         }
+-        __EXCEPT_ALL
++        __EXCEPT_ALL_SEH
+         {
+             TRACE_(relay)("\1exception %08lx in TLS callback (proc=%p,module=%p,reason=%s,reserved=0)\n",
+                           GetExceptionCode(), callback, module, reason_names[reason] );
+             return;
+         }
+-        __ENDTRY
++        __ENDTRY_SEH
+         TRACE_(relay)("\1Ret  TLS callback (proc=%p,module=%p,reason=%s,reserved=0)\n",
+                       *callback, module, reason_names[reason] );
+     }
+@@ -1711,7 +1711,7 @@ static void call_tls_callbacks( HMODULE module, UINT reason )
+ /*************************************************************************
+  *              MODULE_InitDLL
+  */
+-static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved )
++static NTSTATUS __USES_SEH MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved )
+ {
+     WCHAR mod_name[64];
+     NTSTATUS status = STATUS_SUCCESS;
+@@ -1738,19 +1738,19 @@ static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved
+ 
+     RtlEnterCriticalSection( &loader_section );
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         retv = call_dll_entry_point( entry, module, reason, lpReserved );
+         if (!retv)
+             status = STATUS_DLL_INIT_FAILED;
+     }
+-    __EXCEPT_ALL
++    __EXCEPT_ALL_SEH
+     {
+         status = GetExceptionCode();
+         TRACE_(relay)("\1exception %08lx in PE entry point (proc=%p,module=%p,reason=%s,res=%p)\n",
+                       status, entry, module, reason_names[reason], lpReserved );
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ 
+     RtlLeaveCriticalSection( &loader_section );
+ 
+@@ -1892,7 +1892,7 @@ static void process_detach(void)
+ 
+             /* Call detach notification */
+             mod->Flags &= ~LDR_PROCESS_ATTACHED;
+-            MODULE_InitDLL( CONTAINING_RECORD(mod, WINE_MODREF, ldr), 
++            MODULE_InitDLL( CONTAINING_RECORD(mod, WINE_MODREF, ldr),
+                             DLL_PROCESS_DETACH, ULongToPtr(process_detaching) );
+             call_ldr_notifications( LDR_DLL_NOTIFICATION_REASON_UNLOADED, mod );
+ 
+@@ -3974,7 +3974,7 @@ void WINAPI LdrShutdownThread(void)
+         if ( mod->Flags & LDR_NO_DLL_CALLS )
+             continue;
+ 
+-        MODULE_InitDLL( CONTAINING_RECORD(mod, WINE_MODREF, ldr), 
++        MODULE_InitDLL( CONTAINING_RECORD(mod, WINE_MODREF, ldr),
+                         DLL_THREAD_DETACH, NULL );
+     }
+ 
+@@ -4227,11 +4227,11 @@ NTSTATUS WINAPI LdrUnloadDll( HMODULE hModule )
+ /***********************************************************************
+  *           RtlImageNtHeader   (NTDLL.@)
+  */
+-PIMAGE_NT_HEADERS WINAPI RtlImageNtHeader(HMODULE hModule)
++PIMAGE_NT_HEADERS WINAPI __USES_SEH RtlImageNtHeader(HMODULE hModule)
+ {
+     IMAGE_NT_HEADERS *ret;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)hModule;
+ 
+@@ -4242,11 +4242,11 @@ PIMAGE_NT_HEADERS WINAPI RtlImageNtHeader(HMODULE hModule)
+             if (ret->Signature != IMAGE_NT_SIGNATURE) ret = NULL;
+         }
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         return NULL;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return ret;
+ }
+ 
+@@ -4255,22 +4255,22 @@ PIMAGE_NT_HEADERS WINAPI RtlImageNtHeader(HMODULE hModule)
+  *
+  * Trigger a debug breakpoint if the process is being debugged.
+  */
+-static void process_breakpoint(void)
++static void __USES_SEH process_breakpoint(void)
+ {
+     DWORD_PTR port = 0;
+ 
+     NtQueryInformationProcess( GetCurrentProcess(), ProcessDebugPort, &port, sizeof(port), NULL );
+     if (!port) return;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         DbgBreakPoint();
+     }
+-    __EXCEPT_ALL
++    __EXCEPT_ALL_SEH
+     {
+         /* do nothing */
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ }
+ 
+ 
+diff --git a/dlls/ntdll/process.c b/dlls/ntdll/process.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/process.c
++++ b/dlls/ntdll/process.c
+@@ -66,19 +66,19 @@ NTSTATUS WINAPI RtlWow64EnableFsRedirection( BOOLEAN enable )
+ /******************************************************************
+  *		RtlWow64EnableFsRedirectionEx   (NTDLL.@)
+  */
+-NTSTATUS WINAPI RtlWow64EnableFsRedirectionEx( ULONG disable, ULONG *old_value )
++NTSTATUS WINAPI __USES_SEH RtlWow64EnableFsRedirectionEx( ULONG disable, ULONG *old_value )
+ {
+     if (!NtCurrentTeb64()) return STATUS_NOT_IMPLEMENTED;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         *old_value = NtCurrentTeb64()->TlsSlots[WOW64_TLS_FILESYSREDIR];
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         return STATUS_ACCESS_VIOLATION;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ 
+     NtCurrentTeb64()->TlsSlots[WOW64_TLS_FILESYSREDIR] = disable;
+     return STATUS_SUCCESS;
+@@ -598,20 +598,20 @@ NTSTATUS WINAPI DbgUiConvertStateChangeStructure( DBGUI_WAIT_STATE_CHANGE *state
+ /***********************************************************************
+  *      DbgUiRemoteBreakin (NTDLL.@)
+  */
+-void WINAPI DbgUiRemoteBreakin( void *arg )
++void WINAPI __USES_SEH DbgUiRemoteBreakin( void *arg )
+ {
+     TRACE( "\n" );
+     if (NtCurrentTeb()->Peb->BeingDebugged)
+     {
+-        __TRY
++        __TRY_SEH
+         {
+             DbgBreakPoint();
+         }
+-        __EXCEPT_ALL
++        __EXCEPT_ALL_SEH
+         {
+             /* do nothing */
+         }
+-        __ENDTRY
++        __ENDTRY_SEH
+     }
+     RtlExitUserThread( STATUS_SUCCESS );
+ }
+diff --git a/dlls/ntdll/relay.c b/dlls/ntdll/relay.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/relay.c
++++ b/dlls/ntdll/relay.c
+@@ -1153,13 +1153,13 @@ FARPROC SNOOP_GetProcAddress( HMODULE hmod, const IMAGE_EXPORT_DIRECTORY *export
+     return (FARPROC)&(fun->lcall);
+ }
+ 
+-static void SNOOP_PrintArg(DWORD x)
++static void __USES_SEH SNOOP_PrintArg(DWORD x)
+ {
+     int i,nostring;
+ 
+     TRACE_(snoop)("%08lx",x);
+     if (IS_INTARG(x) || TRACE_ON(seh)) return; /* trivial reject to avoid faults */
+-    __TRY
++    __TRY_SEH
+     {
+         LPBYTE s=(LPBYTE)x;
+         i=0;nostring=0;
+@@ -1184,10 +1184,10 @@ static void SNOOP_PrintArg(DWORD x)
+             if (!nostring && i > 5) TRACE_(snoop)(" %s",debugstr_wn((LPWSTR)x,i));
+         }
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ }
+ 
+ void WINAPI DECLSPEC_HIDDEN __regs_SNOOP_Entry( void **stack )
+@@ -1233,7 +1233,7 @@ void WINAPI DECLSPEC_HIDDEN __regs_SNOOP_Entry( void **stack )
+                 SIZE_T size = 4096;
+                 VOID* addr = NULL;
+ 
+-                NtAllocateVirtualMemory(NtCurrentProcess(), &addr, 0, &size, 
++                NtAllocateVirtualMemory(NtCurrentProcess(), &addr, 0, &size,
+                                         MEM_COMMIT | MEM_RESERVE,
+                                         PAGE_EXECUTE_READWRITE);
+                 if (!addr) return;
+diff --git a/dlls/ntdll/resource.c b/dlls/ntdll/resource.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/resource.c
++++ b/dlls/ntdll/resource.c
+@@ -256,13 +256,13 @@ done:
+ /**********************************************************************
+  *	LdrFindResourceDirectory_U  (NTDLL.@)
+  */
+-NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrFindResourceDirectory_U( HMODULE hmod, const LDR_RESOURCE_INFO *info,
++NTSTATUS WINAPI DECLSPEC_HOTPATCH __USES_SEH LdrFindResourceDirectory_U( HMODULE hmod, const LDR_RESOURCE_INFO *info,
+                                             ULONG level, const IMAGE_RESOURCE_DIRECTORY **dir )
+ {
+     const void *res;
+     NTSTATUS status;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+ 	if (info) TRACE( "module %p type %s name %s lang %04lx level %ld\n",
+                      hmod, debugstr_w((LPCWSTR)info->Type),
+@@ -272,11 +272,11 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrFindResourceDirectory_U( HMODULE hmod, cons
+         status = find_resource_entry( hmod, info, level, &res, TRUE );
+         if (status == STATUS_SUCCESS) *dir = res;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         return GetExceptionCode();
+     }
+-    __ENDTRY;
++    __ENDTRY_SEH;
+     return status;
+ }
+ 
+@@ -284,13 +284,13 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrFindResourceDirectory_U( HMODULE hmod, cons
+ /**********************************************************************
+  *	LdrFindResource_U  (NTDLL.@)
+  */
+-NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrFindResource_U( HMODULE hmod, const LDR_RESOURCE_INFO *info,
++NTSTATUS WINAPI DECLSPEC_HOTPATCH __USES_SEH LdrFindResource_U( HMODULE hmod, const LDR_RESOURCE_INFO *info,
+                                    ULONG level, const IMAGE_RESOURCE_DATA_ENTRY **entry )
+ {
+     const void *res;
+     NTSTATUS status;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+ 	if (info) TRACE( "module %p type %s name %s lang %04lx level %ld\n",
+                      hmod, debugstr_w((LPCWSTR)info->Type),
+@@ -302,27 +302,27 @@ NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrFindResource_U( HMODULE hmod, const LDR_RES
+ 
+         if (status == STATUS_SUCCESS) *entry = res;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         return GetExceptionCode();
+     }
+-    __ENDTRY;
++    __ENDTRY_SEH;
+     return status;
+ }
+ 
+ 
+ /* don't penalize other platforms with stuff needed on i386 for compatibility */
+ #ifdef __i386__
+-NTSTATUS WINAPI DECLSPEC_HIDDEN access_resource( HMODULE hmod, const IMAGE_RESOURCE_DATA_ENTRY *entry,
++NTSTATUS WINAPI DECLSPEC_HIDDEN __USES_SEH access_resource( HMODULE hmod, const IMAGE_RESOURCE_DATA_ENTRY *entry,
+                                                  void **ptr, ULONG *size )
+ #else
+-static inline NTSTATUS access_resource( HMODULE hmod, const IMAGE_RESOURCE_DATA_ENTRY *entry,
++static inline NTSTATUS __USES_SEH access_resource( HMODULE hmod, const IMAGE_RESOURCE_DATA_ENTRY *entry,
+                                         void **ptr, ULONG *size )
+ #endif
+ {
+     NTSTATUS status;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         ULONG dirsize;
+ 
+@@ -345,11 +345,11 @@ static inline NTSTATUS access_resource( HMODULE hmod, const IMAGE_RESOURCE_DATA_
+             status = STATUS_SUCCESS;
+         }
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         return GetExceptionCode();
+     }
+-    __ENDTRY;
++    __ENDTRY_SEH;
+     return status;
+ }
+ 
+diff --git a/dlls/ntdll/rtl.c b/dlls/ntdll/rtl.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/rtl.c
++++ b/dlls/ntdll/rtl.c
+@@ -345,7 +345,7 @@ NTSTATUS WINAPI vDbgPrintEx( ULONG id, ULONG level, LPCSTR fmt, va_list args )
+ /******************************************************************************
+  *	vDbgPrintExWithPrefix  [NTDLL.@]
+  */
+-NTSTATUS WINAPI vDbgPrintExWithPrefix( LPCSTR prefix, ULONG id, ULONG level, LPCSTR fmt, va_list args )
++NTSTATUS WINAPI __USES_SEH vDbgPrintExWithPrefix( LPCSTR prefix, ULONG id, ULONG level, LPCSTR fmt, va_list args )
+ {
+     ULONG level_mask = level <= 31 ? (1 << level) : level;
+     SIZE_T len = strlen( prefix );
+@@ -359,7 +359,7 @@ NTSTATUS WINAPI vDbgPrintExWithPrefix( LPCSTR prefix, ULONG id, ULONG level, LPC
+ 
+     if (level_mask & (1 << DPFLTR_ERROR_LEVEL) && NtCurrentTeb()->Peb->BeingDebugged)
+     {
+-        __TRY
++        __TRY_SEH
+         {
+             EXCEPTION_RECORD record;
+             record.ExceptionCode    = DBG_PRINTEXCEPTION_C;
+@@ -371,10 +371,10 @@ NTSTATUS WINAPI vDbgPrintExWithPrefix( LPCSTR prefix, ULONG id, ULONG level, LPC
+             record.ExceptionInformation[0] = strlen( buf ) + 1;
+             RtlRaiseException( &record );
+         }
+-        __EXCEPT(debug_exception_handler)
++        __EXCEPT_SEH(debug_exception_handler)
+         {
+         }
+-        __ENDTRY
++        __ENDTRY_SEH
+     }
+ 
+     return STATUS_SUCCESS;
+@@ -1716,7 +1716,7 @@ PSLIST_ENTRY WINAPI RtlInterlockedPushEntrySList(PSLIST_HEADER list, PSLIST_ENTR
+ /*************************************************************************
+  * RtlInterlockedPopEntrySList   [NTDLL.@]
+  */
+-PSLIST_ENTRY WINAPI RtlInterlockedPopEntrySList(PSLIST_HEADER list)
++PSLIST_ENTRY WINAPI __USES_SEH RtlInterlockedPopEntrySList(PSLIST_HEADER list)
+ {
+     SLIST_HEADER old, new;
+     PSLIST_ENTRY entry;
+@@ -1727,16 +1727,16 @@ PSLIST_ENTRY WINAPI RtlInterlockedPopEntrySList(PSLIST_HEADER list)
+         old = *list;
+         if (!(entry = (SLIST_ENTRY *)((ULONG_PTR)old.Header16.NextEntry << 4))) return NULL;
+         /* entry could be deleted by another thread */
+-        __TRY
++        __TRY_SEH
+         {
+             new.Header16.NextEntry = (ULONG_PTR)entry->Next >> 4;
+             new.Header16.Depth = old.Header16.Depth - 1;
+             new.Header16.Sequence = old.Header16.Sequence + 1;
+         }
+-        __EXCEPT_PAGE_FAULT
++        __EXCEPT_PAGE_FAULT_SEH
+         {
+         }
+-        __ENDTRY
++        __ENDTRY_SEH
+     } while (!InterlockedCompareExchange128((__int64 *)list, new.s.Region, new.s.Alignment, (__int64 *)&old));
+ #else
+     do
+@@ -1744,16 +1744,16 @@ PSLIST_ENTRY WINAPI RtlInterlockedPopEntrySList(PSLIST_HEADER list)
+         old = *list;
+         if (!(entry = old.s.Next.Next)) return NULL;
+         /* entry could be deleted by another thread */
+-        __TRY
++        __TRY_SEH
+         {
+             new.s.Next.Next = entry->Next;
+             new.s.Depth = old.s.Depth - 1;
+             new.s.Sequence = old.s.Sequence + 1;
+         }
+-        __EXCEPT_PAGE_FAULT
++        __EXCEPT_PAGE_FAULT_SEH
+         {
+         }
+-        __ENDTRY
++        __ENDTRY_SEH
+     } while (InterlockedCompareExchange64((__int64 *)&list->Alignment, new.Alignment,
+                                           old.Alignment) != old.Alignment);
+ #endif
+diff --git a/dlls/ntdll/sec.c b/dlls/ntdll/sec.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/sec.c
++++ b/dlls/ntdll/sec.c
+@@ -404,10 +404,10 @@ BOOLEAN WINAPI RtlCopySid( DWORD nDestinationSidLength, PSID pDestinationSid, PS
+  *   TRUE if pSid is valid,
+  *   FALSE otherwise.
+  */
+-BOOLEAN WINAPI RtlValidSid( PSID pSid )
++BOOLEAN WINAPI __USES_SEH RtlValidSid( PSID pSid )
+ {
+     BOOL ret;
+-    __TRY
++    __TRY_SEH
+     {
+         ret = TRUE;
+         if (!pSid || ((SID*)pSid)->Revision != SID_REVISION ||
+@@ -416,12 +416,12 @@ BOOLEAN WINAPI RtlValidSid( PSID pSid )
+             ret = FALSE;
+         }
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         WARN("(%p): invalid pointer!\n", pSid);
+         return FALSE;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     return ret;
+ }
+ 
+@@ -1497,12 +1497,12 @@ NTSTATUS WINAPI RtlAddMandatoryAce(
+ /******************************************************************************
+  *  RtlValidAcl		[NTDLL.@]
+  */
+-BOOLEAN WINAPI RtlValidAcl(PACL pAcl)
++BOOLEAN WINAPI __USES_SEH RtlValidAcl(PACL pAcl)
+ {
+         BOOLEAN ret;
+ 	TRACE("(%p)\n", pAcl);
+ 
+-	__TRY
++	__TRY_SEH
+ 	{
+ 		PACE_HEADER	ace;
+ 		int		i;
+@@ -1526,12 +1526,12 @@ BOOLEAN WINAPI RtlValidAcl(PACL pAcl)
+                     }
+                 }
+ 	}
+-	__EXCEPT_PAGE_FAULT
++	__EXCEPT_PAGE_FAULT_SEH
+ 	{
+ 		WARN("(%p): invalid pointer!\n", pAcl);
+ 		return FALSE;
+ 	}
+-	__ENDTRY
++	__ENDTRY_SEH
+         return ret;
+ }
+ 
+diff --git a/dlls/ntdll/signal_x86_64.c b/dlls/ntdll/signal_x86_64.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/signal_x86_64.c
++++ b/dlls/ntdll/signal_x86_64.c
+@@ -675,21 +675,21 @@ __ASM_GLOBAL_FUNC( KiUserApcDispatcher,
+                    "int3")
+ 
+ 
+-void WINAPI user_callback_dispatcher( ULONG id, void *args, ULONG len )
++void WINAPI __USES_SEH user_callback_dispatcher( ULONG id, void *args, ULONG len )
+ {
+     NTSTATUS status;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         NTSTATUS (WINAPI *func)(void *, ULONG) = ((void **)NtCurrentTeb()->Peb->KernelCallbackTable)[id];
+         status = NtCallbackReturn( NULL, 0, func( args, len ));
+     }
+-    __EXCEPT_ALL
++    __EXCEPT_ALL_SEH
+     {
+         ERR_(seh)( "ignoring exception\n" );
+         status = NtCallbackReturn( 0, 0, 0 );
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ 
+     RtlRaiseStatus( status );
+ }
+diff --git a/dlls/ntoskrnl.exe/pnp.c b/dlls/ntoskrnl.exe/pnp.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntoskrnl.exe/pnp.c
++++ b/dlls/ntoskrnl.exe/pnp.c
+@@ -697,17 +697,17 @@ static LONG WINAPI rpc_filter( EXCEPTION_POINTERS *eptr )
+     return I_RpcExceptionFilter( eptr->ExceptionRecord->ExceptionCode );
+ }
+ 
+-static void send_devicechange( DWORD code, void *data, unsigned int size )
++static void __USES_SEH send_devicechange( DWORD code, void *data, unsigned int size )
+ {
+-    __TRY
++    __TRY_SEH
+     {
+         plugplay_send_event( code, data, size );
+     }
+-    __EXCEPT(rpc_filter)
++    __EXCEPT_SEH(rpc_filter)
+     {
+         WARN("Failed to send event, exception %#lx.\n", GetExceptionCode());
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ }
+ 
+ /***********************************************************************
+diff --git a/dlls/user32/cursoricon.c b/dlls/user32/cursoricon.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/cursoricon.c
++++ b/dlls/user32/cursoricon.c
+@@ -2132,8 +2132,8 @@ end:
+  *
+  * See LoadImageW.
+  */
+-HANDLE WINAPI LoadImageA( HINSTANCE hinst, LPCSTR name, UINT type,
+-                              INT desiredx, INT desiredy, UINT loadflags)
++HANDLE WINAPI __USES_SEH LoadImageA( HINSTANCE hinst, LPCSTR name, UINT type,
++                                     INT desiredx, INT desiredy, UINT loadflags)
+ {
+     HANDLE res;
+     LPWSTR u_name;
+@@ -2141,16 +2141,16 @@ HANDLE WINAPI LoadImageA( HINSTANCE hinst, LPCSTR name, UINT type,
+     if (IS_INTRESOURCE(name))
+         return LoadImageW(hinst, (LPCWSTR)name, type, desiredx, desiredy, loadflags);
+ 
+-    __TRY {
++    __TRY_SEH {
+         DWORD len = MultiByteToWideChar( CP_ACP, 0, name, -1, NULL, 0 );
+         u_name = HeapAlloc( GetProcessHeap(), 0, len * sizeof(WCHAR) );
+         MultiByteToWideChar( CP_ACP, 0, name, -1, u_name, len );
+     }
+-    __EXCEPT_PAGE_FAULT {
++    __EXCEPT_PAGE_FAULT_SEH {
+         SetLastError( ERROR_INVALID_PARAMETER );
+         return 0;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+     res = LoadImageW(hinst, u_name, type, desiredx, desiredy, loadflags);
+     HeapFree(GetProcessHeap(), 0, u_name);
+     return res;
+@@ -2329,7 +2329,7 @@ HANDLE WINAPI CopyImage( HANDLE hnd, UINT type, INT desiredx,
+                     {
+                         /* Look if the colors of the DIB are black and white */
+ 
+-                        monochrome = 
++                        monochrome =
+                               (bi->bmiColors[0].rgbRed == 0xff
+                             && bi->bmiColors[0].rgbGreen == 0xff
+                             && bi->bmiColors[0].rgbBlue == 0xff
+diff --git a/dlls/user32/listbox.c b/dlls/user32/listbox.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/listbox.c
++++ b/dlls/user32/listbox.c
+@@ -841,7 +841,7 @@ static BOOL LISTBOX_SetTabStops( LB_DESCR *descr, INT count, LPINT tabs )
+ /***********************************************************************
+  *           LISTBOX_GetText
+  */
+-static LRESULT LISTBOX_GetText( LB_DESCR *descr, INT index, LPWSTR buffer, BOOL unicode )
++static LRESULT __USES_SEH LISTBOX_GetText( LB_DESCR *descr, INT index, LPWSTR buffer, BOOL unicode )
+ {
+     DWORD len;
+ 
+@@ -865,7 +865,7 @@ static LRESULT LISTBOX_GetText( LB_DESCR *descr, INT index, LPWSTR buffer, BOOL
+ 
+         TRACE("index %d (0x%04x) %s\n", index, index, debugstr_w(str));
+ 
+-        __TRY  /* hide a Delphi bug that passes a read-only buffer */
++        __TRY_SEH  /* hide a Delphi bug that passes a read-only buffer */
+         {
+             if(unicode)
+             {
+@@ -878,13 +878,13 @@ static LRESULT LISTBOX_GetText( LB_DESCR *descr, INT index, LPWSTR buffer, BOOL
+                                           0x7FFFFFFF, NULL, NULL) - 1;
+             }
+         }
+-        __EXCEPT_PAGE_FAULT
++        __EXCEPT_PAGE_FAULT_SEH
+         {
+             WARN( "got an invalid buffer (Delphi bug?)\n" );
+             SetLastError( ERROR_INVALID_PARAMETER );
+             return LB_ERR;
+         }
+-        __ENDTRY
++        __ENDTRY_SEH
+     } else
+     {
+         if (buffer)
+diff --git a/dlls/user32/message.c b/dlls/user32/message.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/message.c
++++ b/dlls/user32/message.c
+@@ -282,7 +282,7 @@ static BOOL dde_add_pair(HGLOBAL chm, HGLOBAL shm)
+ 	    tmp  = HeapReAlloc( GetProcessHeap(), 0, dde_pairs,
+                                             (dde_num_alloc + GROWBY) * sizeof(struct DDE_pair));
+ 	else
+-	    tmp  = HeapAlloc( GetProcessHeap(), 0, 
++	    tmp  = HeapAlloc( GetProcessHeap(), 0,
+                                             (dde_num_alloc + GROWBY) * sizeof(struct DDE_pair));
+ 
+         if (!tmp)
+@@ -864,23 +864,23 @@ static LRESULT dispatch_message( const MSG *msg, BOOL ansi )
+  *
+  * See DispatchMessageW.
+  */
+-LRESULT WINAPI DECLSPEC_HOTPATCH DispatchMessageA( const MSG* msg )
++LRESULT WINAPI DECLSPEC_HOTPATCH __USES_SEH DispatchMessageA( const MSG* msg )
+ {
+     LRESULT retval;
+ 
+       /* Process timer messages */
+     if (msg->lParam && msg->message == WM_TIMER)
+     {
+-        __TRY
++        __TRY_SEH
+         {
+             retval = CallWindowProcA( (WNDPROC)msg->lParam, msg->hwnd,
+                                       msg->message, msg->wParam, GetTickCount() );
+         }
+-        __EXCEPT_ALL
++        __EXCEPT_ALL_SEH
+         {
+             retval = 0;
+         }
+-        __ENDTRY
++        __ENDTRY_SEH
+         return retval;
+     }
+ 
+@@ -914,7 +914,7 @@ LRESULT WINAPI DECLSPEC_HOTPATCH DispatchMessageA( const MSG* msg )
+  *   ECMA-234, Win32
+  *
+  */
+-LRESULT WINAPI DECLSPEC_HOTPATCH DispatchMessageW( const MSG* msg )
++LRESULT WINAPI DECLSPEC_HOTPATCH __USES_SEH DispatchMessageW( const MSG* msg )
+ {
+     LRESULT retval;
+ 
+@@ -923,16 +923,16 @@ LRESULT WINAPI DECLSPEC_HOTPATCH DispatchMessageW( const MSG* msg )
+     {
+         if (msg->lParam)
+         {
+-            __TRY
++            __TRY_SEH
+             {
+                 retval = CallWindowProcW( (WNDPROC)msg->lParam, msg->hwnd,
+                                           msg->message, msg->wParam, GetTickCount() );
+             }
+-            __EXCEPT_ALL
++            __EXCEPT_ALL_SEH
+             {
+                 retval = 0;
+             }
+-            __ENDTRY
++            __ENDTRY_SEH
+             return retval;
+         }
+     }
+diff --git a/dlls/user32/win.c b/dlls/user32/win.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/win.c
++++ b/dlls/user32/win.c
+@@ -1059,14 +1059,14 @@ LONG WINAPI DECLSPEC_HOTPATCH SetWindowLongW(
+ /*******************************************************************
+  *		GetWindowTextA (USER32.@)
+  */
+-INT WINAPI GetWindowTextA( HWND hwnd, LPSTR lpString, INT nMaxCount )
++INT WINAPI __USES_SEH GetWindowTextA( HWND hwnd, LPSTR lpString, INT nMaxCount )
+ {
+     WCHAR *buffer;
+     int ret = 0;
+ 
+     if (!lpString || nMaxCount <= 0) return 0;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         lpString[0] = 0;
+ 
+@@ -1084,11 +1084,11 @@ INT WINAPI GetWindowTextA( HWND hwnd, LPSTR lpString, INT nMaxCount )
+             ret = strlen(lpString);
+         }
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         ret = 0;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ 
+     return ret;
+ }
+@@ -1097,13 +1097,13 @@ INT WINAPI GetWindowTextA( HWND hwnd, LPSTR lpString, INT nMaxCount )
+ /*******************************************************************
+  *		GetWindowTextW (USER32.@)
+  */
+-INT WINAPI GetWindowTextW( HWND hwnd, LPWSTR lpString, INT nMaxCount )
++INT WINAPI __USES_SEH GetWindowTextW( HWND hwnd, LPWSTR lpString, INT nMaxCount )
+ {
+     int ret;
+ 
+     if (!lpString || nMaxCount <= 0) return 0;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         lpString[0] = 0;
+ 
+@@ -1117,11 +1117,11 @@ INT WINAPI GetWindowTextW( HWND hwnd, LPWSTR lpString, INT nMaxCount )
+             ret = NtUserInternalGetWindowText( hwnd, lpString, nMaxCount );
+         }
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         ret = 0;
+     }
+-    __ENDTRY
++    __ENDTRY_SEH
+ 
+     return ret;
+ }
+diff --git a/dlls/vcruntime140_1/except_x86_64.c b/dlls/vcruntime140_1/except_x86_64.c
+index 11111111111..11111111111 100644
+--- a/dlls/vcruntime140_1/except_x86_64.c
++++ b/dlls/vcruntime140_1/except_x86_64.c
+@@ -519,7 +519,7 @@ static void CALLBACK cxx_catch_cleanup(BOOL normal, void *c)
+     FlsSetValue(fls_index, (void*)(DWORD_PTR)ctx->unwind_state);
+ }
+ 
+-static void* WINAPI call_catch_block4(EXCEPTION_RECORD *rec)
++static void* WINAPI __USES_SEH call_catch_block4(EXCEPTION_RECORD *rec)
+ {
+     ULONG64 frame = rec->ExceptionInformation[1];
+     EXCEPTION_RECORD *prev_rec = (void*)rec->ExceptionInformation[4];
+@@ -538,13 +538,13 @@ static void* WINAPI call_catch_block4(EXCEPTION_RECORD *rec)
+     ctx.unwind_state = rec->ExceptionInformation[3];
+     ctx.prev_rec = prev_rec;
+     (*__processing_throw())--;
+-    __TRY
++    __TRY_SEH
+     {
+-        __TRY
++        __TRY_SEH
+         {
+             ret_addr = handler(0, frame);
+         }
+-        __EXCEPT_CTX(cxx_rethrow_filter, &ctx)
++        __EXCEPT_CTX_SEH(cxx_rethrow_filter, &ctx)
+         {
+             TRACE("detect rethrow: exception code: %lx\n", prev_rec->ExceptionCode);
+             ctx.rethrow = TRUE;
+@@ -562,9 +562,9 @@ static void* WINAPI call_catch_block4(EXCEPTION_RECORD *rec)
+                         prev_rec->NumberParameters, prev_rec->ExceptionInformation);
+             }
+         }
+-        __ENDTRY
++        __ENDTRY_SEH
+     }
+-    __FINALLY_CTX(cxx_catch_cleanup, &ctx)
++    __FINALLY_CTX_SEH(cxx_catch_cleanup, &ctx)
+ 
+     FlsSetValue(fls_index, (void*)-2);
+     TRACE("handler returned %p, ret_addr[0] %#Ix, ret_addr[1] %#Ix.\n",
+@@ -719,7 +719,7 @@ static void check_noexcept( PEXCEPTION_RECORD rec, const cxx_function_descr *des
+     }
+ }
+ 
+-static DWORD cxx_frame_handler4(EXCEPTION_RECORD *rec, ULONG64 frame,
++static DWORD __USES_SEH cxx_frame_handler4(EXCEPTION_RECORD *rec, ULONG64 frame,
+         CONTEXT *context, DISPATCHER_CONTEXT *dispatch,
+         const cxx_function_descr *descr, int trylevel)
+ {
+@@ -785,16 +785,16 @@ static DWORD cxx_frame_handler4(EXCEPTION_RECORD *rec, ULONG64 frame,
+             ctx.dispatch   = dispatch;
+             ctx.descr      = descr;
+             ctx.trylevel   = trylevel;
+-            __TRY
++            __TRY_SEH
+             {
+                 except_ptrs.ExceptionRecord = rec;
+                 except_ptrs.ContextRecord = context;
+                 se_translator(rec->ExceptionCode, &except_ptrs);
+             }
+-            __EXCEPT_CTX(se_translation_filter, &ctx)
++            __EXCEPT_CTX_SEH(se_translation_filter, &ctx)
+             {
+             }
+-            __ENDTRY
++            __ENDTRY_SEH
+         }
+     }
+ 
+diff --git a/dlls/wininet/http.c b/dlls/wininet/http.c
+index 11111111111..11111111111 100644
+--- a/dlls/wininet/http.c
++++ b/dlls/wininet/http.c
+@@ -1282,7 +1282,7 @@ BOOL WINAPI HttpAddRequestHeadersW(HINTERNET hHttpRequest,
+ 
+     TRACE("%p, %s, %lu, %08lx\n", hHttpRequest, debugstr_wn(lpszHeader, dwHeaderLength), dwHeaderLength, dwModifier);
+ 
+-    if (!lpszHeader) 
++    if (!lpszHeader)
+       return TRUE;
+ 
+     request = (http_request_t*) get_handle_object( hHttpRequest );
+@@ -1336,7 +1336,7 @@ static void free_accept_types( WCHAR **accept_types )
+     free(accept_types);
+ }
+ 
+-static WCHAR **convert_accept_types( const char **accept_types )
++static WCHAR **__USES_SEH convert_accept_types( const char **accept_types )
+ {
+     unsigned int count;
+     const char **types = accept_types;
+@@ -1347,7 +1347,7 @@ static WCHAR **convert_accept_types( const char **accept_types )
+     count = 0;
+     while (*types)
+     {
+-        __TRY
++        __TRY_SEH
+         {
+             /* find out how many there are */
+             if (*types && **types)
+@@ -1356,12 +1356,12 @@ static WCHAR **convert_accept_types( const char **accept_types )
+                 count++;
+             }
+         }
+-        __EXCEPT_PAGE_FAULT
++        __EXCEPT_PAGE_FAULT_SEH
+         {
+             WARN("invalid accept type pointer\n");
+             invalid_pointer = TRUE;
+         }
+-        __ENDTRY;
++        __ENDTRY_SEH;
+         types++;
+     }
+     if (invalid_pointer) return NULL;
+@@ -3969,13 +3969,13 @@ BOOL WINAPI HttpQueryInfoW(HINTERNET hHttpRequest, DWORD dwInfoLevel,
+ 		info_mod &= ~ modifier_flags[i].val;
+ 	    }
+ 	}
+-	
++
+ 	if (info_mod) {
+ 	    TRACE(" Unknown (%08lx)", info_mod);
+ 	}
+ 	TRACE("\n");
+     }
+-    
++
+     request = (http_request_t*) get_handle_object( hHttpRequest );
+     if (NULL == request ||  request->hdr.htype != WH_HHTTPREQ)
+     {
+diff --git a/dlls/winmm/driver.c b/dlls/winmm/driver.c
+index 11111111111..11111111111 100644
+--- a/dlls/winmm/driver.c
++++ b/dlls/winmm/driver.c
+@@ -96,20 +96,20 @@ static	unsigned DRIVER_GetNumberOfModuleRefs(HMODULE hModule, WINE_DRIVER** foun
+  *
+  * From a hDrvr being 32 bits, returns the WINE internal structure.
+  */
+-LPWINE_DRIVER	DRIVER_FindFromHDrvr(HDRVR hDrvr)
++LPWINE_DRIVER	__USES_SEH DRIVER_FindFromHDrvr(HDRVR hDrvr)
+ {
+     LPWINE_DRIVER d;
+ 
+-    __TRY
++    __TRY_SEH
+     {
+         d = (LPWINE_DRIVER)hDrvr;
+         if (d && d->dwMagic != WINE_DI_MAGIC) d = NULL;
+     }
+-    __EXCEPT_PAGE_FAULT
++    __EXCEPT_PAGE_FAULT_SEH
+     {
+         return NULL;
+     }
+-    __ENDTRY;
++    __ENDTRY_SEH;
+ 
+     if (d) TRACE("%p -> %p, %p\n", hDrvr, d->lpDrvProc, (void *)d->dwDriverID);
+     else TRACE("%p -> NULL\n", hDrvr);
+@@ -398,7 +398,7 @@ HDRVR WINAPI OpenDriver(LPCWSTR lpDriverName, LPCWSTR lpSectionName, LPARAM lPar
+ 	(lpDrv = DRIVER_TryOpenDriver32(libName, lParam)))
+ 	goto the_end;
+ 
+-    TRACE("Failed to open driver %s from system.ini file, section %s\n", 
++    TRACE("Failed to open driver %s from system.ini file, section %s\n",
+           debugstr_w(lpDriverName), debugstr_w(lpSectionName));
+ 
+ the_end:
+@@ -575,7 +575,7 @@ BOOL WINAPI DriverCallback(DWORD_PTR dwCallBack, DWORD uFlags, HDRVR hDev,
+ 	/* this is an undocumented DCB_ value used for mmThreads
+ 	 * loword of dwCallBack contains the handle of the lpMMThd block
+ 	 * which dwSignalCount has to be incremented
+-	 */     
++	 */
+         if (pFnGetMMThread16)
+ 	{
+ 	    WINE_MMTHREAD*	lpMMThd = pFnGetMMThread16(LOWORD(dwCallBack));
+diff --git a/dlls/winmm/lolvldrv.c b/dlls/winmm/lolvldrv.c
+index 11111111111..11111111111 100644
+--- a/dlls/winmm/lolvldrv.c
++++ b/dlls/winmm/lolvldrv.c
+@@ -245,7 +245,7 @@ static LPWINE_MLD MMDRV_GetByID(UINT uDevID, UINT type)
+ /**************************************************************************
+  * 				MMDRV_Get			[internal]
+  */
+-LPWINE_MLD	MMDRV_Get(HANDLE _hndl, UINT type, BOOL bCanBeID)
++LPWINE_MLD	__USES_SEH MMDRV_Get(HANDLE _hndl, UINT type, BOOL bCanBeID)
+ {
+     LPWINE_MLD	mld = NULL;
+     UINT_PTR    hndl = (UINT_PTR)_hndl;
+@@ -259,16 +259,16 @@ LPWINE_MLD	MMDRV_Get(HANDLE _hndl, UINT type, BOOL bCanBeID)
+ 	if (hndl & 0x8000) {
+ 	    UINT idx = hndl & ~0x8000;
+ 	    if (idx < ARRAY_SIZE(MM_MLDrvs)) {
+-                __TRY
++                __TRY_SEH
+                 {
+                     mld = MM_MLDrvs[idx];
+                     if (mld && mld->type != type) mld = NULL;
+                 }
+-                __EXCEPT_PAGE_FAULT
++                __EXCEPT_PAGE_FAULT_SEH
+                 {
+                     mld = NULL;
+                 }
+-                __ENDTRY;
++                __ENDTRY_SEH;
+ 	    }
+ 	}
+     }
+@@ -353,7 +353,7 @@ static  BOOL	MMDRV_InitPerType(LPWINE_MM_DRIVER lpDrv, UINT type, UINT wMsg)
+     else return FALSE;
+ 
+     TRACE("Got %u dev for (%s:%s)\n", count, lpDrv->drvname, llTypes[type].typestr);
+-    
++
+     if (HIWORD(count))
+         return FALSE;
+ 
+diff --git a/programs/winedbg/dbg.y b/programs/winedbg/dbg.y
+index 11111111111..11111111111 100644
+--- a/programs/winedbg/dbg.y
++++ b/programs/winedbg/dbg.y
+@@ -151,7 +151,7 @@ command:
+     | disassemble_command
+     | set_command
+     | x_command
+-    | print_command     
++    | print_command
+     | break_command
+     | watch_command
+     | display_command
+@@ -417,11 +417,11 @@ expr:
+  * The lvalue rule builds an expression tree.  This is a limited form
+  * of expression that is suitable to be used as an lvalue.
+  */
+-lvalue_addr: 
++lvalue_addr:
+       lvalue                     { $$ = expr_eval($1); }
+     ;
+ 
+-lvalue: 
++lvalue:
+       tNUM                       { $$ = expr_alloc_sconstant($1); }
+     | tINTVAR                    { $$ = expr_alloc_internal_var($1); }
+     | identifier		 { $$ = expr_alloc_symbol($1); }
+@@ -594,7 +594,7 @@ int input_read_line(const char* pfx, char* buf, int size)
+  *
+  * Debugger command line parser
+  */
+-void	parser_handle(const char* filename, HANDLE input)
++void	__USES_SEH parser_handle(const char* filename, HANDLE input)
+ {
+     BOOL ret_ok;
+     struct parser_context prev = dbg_parser;
+@@ -617,16 +617,16 @@ void	parser_handle(const char* filename, HANDLE input)
+     dbg_parser.last_line_idx = 0;
+     do
+     {
+-       __TRY
++       __TRY_SEH
+        {
+ 	  ret_ok = TRUE;
+ 	  dbg_parse();
+        }
+-       __EXCEPT(wine_dbg_cmd)
++       __EXCEPT_SEH(wine_dbg_cmd)
+        {
+ 	  ret_ok = FALSE;
+        }
+-       __ENDTRY;
++       __ENDTRY_SEH;
+        lexeme_flush();
+     } while (!ret_ok);
+ 
+@@ -660,7 +660,7 @@ HANDLE WINAPIV parser_generate_command_file(const char* pmt, ...)
+ 
+     GetTempPathA(sizeof(path), path);
+     GetTempFileNameA(path, "WD", 0, file);
+-    hFile = CreateFileA(file, GENERIC_READ|GENERIC_WRITE|DELETE, FILE_SHARE_DELETE, 
++    hFile = CreateFileA(file, GENERIC_READ|GENERIC_WRITE|DELETE, FILE_SHARE_DELETE,
+                         NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, 0);
+     if (hFile != INVALID_HANDLE_VALUE)
+     {
+diff --git a/programs/winedbg/tgt_minidump.c b/programs/winedbg/tgt_minidump.c
+index 11111111111..11111111111 100644
+--- a/programs/winedbg/tgt_minidump.c
++++ b/programs/winedbg/tgt_minidump.c
+@@ -147,12 +147,12 @@ static BOOL tgt_process_minidump_read(HANDLE hProcess, const void* addr,
+         }
+     }
+     /* FIXME: this is a dirty hack to let the last frame in a bt to work
+-     * However, we need to check who's to blame, this code or the current 
++     * However, we need to check who's to blame, this code or the current
+      * dbghelp!StackWalk implementation
+      */
+     if ((DWORD_PTR)addr < 32)
+     {
+-        memset(buffer, 0, len); 
++        memset(buffer, 0, len);
+         if (rlen) *rlen = len;
+         return TRUE;
+     }
+@@ -502,14 +502,14 @@ static void cleanup(struct tgt_process_minidump_data* data)
+ 
+ static struct be_process_io be_process_minidump_io;
+ 
+-enum dbg_start minidump_reload(int argc, char* argv[])
++enum dbg_start __USES_SEH minidump_reload(int argc, char* argv[])
+ {
+     struct tgt_process_minidump_data*   data;
+     enum dbg_start                      ret = start_error_parse;
+ 
+     /* try the form <myself> minidump-file */
+     if (argc != 1) return start_error_parse;
+-    
++
+     WINE_TRACE("Processing Minidump file %s\n", argv[0]);
+ 
+     data = malloc(sizeof(struct tgt_process_minidump_data));
+@@ -518,24 +518,24 @@ enum dbg_start minidump_reload(int argc, char* argv[])
+     data->hMap    = NULL;
+     data->hFile   = INVALID_HANDLE_VALUE;
+ 
+-    if ((data->hFile = CreateFileA(argv[0], GENERIC_READ, FILE_SHARE_READ, NULL, 
++    if ((data->hFile = CreateFileA(argv[0], GENERIC_READ, FILE_SHARE_READ, NULL,
+                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)) != INVALID_HANDLE_VALUE &&
+         ((data->hMap = CreateFileMappingA(data->hFile, NULL, PAGE_READONLY, 0, 0, NULL)) != 0) &&
+         ((data->mapping = MapViewOfFile(data->hMap, FILE_MAP_READ, 0, 0, 0)) != NULL))
+     {
+-        __TRY
++        __TRY_SEH
+         {
+             if (((MINIDUMP_HEADER*)data->mapping)->Signature == MINIDUMP_SIGNATURE)
+             {
+                 ret = minidump_do_reload(data);
+             }
+         }
+-        __EXCEPT_PAGE_FAULT
++        __EXCEPT_PAGE_FAULT_SEH
+         {
+             dbg_printf("Unexpected fault while reading minidump %s\n", argv[0]);
+             dbg_curr_pid = 0;
+         }
+-        __ENDTRY;
++        __ENDTRY_SEH;
+     }
+     if (ret != start_ok) cleanup(data);
+     return ret;
+-- 
+2.39.0
+

@@ -1,0 +1,233 @@
+From 92d59a623a8fe85e30fef6dfad424a9cd6218e4e Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Mon, 7 Nov 2022 03:56:51 +0100
+Subject: [PATCH 1/2] include: Add SEH exception macros.
+
+---
+ include/wine/exception.h | 210 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 210 insertions(+)
+
+diff --git a/include/wine/exception.h b/include/wine/exception.h
+index 11111111111..11111111111 100644
+--- a/include/wine/exception.h
++++ b/include/wine/exception.h
+@@ -138,6 +138,216 @@ extern DWORD __cdecl __wine_finally_ctx_handler( EXCEPTION_RECORD *record,
+                                                  CONTEXT *context,
+                                                  EXCEPTION_REGISTRATION_RECORD **pdispatcher ) DECLSPEC_HIDDEN;
+ 
++#if defined(__GNUC__) && defined(__SEH__) && defined(_WIN64) && defined(__WINE_PE_BUILD)
++
++#include <wine/asm.h>
++
++/* -O1 to not reorder past the ret instruction and to not replace the ret with a jmp.
++   -fno-reorder-blocks to not reorder past the end of the __TRY (neither needed nor supported before GCC 3.3).
++   -fexceptions and -fnon-call-exceptions for exception support. */
++#if (__GNUC__ > 3) || ((__GNUC__ == 3) && (__GNUC_MINOR__ >= 3))
++#define __USES_SEH __attribute__ ((optimize(1,"no-reorder-blocks","exceptions","non-call-exceptions")))
++#else
++#define __USES_SEH __attribute__ ((optimize(1,"exceptions","non-call-exceptions")))
++#endif
++
++#define __TRY_SEH \
++     do { __label__ __TRY_begin, __TRY_endtry, __TRY_end; \
++     __TRY_begin: \
++         __asm__ __volatile__ goto ( \
++             ".set __seh_handler_emit_header, 0\n\t" \
++             ".ifndef __seh_handler_function\n\t" \
++             "    .set __seh_handler_emit_header, 1\n\t" \
++             "    .set __seh_handler_function, %0\n\t" \
++             ".elseif __seh_handler_function != %0\n\t" \
++             "    .set __seh_handler_emit_header, 1\n\t" \
++             "    .set __seh_handler_function, %0\n\t" \
++             ".endif\n\t" \
++             ".if __seh_handler_emit_header\n\t" \
++             "    .ifdef __seh_handler_count\n\t" \
++             "        .if __seh_handler_count != 0\n\t" \
++             "            .error \"Previous function had no ret instruction!\"\n\t" \
++             "        .endif\n\t" \
++             "    .endif\n\t" \
++             "    .seh_handler __C_specific_handler, @unwind, @except\n\t" \
++             "    .seh_handlerdata\n\t" \
++             "    .long .L___seh_handler_count_value%0\n\t" \
++             "    .set __seh_handler_count, 0\n\t" \
++             "    .seh_code\n\t" \
++             ".endif\n\t" \
++             \
++             ".ifdef __seh_handler_ret_defined\n\t" \
++             "    .if __seh_handler_ret_defined != 0\n\t" \
++             "        .purgem ret\n\t" \
++             "    .endif\n\t" \
++             ".endif\n\t" \
++             ".macro ret\n\t" \
++             "    .if __seh_handler_function != %0\n\t" \
++             "        .error \"Previous function had no ret instruction!\"\n\t" \
++             "    .endif\n\t" \
++             "    .struct __seh_handler_count\n\t" \
++             ".L___seh_handler_count_value%0:\n\t" \
++             "    .seh_code\n\t" \
++             "    .set __seh_handler_count, 0\n\t" \
++             "    .purgem ret\n\t" \
++             "    .set __seh_handler_ret_defined, 0\n\t" \
++             "    ret\n\t" \
++             ".endm\n\t" \
++             ".set __seh_handler_ret_defined, 1\n\t" \
++             :: "i" (__func__) \
++             :: __TRY_begin, __TRY_endtry); \
++         do {
++
++#define __EXCEPT_SEH(func) \
++         } while(0); \
++         __asm__ __volatile__ goto ("jmp %l[__TRY_end]\n\t" :::: __TRY_end); \
++     __TRY_endtry: \
++         do { \
++             __label__ __TRY_handler; \
++             __asm__ __volatile__ goto ( \
++                 ".seh_handlerdata\n\t" \
++                 ".set __seh_handler_count, __seh_handler_count+1\n\t" \
++                 ".rva %l[__TRY_begin], %l[__TRY_endtry], " __ASM_NAME(#func) ", %l[__TRY_handler]\n\t" \
++                 ".seh_code\n\t" \
++                 :: "i" (func) \
++                 :: __TRY_begin, __TRY_endtry, __TRY_handler); \
++         __TRY_handler: \
++         } while (0); \
++         do { \
++             EXCEPTION_POINTERS *__eptr; \
++             do { \
++                 register EXCEPTION_POINTERS *rcx __asm__ ("rcx"); \
++                 __eptr = rcx; \
++             } while(0); \
++             (void)__eptr; \
++             do { \
++
++#define __EXCEPT_CTX_SEH(func, context) \
++         } while(0); \
++         __asm__ __volatile__ goto ("jmp %l[__TRY_end]\n\t" :::: __TRY_end); \
++     __TRY_endtry: \
++         do { \
++             __label__ __TRY_filter, __TRY_handler; \
++             register EXCEPTION_POINTERS *__eptr __asm__ ("rcx"); \
++             __asm__ __volatile__ goto ( \
++                 ".seh_handlerdata\n\t" \
++                 ".set __seh_handler_count, __seh_handler_count+1\n\t" \
++                 ".rva %l[__TRY_begin], %l[__TRY_endtry], %l[__TRY_filter], %l[__TRY_handler]\n\t" \
++                 ".seh_code\n\t" \
++                 :::: __TRY_begin, __TRY_endtry, __TRY_filter, __TRY_handler); \
++         __TRY_filter: \
++             __asm__ __volatile__ ( \
++                 "jmp " __ASM_NAME(#func) "\n\t" \
++                 :: "i" (func), "c" (__eptr), "d" (context)); \
++             __builtin_unreachable(); \
++         __TRY_handler: \
++         } while (0); \
++         do { \
++             EXCEPTION_POINTERS *__eptr; \
++             do { \
++                 register EXCEPTION_POINTERS *rcx __asm__ ("rcx"); \
++                 __eptr = rcx; \
++             } while(0); \
++             (void)__eptr; \
++             do { \
++
++#define __EXCEPT_EXPR_SEH(expression) \
++         } while(0); \
++         __asm__ __volatile__ goto ("jmp %l[__TRY_end]\n\t" :::: __TRY_end); \
++     __TRY_endtry: \
++         do { \
++             __label__ __TRY_filter, __TRY_handler; \
++             register EXCEPTION_POINTERS *__eptr __asm__ ("rcx"); \
++             __asm__ __volatile__ goto ( \
++                 ".seh_handlerdata\n\t" \
++                 ".set __seh_handler_count, __seh_handler_count+1\n\t" \
++                 ".rva %l[__TRY_begin], %l[__TRY_endtry], %l[__TRY_filter], %l[__TRY_handler]\n\t" \
++                 ".seh_code\n\t" \
++                 :::: __TRY_begin, __TRY_endtry, __TRY_filter, __TRY_handler); \
++         __TRY_filter: \
++             (void)__eptr; \
++             __asm__ __volatile__ ( \
++                 ".byte 0xc3\n\t" /* ret */ \
++                 :: "c" (expression)); \
++             __builtin_unreachable(); \
++         __TRY_handler: \
++         } while (0); \
++         do { \
++             EXCEPTION_POINTERS *__eptr; \
++             do { \
++                 register EXCEPTION_POINTERS *rcx __asm__ ("rcx"); \
++                 __eptr = rcx; \
++             } while(0); \
++             (void)__eptr; \
++             do { \
++
++#define __EXCEPT_PAGE_FAULT_SEH __EXCEPT_EXPR_SEH(GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
++#define __EXCEPT_ALL_SEH        __EXCEPT_EXPR_SEH(EXCEPTION_EXECUTE_HANDLER)
++
++#define __ENDTRY_SEH \
++             } while (0); \
++         } while (0); \
++     __TRY_end: \
++     } while (0);
++
++#define __FINALLY_SEH(func) \
++         } while (0); \
++     __TRY_endtry: \
++         func( TRUE ); \
++         __asm__ __volatile__ goto ( \
++             ".seh_handlerdata\n\t" \
++             ".set __seh_handler_count, __seh_handler_count+1\n\t" \
++             ".rva %l[__TRY_begin], %l[__TRY_endtry], " __ASM_NAME(#func) "\n\t" \
++             ".long 0\n\t" \
++             ".seh_code\n\t" \
++             :: "i" (func) \
++             :: __TRY_begin, __TRY_endtry); \
++     __TRY_end: \
++     } while (0);
++
++#define __FINALLY_CTX_SEH(func, context) \
++         } while (0); \
++         do { \
++             __label__ __TRY_endtry_inner; \
++         __TRY_endtry_inner: \
++             func( TRUE, (context) ); \
++             __asm__ __volatile__ goto ("jmp %l[__TRY_end]\n\t" :::: __TRY_end); \
++         __TRY_endtry: \
++             do { \
++                 __label__ __TRY_filter; \
++                 register BOOL __normal __asm__ ("rcx"); \
++                 __asm__ __volatile__ goto ( \
++                     ".seh_handlerdata\n\t" \
++                     ".set __seh_handler_count, __seh_handler_count+1\n\t" \
++                     ".rva %l[__TRY_begin], %l[__TRY_endtry_inner], %l[__TRY_filter]\n\t" \
++                     ".long 0\n\t" \
++                     ".seh_code\n\t" \
++                     :::: __TRY_begin, __TRY_endtry_inner, __TRY_filter); \
++             __TRY_filter: \
++                 __asm__ __volatile__ ( \
++                     "jmp " __ASM_NAME(#func) "\n\t" \
++                     :: "i" (func), "c" (__normal), "d" (context)); \
++                 __builtin_unreachable(); \
++             } while (0); \
++         } while (0); \
++     __TRY_end: \
++     } while (0);
++
++#else
++
++#define __USES_SEH
++#define __TRY_SEH __TRY
++#define __EXCEPT_SEH(func) __EXCEPT(func)
++#define __EXCEPT_CTX_SEH(func, context) __EXCEPT_CTX(func, context)
++#define __EXCEPT_HANDLER_SEH(handler) __EXCEPT_HANDLER(handler)
++#define __EXCEPT_PAGE_FAULT_SEH __EXCEPT_PAGE_FAULT
++#define __EXCEPT_ALL_SEH __EXCEPT_ALL
++#define __ENDTRY_SEH __ENDTRY
++#define __FINALLY_SEH(func) __FINALLY(func)
++#define __FINALLY_CTX_SEH(func, context) __FINALLY_CTX(func, context)
++
++#endif
++
+ #define __TRY \
+     do { __WINE_FRAME __f; \
+          int __first = 1; \
+-- 
+2.39.0
+

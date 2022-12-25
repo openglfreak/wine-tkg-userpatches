@@ -16,23 +16,23 @@ diff --git a/dlls/opengl32/wgl.c b/dlls/opengl32/wgl.c
 index 11111111111..11111111111 100644
 --- a/dlls/opengl32/wgl.c
 +++ b/dlls/opengl32/wgl.c
-@@ -454,6 +454,7 @@ INT WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR* ppfd)
+@@ -117,6 +117,7 @@ INT WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR* ppfd)
      PIXELFORMATDESCRIPTOR format, best;
      int i, count, best_format;
      int bestDBuffer = -1, bestStereo = -1;
-+    uint bestdelta = ~0U;
++    unsigned int bestdelta = ~0U;
  
-     TRACE_(wgl)( "%p %p: size %u version %u flags %u type %u color %u %u,%u,%u,%u "
-                  "accum %u depth %u stencil %u aux %u\n",
-@@ -474,6 +475,7 @@ INT WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR* ppfd)
+     TRACE( "%p %p: size %u version %u flags %lu type %u color %u %u,%u,%u,%u "
+            "accum %u depth %u stencil %u aux %u\n",
+@@ -137,6 +138,7 @@ INT WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR* ppfd)
  
      for (i = 1; i <= count; i++)
      {
-+        uint delta = 0;
++        unsigned int delta = 0;
          if (!wglDescribePixelFormat( hdc, i, sizeof(format), &format )) continue;
  
          if ((ppfd->iPixelType == PFD_TYPE_COLORINDEX) != (format.iPixelType == PFD_TYPE_COLORINDEX))
-@@ -513,24 +515,34 @@ INT WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR* ppfd)
+@@ -176,24 +178,34 @@ INT WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR* ppfd)
          {
              if (((ppfd->dwFlags & PFD_DOUBLEBUFFER) != bestDBuffer) &&
                  ((format.dwFlags & PFD_DOUBLEBUFFER) == (ppfd->dwFlags & PFD_DOUBLEBUFFER)))
@@ -69,7 +69,7 @@ index 11111111111..11111111111 100644
  
          /* Below we will do a number of checks to select the 'best' pixelformat.
           * We assume the precedence cColorBits > cAlphaBits > cDepthBits > cStencilBits -> cAuxBuffers.
-@@ -542,74 +554,62 @@ INT WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR* ppfd)
+@@ -205,74 +217,62 @@ INT WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR* ppfd)
  
          if (ppfd->cColorBits)
          {
@@ -109,25 +109,6 @@ index 11111111111..11111111111 100644
 +                delta++;
          }
 +        
-         if (ppfd->cDepthBits && !(ppfd->dwFlags & PFD_DEPTH_DONTCARE))
-         {
--            if (((ppfd->cDepthBits > best.cDepthBits) && (format.cDepthBits > best.cDepthBits)) ||
--                ((format.cDepthBits >= ppfd->cDepthBits) && (format.cDepthBits < best.cDepthBits)))
--                goto found;
--
--            if (best.cDepthBits != format.cDepthBits)
--            {
--                TRACE( "depth mismatch for iPixelFormat=%d\n", i );
--                continue;
--            }
-+            if (ppfd->cDepthBits && !format.cDepthBits)
-+                delta += 10000;
-+            else if (ppfd->cDepthBits > format.cDepthBits)
-+                delta += 200;
-+            else if (ppfd->cDepthBits < format.cDepthBits)
-+                delta += 2;
-         }
-+        
          if (ppfd->cStencilBits)
          {
 -            if (((ppfd->cStencilBits > best.cStencilBits) && (format.cStencilBits > best.cStencilBits)) ||
@@ -145,6 +126,25 @@ index 11111111111..11111111111 100644
 +                delta += 400;
 +            else if (ppfd->cStencilBits < format.cStencilBits)
 +                delta++;
+         }
++        
+         if (ppfd->cDepthBits && !(ppfd->dwFlags & PFD_DEPTH_DONTCARE))
+         {
+-            if (((ppfd->cDepthBits > best.cDepthBits) && (format.cDepthBits > best.cDepthBits)) ||
+-                ((format.cDepthBits >= ppfd->cDepthBits) && (format.cDepthBits < best.cDepthBits)))
+-                goto found;
+-
+-            if (best.cDepthBits != format.cDepthBits)
+-            {
+-                TRACE( "depth mismatch for iPixelFormat=%d\n", i );
+-                continue;
+-            }
++            if (ppfd->cDepthBits && !format.cDepthBits)
++                delta += 10000;
++            else if (ppfd->cDepthBits > format.cDepthBits)
++                delta += 200;
++            else if (ppfd->cDepthBits < format.cDepthBits)
++                delta += 2;
          }
 +        
          if (ppfd->cAuxBuffers)
@@ -187,5 +187,5 @@ index 11111111111..11111111111 100644
      TRACE( "returning %u\n", best_format );
 
 -- 
-2.36.1
+2.39.0
 

@@ -1,0 +1,103 @@
+From 0ae80583212d85416339156e5838d670902eccd9 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Wed, 7 Sep 2022 16:10:53 +0200
+Subject: [PATCH 5/5] ntdll: Add thread_get_register_pointer_values-based fast
+ path for NtFlushProcessWriteBuffers.
+
+---
+ dlls/ntdll/unix/virtual.c | 58 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 58 insertions(+)
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -65,6 +65,9 @@
+ #if defined(__APPLE__)
+ # include <mach/mach_init.h>
+ # include <mach/mach_vm.h>
++# include <mach/task.h>
++# include <mach/thread_state.h>
++# include <mach/vm_map.h>
+ #endif
+ 
+ #include <sys/uio.h>
+@@ -230,6 +233,11 @@ struct range_entry
+ static struct range_entry *free_ranges;
+ static struct range_entry *free_ranges_end;
+ 
++#ifdef __APPLE__
++static kern_return_t (*pthread_get_register_pointer_values)( thread_t, uintptr_t*, size_t*, uintptr_t* );
++static pthread_once_t tgrpvs_init_once = PTHREAD_ONCE_INIT;
++#endif
++
+ #ifdef __linux__
+ #ifdef __NR_membarrier
+ static BOOL membarrier_exp_available;
+@@ -5845,6 +5853,54 @@ NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T
+ }
+ 
+ 
++#ifdef __APPLE__
++
++static void tgrpvs_init( void )
++{
++    pthread_get_register_pointer_values = dlsym( RTLD_DEFAULT, "thread_get_register_pointer_values" );
++}
++
++static int try_mach_tgrpvs( void )
++{
++    /* Taken from https://github.com/dotnet/runtime/blob/7be37908e5a1cbb83b1062768c1649827eeaceaa/src/coreclr/pal/src/thread/process.cpp#L2799 */
++    mach_msg_type_number_t count, i;
++    thread_act_array_t threads;
++    kern_return_t kret;
++    int ret = 0;
++
++    pthread_once(&tgrpvs_init_once, tgrpvs_init);
++    if (!pthread_get_register_pointer_values)
++        return 0;
++
++    kret = task_threads( mach_task_self(), &threads, &count );
++    if (kret)
++        return 0;
++
++    for (i = 0; i < count; i++)
++    {
++        uintptr_t reg_values[128];
++        size_t reg_count = ARRAY_SIZE( reg_values );
++        uintptr_t sp;
++
++        kret = pthread_get_register_pointer_values( threads[i], &sp, &reg_count, reg_values );
++        if (kret)
++            goto fail;
++
++        mach_port_deallocate( mach_task_self(), threads[i] );
++    }
++    ret = 1;
++fail:
++    for (; i < count; i++)
++        mach_port_deallocate( mach_task_self(), threads[i] );
++    vm_deallocate( mach_task_self(), (vm_address_t)threads, count * sizeof(threads[0]) );
++    return ret;
++}
++
++#else
++static int try_mach_tgrpvs( void ) { return 0; }
++#endif
++
++
+ #if defined(__linux__) && defined(__NR_membarrier)
+ #define MEMBARRIER_CMD_QUERY                        0x00
+ #define MEMBARRIER_CMD_PRIVATE_EXPEDITED            0x08
+@@ -5949,6 +6005,8 @@ static void do_apc_memorybarrier( void )
+  */
+ void WINAPI NtFlushProcessWriteBuffers(void)
+ {
++    if (try_mach_tgrpvs())
++        return;
+     if (try_exp_membarrier())
+         return;
+     if (try_madvise())
+-- 
+2.39.0
+

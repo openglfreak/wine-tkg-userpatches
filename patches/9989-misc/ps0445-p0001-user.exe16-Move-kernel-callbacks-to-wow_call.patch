@@ -1,0 +1,141 @@
+From 04020a2e4f7c6cc8514ad4231cf1208e22e3974c Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Tue, 22 Nov 2022 18:18:17 +0100
+Subject: [PATCH 01/11] user.exe16: Move kernel callbacks to wow_callbacks.
+
+Signed-off-by: Torge Matthies <tmatthies@codeweavers.com>
+---
+ dlls/user.exe16/message.c      | 20 ++++++++------------
+ dlls/user.exe16/user_private.h |  2 ++
+ dlls/user32/controls.h         |  2 ++
+ dlls/user32/user_main.c        | 13 +++++++++++++
+ dlls/user32/winproc.c          |  2 ++
+ 5 files changed, 27 insertions(+), 12 deletions(-)
+
+diff --git a/dlls/user.exe16/message.c b/dlls/user.exe16/message.c
+index 11111111111..11111111111 100644
+--- a/dlls/user.exe16/message.c
++++ b/dlls/user.exe16/message.c
+@@ -2581,28 +2581,26 @@ HWND create_window16( CREATESTRUCTW *cs, LPCWSTR className, HINSTANCE instance,
+ }
+ 
+ 
+-static void WINAPI User16CallFreeIcon( ULONG *param, ULONG size )
++static void call_free_icon16( HICON16 hIcon )
+ {
+-    GlobalFree16( LOWORD(*param) );
++    GlobalFree16( hIcon );
+ }
+ 
+ 
+-static DWORD WINAPI User16ThunkLock( DWORD *param, ULONG size )
++static DWORD thunk_lock16( DWORD lock, BOOL release )
+ {
+-    if (size != sizeof(DWORD))
++    if (release)
+     {
+-        DWORD lock;
+         ReleaseThunkLock( &lock );
+         return lock;
+     }
+-    RestoreThunkLock( *param );
++    RestoreThunkLock( lock );
+     return 0;
+ }
+ 
+ 
+ void register_wow_handlers(void)
+ {
+-    void **callback_table = NtCurrentTeb()->Peb->KernelCallbackTable;
+     static const struct wow_handlers16 handlers16 =
+     {
+         button_proc16,
+@@ -2615,12 +2613,10 @@ void register_wow_handlers(void)
+         create_window16,
+         call_window_proc_Ato16,
+         call_dialog_proc_Ato16,
++        call_free_icon16,
++        thunk_lock16
+     };
+ 
+-    callback_table[NtUserCallFreeIcon] = User16CallFreeIcon;
+-    callback_table[NtUserThunkLock]    = User16ThunkLock;
+-
+-    NtUserEnableThunkLock( TRUE );
+-
+     UserRegisterWowHandlers( &handlers16, &wow_handlers32 );
++    NtUserEnableThunkLock( TRUE );
+ }
+diff --git a/dlls/user.exe16/user_private.h b/dlls/user.exe16/user_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/user.exe16/user_private.h
++++ b/dlls/user.exe16/user_private.h
+@@ -44,6 +44,8 @@ struct wow_handlers16
+     HWND    (*create_window)(CREATESTRUCTW*,LPCWSTR,HINSTANCE,BOOL);
+     LRESULT (*call_window_proc)(HWND,UINT,WPARAM,LPARAM,LRESULT*,void*);
+     LRESULT (*call_dialog_proc)(HWND,UINT,WPARAM,LPARAM,LRESULT*,void*);
++    void    (*call_free_icon)(HICON16);
++    DWORD   (*thunk_lock)(DWORD,BOOL);
+ };
+ 
+ struct wow_handlers32
+diff --git a/dlls/user32/controls.h b/dlls/user32/controls.h
+index 11111111111..11111111111 100644
+--- a/dlls/user32/controls.h
++++ b/dlls/user32/controls.h
+@@ -45,6 +45,8 @@ struct wow_handlers16
+     HWND    (*create_window)(CREATESTRUCTW*,LPCWSTR,HINSTANCE,BOOL);
+     LRESULT (*call_window_proc)(HWND,UINT,WPARAM,LPARAM,LRESULT*,void*);
+     LRESULT (*call_dialog_proc)(HWND,UINT,WPARAM,LPARAM,LRESULT*,void*);
++    void    (*call_free_icon)(WORD);
++    DWORD   (*thunk_lock)(DWORD,BOOL);
+ };
+ 
+ struct wow_handlers32
+diff --git a/dlls/user32/user_main.c b/dlls/user32/user_main.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/user_main.c
++++ b/dlls/user32/user_main.c
+@@ -199,6 +199,17 @@ static NTSTATUS WINAPI User32UnpackDDEMessage( const struct unpack_dde_message_p
+     return TRUE;
+ }
+ 
++static void WINAPI User32CallFreeIcon( ULONG *param, ULONG size )
++{
++    if (wow_handlers.call_free_icon)
++        wow_handlers.call_free_icon( LOWORD(*param) );
++}
++
++static DWORD WINAPI User32ThunkLock( DWORD *param, ULONG size )
++{
++    return wow_handlers.thunk_lock( param ? *param : 0, size == sizeof(DWORD) );
++}
++
+ static const void *kernel_callback_table[NtUserCallCount] =
+ {
+     User32CallEnumDisplayMonitor,
+@@ -220,6 +231,8 @@ static const void *kernel_callback_table[NtUserCallCount] =
+     User32PostDDEMessage,
+     User32RenderSsynthesizedFormat,
+     User32UnpackDDEMessage,
++    User32CallFreeIcon,
++    User32ThunkLock,
+ };
+ 
+ 
+diff --git a/dlls/user32/winproc.c b/dlls/user32/winproc.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/winproc.c
++++ b/dlls/user32/winproc.c
+@@ -1465,6 +1465,8 @@ struct wow_handlers16 wow_handlers =
+     WIN_CreateWindowEx,
+     NULL,  /* call_window_proc */
+     NULL,  /* call_dialog_proc */
++    NULL,  /* call_free_icon */
++    NULL,  /* thunk_lock */
+ };
+ 
+ static const struct user_client_procs client_procsA =
+-- 
+2.39.0
+

@@ -1,0 +1,322 @@
+From 8a68e59d3fd65a4402d83e6040d715b6e4fc0935 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sat, 10 Dec 2022 12:18:21 +0100
+Subject: [PATCH 5/6] winevulkan: Avoid double indirection in device/queue
+ wrappers.
+
+---
+ dlls/winevulkan/loader.c         |  9 ++++--
+ dlls/winevulkan/vulkan.c         | 54 +++++++++++---------------------
+ dlls/winevulkan/vulkan_loader.h  |  8 ++++-
+ dlls/winevulkan/vulkan_private.h | 44 +++++++++++++-------------
+ 4 files changed, 55 insertions(+), 60 deletions(-)
+
+diff --git a/dlls/winevulkan/loader.c b/dlls/winevulkan/loader.c
+index 11111111111..11111111111 100644
+--- a/dlls/winevulkan/loader.c
++++ b/dlls/winevulkan/loader.c
+@@ -36,6 +36,7 @@ DEFINE_DEVPROPKEY(DEVPROPKEY_GPU_LUID, 0x60b193cb, 0x5276, 0x4d0f, 0x96, 0xfc, 0
+ DEFINE_DEVPROPKEY(WINE_DEVPROPKEY_GPU_VULKAN_UUID, 0x233a9ef3, 0xafc4, 0x4abd, 0xb5, 0x64, 0xc3, 0x2f, 0x21, 0xf1, 0x53, 0x5c, 2);
+ 
+ static HINSTANCE hinstance;
++static struct alloc_info alloc_info;
+ 
+ static void *wine_vk_get_global_proc_addr(const char *name);
+ 
+@@ -255,6 +256,7 @@ static BOOL WINAPI wine_vk_init(INIT_ONCE *once, void *param, void **context)
+     struct init_vulkan_params params;
+ 
+     params.callback_funcs = &callback_funcs;
++    params.alloc_info = &alloc_info;
+     return !__wine_init_unix_call() && !UNIX_CALL(init, &params);
+ }
+ 
+@@ -493,10 +495,13 @@ VkResult WINAPI vkCreateDevice(VkPhysicalDevice phys_dev, const VkDeviceCreateIn
+ 
+     for (i = 0; i < create_info->queueCreateInfoCount; i++)
+         queue_count += create_info->pQueueCreateInfos[i].queueCount;
+-    if (!(device = alloc_vk_object(FIELD_OFFSET(struct VkDevice_T, queues[queue_count]))))
++    if (!(device = alloc_vk_object(alloc_info.device_size + queue_count * alloc_info.queue_size)))
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+     for (i = 0; i < queue_count; i++)
+-        device->queues[i].base.loader_magic = VULKAN_ICD_MAGIC_VALUE;
++    {
++        struct VkQueue_T *queue = (struct VkQueue_T *)((char *)device + alloc_info.device_size + i * alloc_info.queue_size);
++        queue->base.loader_magic = VULKAN_ICD_MAGIC_VALUE;
++    }
+ 
+     params.physicalDevice = phys_dev;
+     params.pCreateInfo = create_info;
+diff --git a/dlls/winevulkan/vulkan.c b/dlls/winevulkan/vulkan.c
+index 11111111111..11111111111 100644
+--- a/dlls/winevulkan/vulkan.c
++++ b/dlls/winevulkan/vulkan.c
+@@ -352,7 +352,7 @@ static void wine_vk_free_command_buffers(struct wine_device *device,
+ 
+ static void wine_vk_device_get_queues(struct wine_device *device,
+         uint32_t family_index, uint32_t queue_count, VkDeviceQueueCreateFlags flags,
+-        struct wine_queue *queues, VkQueue *handles)
++        struct wine_queue *queues)
+ {
+     VkDeviceQueueInfo2 queue_info;
+     unsigned int i;
+@@ -362,7 +362,6 @@ static void wine_vk_device_get_queues(struct wine_device *device,
+         struct wine_queue *queue = &queues[i];
+ 
+         queue->device = device;
+-        queue->handle = (*handles)++;
+         queue->family_index = family_index;
+         queue->queue_index = i;
+         queue->flags = flags;
+@@ -386,8 +385,8 @@ static void wine_vk_device_get_queues(struct wine_device *device,
+             device->funcs.p_vkGetDeviceQueue(device->device, family_index, i, &queue->queue);
+         }
+ 
+-        queue->handle->base.unix_handle = (uintptr_t)queue;
+-        WINE_VK_ADD_DISPATCHABLE_MAPPING(device->phys_dev->instance, queue->handle, queue->queue, queue);
++        queue->handle.base.unix_handle = (uintptr_t)queue;
++        WINE_VK_ADD_DISPATCHABLE_MAPPING(device->phys_dev->instance, &queue->handle, queue->queue, queue);
+     }
+ }
+ 
+@@ -436,21 +435,16 @@ static VkResult wine_vk_device_convert_create_info(struct wine_phys_dev *phys_de
+ static void wine_vk_device_free(struct wine_device *device)
+ {
+     struct wine_queue *queue;
++    unsigned int i;
+ 
+     if (!device)
+         return;
+ 
+-    if (device->queues)
++    for (i = 0; i < device->queue_count; i++)
+     {
+-        unsigned int i;
+-        for (i = 0; i < device->queue_count; i++)
+-        {
+-            queue = &device->queues[i];
+-            if (queue && queue->queue)
+-                WINE_VK_REMOVE_HANDLE_MAPPING(device->phys_dev->instance, queue);
+-        }
+-        free(device->queues);
+-        device->queues = NULL;
++        queue = &device->queues[i];
++        if (queue && queue->queue)
++            WINE_VK_REMOVE_HANDLE_MAPPING(device->phys_dev->instance, queue);
+     }
+ 
+     if (device->device && device->funcs.p_vkDestroyDevice)
+@@ -458,8 +452,6 @@ static void wine_vk_device_free(struct wine_device *device)
+         WINE_VK_REMOVE_HANDLE_MAPPING(device->phys_dev->instance, device);
+         device->funcs.p_vkDestroyDevice(device->device, NULL /* pAllocator */);
+     }
+-
+-    free(device);
+ }
+ 
+ struct vk_callback_funcs callback_funcs;
+@@ -467,6 +459,7 @@ struct vk_callback_funcs callback_funcs;
+ NTSTATUS init_vulkan(void *args)
+ {
+     struct init_vulkan_params *params = args;
++    struct alloc_info *info = params->alloc_info;
+ 
+     vk_funcs = __wine_get_vulkan_driver(WINE_VULKAN_DRIVER_VERSION);
+     if (!vk_funcs)
+@@ -476,6 +469,9 @@ NTSTATUS init_vulkan(void *args)
+     }
+ 
+     callback_funcs = *params->callback_funcs;
++    info->device_size = sizeof(struct wine_device);
++    info->queue_size = sizeof(struct wine_queue);
++
+     return STATUS_SUCCESS;
+ }
+ 
+@@ -734,12 +730,10 @@ VkResult wine_vkCreateDevice(VkPhysicalDevice phys_dev_handle, const VkDeviceCre
+                              void *client_ptr)
+ {
+     struct wine_phys_dev *phys_dev = wine_phys_dev_from_handle(phys_dev_handle);
+-    VkDevice device_handle = client_ptr;
++    struct wine_device *object = client_ptr;
+     VkDeviceCreateInfo create_info_host;
+-    struct VkQueue_T *queue_handles;
+     struct wine_queue *next_queue;
+     struct conversion_context ctx;
+-    struct wine_device *object;
+     unsigned int i;
+     VkResult res;
+ 
+@@ -757,9 +751,6 @@ VkResult wine_vkCreateDevice(VkPhysicalDevice phys_dev_handle, const VkDeviceCre
+         TRACE("Driver version: %#x.\n", properties.driverVersion);
+     }
+ 
+-    if (!(object = calloc(1, sizeof(*object))))
+-        return VK_ERROR_OUT_OF_HOST_MEMORY;
+-
+     object->phys_dev = phys_dev;
+ 
+     init_conversion_context(&ctx);
+@@ -768,7 +759,7 @@ VkResult wine_vkCreateDevice(VkPhysicalDevice phys_dev_handle, const VkDeviceCre
+         res = phys_dev->instance->funcs.p_vkCreateDevice(phys_dev->phys_dev,
+                 &create_info_host, NULL /* allocator */, &object->device);
+     free_conversion_context(&ctx);
+-    WINE_VK_ADD_DISPATCHABLE_MAPPING(phys_dev->instance, device_handle, object->device, object);
++    WINE_VK_ADD_DISPATCHABLE_MAPPING(phys_dev->instance, &object->handle, object->device, object);
+     if (res != VK_SUCCESS)
+     {
+         WARN("Failed to create device, res=%d.\n", res);
+@@ -794,14 +785,7 @@ VkResult wine_vkCreateDevice(VkPhysicalDevice phys_dev_handle, const VkDeviceCre
+         object->queue_count += create_info_host.pQueueCreateInfos[i].queueCount;
+     }
+ 
+-    if (!(object->queues = calloc(object->queue_count, sizeof(*object->queues))))
+-    {
+-        res = VK_ERROR_OUT_OF_HOST_MEMORY;
+-        goto fail;
+-    }
+-
+     next_queue = object->queues;
+-    queue_handles = device_handle->queues;
+     for (i = 0; i < create_info_host.queueCreateInfoCount; i++)
+     {
+         uint32_t flags = create_info_host.pQueueCreateInfos[i].flags;
+@@ -810,13 +794,13 @@ VkResult wine_vkCreateDevice(VkPhysicalDevice phys_dev_handle, const VkDeviceCre
+ 
+         TRACE("Queue family index %u, queue count %u.\n", family_index, queue_count);
+ 
+-        wine_vk_device_get_queues(object, family_index, queue_count, flags, next_queue, &queue_handles);
++        wine_vk_device_get_queues(object, family_index, queue_count, flags, next_queue);
+         next_queue += queue_count;
+     }
+ 
+-    device_handle->quirks = phys_dev->instance->quirks;
+-    device_handle->base.unix_handle = (uintptr_t)object;
+-    *ret_device = device_handle;
++    object->handle.quirks = phys_dev->instance->quirks;
++    object->handle.base.unix_handle = (uintptr_t)object;
++    *ret_device = &object->handle;
+     TRACE("Created device %p (native device %p).\n", object, object->device);
+     return VK_SUCCESS;
+ 
+@@ -1080,7 +1064,7 @@ static VkQueue wine_vk_device_find_queue(VkDevice handle, const VkDeviceQueueInf
+                 && queue->queue_index == info->queueIndex
+                 && queue->flags == info->flags)
+         {
+-            return queue->handle;
++            return &queue->handle;
+         }
+     }
+ 
+diff --git a/dlls/winevulkan/vulkan_loader.h b/dlls/winevulkan/vulkan_loader.h
+index 11111111111..11111111111 100644
+--- a/dlls/winevulkan/vulkan_loader.h
++++ b/dlls/winevulkan/vulkan_loader.h
+@@ -44,6 +44,12 @@
+ #define WINEVULKAN_QUIRK_ADJUST_MAX_IMAGE_COUNT 0x00000002
+ #define WINEVULKAN_QUIRK_IGNORE_EXPLICIT_LAYERS 0x00000004
+ 
++struct alloc_info
++{
++    size_t device_size;
++    size_t queue_size;
++};
++
+ /* Base 'class' for our Vulkan dispatchable objects such as VkDevice and VkInstance.
+  * This structure MUST be the first element of a dispatchable object as the ICD
+  * loader depends on it. For now only contains loader_magic, but over time more common
+@@ -79,7 +85,6 @@ struct VkDevice_T
+ {
+     struct wine_vk_base base;
+     unsigned int quirks;
+-    struct VkQueue_T queues[1];
+ };
+ 
+ struct vk_command_pool
+@@ -118,6 +123,7 @@ struct vk_callback_funcs
+ struct init_vulkan_params
+ {
+     const struct vk_callback_funcs *callback_funcs;
++    struct alloc_info *alloc_info;
+ };
+ 
+ /* debug callbacks params */
+diff --git a/dlls/winevulkan/vulkan_private.h b/dlls/winevulkan/vulkan_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/winevulkan/vulkan_private.h
++++ b/dlls/winevulkan/vulkan_private.h
+@@ -53,23 +53,42 @@ static inline struct wine_cmd_buffer *wine_cmd_buffer_from_handle(VkCommandBuffe
+     return (struct wine_cmd_buffer *)(uintptr_t)handle->base.unix_handle;
+ }
+ 
++struct wine_queue
++{
++    struct VkQueue_T handle; /* client queue */
++    struct wine_device *device; /* parent */
++
++    VkQueue queue; /* native queue */
++
++    uint32_t family_index;
++    uint32_t queue_index;
++    VkDeviceQueueCreateFlags flags;
++
++    struct wine_vk_mapping mapping;
++};
++
++static inline struct wine_queue *wine_queue_from_handle(VkQueue handle)
++{
++    return CONTAINING_RECORD(handle, struct wine_queue, handle);
++}
++
+ struct wine_device
+ {
++    struct VkDevice_T handle; /* client device */
+     struct vulkan_device_funcs funcs;
+     struct wine_phys_dev *phys_dev; /* parent */
+ 
+-    VkDevice handle; /* client device */
+     VkDevice device; /* native device */
+ 
+-    struct wine_queue *queues;
+     uint32_t queue_count;
+ 
+     struct wine_vk_mapping mapping;
++    struct wine_queue queues[1];
+ };
+ 
+ static inline struct wine_device *wine_device_from_handle(VkDevice handle)
+ {
+-    return (struct wine_device *)(uintptr_t)handle->base.unix_handle;
++    return CONTAINING_RECORD(handle, struct wine_device, handle);
+ }
+ 
+ struct wine_debug_utils_messenger;
+@@ -139,25 +158,6 @@ static inline struct wine_phys_dev *wine_phys_dev_from_handle(VkPhysicalDevice h
+     return (struct wine_phys_dev *)(uintptr_t)handle->base.unix_handle;
+ }
+ 
+-struct wine_queue
+-{
+-    struct wine_device *device; /* parent */
+-
+-    VkQueue handle; /* client queue */
+-    VkQueue queue; /* native queue */
+-
+-    uint32_t family_index;
+-    uint32_t queue_index;
+-    VkDeviceQueueCreateFlags flags;
+-
+-    struct wine_vk_mapping mapping;
+-};
+-
+-static inline struct wine_queue *wine_queue_from_handle(VkQueue handle)
+-{
+-    return (struct wine_queue *)(uintptr_t)handle->base.unix_handle;
+-}
+-
+ struct wine_cmd_pool
+ {
+     VkCommandPool handle;
+-- 
+2.39.0
+

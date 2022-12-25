@@ -1,0 +1,155 @@
+From 9130e7f859509ffe05951f516148140b2b380f2b Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Wed, 16 Nov 2022 06:53:02 +0100
+Subject: [PATCH 3/6] http.sys: Add ioctl for waiting for disconnect.
+
+Signed-off-by: Torge Matthies <tmatthies@codeweavers.com>
+---
+ dlls/http.sys/http.c | 68 ++++++++++++++++++++++++++++++++++++++++++++
+ include/wine/http.h  | 16 +++++++----
+ 2 files changed, 79 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/http.sys/http.c b/dlls/http.sys/http.c
+index 11111111111..11111111111 100644
+--- a/dlls/http.sys/http.c
++++ b/dlls/http.sys/http.c
+@@ -57,6 +57,8 @@ struct connection
+     unsigned int len, size;
+     BOOL expect_body;
+ 
++    LIST_ENTRY dc_irp_queue;
++
+     /* If there is a request fully received and waiting to be read, the
+      * "available" parameter will be TRUE. Either there is no queue matching
+      * the URL of this request yet ("queue" is NULL), there is a queue but no
+@@ -138,15 +140,29 @@ static void accept_connection(SOCKET socket)
+     WSAEventSelect(peer, request_event, FD_READ | FD_CLOSE);
+     ioctlsocket(peer, FIONBIO, &true);
+     conn->socket = peer;
++    InitializeListHead(&conn->dc_irp_queue);
+     list_add_head(&connections, &conn->entry);
+ }
+ 
++/* Complete all IOCTL_HTTP_WAIT_FOR_DISCONNECT IRPs. */
++static void complete_wait_irps(struct connection *conn)
++{
++    LIST_ENTRY *entry;
++    while ((entry = RemoveHeadList(&conn->dc_irp_queue)) != &conn->dc_irp_queue)
++    {
++        IRP *irp = CONTAINING_RECORD(entry, IRP, Tail.Overlay.ListEntry);
++        irp->IoStatus.Status = STATUS_SUCCESS;
++        IoCompleteRequest(irp, IO_NO_INCREMENT);
++    }
++}
++
+ static void close_connection(struct connection *conn)
+ {
+     heap_free(conn->buffer);
+     shutdown(conn->socket, SD_BOTH);
+     closesocket(conn->socket);
+     list_remove(&conn->entry);
++    complete_wait_irps(conn);
+     heap_free(conn);
+ }
+ 
+@@ -1071,6 +1087,55 @@ static NTSTATUS http_receive_body(struct request_queue *queue, IRP *irp)
+     return ret;
+ }
+ 
++static void WINAPI http_wait_for_disconnect_cancel(DEVICE_OBJECT *device, IRP *irp)
++{
++    TRACE("device %p, irp %p.\n", device, irp);
++
++    IoReleaseCancelSpinLock(irp->CancelIrql);
++
++    EnterCriticalSection(&http_cs);
++    RemoveEntryList(&irp->Tail.Overlay.ListEntry);
++    LeaveCriticalSection(&http_cs);
++
++    irp->IoStatus.Status = STATUS_CANCELLED;
++    IoCompleteRequest(irp, IO_NO_INCREMENT);
++}
++
++static NTSTATUS http_wait_for_disconnect(struct request_queue *queue, IRP *irp)
++{
++    const struct http_wait_for_disconnect_params *params = irp->AssociatedIrp.SystemBuffer;
++    struct connection *conn;
++    NTSTATUS ret;
++
++    TRACE("id %s.\n", wine_dbgstr_longlong(params->id));
++
++    EnterCriticalSection(&http_cs);
++
++    if ((conn = get_connection(params->id)))
++    {
++        TRACE("Queuing IRP %p.\n", irp);
++
++        IoSetCancelRoutine(irp, http_wait_for_disconnect_cancel);
++        if (irp->Cancel && !IoSetCancelRoutine(irp, NULL))
++        {
++            /* The IRP was canceled before we set the cancel routine. */
++            ret = STATUS_CANCELLED;
++        }
++        else
++        {
++            IoMarkIrpPending(irp);
++            InsertTailList(&conn->dc_irp_queue, &irp->Tail.Overlay.ListEntry);
++            ret = STATUS_PENDING;
++        }
++    }
++    else
++        ret = STATUS_CONNECTION_INVALID;
++
++    LeaveCriticalSection(&http_cs);
++
++    return ret;
++}
++
+ static NTSTATUS WINAPI dispatch_ioctl(DEVICE_OBJECT *device, IRP *irp)
+ {
+     IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
+@@ -1094,6 +1159,9 @@ static NTSTATUS WINAPI dispatch_ioctl(DEVICE_OBJECT *device, IRP *irp)
+     case IOCTL_HTTP_RECEIVE_BODY:
+         ret = http_receive_body(queue, irp);
+         break;
++    case IOCTL_HTTP_WAIT_FOR_DISCONNECT:
++        ret = http_wait_for_disconnect(queue, irp);
++        break;
+     default:
+         FIXME("Unhandled ioctl %#lx.\n", stack->Parameters.DeviceIoControl.IoControlCode);
+         ret = STATUS_NOT_IMPLEMENTED;
+diff --git a/include/wine/http.h b/include/wine/http.h
+index 11111111111..11111111111 100644
+--- a/include/wine/http.h
++++ b/include/wine/http.h
+@@ -23,11 +23,12 @@
+ #include <http.h>
+ #include <winioctl.h>
+ 
+-#define IOCTL_HTTP_ADD_URL          CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, 0)
+-#define IOCTL_HTTP_REMOVE_URL       CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, 0)
+-#define IOCTL_HTTP_RECEIVE_REQUEST  CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, 0)
+-#define IOCTL_HTTP_SEND_RESPONSE    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, 0)
+-#define IOCTL_HTTP_RECEIVE_BODY     CTL_CODE(FILE_DEVICE_UNKNOWN, 0x804, METHOD_BUFFERED, 0)
++#define IOCTL_HTTP_ADD_URL              CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, 0)
++#define IOCTL_HTTP_REMOVE_URL           CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, 0)
++#define IOCTL_HTTP_RECEIVE_REQUEST      CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, 0)
++#define IOCTL_HTTP_SEND_RESPONSE        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, 0)
++#define IOCTL_HTTP_RECEIVE_BODY         CTL_CODE(FILE_DEVICE_UNKNOWN, 0x804, METHOD_BUFFERED, 0)
++#define IOCTL_HTTP_WAIT_FOR_DISCONNECT  CTL_CODE(FILE_DEVICE_UNKNOWN, 0x805, METHOD_BUFFERED, 0)
+ 
+ struct http_add_url_params
+ {
+@@ -58,4 +59,9 @@ struct http_receive_body_params
+     ULONG bits;
+ };
+ 
++struct http_wait_for_disconnect_params
++{
++    HTTP_REQUEST_ID id;
++};
++
+ #endif
+-- 
+2.39.0
+

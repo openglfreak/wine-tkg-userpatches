@@ -20,7 +20,7 @@ diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/signal_i386.c
 +++ b/dlls/ntdll/unix/signal_i386.c
-@@ -466,9 +466,10 @@ struct syscall_frame
+@@ -469,9 +469,10 @@ struct syscall_frame
       * 32-bit mode, but some processors fault if they're not in writable memory.
       */
      DECLSPEC_ALIGN(64) XSTATE xstate;     /* 240 */
@@ -32,7 +32,7 @@ index 11111111111..11111111111 100644
  
  struct x86_thread_data
  {
-@@ -2557,7 +2558,7 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
+@@ -2603,7 +2604,7 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
                     "movl 0x1f8(%ecx),%eax\n\t"  /* x86_thread_data()->syscall_frame */
                     "orl %eax,%eax\n\t"
                     "jnz 1f\n\t"
@@ -41,20 +41,20 @@ index 11111111111..11111111111 100644
                     "andl $~63,%eax\n\t"
                     "movl %eax,0x1f8(%ecx)\n"    /* x86_thread_data()->syscall_frame */
                     "1:\tmovl %eax,%esp\n\t"
-@@ -2733,6 +2734,8 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
-                    "6:\tmovl $0xc000000d,%eax\n\t" /* STATUS_INVALID_PARAMETER */
-                    "jmp 5b\n"
-                    __ASM_NAME("__wine_syscall_dispatcher_return") ":\n\t"
+@@ -2827,6 +2828,8 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    __ASM_CFI(".cfi_restore %edi\n\t")
+                    __ASM_CFI(".cfi_restore %esi\n\t")
+                    __ASM_CFI(".cfi_restore %ebp\n\t")
 +                   "movl 0(%esp),%eax\n\t"
 +                   "movl %eax,0x380(%esp)\n\t"     /* frame->unwind_eip */
                     "movl 8(%esp),%eax\n\t"
                     "movl 4(%esp),%esp\n\t"
-                    "jmp 5b" )
+                    __ASM_CFI(".cfi_restore_state\n\t")
 diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
-@@ -358,7 +358,8 @@ struct syscall_frame
+@@ -420,7 +420,8 @@ struct syscall_frame
      struct syscall_frame *prev_frame;    /* 00a0 */
      SYSTEM_SERVICE_TABLE *syscall_table; /* 00a8 */
      DWORD                 syscall_flags; /* 00b0 */
@@ -64,16 +64,16 @@ index 11111111111..11111111111 100644
      XMM_SAVE_AREA32       xsave;         /* 00c0 */
      DECLSPEC_ALIGN(64) XSTATE xstate;    /* 02c0 */
  };
-@@ -3654,6 +3655,8 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
-                    "5:\tmovl $0xc000000d,%edx\n\t" /* STATUS_INVALID_PARAMETER */
-                    "movq %rsp,%rcx\n"
+@@ -3111,6 +3112,8 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    __ASM_CFI(".cfi_restore_state\n\t")
+                    ".globl " __ASM_NAME("__wine_syscall_dispatcher_return") "\n"
                     __ASM_NAME("__wine_syscall_dispatcher_return") ":\n\t"
 +                   "movq 0(%rsp),%r14\n\t"
 +                   "movq %r14,0xb8(%rcx)\n\t"      /* frame->unwind_rip */
                     "movl 0xb0(%rcx),%r14d\n\t"     /* frame->syscall_flags */
                     "movq %rdx,%rax\n\t"
-                    "jmp 2b" )
 
+                    "jmp .L__wine_syscall_dispatcher_return" )
 -- 
-2.36.1
+2.39.0
 

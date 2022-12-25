@@ -5,48 +5,47 @@ Subject: [PATCH 15/16] user32: Send WM_*FOCUS messages even if already
  focused.
 
 ---
- dlls/user32/tests/msg.c | 8 ++++----
- dlls/win32u/input.c     | 9 +++++----
- 2 files changed, 9 insertions(+), 8 deletions(-)
+ dlls/win32u/input.c | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
 
-diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
-index 11111111111..11111111111 100644
---- a/dlls/user32/tests/msg.c
-+++ b/dlls/user32/tests/msg.c
-@@ -15220,15 +15220,15 @@ static void test_interthread_set_foreground_window(struct test_set_foreground_wi
-         { hwnd2, TRUE, FALSE, FALSE,   FALSE, WmEmptySeq, FALSE, sequence_3,  TRUE, sequence_0,  TRUE, hwnd1 },
-         { hwnd2, FALSE, TRUE, FALSE,   FALSE, sequence_3, FALSE, WmEmptySeq,  TRUE, sequence_0,  TRUE, hwnd1 },
-         { hwnd2, TRUE, TRUE, FALSE,    FALSE, sequence_4, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
--        { hwnd2, FALSE, FALSE, TRUE,    TRUE, sequence_5, FALSE, WmEmptySeq,  TRUE, sequence_0,  TRUE, hwnd1 },
--        { hwnd2, TRUE, FALSE, TRUE,     TRUE, sequence_6, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
-+        { hwnd2, FALSE, FALSE, TRUE,   FALSE, sequence_5, FALSE, WmEmptySeq,  TRUE, sequence_0,  TRUE, hwnd1 },
-+        { hwnd2, TRUE, FALSE, TRUE,    FALSE, sequence_6, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
- 
-         { hwnd0, FALSE, FALSE, FALSE,  FALSE, WmEmptySeq, FALSE, sequence_3, FALSE, sequence_0, FALSE, hwnd1 },
-         { hwnd0, TRUE, FALSE, FALSE,   FALSE, WmEmptySeq, FALSE, sequence_3,  TRUE, sequence_0,  TRUE, hwnd1 },
-         { hwnd0, FALSE, TRUE, FALSE,   FALSE, sequence_3, FALSE, WmEmptySeq, FALSE, sequence_0, FALSE, hwnd1 },
-         { hwnd0, TRUE, TRUE, FALSE,    FALSE, sequence_4, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
--        { hwnd0, FALSE, FALSE, TRUE,    TRUE, sequence_5, FALSE, WmEmptySeq, FALSE, sequence_0, FALSE, hwnd1 },
--        { hwnd0, TRUE, FALSE, TRUE,     TRUE, sequence_6, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
-+        { hwnd0, FALSE, FALSE, TRUE,   FALSE, sequence_5, FALSE, WmEmptySeq, FALSE, sequence_0, FALSE, hwnd1 },
-+        { hwnd0, TRUE, FALSE, TRUE,    FALSE, sequence_6, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
-     };
- 
-     DWORD i, res;
+#diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
+#index 11111111111..11111111111 100644
+#--- a/dlls/user32/tests/msg.c
+#+++ b/dlls/user32/tests/msg.c
+#@@ -15220,15 +15220,15 @@ static void test_interthread_set_foreground_window(struct test_set_foreground_wi
+#         { hwnd2, TRUE, FALSE, FALSE,   FALSE, WmEmptySeq, FALSE, sequence_3,  TRUE, sequence_0,  TRUE, hwnd1 },
+#         { hwnd2, FALSE, TRUE, FALSE,   FALSE, sequence_3, FALSE, WmEmptySeq,  TRUE, sequence_0,  TRUE, hwnd1 },
+#         { hwnd2, TRUE, TRUE, FALSE,    FALSE, sequence_4, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+#-        { hwnd2, FALSE, FALSE, TRUE,    TRUE, sequence_5, FALSE, WmEmptySeq,  TRUE, sequence_0,  TRUE, hwnd1 },
+#-        { hwnd2, TRUE, FALSE, TRUE,     TRUE, sequence_6, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+#+        { hwnd2, FALSE, FALSE, TRUE,   FALSE, sequence_5, FALSE, WmEmptySeq,  TRUE, sequence_0,  TRUE, hwnd1 },
+#+        { hwnd2, TRUE, FALSE, TRUE,    FALSE, sequence_6, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+# 
+#         { hwnd0, FALSE, FALSE, FALSE,  FALSE, WmEmptySeq, FALSE, sequence_3, FALSE, sequence_0, FALSE, hwnd1 },
+#         { hwnd0, TRUE, FALSE, FALSE,   FALSE, WmEmptySeq, FALSE, sequence_3,  TRUE, sequence_0,  TRUE, hwnd1 },
+#         { hwnd0, FALSE, TRUE, FALSE,   FALSE, sequence_3, FALSE, WmEmptySeq, FALSE, sequence_0, FALSE, hwnd1 },
+#         { hwnd0, TRUE, TRUE, FALSE,    FALSE, sequence_4, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+#-        { hwnd0, FALSE, FALSE, TRUE,    TRUE, sequence_5, FALSE, WmEmptySeq, FALSE, sequence_0, FALSE, hwnd1 },
+#-        { hwnd0, TRUE, FALSE, TRUE,     TRUE, sequence_6, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+#+        { hwnd0, FALSE, FALSE, TRUE,   FALSE, sequence_5, FALSE, WmEmptySeq, FALSE, sequence_0, FALSE, hwnd1 },
+#+        { hwnd0, TRUE, FALSE, TRUE,    FALSE, sequence_6, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+#     };
+# 
+#     DWORD i, res;
 diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/input.c
 +++ b/dlls/win32u/input.c
-@@ -1498,7 +1498,7 @@ HWND get_focus(void)
+@@ -1487,7 +1487,7 @@ HWND get_focus(void)
   *
   * Change the focus window, sending the WM_SETFOCUS and WM_KILLFOCUS messages
   */
 -static HWND set_focus_window( HWND hwnd )
 +static HWND set_focus_window( HWND hwnd, HWND last_focus )
  {
-     HWND previous = 0;
+     HWND previous = 0, ime_hwnd;
      BOOL ret;
-@@ -1511,7 +1511,8 @@ static HWND set_focus_window( HWND hwnd )
+@@ -1500,7 +1500,8 @@ static HWND set_focus_window( HWND hwnd )
      }
      SERVER_END_REQ;
      if (!ret) return 0;
@@ -56,7 +55,7 @@ index 11111111111..11111111111 100644
  
      if (previous)
      {
-@@ -1649,7 +1650,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+@@ -1644,7 +1645,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
          {
              /* this line exists to keep this patch from applying in the wrong place */
              if (!info.hwndFocus || !hwnd || NtUserGetAncestor( info.hwndFocus, GA_ROOT ) != hwnd)
@@ -65,7 +64,7 @@ index 11111111111..11111111111 100644
          }
      }
  
-@@ -1743,7 +1744,7 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
+@@ -1738,7 +1739,7 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
      }
  
      /* change focus and send messages */
@@ -75,5 +74,5 @@ index 11111111111..11111111111 100644
  
  /*******************************************************************
 -- 
-2.36.1
+2.39.0
 

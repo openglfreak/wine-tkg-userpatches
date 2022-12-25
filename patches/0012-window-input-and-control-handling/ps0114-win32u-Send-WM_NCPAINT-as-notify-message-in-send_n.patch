@@ -1,0 +1,131 @@
+From 9965f3b13b8412a6132e828042a92bf8ce821e3f Mon Sep 17 00:00:00 2001
+From: Paul Gofman <pgofman@codeweavers.com>
+Date: Wed, 13 Jul 2022 20:18:38 -0500
+Subject: [PATCH] win32u: Send WM_NCPAINT as notify message in send_ncpaint().
+
+---
+ dlls/user32/tests/win.c      | 59 ++++++++++++++++++++++++++++++++++++
+ dlls/win32u/dce.c            |  2 +-
+ dlls/win32u/win32u_private.h |  1 +
+ 3 files changed, 61 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/tests/win.c
++++ b/dlls/user32/tests/win.c
+@@ -6754,11 +6754,16 @@ static void test_AdjustWindowRect(void)
+ 
+ /* Global variables to trigger exit from loop */
+ static int redrawComplete, WMPAINT_count;
++static HANDLE redraw_call_complete_event;
+ 
+ static LRESULT WINAPI redraw_window_procA(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+ {
+     switch (msg)
+     {
++    case WM_NCPAINT:
++        if (redraw_call_complete_event)
++            WaitForSingleObject(redraw_call_complete_event, INFINITE);
++        break;
+     case WM_PAINT:
+         WMPAINT_count++;
+         if (WMPAINT_count > 10 && redrawComplete == 0) {
+@@ -6772,11 +6777,50 @@ static LRESULT WINAPI redraw_window_procA(HWND hwnd, UINT msg, WPARAM wparam, LP
+     return DefWindowProcA(hwnd, msg, wparam, lparam);
+ }
+ 
++struct rdw_window_thread_param
++{
++    HANDLE ready_event;
++    HANDLE done_event;
++    HWND hwnd;
++};
++
++static DWORD WINAPI rdw_window_thread(void *param)
++{
++    struct rdw_window_thread_param *p = param;
++    DWORD ret;
++    MSG msg;
++
++    p->hwnd = CreateWindowA("RedrawWindowClass", "Main Window", WS_OVERLAPPEDWINDOW,
++                            CW_USEDEFAULT, 0, 100, 100, NULL, NULL, 0, NULL);
++    ShowWindow(p->hwnd, SW_MINIMIZE);
++    redrawComplete = FALSE;
++    while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE))
++        DispatchMessageA(&msg);
++
++    redraw_call_complete_event = p->done_event;
++    SetEvent(p->ready_event);
++    while ((ret = MsgWaitForMultipleObjects(1, &p->done_event, FALSE, INFINITE, QS_SENDMESSAGE)) != WAIT_OBJECT_0)
++    {
++        while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE))
++        {
++            ok(msg.message != WM_NCPAINT, "got WM_NCPAINT.\n");
++            DispatchMessageA(&msg);
++        }
++    }
++    redraw_call_complete_event = NULL;
++    WaitForSingleObject(redraw_call_complete_event, INFINITE);
++
++    DestroyWindow(p->hwnd);
++    return 0;
++}
++
+ /* Ensure we exit from RedrawNow regardless of invalidated area */
+ static void test_redrawnow(void)
+ {
++   struct rdw_window_thread_param p;
+    WNDCLASSA cls;
+    HWND hwndMain;
++   HANDLE thread;
+    BOOL ret;
+ 
+    cls.style = CS_DBLCLKS;
+@@ -6806,6 +6850,21 @@ static void test_redrawnow(void)
+ 
+    /* clean up */
+    DestroyWindow( hwndMain);
++
++   /* When on the other thread, WM_NCPAINT is delivered through window proc but RedrawWindow does
++    * not wait for that. */
++   p.ready_event = CreateEventW(NULL, FALSE, FALSE, NULL);
++   p.done_event = CreateEventW(NULL, TRUE, FALSE, NULL);
++   WMPAINT_count = 0;
++   thread = CreateThread(NULL, 0, rdw_window_thread, &p, 0, NULL);
++   WaitForSingleObject(p.ready_event, INFINITE);
++
++   ret = RedrawWindow(p.hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_ERASENOW | RDW_FRAME);
++   ok(ret, "ret %d.\n", ret);
++
++   SetEvent(p.done_event);
++   WaitForSingleObject(thread, INFINITE);
++   CloseHandle(thread);
+ }
+ 
+ struct parentdc_stat {
+diff --git a/dlls/win32u/dce.c b/dlls/win32u/dce.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/dce.c
++++ b/dlls/win32u/dce.c
+@@ -1208,7 +1208,7 @@ static HRGN send_ncpaint( HWND hwnd, HWND *child, UINT *flags )
+                 if (style & WS_VSCROLL)
+                     set_standard_scroll_painted( hwnd, SB_VERT, FALSE );
+ 
+-                send_message( hwnd, WM_NCPAINT, (WPARAM)whole_rgn, 0 );
++                send_notify_message( hwnd, WM_NCPAINT, (WPARAM)whole_rgn, 0, FALSE );
+             }
+             if (whole_rgn > (HRGN)1) NtGdiDeleteObjectApp( whole_rgn );
+         }
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -316,6 +316,7 @@ extern LRESULT send_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+ extern BOOL send_notify_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, BOOL ansi ) DECLSPEC_HIDDEN;
+ extern LRESULT send_message_timeout( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
+                                      UINT flags, UINT timeout, BOOL ansi );
++extern BOOL send_notify_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, BOOL ansi ) DECLSPEC_HIDDEN;
+ 
+ /* rawinput.c */
+ extern BOOL process_rawinput_message( MSG *msg, UINT hw_id, const struct hardware_msg_data *msg_data ) DECLSPEC_HIDDEN;
+

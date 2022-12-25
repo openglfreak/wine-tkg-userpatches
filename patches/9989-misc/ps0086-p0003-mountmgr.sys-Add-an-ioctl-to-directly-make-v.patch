@@ -19,24 +19,24 @@ Date: Sun, 28 Feb 2021 11:21:06 -0700
 
 Signed-off-by: Erich E. Hoover <erich.e.hoover@gmail.com>
 ---
- dlls/mountmgr.sys/device.c   | 89 ++++++++++++++++++++++++------------
- dlls/mountmgr.sys/mountmgr.c | 11 +++++
- dlls/mountmgr.sys/mountmgr.h |  1 +
- include/ddk/mountmgr.h       | 10 ++++
- 4 files changed, 83 insertions(+), 28 deletions(-)
+ dlls/mountmgr.sys/device.c   | 102 +++++++++++++++++++++++------------
+ dlls/mountmgr.sys/mountmgr.c |  11 ++++
+ dlls/mountmgr.sys/mountmgr.h |   1 +
+ include/ddk/mountmgr.h       |  10 ++++
+ 4 files changed, 90 insertions(+), 34 deletions(-)
 
 diff --git a/dlls/mountmgr.sys/device.c b/dlls/mountmgr.sys/device.c
 index 11111111111..11111111111 100644
 --- a/dlls/mountmgr.sys/device.c
 +++ b/dlls/mountmgr.sys/device.c
-@@ -1642,32 +1642,18 @@ static NTSTATUS query_property( struct disk_device *device, IRP *irp )
+@@ -1624,32 +1624,18 @@ static NTSTATUS query_property( struct disk_device *device, IRP *irp )
      return status;
  }
  
 -static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
 +static NTSTATUS WINAPI fill_volume_info( FS_INFORMATION_CLASS info_class, enum fs_type fs_type,
-+                                         DWORD serial, WCHAR *label, void *buff, ULONG length,
-+                                         ULONG_PTR *size )
++                                         DWORD serial, WCHAR *label, char *unix_mount, void *buff,
++                                         ULONG length, ULONG_PTR *size )
  {
 -    IO_STACK_LOCATION *irpsp = IoGetCurrentIrpStackLocation( irp );
 -    int info_class = irpsp->Parameters.QueryVolume.FsInformationClass;
@@ -66,7 +66,7 @@ index 11111111111..11111111111 100644
  
          if (length < sizeof(FILE_FS_VOLUME_INFORMATION))
          {
-@@ -1676,20 +1662,20 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
+@@ -1658,21 +1644,21 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
          }
  
          info->VolumeCreationTime.QuadPart = 0; /* FIXME */
@@ -85,6 +85,27 @@ index 11111111111..11111111111 100644
          status = STATUS_SUCCESS;
          break;
      }
+     case FileFsSizeInformation:
+     {
+-        FILE_FS_SIZE_INFORMATION *info = irp->AssociatedIrp.SystemBuffer;
++        FILE_FS_SIZE_INFORMATION *info = buff;
+         struct size_info size_info = { 0, 0, 0, 0, 0 };
+-        struct get_volume_size_info_params params = { dev->unix_mount, &size_info };
++        struct get_volume_size_info_params params = { unix_mount, &size_info };
+ 
+         if (length < sizeof(FILE_FS_SIZE_INFORMATION))
+         {
+@@ -1686,7 +1672,7 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
+             info->AvailableAllocationUnits.QuadPart = size_info.caller_available_allocation_units;
+             info->SectorsPerAllocationUnit = size_info.sectors_per_allocation_unit;
+             info->BytesPerSector = size_info.bytes_per_sector;
+-            io->Information = sizeof(*info);
++            *size = sizeof(*info);
+             status = STATUS_SUCCESS;
+         }
+ 
+@@ -1694,8 +1680,8 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
+     }
      case FileFsAttributeInformation:
      {
 -        FILE_FS_ATTRIBUTE_INFORMATION *info = irp->AssociatedIrp.SystemBuffer;
@@ -94,7 +115,7 @@ index 11111111111..11111111111 100644
          const WCHAR *fsname;
  
          if (length < sizeof(FILE_FS_ATTRIBUTE_INFORMATION))
-@@ -1729,17 +1715,64 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
+@@ -1735,15 +1721,15 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
          }
          info->FileSystemNameLength = min( wcslen(fsname) * sizeof(WCHAR), length - offsetof( FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName ) );
          memcpy(info->FileSystemName, fsname, info->FileSystemNameLength);
@@ -103,6 +124,28 @@ index 11111111111..11111111111 100644
          status = STATUS_SUCCESS;
          break;
      }
+     case FileFsFullSizeInformation:
+     {
+-        FILE_FS_FULL_SIZE_INFORMATION *info = irp->AssociatedIrp.SystemBuffer;
++        FILE_FS_FULL_SIZE_INFORMATION *info = buff;
+         struct size_info size_info = { 0, 0, 0, 0, 0 };
+-        struct get_volume_size_info_params params = { dev->unix_mount, &size_info };
++        struct get_volume_size_info_params params = { unix_mount, &size_info };
+ 
+         if (length < sizeof(FILE_FS_FULL_SIZE_INFORMATION))
+         {
+@@ -1758,7 +1744,7 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
+             info->ActualAvailableAllocationUnits.QuadPart = size_info.actual_available_allocation_units;
+             info->SectorsPerAllocationUnit = size_info.sectors_per_allocation_unit;
+             info->BytesPerSector = size_info.bytes_per_sector;
+-            io->Information = sizeof(*info);
++            *size = sizeof(*info);
+             status = STATUS_SUCCESS;
+         }
+ 
+@@ -1766,12 +1752,60 @@ static NTSTATUS WINAPI harddisk_query_volume( DEVICE_OBJECT *device, IRP *irp )
+     }
+ 
      default:
 -        FIXME("Unsupported volume query %x\n", irpsp->Parameters.QueryVolume.FsInformationClass);
 +        FIXME("Unsupported volume query %x\n", info_class);
@@ -130,8 +173,9 @@ index 11111111111..11111111111 100644
 +        volume = find_volume_by_unixdev( input->unix_dev );
 +    if (volume)
 +    {
++        char *unix_mount = volume->device ? volume->device->unix_mount : NULL;
 +        status = fill_volume_info( info_class, volume->fs_type, volume->serial, volume->label,
-+                                   buff, outsize, &iosb->Information );
++                                   unix_mount, buff, outsize, &iosb->Information );
 +        release_volume( volume );
 +    }
 +    LeaveCriticalSection( &device_section );
@@ -156,7 +200,7 @@ index 11111111111..11111111111 100644
 +    volume = dev->volume;
 +    if (volume)
 +        status = fill_volume_info( info_class, volume->fs_type, volume->serial, volume->label,
-+                                   buff, length, &io->Information );
++                                   dev->unix_mount, buff, length, &io->Information );
  
 -done:
      io->u.Status = status;
@@ -166,7 +210,7 @@ diff --git a/dlls/mountmgr.sys/mountmgr.c b/dlls/mountmgr.sys/mountmgr.c
 index 11111111111..11111111111 100644
 --- a/dlls/mountmgr.sys/mountmgr.c
 +++ b/dlls/mountmgr.sys/mountmgr.c
-@@ -529,6 +529,17 @@ static NTSTATUS WINAPI mountmgr_ioctl( DEVICE_OBJECT *device, IRP *irp )
+@@ -527,6 +527,17 @@ static NTSTATUS WINAPI mountmgr_ioctl( DEVICE_OBJECT *device, IRP *irp )
                                       irpsp->Parameters.DeviceIoControl.OutputBufferLength,
                                       &irp->IoStatus );
          break;
@@ -233,5 +277,5 @@ index 11111111111..11111111111 100644
  #define IOCTL_MOUNTMGR_DELETE_CREDENTIAL     CTL_CODE(MOUNTMGRCONTROLTYPE, 50, METHOD_BUFFERED, FILE_WRITE_ACCESS)
 
 -- 
-2.36.1
+2.39.0
 

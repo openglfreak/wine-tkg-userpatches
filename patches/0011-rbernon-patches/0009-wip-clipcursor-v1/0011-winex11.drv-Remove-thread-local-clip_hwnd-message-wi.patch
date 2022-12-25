@@ -1,4 +1,4 @@
-From adccb5a3e6f2c96be54ee2e497fd183038d25f08 Mon Sep 17 00:00:00 2001
+From 2d21e7e792b7b10b657df0e62492393c68b4f530 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Sat, 7 May 2022 01:47:20 +0200
 Subject: [PATCH 11/13] winex11.drv: Remove thread-local clip_hwnd message
@@ -6,24 +6,25 @@ Subject: [PATCH 11/13] winex11.drv: Remove thread-local clip_hwnd message
 
 ---
  dlls/winex11.drv/mouse.c  | 36 +++++++++---------------------------
+ dlls/winex11.drv/window.c |  2 --
  dlls/winex11.drv/x11drv.h |  1 -
- 2 files changed, 9 insertions(+), 28 deletions(-)
+ 3 files changed, 9 insertions(+), 30 deletions(-)
 
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
-@@ -440,9 +440,7 @@ void X11DRV_XInput2_Enable( Display *display, Window window, long event_mask )
+@@ -456,9 +456,7 @@ void X11DRV_XInput2_Enable( Display *display, Window window, long event_mask )
  static BOOL grab_clipping_window( const RECT *clip )
  {
- #if HAVE_X11_EXTENSIONS_XINPUT2_H
+ #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
 -    static const WCHAR messageW[] = {'M','e','s','s','a','g','e',0};
      struct x11drv_thread_data *data = x11drv_thread_data();
 -    UNICODE_STRING class_name;
      CURSORINFO pci;
      Window clip_window;
      POINT pos;
-@@ -450,12 +448,6 @@ static BOOL grab_clipping_window( const RECT *clip )
+@@ -466,12 +464,6 @@ static BOOL grab_clipping_window( const RECT *clip )
      if (!data) return FALSE;
      if (!(clip_window = init_clip_window())) return TRUE;
  
@@ -36,7 +37,7 @@ index 11111111111..11111111111 100644
      if (keyboard_grabbed)
      {
          WARN( "refusing to clip to %s\n", wine_dbgstr_rect(clip) );
-@@ -470,7 +462,7 @@ static BOOL grab_clipping_window( const RECT *clip )
+@@ -486,7 +478,7 @@ static BOOL grab_clipping_window( const RECT *clip )
      }
  
      /* enable XInput2 unless we are already clipping */
@@ -45,7 +46,7 @@ index 11111111111..11111111111 100644
  
      TRACE( "clipping to %s win %lx\n", wine_dbgstr_rect(clip), clip_window );
  
-@@ -499,8 +491,6 @@ static BOOL grab_clipping_window( const RECT *clip )
+@@ -515,8 +507,6 @@ static BOOL grab_clipping_window( const RECT *clip )
      {
          X11DRV_XInput2_Enable( data->display, None, 0 );
          XUnmapWindow( data->display, clip_window );
@@ -54,7 +55,7 @@ index 11111111111..11111111111 100644
          return FALSE;
      }
      clip_rect = *clip;
-@@ -528,8 +518,6 @@ void ungrab_clipping_window(void)
+@@ -544,8 +534,6 @@ void ungrab_clipping_window(void)
      XUnmapWindow( data->display, clip_window );
      if (clipping_cursor) XUngrabPointer( data->display, CurrentTime );
      clipping_cursor = FALSE;
@@ -63,16 +64,16 @@ index 11111111111..11111111111 100644
      data->clip_reset = NtGetTickCount();
      X11DRV_XInput2_Enable( data->display, None, 0 );
  }
-@@ -586,7 +574,7 @@ static BOOL clip_fullscreen_window( HWND hwnd, BOOL reset )
-     if (!fullscreen) return FALSE;
+@@ -603,7 +591,7 @@ static BOOL clip_fullscreen_window( HWND hwnd, BOOL reset )
      if (!(thread_data = x11drv_thread_data())) return FALSE;
-     if (NtGetTickCount() - thread_data->clip_reset < 1000) return FALSE;
--    if (!reset && clipping_cursor && thread_data->clip_hwnd) return FALSE;  /* already clipping */
-+    if (!reset && clipping_cursor) return FALSE;  /* already clipping */
- 
+     if (!reset) {
+         if (NtGetTickCount() - thread_data->clip_reset < 1000) return FALSE;
+-        if (!reset && clipping_cursor && thread_data->clip_hwnd) return FALSE;  /* already clipping */
++        if (!reset && clipping_cursor) return FALSE;  /* already clipping */
+     }
      monitor = NtUserMonitorFromWindow( hwnd, MONITOR_DEFAULTTONEAREST );
      if (!monitor) return FALSE;
-@@ -634,7 +622,7 @@ static void map_event_coords( HWND hwnd, Window window, Window event_root, int x
+@@ -651,7 +639,7 @@ static void map_event_coords( HWND hwnd, Window window, Window event_root, int x
      if (!hwnd)
      {
          thread_data = x11drv_thread_data();
@@ -81,7 +82,7 @@ index 11111111111..11111111111 100644
          if (thread_data->clip_window != window) return;
          pt.x += clip_rect.left;
          pt.y += clip_rect.top;
-@@ -678,9 +666,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
+@@ -697,9 +685,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
      if (!hwnd)
      {
          struct x11drv_thread_data *thread_data = x11drv_thread_data();
@@ -92,32 +93,45 @@ index 11111111111..11111111111 100644
          if (thread_data->clip_window != window) return;
          __wine_send_input( hwnd, input, NULL );
          return;
-@@ -1595,15 +1581,11 @@ void x11drv_desktop_clip_cursor( BOOL fullscreen, BOOL reset )
+@@ -1623,15 +1609,11 @@ void x11drv_desktop_clip_cursor( BOOL fullscreen, BOOL reset )
          {
              if (grab_clipping_window( &clip )) return;
          }
--        else /* if currently clipping, check if we should switch to fullscreen clipping */
+-        else /* check if we should switch to fullscreen clipping */
 -        {
 -            struct x11drv_thread_data *data = x11drv_thread_data();
--            if (data && data->clip_hwnd)
+-            if (data)
 -            {
--                if (EqualRect( &clip, &clip_rect ) || clip_fullscreen_window( foreground, TRUE ))
+-                if ((data->clip_hwnd && EqualRect( &clip, &clip_rect ) && !EqualRect(&clip_rect, &virtual_rect)) || clip_fullscreen_window( foreground, TRUE ))
 -                    return;
 -            }
 -        }
-+        /* if currently clipping, check if we should switch to fullscreen clipping */
-+        else if (clipping_cursor && EqualRect( &clip, &clip_rect ))
++        /* check if we should switch to fullscreen clipping */
++        else if (clipping_cursor && (EqualRect( &clip, &clip_rect ) && !EqualRect(&clip_rect, &virtual_rect)))
 +            return;
 +        else if (clipping_cursor && clip_fullscreen_window( foreground, TRUE ))
 +            return;
  
          ungrab_clipping_window();
      }
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -3270,8 +3270,6 @@ LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
+             win = data->whole_window;
+             release_win_data( data );
+         }
+-        else if (hwnd == x11drv_thread_data()->clip_hwnd)
+-            win = x11drv_thread_data()->clip_window;
+ 
+         if (win)
+         {
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -371,7 +371,6 @@ struct x11drv_thread_data
+@@ -384,7 +384,6 @@ struct x11drv_thread_data
      Window   selection_wnd;        /* window used for selection interactions */
      unsigned long warp_serial;     /* serial number of last pointer warp request */
      Window   clip_window;          /* window used for cursor clipping */
@@ -126,5 +140,5 @@ index 11111111111..11111111111 100644
  #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
      XIValuatorClassInfo x_valuator;
 -- 
-2.36.1
+2.39.0
 

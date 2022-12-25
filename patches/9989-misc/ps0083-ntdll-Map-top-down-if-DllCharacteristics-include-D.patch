@@ -1,0 +1,37 @@
+From: Myah Caron <qsniyg@protonmail.com>
+Subject: [PATCH] ntdll: Map top-down if DllCharacteristics include DYNAMIC_BASE.
+Message-Id: <_-LD480GUnNq5vyFN1EFyejnfC2BRYNApiDqMAezQdkvPI4iIHkxsiVpmFubth01oNU-N0voHBWYMRes4eBLNA6_pf_PTiot7ynCF7yHVY8=@protonmail.com>
+Date: Sat, 13 Mar 2021 04:37:22 +0000
+
+Wine-bug: https://bugs.winehq.org/show_bug.cgi?id=44893
+Wine-bug: https://bugs.winehq.org/show_bug.cgi?id=48641
+Signed-off-by: Myah Caron <qsniyg@protonmail.com>
+---
+A test is available here: https://github.com/qsniyg/wine_dll_load_test/tree/b2b64bc8d7d1589cbfeb1dbb533674e4b32ed2b3/2 (D1 should load with a high 0x7fff... address)
+
+If --dynamicbase is added to the linker options, it will map the DLL top-down rather than bottom-up (tested under Windows 10).
+This patch fixes the SKSE issue, as it requires its base address to be > 0x180000000.
+
+While the linked issue may be "invalid" due to it an application bug, it does nonetheless demonstrate a bug in wine, so I believe it's worth fixing this issue.
+
+ dlls/ntdll/loader.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -2721,8 +2721,9 @@ static NTSTATUS load_native_dll( LPCWSTR load_path, const UNICODE_STRING *nt_nam
+ {
+     void *module = NULL;
+     SIZE_T len = 0;
++    ULONG alloc_type = (image_info->DllCharacteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE) ? MEM_TOP_DOWN : 0;
+     NTSTATUS status = NtMapViewOfSection( mapping, NtCurrentProcess(), &module, 0, 0, NULL, &len,
+-                                          ViewShare, 0, PAGE_EXECUTE_READ );
++                                          ViewShare, alloc_type, PAGE_EXECUTE_READ );
+ 
+     if (status == STATUS_IMAGE_NOT_AT_BASE) status = STATUS_SUCCESS;
+     if (status) return status;
+-- 
+2.39.0
+

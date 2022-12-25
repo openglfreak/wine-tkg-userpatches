@@ -1,0 +1,104 @@
+From e18a4286a1ede2b7a7a37464d125a6aaef7f8b60 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Tue, 6 Dec 2022 09:14:23 +0100
+Subject: [PATCH 5/5] ntdll: Make syscall functions sysv_abi on x64.
+
+This doesn't support CDECL syscalls.
+---
+ dlls/ntdll/unix/signal_x86_64.c | 37 +++++++++++++++++++++++++++++----
+ include/windef.h                |  4 ++++
+ 2 files changed, 37 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -2940,6 +2940,18 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    "movq %rdx,0x2f0(%rcx)\n\t"
+                    "movq %rdx,0x2f8(%rcx)\n\t"
+                    "xsavec64 0xc0(%rcx)\n\t"
++                   "testq $2,0x2c0(%rcx)\n\t"          /* frame->xstate.Mask */
++                   "jnz 3f\n\t"
++                   "movdqa %xmm6,0x1c0(%rcx)\n\t"
++                   "movdqa %xmm7,0x1d0(%rcx)\n\t"
++                   "movdqa %xmm8,0x1e0(%rcx)\n\t"
++                   "movdqa %xmm9,0x1f0(%rcx)\n\t"
++                   "movdqa %xmm10,0x200(%rcx)\n\t"
++                   "movdqa %xmm11,0x210(%rcx)\n\t"
++                   "movdqa %xmm12,0x220(%rcx)\n\t"
++                   "movdqa %xmm13,0x230(%rcx)\n\t"
++                   "movdqa %xmm14,0x240(%rcx)\n\t"
++                   "movdqa %xmm15,0x250(%rcx)\n\t"
+                    "jmp 3f\n"
+                    "1:\txsave64 0xc0(%rcx)\n\t"
+                    "jmp 3f\n"
+@@ -2972,7 +2984,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    "leaq -0x98(%rbp),%rcx\n"
+                    "2:\n\t"
+ #endif
+-                   "leaq 0x28(%rsp),%rsi\n\t"      /* first argument */
++                   "leaq 0x38(%rsp),%rsi\n\t"      /* third argument */
+                    "movq %rcx,%rsp\n\t"
+                    "movq 0x00(%rcx),%rax\n\t"
+                    "movq 0x18(%rcx),%rdx\n\t"
+@@ -2986,7 +2998,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    "jae 5f\n\t"
+                    "movq 24(%rbx),%rcx\n\t"        /* table->ArgumentTable */
+                    "movzbl (%rcx,%rax),%ecx\n\t"
+-                   "subq $0x20,%rcx\n\t"
++                   "subq $0x30,%rcx\n\t"
+                    "jbe 1f\n\t"
+                    "subq %rcx,%rsp\n\t"
+                    "shrq $3,%rcx\n\t"
+@@ -2994,13 +3006,30 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    "movq %rsp,%rdi\n\t"
+                    "cld\n\t"
+                    "rep; movsq\n"
+-                   "1:\tmovq %r10,%rcx\n\t"
+-                   "subq $0x20,%rsp\n\t"
++                   "1:\tmovq %r10,%rdi\n\t"
++                   "movq %rdx,%rsi\n\t"
++                   "movq %r8,%rdx\n\t"
++                   "movq %r9,%rcx\n\t"
++                   "movq -0x10(%rbp),%r9\n\t"      /* frame->rsp */
++                   "movq 0x28(%r9),%r8\n\t"
++                   "movq 0x30(%r9),%r9\n\t"
+                    "movq (%rbx),%r10\n\t"          /* table->ServiceTable */
+                    "callq *(%r10,%rax,8)\n\t"
+                    "leaq -0x98(%rbp),%rcx\n\t"
+                    /* $rcx is now pointing to "frame" again */
+                    __ASM_CFI(".cfi_restore_state\n")
++                   "testl $0x8,0x94(%rcx)\n\t"     /* frame->restore_flags */
++                   "jnz .L__wine_syscall_dispatcher_return\n\t"
++                   "movdqa 0x1c0(%rcx),%xmm6\n\t"
++                   "movdqa 0x1d0(%rcx),%xmm7\n\t"
++                   "movdqa 0x1e0(%rcx),%xmm8\n\t"
++                   "movdqa 0x1f0(%rcx),%xmm9\n\t"
++                   "movdqa 0x200(%rcx),%xmm10\n\t"
++                   "movdqa 0x210(%rcx),%xmm11\n\t"
++                   "movdqa 0x220(%rcx),%xmm12\n\t"
++                   "movdqa 0x230(%rcx),%xmm13\n\t"
++                   "movdqa 0x240(%rcx),%xmm14\n\t"
++                   "movdqa 0x250(%rcx),%xmm15\n\t"
+                    ".L__wine_syscall_dispatcher_return:\n\t"
+                    "movl 0x94(%rcx),%edx\n\t"  /* frame->restore_flags */
+ #ifdef __linux__
+diff --git a/include/windef.h b/include/windef.h
+index 11111111111..11111111111 100644
+--- a/include/windef.h
++++ b/include/windef.h
+@@ -200,7 +200,11 @@ extern "C" {
+ #define APIENTRY    WINAPI
+ #define CONST       __ONLY_IN_WINELIB(const)
+ 
++#if defined(_WIN64) && !defined(__WINE_PE_BUILD)
++#define SYSCALL
++#else
+ #define SYSCALL WINAPI
++#endif
+ 
+ /* Misc. constants. */
+ 
+-- 
+2.39.0
+

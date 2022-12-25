@@ -1,0 +1,73 @@
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1583,9 +1583,18 @@ NTSTATUS SYSCALL NtRaiseException( EXCEPTION_RECORD *rec, CONTEXT *context, BOOL
+ /**********************************************************************
+  *           NtCurrentTeb   (NTDLL.@)
+  */
+-TEB * WINAPI NtCurrentTeb(void)
++TEB *__wine_get_current_teb(void)
+ {
+-    return pthread_getspecific( teb_key );
++    return unix_get_current_teb();
++}
++
++
++/**********************************************************************
++ *           NtCurrentTeb   (NTDLL.@)
++ */
++TEB * WINAPI NtCurrentTeb_(void)
++{
++    return unix_get_current_teb();
+ }
+ 
+ 
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -330,6 +330,11 @@ extern void call_raise_user_exception_dispatcher(void) DECLSPEC_HIDDEN;
+ 
+ #define IMAGE_DLLCHARACTERISTICS_PREFER_NATIVE 0x0010 /* Wine extension */
+ 
++static inline TEB *unix_get_current_teb(void)
++{
++    return pthread_getspecific( teb_key );
++}
++
+ #define TICKSPERSEC 10000000
+ #define SECS_1601_TO_1970  ((369 * 365 + 89) * (ULONGLONG)86400)
+ 
+diff --git a/include/winnt.h b/include/winnt.h
+index 11111111111..11111111111 100644
+--- a/include/winnt.h
++++ b/include/winnt.h
+@@ -2281,10 +2281,24 @@ static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
+ {
+     return (struct _TEB *)(ULONG_PTR)_MoveFromCoprocessor(15, 0, 13, 0, 2);
+ }
+-#elif defined(__GNUC__)
+-extern struct _TEB * WINAPI NtCurrentTeb(void) __attribute__((pure));
+ #else
+-extern struct _TEB * WINAPI NtCurrentTeb(void);
++#ifdef _NTSYSTEM_
++static inline struct _TEB *unix_get_current_teb(void);
++#else
++struct _TEB *__wine_get_current_teb(void);
++#endif
++#if defined(__GNUC__)
++static FORCEINLINE struct _TEB * WINAPI __attribute__((pure)) NtCurrentTeb(void)
++#else
++static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
++#endif
++{
++#ifdef _NTSYSTEM_
++    return unix_get_current_teb();
++#else
++    return __wine_get_current_teb();
++#endif
++}
+ #endif
+ 
+ #ifdef NONAMELESSUNION

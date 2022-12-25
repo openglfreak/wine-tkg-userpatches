@@ -1,20 +1,20 @@
-From 7925ea1112ae8d2a1012c0afa80d3fd267cf1e36 Mon Sep 17 00:00:00 2001
+From 9e41220bf174cbc38f51b6732b66db0e4506e30e Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Sat, 7 May 2022 01:45:29 +0200
 Subject: [PATCH 10/13] winex11.drv: Clip cursor in the desktop thread.
 
 ---
  dlls/winex11.drv/event.c  |   2 +
- dlls/winex11.drv/mouse.c  | 110 ++++++++++----------------------------
+ dlls/winex11.drv/mouse.c  | 102 ++++++++++----------------------------
  dlls/winex11.drv/window.c |   6 +--
  dlls/winex11.drv/x11drv.h |   7 +--
- 4 files changed, 32 insertions(+), 93 deletions(-)
+ 4 files changed, 32 insertions(+), 85 deletions(-)
 
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -873,6 +873,7 @@ BOOL x11drv_handle_focus_in_event( HWND hwnd, XEvent *xev, Time time )
+@@ -868,6 +868,7 @@ BOOL x11drv_handle_focus_in_event( HWND hwnd, XEvent *xev, Time time )
          break;
      case NotifyNormal:
          keyboard_grabbed = FALSE;
@@ -22,7 +22,7 @@ index 11111111111..11111111111 100644
          break;
      case NotifyUngrab:
          keyboard_grabbed = FALSE;
-@@ -964,6 +965,7 @@ BOOL x11drv_handle_focus_out_event( HWND hwnd, XEvent *xev, Time time )
+@@ -960,6 +961,7 @@ BOOL x11drv_handle_focus_out_event( HWND hwnd, XEvent *xev, Time time )
          break;
      case NotifyWhileGrabbed:
          keyboard_grabbed = TRUE;
@@ -34,11 +34,10 @@ diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
-@@ -443,21 +443,17 @@ static BOOL grab_clipping_window( const RECT *clip )
+@@ -459,20 +459,17 @@ static BOOL grab_clipping_window( const RECT *clip )
      static const WCHAR messageW[] = {'M','e','s','s','a','g','e',0};
      struct x11drv_thread_data *data = x11drv_thread_data();
      UNICODE_STRING class_name;
--    HCURSOR cursor;
 +    CURSORINFO pci;
      Window clip_window;
 -    HWND msg_hwnd = 0;
@@ -60,7 +59,7 @@ index 11111111111..11111111111 100644
          return TRUE;
  
      if (keyboard_grabbed)
-@@ -478,14 +474,19 @@ static BOOL grab_clipping_window( const RECT *clip )
+@@ -493,14 +490,19 @@ static BOOL grab_clipping_window( const RECT *clip )
  
      TRACE( "clipping to %s win %lx\n", wine_dbgstr_rect(clip), clip_window );
  
@@ -83,18 +82,11 @@ index 11111111111..11111111111 100644
          clip->right < clip_rect.right || clip->bottom < clip_rect.bottom)
          data->warp_serial = NextRequest( data->display );
  
-@@ -494,24 +495,16 @@ static BOOL grab_clipping_window( const RECT *clip )
+@@ -509,17 +511,16 @@ static BOOL grab_clipping_window( const RECT *clip )
                         GrabModeAsync, GrabModeAsync, clip_window, None, CurrentTime ))
          clipping_cursor = TRUE;
  
--    SERVER_START_REQ( set_cursor )
--    {
--        req->flags = 0;
--        wine_server_call( req );
--        cursor = reply->prev_count >= 0 ? wine_server_ptr_handle( reply->prev_handle ) : 0;
--    }
--    SERVER_END_REQ;
--    set_window_cursor( clip_window, cursor );
+-    sync_window_cursor( clip_window );
 -
      if (!clipping_cursor)
      {
@@ -112,7 +104,7 @@ index 11111111111..11111111111 100644
      return TRUE;
  #else
      WARN( "XInput2 was not available at compile time\n" );
-@@ -526,16 +519,19 @@ static BOOL grab_clipping_window( const RECT *clip )
+@@ -534,16 +535,19 @@ static BOOL grab_clipping_window( const RECT *clip )
   */
  void ungrab_clipping_window(void)
  {
@@ -136,7 +128,7 @@ index 11111111111..11111111111 100644
  }
  
  /***********************************************************************
-@@ -563,42 +559,6 @@ void retry_grab_clipping_window(void)
+@@ -571,42 +575,6 @@ void retry_grab_clipping_window(void)
          NtUserClipCursor( &last_clip_rect );
  }
  
@@ -179,7 +171,7 @@ index 11111111111..11111111111 100644
  
  /***********************************************************************
   *		clip_fullscreen_window
-@@ -1615,26 +1575,12 @@ BOOL X11DRV_ClipCursor( LPCRECT clip )
+@@ -1635,26 +1603,12 @@ BOOL X11DRV_ClipCursor( LPCRECT clip )
   * Function called upon receiving a WM_X11DRV_DESKTOP_CLIP_CURSOR.
   */
  void x11drv_desktop_clip_cursor( BOOL fullscreen, BOOL reset )
@@ -208,19 +200,19 @@ index 11111111111..11111111111 100644
      else if (!grab_pointer)
          ungrab_clipping_window();
      else
-@@ -1647,7 +1593,7 @@ LRESULT clip_cursor_request( HWND hwnd, BOOL fullscreen, BOOL reset )
+@@ -1667,7 +1621,7 @@ LRESULT clip_cursor_request( HWND hwnd, BOOL fullscreen, BOOL reset )
          if (clip.left > virtual_rect.left || clip.right < virtual_rect.right ||
              clip.top > virtual_rect.top || clip.bottom < virtual_rect.bottom)
          {
 -            if (grab_clipping_window( &clip )) return 0;
 +            if (grab_clipping_window( &clip )) return;
          }
-         else /* if currently clipping, check if we should switch to fullscreen clipping */
+         else /* check if we should switch to fullscreen clipping */
          {
-@@ -1655,14 +1601,12 @@ LRESULT clip_cursor_request( HWND hwnd, BOOL fullscreen, BOOL reset )
-             if (data && data->clip_hwnd)
+@@ -1675,14 +1629,12 @@ LRESULT clip_cursor_request( HWND hwnd, BOOL fullscreen, BOOL reset )
+             if (data)
              {
-                 if (EqualRect( &clip, &clip_rect ) || clip_fullscreen_window( foreground, TRUE ))
+                 if ((data->clip_hwnd && EqualRect( &clip, &clip_rect ) && !EqualRect(&clip_rect, &virtual_rect)) || clip_fullscreen_window( foreground, TRUE ))
 -                    return 0;
 +                    return;
              }
@@ -237,18 +229,19 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -3190,21 +3190,17 @@ LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
-             release_win_data( data );
-             if (win) set_window_cursor( win, (HCURSOR)lp );
+@@ -3280,22 +3280,18 @@ LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
+             else
+                 sync_window_cursor( win );
          }
 -        if (clipping_cursor) set_window_cursor( x11drv_thread_data()->clip_window, (HCURSOR)lp );
          return 0;
+     }
      case WM_X11DRV_DESKTOP_SET_HICON_CURSOR:
          x11drv_desktop_set_hicon_cursor( (HICON)wp, (Cursor)lp );
          return 0;
      case WM_X11DRV_DESKTOP_SET_WINDOW_CURSOR:
 +        if (clipping_cursor) set_window_cursor( x11drv_thread_data()->clip_window, (HCURSOR)lp );
-         send_notify_message( (HWND)wp, WM_X11DRV_SET_CURSOR, 0, lp );
+         send_notify_message( (HWND)wp, WM_X11DRV_SET_CURSOR, GetCurrentThreadId(), lp );
          return 0;
      case WM_X11DRV_DESKTOP_CLIP_CURSOR:
          x11drv_desktop_clip_cursor( (BOOL)wp, (BOOL)lp );
@@ -264,7 +257,7 @@ diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -595,10 +595,9 @@ enum x11drv_window_messages
+@@ -606,10 +606,9 @@ enum x11drv_window_messages
      WM_X11DRV_DESKTOP_SET_HICON_CURSOR,
      WM_X11DRV_DESKTOP_SET_WINDOW_CURSOR,
      WM_X11DRV_DESKTOP_CLIP_CURSOR,
@@ -277,7 +270,7 @@ index 11111111111..11111111111 100644
  };
  
  /* _NET_WM_STATE properties that we keep track of */
-@@ -698,8 +697,6 @@ extern XContext cursor_context DECLSPEC_HIDDEN;
+@@ -711,8 +710,6 @@ extern XContext cursor_context DECLSPEC_HIDDEN;
  extern void X11DRV_SetFocus( HWND hwnd ) DECLSPEC_HIDDEN;
  extern BOOL X11DRV_SetForegroundWindow( HWND hwnd ) DECLSPEC_HIDDEN;
  extern void set_window_cursor( Window window, HCURSOR handle ) DECLSPEC_HIDDEN;
@@ -287,5 +280,5 @@ index 11111111111..11111111111 100644
  extern void ungrab_clipping_window(void) DECLSPEC_HIDDEN;
  extern void reset_clipping_window(void) DECLSPEC_HIDDEN;
 -- 
-2.36.1
+2.39.0
 

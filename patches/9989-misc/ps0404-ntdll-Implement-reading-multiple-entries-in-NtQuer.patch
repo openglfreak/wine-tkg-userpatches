@@ -9,18 +9,18 @@ Signed-off-by: Zebediah Figura <zfigura@codeweavers.com>
 v3: fix a missing dereference in sizeof (thanks Jinoh Kang)
 
  dlls/ntdll/tests/om.c  |  57 +++++++++-----------
- dlls/ntdll/unix/sync.c | 118 +++++++++++++++++++++++++++--------------
+ dlls/ntdll/unix/sync.c | 117 +++++++++++++++++++++++++++--------------
  server/directory.c     |  74 ++++++++++++++++++++------
  server/object.c        |   1 -
  server/protocol.def    |  20 ++++---
  server/trace.c         |  34 ++++++++++++
- 6 files changed, 209 insertions(+), 95 deletions(-)
+ 6 files changed, 208 insertions(+), 95 deletions(-)
 
 diff --git a/dlls/ntdll/tests/om.c b/dlls/ntdll/tests/om.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/tests/om.c
 +++ b/dlls/ntdll/tests/om.c
-@@ -2546,9 +2546,9 @@ static void test_query_directory(void)
+@@ -2540,9 +2540,9 @@ static void test_query_directory(void)
      context = 0xdeadbeef;
      size = 0xdeadbeef;
      status = NtQueryDirectoryObject( dir, info, 0, FALSE, TRUE, &context, &size );
@@ -32,7 +32,7 @@ index 11111111111..11111111111 100644
  
      context = 0xdeadbeef;
      size = 0xdeadbeef;
-@@ -2564,9 +2564,9 @@ static void test_query_directory(void)
+@@ -2558,9 +2558,9 @@ static void test_query_directory(void)
      size = 0xdeadbeef;
      memset( buffer, 0xcc, sizeof(buffer) );
      status = NtQueryDirectoryObject( dir, info, sizeof(buffer), FALSE, TRUE, &context, &size );
@@ -44,7 +44,7 @@ index 11111111111..11111111111 100644
      if (size == sizeof(*info))
          ok( !memcmp( &info[0], &empty_info, sizeof(*info) ), "entry was not cleared\n" );
  
-@@ -2662,37 +2662,31 @@ static void test_query_directory(void)
+@@ -2656,37 +2656,31 @@ static void test_query_directory(void)
  
      memset( buffer, 0xcc, sizeof(buffer) );
      status = NtQueryDirectoryObject( dir, info, sizeof(buffer), FALSE, TRUE, &context, &size );
@@ -96,7 +96,7 @@ index 11111111111..11111111111 100644
              || broken(status == STATUS_BUFFER_TOO_SMALL) /* wow64 */, "got %#lx\n", status );
      if (status == STATUS_MORE_ENTRIES)
      {
-@@ -2704,7 +2698,7 @@ static void test_query_directory(void)
+@@ -2698,7 +2692,7 @@ static void test_query_directory(void)
      size = 0xdeadbeef;
      context = 0xdeadbeef;
      status = NtQueryDirectoryObject( dir, info, 0, FALSE, TRUE, &context, &size );
@@ -105,7 +105,7 @@ index 11111111111..11111111111 100644
              || broken(status == STATUS_BUFFER_TOO_SMALL) /* wow64 */, "got %#lx\n", status );
      if (status == STATUS_MORE_ENTRIES)
      {
-@@ -2715,14 +2709,11 @@ static void test_query_directory(void)
+@@ -2709,14 +2703,11 @@ static void test_query_directory(void)
      context = 1;
      memset( buffer, 0xcc, sizeof(buffer) );
      status = NtQueryDirectoryObject( dir, info, sizeof(buffer), FALSE, FALSE, &context, &size );
@@ -123,13 +123,13 @@ index 11111111111..11111111111 100644
 +    check_unicode_string( &info[0].ObjectTypeName, L"Mutant" );
 +    ok( !memcmp( &info[1], &empty_info, sizeof(*info) ), "entry was not cleared\n" );
  
-     NtClose( child1 );
-     NtClose( child2 );
+     pNtClose( child1 );
+     pNtClose( child2 );
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
-@@ -2308,57 +2308,95 @@ NTSTATUS WINAPI NtOpenDirectoryObject( HANDLE *handle, ACCESS_MASK access, const
+@@ -2308,57 +2308,94 @@ NTSTATUS WINAPI NtOpenDirectoryObject( HANDLE *handle, ACCESS_MASK access, const
  /**************************************************************************
   *           NtQueryDirectoryObject   (NTDLL.@)
   */
@@ -138,11 +138,10 @@ index 11111111111..11111111111 100644
                                          ULONG size, BOOLEAN single_entry, BOOLEAN restart,
                                          ULONG *context, ULONG *ret_size )
  {
-+    unsigned int i, count, total_len, pos, used_size, used_count;
++    unsigned int i, count, total_len, pos, used_size, used_count, status;
      ULONG index = restart ? 0 : *context;
--    NTSTATUS ret;
+-    unsigned int ret;
 +    struct directory_entry *buffer;
-+    NTSTATUS status;
 +    char *p;
 +
 +    if (!(buffer = malloc( size ))) return STATUS_NO_MEMORY;
@@ -189,7 +188,9 @@ index 11111111111..11111111111 100644
 +        total_len = reply->total_len;
 +    }
 +    SERVER_END_REQ;
-+
+ 
+-            if (ret_size && (!ret || ret == STATUS_BUFFER_TOO_SMALL))
+-                *ret_size = 2 * sizeof(*buffer) + reply->total_len + 2 * sizeof(WCHAR);
 +    if (status && status != STATUS_MORE_ENTRIES)
 +    {
 +        free( buffer );
@@ -202,9 +203,7 @@ index 11111111111..11111111111 100644
 +    {
 +        const struct directory_entry *entry = (const struct directory_entry *)((char *)buffer + pos);
 +        unsigned int entry_size = sizeof(*info) + entry->name_len + entry->type_len + 2 * sizeof(WCHAR);
- 
--            if (ret_size && (!ret || ret == STATUS_BUFFER_TOO_SMALL))
--                *ret_size = 2 * sizeof(*buffer) + reply->total_len + 2 * sizeof(WCHAR);
++
 +        if (used_size + entry_size > size)
 +        {
 +            status = STATUS_MORE_ENTRIES;
@@ -365,7 +364,7 @@ diff --git a/server/object.c b/server/object.c
 index 11111111111..11111111111 100644
 --- a/server/object.c
 +++ b/server/object.c
-@@ -489,7 +489,6 @@ struct object *find_object_index( const struct namespace *namespace, unsigned in
+@@ -499,7 +499,6 @@ struct object *find_object_index( const struct namespace *namespace, unsigned in
              if (!index--) return grab_object( ptr->obj );
          }
      }
@@ -377,7 +376,7 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -904,6 +904,14 @@ struct input_shared_memory
+@@ -934,6 +934,14 @@ struct input_shared_memory
  #define SEQUENCE_MASK_BITS  4
  #define SEQUENCE_MASK ((1UL << SEQUENCE_MASK_BITS) - 1)
  
@@ -392,7 +391,7 @@ index 11111111111..11111111111 100644
  /****************************************************************/
  /* Request declarations */
  
-@@ -3360,15 +3368,15 @@ enum caret_state
+@@ -3423,15 +3431,15 @@ enum caret_state
  @END
  
  
@@ -418,7 +417,7 @@ diff --git a/server/trace.c b/server/trace.c
 index 11111111111..11111111111 100644
 --- a/server/trace.c
 +++ b/server/trace.c
-@@ -1355,6 +1355,40 @@ static void dump_varargs_cpu_topology_override( const char *prefix, data_size_t
+@@ -1362,6 +1362,40 @@ static void dump_varargs_cpu_topology_override( const char *prefix, data_size_t
      remove_data( size );
  }
  
@@ -461,5 +460,5 @@ index 11111111111..11111111111 100644
  /* Everything below this line is generated automatically by tools/make_requests */
 
 -- 
-2.36.1
+2.39.0
 

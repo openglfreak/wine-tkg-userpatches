@@ -1,0 +1,89 @@
+From 0fe56a136698c8e5a187c622b1111f93e8ae130f Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Wed, 16 Nov 2022 06:53:31 +0100
+Subject: [PATCH 4/6] httpapi: Implement HttpWaitForDisconnect.
+
+Signed-off-by: Torge Matthies <tmatthies@codeweavers.com>
+---
+ dlls/httpapi/httpapi.spec   |  2 +-
+ dlls/httpapi/httpapi_main.c | 40 +++++++++++++++++++++++++++++++++++++
+ include/http.h              |  1 +
+ 3 files changed, 42 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/httpapi/httpapi.spec b/dlls/httpapi/httpapi.spec
+index 11111111111..11111111111 100644
+--- a/dlls/httpapi/httpapi.spec
++++ b/dlls/httpapi/httpapi.spec
+@@ -33,5 +33,5 @@
+ @ stub HttpShutdownRequestQueue
+ @ stdcall HttpTerminate(long ptr)
+ @ stub HttpWaitForDemandStart
+-@ stub HttpWaitForDisconnect
++@ stdcall HttpWaitForDisconnect(ptr int64 ptr)
+ @ stub HttpWaitForDisconnectEx
+diff --git a/dlls/httpapi/httpapi_main.c b/dlls/httpapi/httpapi_main.c
+index 11111111111..11111111111 100644
+--- a/dlls/httpapi/httpapi_main.c
++++ b/dlls/httpapi/httpapi_main.c
+@@ -576,6 +576,46 @@ ULONG WINAPI HttpSendResponseEntityBody(HANDLE queue, HTTP_REQUEST_ID id,
+     return ret;
+ }
+ 
++/***********************************************************************
++ *        HttpWaitForDisconnect     (HTTPAPI.@)
++ */
++ULONG WINAPI HttpWaitForDisconnect(HANDLE queue, HTTP_REQUEST_ID id, OVERLAPPED *ovl)
++{
++    struct http_wait_for_disconnect_params params =
++    {
++        .id = id,
++    };
++    ULONG ret = ERROR_SUCCESS;
++    OVERLAPPED sync_ovl;
++
++    TRACE("queue %p, id %s, ovl %p.\n", queue, wine_dbgstr_longlong(id), ovl);
++
++    if (!ovl)
++    {
++        sync_ovl.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
++        ovl = &sync_ovl;
++    }
++
++    if (!DeviceIoControl(queue, IOCTL_HTTP_WAIT_FOR_DISCONNECT, &params, sizeof(params), NULL, 0, NULL, ovl))
++        ret = GetLastError();
++
++    if (ovl == &sync_ovl)
++    {
++        if (ret == ERROR_IO_PENDING)
++        {
++            ret = ERROR_SUCCESS;
++            if (!GetOverlappedResult(queue, ovl, 0, TRUE))
++                ret = GetLastError();
++        }
++        CloseHandle(sync_ovl.hEvent);
++    }
++
++    if (ret == ERROR_CONNECTION_INVALID)
++        ret = NO_ERROR;
++
++    return ret;
++}
++
+ struct url_group
+ {
+     struct list entry, session_entry;
+diff --git a/include/http.h b/include/http.h
+index 11111111111..11111111111 100644
+--- a/include/http.h
++++ b/include/http.h
+@@ -480,6 +480,7 @@ ULONG WINAPI HttpReceiveRequestEntityBody(HANDLE queue, HTTP_REQUEST_ID id, ULON
+ ULONG WINAPI HttpRemoveUrl(HANDLE queue, const WCHAR *url);
+ ULONG WINAPI HttpRemoveUrlFromUrlGroup(HTTP_URL_GROUP_ID id, const WCHAR *url, ULONG flags);
+ ULONG WINAPI HttpSendHttpResponse(HANDLE queue, HTTP_REQUEST_ID id, ULONG flags, HTTP_RESPONSE *response, HTTP_CACHE_POLICY *cache_policy, ULONG *ret_size, void *reserved1, ULONG reserved2, OVERLAPPED *ovl, HTTP_LOG_DATA *log_data);
++ULONG WINAPI HttpWaitForDisconnect(HANDLE queue, HTTP_REQUEST_ID id, OVERLAPPED *ovl);
+ ULONG WINAPI HttpSetRequestQueueProperty(HANDLE queue, HTTP_SERVER_PROPERTY property, void *value, ULONG length, ULONG reserved1, void *reserved2);
+ ULONG WINAPI HttpSetServerSessionProperty(HTTP_SERVER_SESSION_ID id, HTTP_SERVER_PROPERTY property, void *value, ULONG size);
+ ULONG WINAPI HttpSetServiceConfiguration(HANDLE,HTTP_SERVICE_CONFIG_ID,PVOID,ULONG,LPOVERLAPPED);
+-- 
+2.39.0
+

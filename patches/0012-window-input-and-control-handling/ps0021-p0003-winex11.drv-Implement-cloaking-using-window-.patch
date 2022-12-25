@@ -46,15 +46,15 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -45,6 +45,7 @@
- #undef Status
- #include "ntstatus.h"
+@@ -48,6 +48,7 @@
  #define WIN32_NO_STATUS
+ 
+ #include "x11drv.h"
 +#include "dwmapi.h"
- #include "windef.h"
- #include "winbase.h"
  #include "wingdi.h"
-@@ -397,7 +398,7 @@ static void sync_window_region( struct x11drv_win_data *data, HRGN win_region )
+ #include "winuser.h"
+ 
+@@ -398,7 +399,7 @@ static void sync_window_region( struct x11drv_win_data *data, HRGN win_region )
      if (!data->whole_window) return;
      data->shaped = FALSE;
  
@@ -63,7 +63,7 @@ index 11111111111..11111111111 100644
      {
          static XRectangle empty_rect;
          XShapeCombineRectangles( data->display, data->whole_window, ShapeBounding, 0, 0,
-@@ -1781,7 +1782,13 @@ static void create_whole_window( struct x11drv_win_data *data )
+@@ -1788,7 +1789,13 @@ static void create_whole_window( struct x11drv_win_data *data )
      if (win_rgn || IsRectEmpty( &data->window_rect )) sync_window_region( data, win_rgn );
  
      /* set the window opacity */
@@ -78,7 +78,7 @@ index 11111111111..11111111111 100644
      set_window_opacity( data->display, data->whole_window, (layered_flags & LWA_ALPHA) ? alpha : 0xff );
  
      XFlush( data->display );  /* make sure the window exists before we start painting to it */
-@@ -1949,7 +1956,7 @@ void X11DRV_SetWindowStyle( HWND hwnd, INT offset, STYLESTRUCT *style )
+@@ -1956,7 +1963,7 @@ void X11DRV_SetWindowStyle( HWND hwnd, INT offset, STYLESTRUCT *style )
      {
          data->layered = FALSE;
          set_window_visual( data, &default_visual, FALSE );
@@ -87,7 +87,7 @@ index 11111111111..11111111111 100644
          if (data->surface) set_surface_color_key( data->surface, CLR_INVALID );
      }
  done:
-@@ -3034,6 +3041,80 @@ static void x11drv_desktop_set_hicon_cursor( HICON handle, Cursor cursor )
+@@ -3050,6 +3057,80 @@ static void x11drv_desktop_set_hicon_cursor( HICON handle, Cursor cursor )
      XUnlockDisplay( gdi_display );
  }
  
@@ -105,7 +105,7 @@ index 11111111111..11111111111 100644
 +    case WCA_CLOAK:
 +        if (!(data = get_win_data( hwnd )))
 +        {
-+            SetLastError( ERROR_INVALID_HANDLE );
++            RtlSetLastWin32Error( ERROR_INVALID_HANDLE );
 +            return ~0;
 +        }
 +        ret = *(BOOL*)attr_data ? SET_WINDOW_CLOAKED_ON : 0;
@@ -132,7 +132,7 @@ index 11111111111..11111111111 100644
 +            if (cloaked)
 +            {
 +                release_win_data( data );
-+                SetLastError( ERROR_INVALID_PARAMETER );
++                RtlSetLastWin32Error( ERROR_INVALID_PARAMETER );
 +                return ~0;
 +            }
 +        }
@@ -152,7 +152,7 @@ index 11111111111..11111111111 100644
 +            sync_window_region( data, (HRGN)1 );
 +#else
 +            FIXME("libXshape is not available, but cloaking requires it.\n");
-+            SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
++            RtlSetLastWin32Error( ERROR_CALL_NOT_IMPLEMENTED );
 +            ret = ~0;
 +#endif
 +        }
@@ -168,7 +168,7 @@ index 11111111111..11111111111 100644
  /**********************************************************************
   *		SetWindowIcon (X11DRV.@)
   *
-@@ -3093,7 +3174,7 @@ void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha, DWO
+@@ -3109,7 +3190,7 @@ void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha, DWO
      {
          set_window_visual( data, &default_visual, FALSE );
  
@@ -177,7 +177,7 @@ index 11111111111..11111111111 100644
              set_window_opacity( data->display, data->whole_window, (flags & LWA_ALPHA) ? alpha : 0xff );
          if (data->surface)
              set_surface_color_key( data->surface, (flags & LWA_COLORKEY) ? key : CLR_INVALID );
-@@ -3118,9 +3199,20 @@ void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha, DWO
+@@ -3134,9 +3215,20 @@ void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha, DWO
          Window win = X11DRV_get_whole_window( hwnd );
          if (win)
          {
@@ -205,7 +205,7 @@ diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -630,6 +630,7 @@ struct x11drv_win_data
+@@ -642,6 +642,7 @@ struct x11drv_win_data
      BOOL        managed : 1;    /* is window managed? */
      BOOL        mapped : 1;     /* is window mapped? (in either normal or iconic state) */
      BOOL        iconic : 1;     /* is window in iconic state? */
@@ -213,7 +213,7 @@ index 11111111111..11111111111 100644
      BOOL        embedded : 1;   /* is window an XEMBED client? */
      BOOL        shaped : 1;     /* is window using a custom region shape? */
      BOOL        layered : 1;    /* is window layered and with valid attributes? */
-@@ -1024,4 +1025,6 @@ static inline LONG x11drv_wcstol( LPCWSTR s, LPWSTR *end, INT base )
+@@ -982,4 +983,6 @@ static inline UINT asciiz_to_unicode( WCHAR *dst, const char *src )
          } while (__SHARED_READ_SEQ( x ) != __seq); \
      } while(0)
  
@@ -222,5 +222,5 @@ index 11111111111..11111111111 100644
  #endif  /* __WINE_X11DRV_H */
 
 -- 
-2.36.1
+2.39.0
 

@@ -1,0 +1,113 @@
+From 2db61789b23dacec9185c5620890369fe1cceed7 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Tue, 22 Nov 2022 18:18:20 +0100
+Subject: [PATCH 05/11] wineandroid.drv: Route kernel callbacks through user32.
+
+Signed-off-by: Torge Matthies <tmatthies@codeweavers.com>
+---
+ dlls/wineandroid.drv/android.h | 1 +
+ dlls/wineandroid.drv/device.c  | 4 +++-
+ dlls/wineandroid.drv/dllmain.c | 9 ++-------
+ dlls/wineandroid.drv/init.c    | 2 ++
+ dlls/wineandroid.drv/unixlib.h | 7 +------
+ 5 files changed, 9 insertions(+), 14 deletions(-)
+
+diff --git a/dlls/wineandroid.drv/android.h b/dlls/wineandroid.drv/android.h
+index 11111111111..11111111111 100644
+--- a/dlls/wineandroid.drv/android.h
++++ b/dlls/wineandroid.drv/android.h
+@@ -120,6 +120,7 @@ extern NTSTATUS android_java_init( void *arg ) DECLSPEC_HIDDEN;
+ extern NTSTATUS android_java_uninit( void *arg ) DECLSPEC_HIDDEN;
+ extern NTSTATUS android_register_window( void *arg ) DECLSPEC_HIDDEN;
+ extern PNTAPCFUNC register_window_callback;
++extern user32_callback_func start_device;
+ 
+ extern unsigned int screen_width DECLSPEC_HIDDEN;
+ extern unsigned int screen_height DECLSPEC_HIDDEN;
+diff --git a/dlls/wineandroid.drv/device.c b/dlls/wineandroid.drv/device.c
+index 11111111111..11111111111 100644
+--- a/dlls/wineandroid.drv/device.c
++++ b/dlls/wineandroid.drv/device.c
+@@ -1180,7 +1180,9 @@ void start_android_device(void)
+ {
+     void *ret_ptr;
+     ULONG ret_len;
+-    thread = ULongToHandle( KeUserModeCallback( client_start_device, NULL, 0, &ret_ptr, &ret_len ));
++    struct user32_callback_params cbparams = { (ULONG_PTR)start_device };
++    NTSTATUS ret = KeUserModeCallback( NtUserDispatchCallback, &cbparams, sizeof(cbparams), &ret_ptr, &ret_len );
++    thread = ULongToHandle( ret );
+ }
+ 
+ 
+diff --git a/dlls/wineandroid.drv/dllmain.c b/dlls/wineandroid.drv/dllmain.c
+index 11111111111..11111111111 100644
+--- a/dlls/wineandroid.drv/dllmain.c
++++ b/dlls/wineandroid.drv/dllmain.c
+@@ -117,7 +117,6 @@ static void CALLBACK register_window_callback( ULONG_PTR arg1, ULONG_PTR arg2, U
+ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
+ {
+     struct init_params params;
+-    void **callback_table;
+ 
+     if (reason == DLL_PROCESS_ATTACH) return TRUE;
+ 
+@@ -125,12 +124,8 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
+     if (__wine_init_unix_call()) return FALSE;
+ 
+     params.register_window_callback = register_window_callback;
+-    if (ANDROID_CALL( init, &params )) return FALSE;
+-
+-    callback_table = NtCurrentTeb()->Peb->KernelCallbackTable;
+-    callback_table[client_start_device] = android_start_device;
+-
+-    return TRUE;
++    params.start_device = android_start_device;
++    return !ANDROID_CALL( init, &params );
+ }
+ 
+ 
+diff --git a/dlls/wineandroid.drv/init.c b/dlls/wineandroid.drv/init.c
+index 11111111111..11111111111 100644
+--- a/dlls/wineandroid.drv/init.c
++++ b/dlls/wineandroid.drv/init.c
+@@ -53,6 +53,7 @@ static int device_init_done;
+ static BOOL force_display_devices_refresh;
+ 
+ PNTAPCFUNC register_window_callback;
++user32_callback_func start_device;
+ 
+ typedef struct
+ {
+@@ -586,6 +587,7 @@ static HRESULT android_init( void *arg )
+     pthread_mutexattr_destroy( &attr );
+ 
+     register_window_callback = params->register_window_callback;
++    start_device = params->start_device;
+ 
+     if ((java_vm = *p_java_vm))  /* running under Java */
+     {
+diff --git a/dlls/wineandroid.drv/unixlib.h b/dlls/wineandroid.drv/unixlib.h
+index 11111111111..11111111111 100644
+--- a/dlls/wineandroid.drv/unixlib.h
++++ b/dlls/wineandroid.drv/unixlib.h
+@@ -36,6 +36,7 @@ enum android_funcs
+ struct init_params
+ {
+     PNTAPCFUNC register_window_callback;
++    user32_callback_func start_device;
+ };
+ 
+ 
+@@ -54,9 +55,3 @@ struct register_window_params
+     UINT_PTR arg2;
+     UINT_PTR arg3;
+ };
+-
+-
+-enum
+-{
+-    client_start_device = NtUserDriverCallbackFirst,
+-};
+-- 
+2.39.0
+

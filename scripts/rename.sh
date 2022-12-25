@@ -212,6 +212,8 @@ main() (
         esac
     done
 
+    error_patch=false
+
     for patch in [0-9][0-9][0-9][0-9]-* ps[0-9][0-9][0-9][0-9]-*; do
         [ -e "${patch}" ] || continue
         [ -d "${patch}" ] && continue
@@ -226,6 +228,7 @@ main() (
             else
                 printf 'Error: Patch contains no Subjects: %s\n' "$(_tty_filename "${patch}")" >&2
             fi
+            error_patch=true
             continue
         fi
 
@@ -277,6 +280,12 @@ main() (
             printf 'Skipping %s\n' "$(_tty_filename "${patch}")"
         fi
     done
+
+    if [ xfalse != "x${error_patch}" ]; then
+        return 1
+    fi
 )
 
-main ${1+"$@"}
+if ! [ "${RENAME_SH_NO_MAIN:-0}" -ne 0 ] >/dev/null 2>&1; then
+    main ${1+"$@"}
+fi

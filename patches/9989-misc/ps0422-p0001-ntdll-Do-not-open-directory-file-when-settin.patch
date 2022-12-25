@@ -1,0 +1,70 @@
+From: Paul Gofman <wine@gitlab.winehq.org>
+Subject: [PATCH v3 1/1] ntdll: Do not open directory file when setting the same directory path.
+Message-Id: <wine-wine-mr256-v3-patch1@gitlab-mail-bridge>
+Date: Thu, 16 Jun 2022 16:52:20 +0000
+In-Reply-To: <wine-wine-mr256-v3@gitlab-mail-bridge>
+References: <merge_request_325@gitlab.winehq.org> <wine-wine-mr256-v3@gitlab-mail-bridge>
+
+From: Paul Gofman <pgofman@codeweavers.com>
+
+Signed-off-by: Paul Gofman <pgofman@codeweavers.com>
+---
+ dlls/ntdll/path.c | 22 +++++++++++++++++-----
+ 1 file changed, 17 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/ntdll/path.c b/dlls/ntdll/path.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/path.c
++++ b/dlls/ntdll/path.c
+@@ -937,13 +937,13 @@ ULONG WINAPI RtlGetCurrentDirectory_U(ULONG buflen, LPWSTR buf)
+ NTSTATUS WINAPI RtlSetCurrentDirectory_U(const UNICODE_STRING* dir)
+ {
+     FILE_FS_DEVICE_INFORMATION device_info;
++    ULONG size, compare_size;
+     OBJECT_ATTRIBUTES attr;
+     UNICODE_STRING newdir;
+     IO_STATUS_BLOCK io;
+     CURDIR *curdir;
+     HANDLE handle;
+     NTSTATUS nts;
+-    ULONG size;
+     PWSTR ptr;
+ 
+     newdir.Buffer = NULL;
+@@ -961,6 +961,22 @@ NTSTATUS WINAPI RtlSetCurrentDirectory_U(const UNICODE_STRING* dir)
+         goto out;
+     }
+ 
++    size = newdir.Length / sizeof(WCHAR);
++    ptr = newdir.Buffer;
++    ptr += 4;  /* skip \??\ prefix */
++    size -= 4;
++
++    if (size && ptr[size - 1] == '\\') compare_size = size - 1;
++    else                               compare_size = size;
++
++    if (curdir->DosPath.Length == (compare_size + 1) * sizeof(WCHAR)
++        && !wcsnicmp( curdir->DosPath.Buffer, ptr, compare_size ))
++    {
++        TRACE( "dir %s is the same as current.\n", debugstr_us(dir) );
++        nts = STATUS_SUCCESS;
++        goto out;
++    }
++
+     attr.Length = sizeof(attr);
+     attr.RootDirectory = 0;
+     attr.Attributes = OBJ_CASE_INSENSITIVE;
+@@ -985,10 +1001,6 @@ NTSTATUS WINAPI RtlSetCurrentDirectory_U(const UNICODE_STRING* dir)
+     curdir->Handle = handle;
+ 
+     /* append trailing \ if missing */
+-    size = newdir.Length / sizeof(WCHAR);
+-    ptr = newdir.Buffer;
+-    ptr += 4;  /* skip \??\ prefix */
+-    size -= 4;
+     if (size && ptr[size - 1] != '\\') ptr[size++] = '\\';
+ 
+     /* convert \??\UNC\ path to \\ prefix */
+
+
+

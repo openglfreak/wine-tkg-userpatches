@@ -1,0 +1,157 @@
+From 2ac02791c0d42d04c014eabf042ebdbcf18048ee Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Fri, 29 Jul 2022 03:50:59 +0200
+Subject: [PATCH 49/49] user32: Use the desktop shared data for
+ GetLastInputInfo().
+
+---
+ dlls/user32/input.c          | 11 +++++++++++
+ dlls/win32u/ntuser_private.h | 20 --------------------
+ include/ntuser.h             | 20 ++++++++++++++++++++
+ server/protocol.def          |  1 +
+ server/queue.c               | 12 ++++++++----
+ 5 files changed, 40 insertions(+), 24 deletions(-)
+
+diff --git a/dlls/user32/input.c b/dlls/user32/input.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/input.c
++++ b/dlls/user32/input.c
+@@ -176,6 +176,7 @@ BOOL WINAPI GetInputState(void)
+  */
+ BOOL WINAPI GetLastInputInfo(PLASTINPUTINFO plii)
+ {
++    volatile struct desktop_shared_memory *shared = (void *)NtUserCallNoParam( NtUserGetDesktopSharedMemory );
+     BOOL ret;
+ 
+     TRACE("%p\n", plii);
+@@ -186,6 +187,16 @@ BOOL WINAPI GetLastInputInfo(PLASTINPUTINFO plii)
+         return FALSE;
+     }
+ 
++    if (shared)
++    {
++        SHARED_READ_BEGIN( &shared->seq )
++        {
++            plii->dwTime = shared->last_input_time;
++        }
++        SHARED_READ_END( &shared->seq );
++        return TRUE;
++    }
++
+     SERVER_START_REQ( get_last_input_time )
+     {
+         ret = !wine_server_call_err( req );
+diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/ntuser_private.h
++++ b/dlls/win32u/ntuser_private.h
+@@ -266,24 +266,4 @@ WND *get_win_ptr( HWND hwnd ) DECLSPEC_HIDDEN;
+ BOOL is_child( HWND parent, HWND child );
+ BOOL is_window( HWND hwnd ) DECLSPEC_HIDDEN;
+ 
+-#if defined(__i386__) || defined(__x86_64__)
+-#define __SHARED_READ_SEQ( x ) (*(x))
+-#define __SHARED_READ_FENCE do {} while(0)
+-#else
+-#define __SHARED_READ_SEQ( x ) __atomic_load_n( x, __ATOMIC_RELAXED )
+-#define __SHARED_READ_FENCE __atomic_thread_fence( __ATOMIC_ACQUIRE )
+-#endif
+-
+-#define SHARED_READ_BEGIN( x )                                          \
+-    do {                                                                \
+-        unsigned int __seq;                                             \
+-        do {                                                            \
+-            while ((__seq = __SHARED_READ_SEQ( x )) & SEQUENCE_MASK) NtYieldExecution(); \
+-            __SHARED_READ_FENCE;
+-
+-#define SHARED_READ_END( x )                       \
+-            __SHARED_READ_FENCE;                   \
+-        } while (__SHARED_READ_SEQ( x ) != __seq); \
+-    } while(0)
+-
+ #endif /* __WINE_NTUSER_PRIVATE_H */
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 11111111111..11111111111 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -1508,4 +1508,24 @@ static inline BOOL NtUserShowOwnedPopups( HWND hwnd, BOOL show )
+     return NtUserCallHwndParam( hwnd, show, NtUserCallHwndParam_ShowOwnedPopups );
+ }
+ 
++#if defined(__i386__) || defined(__x86_64__)
++#define __SHARED_READ_SEQ( x ) (*(x))
++#define __SHARED_READ_FENCE do {} while(0)
++#else
++#define __SHARED_READ_SEQ( x ) __atomic_load_n( x, __ATOMIC_RELAXED )
++#define __SHARED_READ_FENCE __atomic_thread_fence( __ATOMIC_ACQUIRE )
++#endif
++
++#define SHARED_READ_BEGIN( x )                                          \
++    do {                                                                \
++        unsigned int __seq;                                             \
++        do {                                                            \
++            while ((__seq = __SHARED_READ_SEQ( x )) & SEQUENCE_MASK) NtYieldExecution(); \
++            __SHARED_READ_FENCE;
++
++#define SHARED_READ_END( x )                       \
++            __SHARED_READ_FENCE;                   \
++        } while (__SHARED_READ_SEQ( x ) != __seq); \
++    } while(0)
++
+ #endif /* _NTUSER_ */
+diff --git a/server/protocol.def b/server/protocol.def
+index 11111111111..11111111111 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -887,6 +887,7 @@ struct desktop_shared_memory
+     unsigned char        keystate[256];    /* asynchronous key state */
+     thread_id_t          foreground_tid;   /* tid of the foreground thread */
+     unsigned int         active_hooks;     /* desktop active hooks */
++    unsigned int         last_input_time;  /* timestamp of most recent input */
+ };
+ 
+ struct queue_shared_memory
+diff --git a/server/queue.c b/server/queue.c
+index 11111111111..11111111111 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -235,9 +235,6 @@ static const struct object_ops thread_input_ops =
+     thread_input_destroy          /* destroy */
+ };
+ 
+-/* pointer to input structure of foreground thread */
+-static unsigned int last_input_time;
+-
+ static cursor_pos_t cursor_history[64];
+ static unsigned int cursor_history_latest;
+ 
+@@ -1796,10 +1793,14 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
+     struct thread *thread;
+     struct thread_input *input;
+     struct hardware_msg_data *msg_data = msg->data;
++    unsigned int last_input_time;
+     unsigned int msg_code;
+ 
+     update_desktop_key_state( desktop, msg->msg, msg->wparam );
+     last_input_time = get_tick_count();
++    SHARED_WRITE_BEGIN( &desktop->shared->seq );
++    desktop->shared->last_input_time = last_input_time;
++    SHARED_WRITE_END( &desktop->shared->seq );
+     if (msg->msg != WM_MOUSEMOVE) always_queue = 1;
+ 
+     if (is_keyboard_msg( msg ))
+@@ -3584,7 +3585,10 @@ DECL_HANDLER(set_caret_info)
+ /* get the time of the last input event */
+ DECL_HANDLER(get_last_input_time)
+ {
+-    reply->time = last_input_time;
++    struct desktop *desktop;
++    if (!(desktop = get_thread_desktop( current, 0 ))) return;
++    reply->time = desktop->shared->last_input_time;
++    release_object( desktop );
+ }
+ 
+ /* set/get the current cursor */
+-- 
+2.39.0
+

@@ -1,0 +1,105 @@
+From 6e2c8f1b6bfb40143a94cd60293c33092b69ce7c Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Thu, 17 Nov 2022 09:19:19 +0100
+Subject: [PATCH 1/6] http.sys: Allow sending additional response data.
+
+Signed-off-by: Torge Matthies <tmatthies@codeweavers.com>
+---
+ dlls/http.sys/http.c        | 42 ++++++++++++++++++++++++-------------
+ dlls/httpapi/httpapi_main.c |  2 ++
+ include/wine/http.h         |  2 ++
+ 3 files changed, 31 insertions(+), 15 deletions(-)
+
+diff --git a/dlls/http.sys/http.c b/dlls/http.sys/http.c
+index 11111111111..11111111111 100644
+--- a/dlls/http.sys/http.c
++++ b/dlls/http.sys/http.c
+@@ -55,6 +55,7 @@ struct connection
+ 
+     char *buffer;
+     unsigned int len, size;
++    BOOL expect_body;
+ 
+     /* If there is a request fully received and waiting to be read, the
+      * "available" parameter will be TRUE. Either there is no queue matching
+@@ -986,25 +987,36 @@ static NTSTATUS http_send_response(struct request_queue *queue, IRP *irp)
+ 
+     if ((conn = get_connection(response->id)))
+     {
+-        if (send(conn->socket, response->buffer, response->len, 0) >= 0)
++        if (!!response->is_body == conn->expect_body)
+         {
+-            if (conn->content_len)
+-            {
+-                /* Discard whatever entity body is left. */
+-                memmove(conn->buffer, conn->buffer + conn->content_len, conn->len - conn->content_len);
+-                conn->len -= conn->content_len;
+-            }
++            irp->IoStatus.Information = 0;
++            LeaveCriticalSection(&http_cs);
++            return STATUS_INVALID_DEVICE_STATE;
++        }
++        conn->expect_body = !!response->more_data;
+ 
+-            conn->queue = NULL;
+-            conn->req_id = HTTP_NULL_ID;
+-            WSAEventSelect(conn->socket, request_event, FD_READ | FD_CLOSE);
++        if (send(conn->socket, response->buffer, response->len, 0) >= 0)
++        {
+             irp->IoStatus.Information = response->len;
+-            /* We might have another request already in the buffer. */
+-            if (parse_request(conn) < 0)
++            if (!response->more_data)
+             {
+-                WARN("Failed to parse request; shutting down connection.\n");
+-                send_400(conn);
+-                close_connection(conn);
++                if (conn->content_len)
++                {
++                    /* Discard whatever entity body is left. */
++                    memmove(conn->buffer, conn->buffer + conn->content_len, conn->len - conn->content_len);
++                    conn->len -= conn->content_len;
++                }
++
++                conn->queue = NULL;
++                conn->req_id = HTTP_NULL_ID;
++                WSAEventSelect(conn->socket, request_event, FD_READ | FD_CLOSE);
++                /* We might have another request already in the buffer. */
++                if (parse_request(conn) < 0)
++                {
++                    WARN("Failed to parse request; shutting down connection.\n");
++                    send_400(conn);
++                    close_connection(conn);
++                }
+             }
+         }
+         else
+diff --git a/dlls/httpapi/httpapi_main.c b/dlls/httpapi/httpapi_main.c
+index 11111111111..11111111111 100644
+--- a/dlls/httpapi/httpapi_main.c
++++ b/dlls/httpapi/httpapi_main.c
+@@ -472,6 +472,8 @@ ULONG WINAPI HttpSendHttpResponse(HANDLE queue, HTTP_REQUEST_ID id, ULONG flags,
+     if (!(buffer = malloc(offsetof(struct http_response, buffer[len]))))
+         return ERROR_OUTOFMEMORY;
+     buffer->id = id;
++    buffer->is_body = FALSE;
++    buffer->more_data = FALSE;
+     buffer->len = len;
+     sprintf(buffer->buffer, "HTTP/1.1 %u %.*s\r\n", response->s.StatusCode,
+             response->s.ReasonLength, response->s.pReason);
+diff --git a/include/wine/http.h b/include/wine/http.h
+index 11111111111..11111111111 100644
+--- a/include/wine/http.h
++++ b/include/wine/http.h
+@@ -46,6 +46,8 @@ struct http_receive_request_params
+ struct http_response
+ {
+     HTTP_REQUEST_ID id;
++    BOOL is_body;
++    BOOL more_data;
+     int len;
+     char buffer[1];
+ };
+-- 
+2.39.0
+

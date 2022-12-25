@@ -14,8 +14,8 @@ This reverts staging patch patches/user32-rawinput-mouse/0006-user32-Set-SEND_HW
  dlls/winemac.drv/keyboard.c     |  3 +--
  dlls/winemac.drv/mouse.c        |  3 +--
  dlls/winex11.drv/keyboard.c     |  3 +--
- dlls/winex11.drv/mouse.c        | 11 ++++-------
- 9 files changed, 15 insertions(+), 26 deletions(-)
+ dlls/winex11.drv/mouse.c        | 10 ++++------
+ 9 files changed, 15 insertions(+), 25 deletions(-)
 
 diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
 index 11111111111..11111111111 100644
@@ -37,12 +37,12 @@ index 11111111111..11111111111 100644
 +            status = send_hardware_message( 0, &input, NULL, SEND_HWMSG_INJECTED );
              break;
          case INPUT_HARDWARE:
-             SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
+             RtlSetLastWin32Error( ERROR_CALL_NOT_IMPLEMENTED );
 diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/message.c
 +++ b/dlls/win32u/message.c
-@@ -2514,7 +2514,7 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
+@@ -2704,7 +2704,7 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
              req->input.mouse.flags = input->mi.dwFlags;
              req->input.mouse.time  = input->mi.time;
              req->input.mouse.info  = input->mi.dwExtraInfo;
@@ -51,7 +51,7 @@ index 11111111111..11111111111 100644
              break;
          case INPUT_KEYBOARD:
              req->input.kbd.vkey  = input->ki.wVk;
-@@ -2522,7 +2522,7 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
+@@ -2712,7 +2712,7 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
              req->input.kbd.flags = input->ki.dwFlags;
              req->input.kbd.time  = input->ki.time;
              req->input.kbd.info  = input->ki.dwExtraInfo;
@@ -64,7 +64,7 @@ diff --git a/dlls/wineandroid.drv/keyboard.c b/dlls/wineandroid.drv/keyboard.c
 index 11111111111..11111111111 100644
 --- a/dlls/wineandroid.drv/keyboard.c
 +++ b/dlls/wineandroid.drv/keyboard.c
-@@ -671,7 +671,6 @@ static BOOL get_async_key_state( BYTE state[256] )
+@@ -674,7 +674,6 @@ static BOOL get_async_key_state( BYTE state[256] )
  
  static void send_keyboard_input( HWND hwnd, WORD vkey, WORD scan, DWORD flags )
  {
@@ -72,7 +72,7 @@ index 11111111111..11111111111 100644
      INPUT input;
  
      input.type             = INPUT_KEYBOARD;
-@@ -681,7 +680,7 @@ static void send_keyboard_input( HWND hwnd, WORD vkey, WORD scan, DWORD flags )
+@@ -684,7 +683,7 @@ static void send_keyboard_input( HWND hwnd, WORD vkey, WORD scan, DWORD flags )
      input.u.ki.time        = 0;
      input.u.ki.dwExtraInfo = 0;
  
@@ -115,25 +115,25 @@ diff --git a/dlls/winemac.drv/ime.c b/dlls/winemac.drv/ime.c
 index 11111111111..11111111111 100644
 --- a/dlls/winemac.drv/ime.c
 +++ b/dlls/winemac.drv/ime.c
-@@ -42,7 +42,6 @@
- #include "winuser.h"
+@@ -38,7 +38,6 @@
  #include "imm.h"
  #include "ddk/imm.h"
+ #include "wine/debug.h"
 -#include "wine/server.h"
  
  WINE_DEFAULT_DEBUG_CHANNEL(imm);
  
-@@ -1419,7 +1418,6 @@ void macdrv_im_set_text(const macdrv_event *event)
-                 event->im_set_text.cursor_pos, !event->im_set_text.complete);
+@@ -1410,7 +1409,6 @@ NTSTATUS WINAPI macdrv_ime_set_text(void *arg, ULONG size)
+                                      params->cursor_pos, !params->complete);
          else
          {
 -            RAWINPUT rawinput;
              INPUT input;
-             CFIndex i;
+             unsigned int i;
  
-@@ -1432,10 +1430,10 @@ void macdrv_im_set_text(const macdrv_event *event)
+@@ -1423,10 +1421,10 @@ NTSTATUS WINAPI macdrv_ime_set_text(void *arg, ULONG size)
              {
-                 input.ki.wScan      = chars[i];
+                 input.ki.wScan      = params->text[i];
                  input.ki.dwFlags    = KEYEVENTF_UNICODE;
 -                __wine_send_input(hwnd, &input, &rawinput);
 +                __wine_send_input(hwnd, &input, NULL);
@@ -143,20 +143,20 @@ index 11111111111..11111111111 100644
 +                __wine_send_input(hwnd, &input, NULL);
              }
          }
- 
+     }
 diff --git a/dlls/winemac.drv/keyboard.c b/dlls/winemac.drv/keyboard.c
 index 11111111111..11111111111 100644
 --- a/dlls/winemac.drv/keyboard.c
 +++ b/dlls/winemac.drv/keyboard.c
-@@ -909,7 +909,6 @@ void macdrv_compute_keyboard_layout(struct macdrv_thread_data *thread_data)
+@@ -990,7 +990,6 @@ void macdrv_compute_keyboard_layout(struct macdrv_thread_data *thread_data)
   */
- static void macdrv_send_keyboard_input(HWND hwnd, WORD vkey, WORD scan, DWORD flags, DWORD time)
+ static void macdrv_send_keyboard_input(HWND hwnd, WORD vkey, WORD scan, unsigned int flags, unsigned int time)
  {
 -    RAWINPUT rawinput;
      INPUT input;
  
      TRACE_(key)("hwnd %p vkey=%04x scan=%04x flags=%04x\n", hwnd, vkey, scan, flags);
-@@ -921,7 +920,7 @@ static void macdrv_send_keyboard_input(HWND hwnd, WORD vkey, WORD scan, DWORD fl
+@@ -1002,7 +1001,7 @@ static void macdrv_send_keyboard_input(HWND hwnd, WORD vkey, WORD scan, unsigned
      input.ki.time           = time;
      input.ki.dwExtraInfo    = 0;
  
@@ -169,7 +169,7 @@ diff --git a/dlls/winemac.drv/mouse.c b/dlls/winemac.drv/mouse.c
 index 11111111111..11111111111 100644
 --- a/dlls/winemac.drv/mouse.c
 +++ b/dlls/winemac.drv/mouse.c
-@@ -128,7 +128,6 @@ static const CFStringRef cocoa_cursor_names[] =
+@@ -129,7 +129,6 @@ static const CFStringRef cocoa_cursor_names[] =
  static void send_mouse_input(HWND hwnd, macdrv_window cocoa_window, UINT flags, int x, int y,
                               DWORD mouse_data, BOOL drag, unsigned long time)
  {
@@ -177,7 +177,7 @@ index 11111111111..11111111111 100644
      INPUT input;
      HWND top_level_hwnd;
  
-@@ -158,7 +157,7 @@ static void send_mouse_input(HWND hwnd, macdrv_window cocoa_window, UINT flags,
+@@ -159,7 +158,7 @@ static void send_mouse_input(HWND hwnd, macdrv_window cocoa_window, UINT flags,
      input.mi.time           = time;
      input.mi.dwExtraInfo    = 0;
  
@@ -190,15 +190,15 @@ diff --git a/dlls/winex11.drv/keyboard.c b/dlls/winex11.drv/keyboard.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/keyboard.c
 +++ b/dlls/winex11.drv/keyboard.c
-@@ -1133,7 +1133,6 @@ static WORD EVENT_event_to_vkey( XIC xic, XKeyEvent *e)
+@@ -1134,7 +1134,6 @@ static WORD EVENT_event_to_vkey( XIC xic, XKeyEvent *e)
   */
- static void X11DRV_send_keyboard_input( HWND hwnd, WORD vkey, WORD scan, DWORD flags, DWORD time )
+ static void X11DRV_send_keyboard_input( HWND hwnd, WORD vkey, WORD scan, UINT flags, UINT time )
  {
 -    RAWINPUT rawinput;
      INPUT input;
  
      TRACE_(key)( "hwnd %p vkey=%04x scan=%04x flags=%04x\n", hwnd, vkey, scan, flags );
-@@ -1145,7 +1144,7 @@ static void X11DRV_send_keyboard_input( HWND hwnd, WORD vkey, WORD scan, DWORD f
+@@ -1146,7 +1145,7 @@ static void X11DRV_send_keyboard_input( HWND hwnd, WORD vkey, WORD scan, UINT fl
      input.u.ki.time        = time;
      input.u.ki.dwExtraInfo = 0;
  
@@ -211,15 +211,15 @@ diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
-@@ -751,7 +751,6 @@ static void map_event_coords( HWND hwnd, Window window, Window event_root, int x
- static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPUT *input )
- {
-     struct x11drv_win_data *data;
--    RAWINPUT rawinput;
- 
-     input->type = INPUT_MOUSE;
- 
-@@ -768,7 +767,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
+#@@ -750,7 +750,6 @@ static void map_event_coords( HWND hwnd, Window window, Window event_root, int x
+# static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPUT *input )
+# {
+#     struct x11drv_win_data *data;
+#-    RAWINPUT rawinput;
+# 
+#     input->type = INPUT_MOUSE;
+# 
+@@ -768,7 +768,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
              sync_window_cursor( window );
              last_cursor_change = input->u.mi.time;
          }
@@ -228,7 +228,7 @@ index 11111111111..11111111111 100644
          return;
      }
  
-@@ -808,7 +807,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
+@@ -809,7 +809,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
          SERVER_END_REQ;
      }
  
@@ -237,7 +237,7 @@ index 11111111111..11111111111 100644
  }
  
  #ifdef SONAME_LIBXCURSOR
-@@ -1782,7 +1781,6 @@ void move_resize_window( HWND hwnd, int dir )
+@@ -1792,7 +1792,6 @@ void move_resize_window( HWND hwnd, int dir )
      {
          MSG msg;
          INPUT input;
@@ -245,7 +245,7 @@ index 11111111111..11111111111 100644
          int x, y, rootX, rootY;
  
          if (!XQueryPointer( display, root_window, &root, &child, &rootX, &rootY, &x, &y, &xstate )) break;
-@@ -1798,7 +1796,7 @@ void move_resize_window( HWND hwnd, int dir )
+@@ -1808,7 +1807,7 @@ void move_resize_window( HWND hwnd, int dir )
              input.u.mi.dwFlags     = button_up_flags[button - 1] | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
              input.u.mi.time        = NtGetTickCount();
              input.u.mi.dwExtraInfo = 0;
@@ -254,7 +254,7 @@ index 11111111111..11111111111 100644
          }
  
          while (NtUserPeekMessage( &msg, 0, 0, 0, PM_REMOVE ))
-@@ -2011,7 +2009,6 @@ static BOOL map_raw_event_coords( XIRawEvent *event, INPUT *input )
+@@ -2023,7 +2022,6 @@ static BOOL map_raw_event_coords( XIRawEvent *event, INPUT *input )
  static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
  {
      XIRawEvent *event = xev->data;
@@ -262,7 +262,7 @@ index 11111111111..11111111111 100644
      INPUT input;
  
      if (broken_rawevents && is_old_motion_event( xev->serial ))
-@@ -2029,7 +2026,7 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+@@ -2041,7 +2039,7 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
      input.u.mi.dy          = 0;
      if (!map_raw_event_coords( event, &input )) return FALSE;
  
@@ -272,5 +272,5 @@ index 11111111111..11111111111 100644
  }
  
 -- 
-2.36.1
+2.39.0
 

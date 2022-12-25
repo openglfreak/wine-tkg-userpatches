@@ -1,0 +1,80 @@
+From b24a375a4d0cc72c7e02c8b783ad615144f19d8b Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Wed, 16 Nov 2022 08:16:26 +0100
+Subject: [PATCH 5/6] http.sys: Add ioctl for cancelling requests.
+
+Signed-off-by: Torge Matthies <tmatthies@codeweavers.com>
+---
+ dlls/http.sys/http.c | 26 ++++++++++++++++++++++++++
+ include/wine/http.h  |  6 ++++++
+ 2 files changed, 32 insertions(+)
+
+diff --git a/dlls/http.sys/http.c b/dlls/http.sys/http.c
+index 11111111111..11111111111 100644
+--- a/dlls/http.sys/http.c
++++ b/dlls/http.sys/http.c
+@@ -1136,6 +1136,29 @@ static NTSTATUS http_wait_for_disconnect(struct request_queue *queue, IRP *irp)
+     return ret;
+ }
+ 
++static NTSTATUS http_cancel_request(struct request_queue *queue, IRP *irp)
++{
++    const struct http_cancel_request_params *params = irp->AssociatedIrp.SystemBuffer;
++    struct connection *conn;
++    NTSTATUS ret;
++
++    TRACE("id %s.\n", wine_dbgstr_longlong(params->id));
++
++    EnterCriticalSection(&http_cs);
++
++    if ((conn = get_connection(params->id)))
++    {
++        close_connection(conn);
++        irp->IoStatus.Status = STATUS_SUCCESS;
++    }
++    else
++        ret = STATUS_CONNECTION_INVALID;
++
++    LeaveCriticalSection(&http_cs);
++
++    return ret;
++}
++
+ static NTSTATUS WINAPI dispatch_ioctl(DEVICE_OBJECT *device, IRP *irp)
+ {
+     IO_STACK_LOCATION *stack = IoGetCurrentIrpStackLocation(irp);
+@@ -1162,6 +1185,9 @@ static NTSTATUS WINAPI dispatch_ioctl(DEVICE_OBJECT *device, IRP *irp)
+     case IOCTL_HTTP_WAIT_FOR_DISCONNECT:
+         ret = http_wait_for_disconnect(queue, irp);
+         break;
++    case IOCTL_HTTP_CANCEL_REQUEST:
++        ret = http_cancel_request(queue, irp);
++        break;
+     default:
+         FIXME("Unhandled ioctl %#lx.\n", stack->Parameters.DeviceIoControl.IoControlCode);
+         ret = STATUS_NOT_IMPLEMENTED;
+diff --git a/include/wine/http.h b/include/wine/http.h
+index 11111111111..11111111111 100644
+--- a/include/wine/http.h
++++ b/include/wine/http.h
+@@ -29,6 +29,7 @@
+ #define IOCTL_HTTP_SEND_RESPONSE        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, 0)
+ #define IOCTL_HTTP_RECEIVE_BODY         CTL_CODE(FILE_DEVICE_UNKNOWN, 0x804, METHOD_BUFFERED, 0)
+ #define IOCTL_HTTP_WAIT_FOR_DISCONNECT  CTL_CODE(FILE_DEVICE_UNKNOWN, 0x805, METHOD_BUFFERED, 0)
++#define IOCTL_HTTP_CANCEL_REQUEST       CTL_CODE(FILE_DEVICE_UNKNOWN, 0x806, METHOD_BUFFERED, 0)
+ 
+ struct http_add_url_params
+ {
+@@ -64,4 +65,9 @@ struct http_wait_for_disconnect_params
+     HTTP_REQUEST_ID id;
+ };
+ 
++struct http_cancel_request_params
++{
++    HTTP_REQUEST_ID id;
++};
++
+ #endif
+-- 
+2.39.0
+

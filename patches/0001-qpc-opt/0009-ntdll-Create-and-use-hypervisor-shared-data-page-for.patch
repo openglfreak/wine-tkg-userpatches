@@ -22,9 +22,9 @@ diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/ntdll_misc.h
 +++ b/dlls/ntdll/ntdll_misc.h
-@@ -85,6 +85,14 @@ extern const WCHAR system_dir[] DECLSPEC_HIDDEN;
+@@ -88,6 +88,14 @@ extern const WCHAR system_dir[] DECLSPEC_HIDDEN;
+ 
  extern void (FASTCALL *pBaseThreadInitThunk)(DWORD,LPTHREAD_START_ROUTINE,void *) DECLSPEC_HIDDEN;
- extern const struct unix_funcs *unix_funcs DECLSPEC_HIDDEN;
  
 +struct hypervisor_shared_data
 +{
@@ -53,8 +53,8 @@ diff --git a/dlls/ntdll/time.c b/dlls/ntdll/time.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/time.c
 +++ b/dlls/ntdll/time.c
-@@ -376,6 +376,14 @@ LONGLONG WINAPI RtlGetSystemTimePrecise( void )
-     return unix_funcs->RtlGetSystemTimePrecise();
+@@ -379,6 +379,14 @@ LONGLONG WINAPI RtlGetSystemTimePrecise( void )
+     return ret;
  }
  
 +/* 128-bit multiply a by b and return the high 64 bits, same as __umulh */
@@ -68,7 +68,7 @@ index 11111111111..11111111111 100644
  /******************************************************************************
   *  RtlQueryPerformanceCounter   [NTDLL.@]
   */
-@@ -397,6 +405,9 @@ BOOL WINAPI DECLSPEC_HOTPATCH RtlQueryPerformanceCounter( LARGE_INTEGER *counter
+@@ -400,6 +408,9 @@ BOOL WINAPI DECLSPEC_HOTPATCH RtlQueryPerformanceCounter( LARGE_INTEGER *counter
              tsc = __rdtsc();
          }
  
@@ -82,7 +82,7 @@ diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/loader.c
 +++ b/dlls/ntdll/unix/loader.c
-@@ -2192,6 +2192,7 @@ static void start_main_thread(void)
+@@ -2158,6 +2158,7 @@ static void start_main_thread(void)
      fsync_init();
      esync_init();
      virtual_map_user_shared_data();
@@ -94,7 +94,7 @@ diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/system.c
 +++ b/dlls/ntdll/unix/system.c
-@@ -3297,6 +3297,18 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+@@ -3324,6 +3324,18 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
          break;
      }
  
@@ -111,13 +111,13 @@ index 11111111111..11111111111 100644
 +    }
 +
      default:
- 	FIXME( "(0x%08x,%p,0x%08x,%p) stub\n", class, info, size, ret_size );
+ 	FIXME( "(0x%08x,%p,0x%08x,%p) stub\n", class, info, (int)size, ret_size );
  
 diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/unix_private.h
 +++ b/dlls/ntdll/unix/unix_private.h
-@@ -139,6 +139,7 @@ extern BOOL process_exiting DECLSPEC_HIDDEN;
+@@ -141,6 +141,7 @@ extern BOOL process_exiting DECLSPEC_HIDDEN;
  extern HANDLE keyed_event DECLSPEC_HIDDEN;
  extern timeout_t server_start_time DECLSPEC_HIDDEN;
  extern sigset_t server_block_set DECLSPEC_HIDDEN;
@@ -125,7 +125,7 @@ index 11111111111..11111111111 100644
  extern struct _KUSER_SHARED_DATA *user_shared_data DECLSPEC_HIDDEN;
  extern SYSTEM_CPU_INFORMATION cpu_info DECLSPEC_HIDDEN;
  #ifndef _WIN64
-@@ -214,6 +215,7 @@ extern NTSTATUS virtual_clear_tls_index( ULONG index ) DECLSPEC_HIDDEN;
+@@ -217,6 +218,7 @@ extern NTSTATUS virtual_clear_tls_index( ULONG index ) DECLSPEC_HIDDEN;
  extern NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR zero_bits, SIZE_T reserve_size,
                                              SIZE_T commit_size, SIZE_T extra_size ) DECLSPEC_HIDDEN;
  extern void virtual_map_user_shared_data(void) DECLSPEC_HIDDEN;
@@ -137,7 +137,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -177,6 +177,7 @@ static void *user_space_limit    = (void *)0x7fff0000;
+@@ -181,6 +181,7 @@ static void *user_space_limit    = (void *)0x7fff0000;
  static void *working_set_limit   = (void *)0x7fff0000;
  #endif
  
@@ -145,7 +145,7 @@ index 11111111111..11111111111 100644
  struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
  
  /* TEB allocation blocks */
-@@ -3068,6 +3069,14 @@ TEB *virtual_alloc_first_teb(void)
+@@ -3191,6 +3192,14 @@ TEB *virtual_alloc_first_teb(void)
          exit(1);
      }
  
@@ -160,7 +160,7 @@ index 11111111111..11111111111 100644
      NtAllocateVirtualMemory( NtCurrentProcess(), &teb_block, is_win64 ? 0x7fffffff : 0, &total,
                               MEM_RESERVE | MEM_TOP_DOWN, PAGE_READWRITE );
      teb_block_pos = 30;
-@@ -3350,6 +3359,35 @@ static BOOL is_inside_thread_stack( void *ptr, struct thread_stack_info *stack )
+@@ -3490,6 +3499,35 @@ static BOOL is_inside_thread_stack( void *ptr, struct thread_stack_info *stack )
  }
  
  
@@ -317,7 +317,7 @@ diff --git a/server/fd.c b/server/fd.c
 index 11111111111..11111111111 100644
 --- a/server/fd.c
 +++ b/server/fd.c
-@@ -397,9 +397,18 @@ static struct list rel_timeout_list = LIST_INIT(rel_timeout_list); /* sorted rel
+@@ -396,9 +396,18 @@ static struct list rel_timeout_list = LIST_INIT(rel_timeout_list); /* sorted rel
  timeout_t current_time;
  timeout_t monotonic_time;
  
@@ -336,7 +336,7 @@ index 11111111111..11111111111 100644
  static void atomic_store_ulong(volatile ULONG *ptr, ULONG value)
  {
      /* on x86 there should be total store order guarantees, so volatile is
-@@ -448,7 +457,13 @@ static void set_user_shared_data_time(void)
+@@ -447,7 +456,13 @@ static void set_user_shared_data_time(void)
      }
  #endif
  
@@ -351,7 +351,7 @@ index 11111111111..11111111111 100644
  
      if (monotonic_time - last_timezone_update > TICKS_PER_SEC)
      {
-@@ -478,7 +493,10 @@ static void set_user_shared_data_time(void)
+@@ -477,7 +492,10 @@ static void set_user_shared_data_time(void)
      atomic_store_ulong(&user_shared_data->TickCount.LowPart, tick_count);
      atomic_store_long(&user_shared_data->TickCount.High1Time, tick_count >> 32);
      atomic_store_ulong(&user_shared_data->TickCountLowDeprecated, tick_count);

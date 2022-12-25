@@ -22,26 +22,24 @@ Somehow libunwind only cares about %rip .cfi directives, although I've
 also added .cfi for %rsp here (resp. %eip, %esp on i386), I'm not
 completely sure why or which option is best.
 
- dlls/ntdll/unix/signal_i386.c   | 5 +++--
- dlls/ntdll/unix/signal_x86_64.c | 5 +++--
- 2 files changed, 6 insertions(+), 4 deletions(-)
+ dlls/ntdll/unix/signal_i386.c   | 4 ++--
+ dlls/ntdll/unix/signal_x86_64.c | 4 ++--
+ 2 files changed, 4 insertions(+), 4 deletions(-)
 
 diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/signal_i386.c
 +++ b/dlls/ntdll/unix/signal_i386.c
-@@ -1653,8 +1653,9 @@ NTSTATUS WINAPI KeUserModeCallback( ULONG id, const void *args, ULONG len, void
+@@ -1700,7 +1700,7 @@ NTSTATUS WINAPI KeUserModeCallback( ULONG id, const void *args, ULONG len, void
+  */
  NTSTATUS WINAPI NtCallbackReturn( void *ret_ptr, ULONG ret_len, NTSTATUS status )
  {
-     struct user_callback_frame *frame = (struct user_callback_frame *)x86_thread_data()->syscall_frame;
-+    void *exit_frame = x86_thread_data()->exit_frame;
+-    if (!x86_thread_data()->syscall_frame->prev_frame) return STATUS_NO_CALLBACK_ACTIVE;
++    if (!x86_thread_data()->syscall_frame->prev_frame == x86_thread_data()->exit_frame) return STATUS_NO_CALLBACK_ACTIVE;
+     user_mode_callback_return( ret_ptr, ret_len, status, NtCurrentTeb() );
+ }
  
--    if (!frame->frame.prev_frame) return STATUS_NO_CALLBACK_ACTIVE;
-+    if (frame->frame.prev_frame == exit_frame) return STATUS_NO_CALLBACK_ACTIVE;
- 
-     *frame->ret_ptr = ret_ptr;
-     *frame->ret_len = ret_len;
-@@ -2524,7 +2525,7 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
+@@ -2571,7 +2571,7 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
      *(--stack) = 0xdeadbabe;
      frame->esp = (DWORD)stack;
      frame->eip = (DWORD)pLdrInitializeThunk;
@@ -54,18 +52,16 @@ diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
-@@ -2410,8 +2410,9 @@ NTSTATUS WINAPI KeUserModeCallback( ULONG id, const void *args, ULONG len, void
+@@ -1762,7 +1762,7 @@ NTSTATUS WINAPI KeUserModeCallback( ULONG id, const void *args, ULONG len, void
+  */
  NTSTATUS WINAPI NtCallbackReturn( void *ret_ptr, ULONG ret_len, NTSTATUS status )
  {
-     struct user_callback_frame *frame = (struct user_callback_frame *)amd64_thread_data()->syscall_frame;
-+    void *exit_frame = amd64_thread_data()->exit_frame;
+-    if (!amd64_thread_data()->syscall_frame->prev_frame) return STATUS_NO_CALLBACK_ACTIVE;
++    if (amd64_thread_data()->syscall_frame->prev_frame == amd64_thread_data()->exit_frame) return STATUS_NO_CALLBACK_ACTIVE;
+     user_mode_callback_return( ret_ptr, ret_len, status, NtCurrentTeb() );
+ }
  
--    if (!frame->frame.prev_frame) return STATUS_NO_CALLBACK_ACTIVE;
-+    if (frame->frame.prev_frame == exit_frame) return STATUS_NO_CALLBACK_ACTIVE;
- 
-     *frame->ret_ptr = ret_ptr;
-     *frame->ret_len = ret_len;
-@@ -3402,7 +3403,7 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
+@@ -2830,7 +2830,7 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
      frame->rsp = (ULONG64)ctx - 8;
      frame->rip = (ULONG64)pLdrInitializeThunk;
      frame->rcx = (ULONG64)ctx;
@@ -76,5 +72,5 @@ index 11111111111..11111111111 100644
      frame->syscall_table = KeServiceDescriptorTable;
 
 -- 
-2.36.1
+2.39.0
 

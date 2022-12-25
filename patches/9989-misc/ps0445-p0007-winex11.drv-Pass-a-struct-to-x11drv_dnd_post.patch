@@ -1,0 +1,322 @@
+From 469837c58f1cfb68ec39341f08764a774c6e930e Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Tue, 22 Nov 2022 18:18:21 +0100
+Subject: [PATCH 07/11] winex11.drv: Pass a struct to x11drv_dnd_post_drop.
+
+Signed-off-by: Torge Matthies <tmatthies@codeweavers.com>
+---
+ dlls/winex11.drv/clipboard.c  | 89 ++++++++++++++++++++++++++---------
+ dlls/winex11.drv/event.c      | 28 ++++++-----
+ dlls/winex11.drv/unixlib.h    |  5 ++
+ dlls/winex11.drv/x11drv.h     |  6 ++-
+ dlls/winex11.drv/x11drv_dll.h |  2 +-
+ dlls/winex11.drv/xdnd.c       |  5 +-
+ 6 files changed, 95 insertions(+), 40 deletions(-)
+
+diff --git a/dlls/winex11.drv/clipboard.c b/dlls/winex11.drv/clipboard.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/clipboard.c
++++ b/dlls/winex11.drv/clipboard.c
+@@ -1046,12 +1046,12 @@ static void *import_text_html( Atom type, const void *data, size_t size, size_t
+ 
+ 
+ /**************************************************************************
+- *      file_list_to_drop_files
++ *      file_list_to_post_drop_params
+  */
+-void *file_list_to_drop_files( const void *data, size_t size, size_t *ret_size )
++struct dnd_post_drop_params *file_list_to_post_drop_params( const void *data, size_t size, size_t *ret_size )
+ {
+     size_t buf_size = 4096, path_size;
+-    DROPFILES *drop = NULL;
++    struct dnd_post_drop_params *ret = NULL;
+     const char *ptr;
+     WCHAR *path;
+ 
+@@ -1063,44 +1063,43 @@ void *file_list_to_drop_files( const void *data, size_t size, size_t *ret_size )
+ 
+         if (!path) continue;
+ 
+-        if (!drop)
++        if (!ret)
+         {
+-            if (!(drop = malloc( buf_size ))) return NULL;
++            DROPFILES *drop;
++            if (!(ret = malloc( FIELD_OFFSET( struct dnd_post_drop_params, drop_files[buf_size] ) ))) return NULL;
++            drop = (void*)ret->drop_files;
+             drop->pFiles = sizeof(*drop);
+             drop->pt.x = drop->pt.y = 0;
+             drop->fNC = FALSE;
+             drop->fWide = TRUE;
+-            *ret_size = sizeof(*drop);
++            *ret_size = FIELD_OFFSET( struct dnd_post_drop_params, drop_files[sizeof(*drop)] );
+         }
+ 
+         path_size = (lstrlenW( path ) + 1) * sizeof(WCHAR);
+         if (*ret_size + path_size > buf_size - sizeof(WCHAR))
+         {
+             void *new_buf;
+-            if (!(new_buf = realloc( drop, buf_size * 2 + path_size )))
++            if (!(new_buf = realloc( ret, FIELD_OFFSET( struct dnd_post_drop_params, drop_files[buf_size * 2 + path_size] ) )))
+             {
+                 free( path );
+                 continue;
+             }
+             buf_size = buf_size * 2 + path_size;
+-            drop = new_buf;
++            ret = new_buf;
+         }
+ 
+-        memcpy( (char *)drop + *ret_size, path, path_size );
++        memcpy( (char *)ret + *ret_size, path, path_size );
+         *ret_size += path_size;
+     }
+ 
+-    if (!drop) return NULL;
+-    *(WCHAR *)((char *)drop + *ret_size) = 0;
++    if (!ret) return NULL;
++    *(WCHAR *)((char *)ret + *ret_size) = 0;
+     *ret_size += sizeof(WCHAR);
+-    return drop;
++    return ret;
+ }
+ 
+ 
+-/**************************************************************************
+- *      uri_list_to_drop_files
+- */
+-void *uri_list_to_drop_files( const void *data, size_t size, size_t *ret_size )
++static void *uri_list_to_dos_paths( const void *data, size_t size, size_t *ret_size )
+ {
+     const char *uriList = data;
+     char *uri;
+@@ -1110,7 +1109,6 @@ void *uri_list_to_drop_files( const void *data, size_t size, size_t *ret_size )
+     int capacity = 4096;
+     int start = 0;
+     int end = 0;
+-    DROPFILES *dropFiles = NULL;
+ 
+     if (!(out = malloc( capacity * sizeof(WCHAR) ))) return 0;
+ 
+@@ -1155,9 +1153,28 @@ void *uri_list_to_drop_files( const void *data, size_t size, size_t *ret_size )
+         start = end + 2;
+         end = start;
+     }
+-    if (out && end >= size)
++    if (out)
++        out[total] = '\0';
++    if (out && end < size)
+     {
+-        *ret_size = sizeof(DROPFILES) + (total + 1) * sizeof(WCHAR);
++        free( out );
++        out = NULL;
++    }
++    *ret_size = (total + 1) * sizeof(WCHAR);
++    return out;
++}
++
++
++static void *uri_list_to_drop_files( const void *data, size_t size, size_t *ret_size )
++{
++    DROPFILES *dropFiles = NULL;
++    size_t dos_paths_size = 0;
++    WCHAR *dos_paths;
++
++    dos_paths = uri_list_to_dos_paths( data, size, &dos_paths_size );
++    if (dos_paths)
++    {
++        *ret_size = sizeof(DROPFILES) + dos_paths_size;
+         if ((dropFiles = malloc( *ret_size )))
+         {
+             dropFiles->pFiles = sizeof(DROPFILES);
+@@ -1165,15 +1182,43 @@ void *uri_list_to_drop_files( const void *data, size_t size, size_t *ret_size )
+             dropFiles->pt.y = 0;
+             dropFiles->fNC = 0;
+             dropFiles->fWide = TRUE;
+-            out[total] = '\0';
+-            memcpy( (char*)dropFiles + dropFiles->pFiles, out, (total + 1) * sizeof(WCHAR) );
++            memcpy( (char*)dropFiles + dropFiles->pFiles, dos_paths, dos_paths_size );
+         }
+     }
+-    free( out );
++    free( dos_paths );
+     return dropFiles;
+ }
+ 
+ 
++/**************************************************************************
++ *      uri_list_to_post_drop_params
++ */
++struct dnd_post_drop_params *uri_list_to_post_drop_params( const void *data, size_t size, size_t *ret_size )
++{
++    struct dnd_post_drop_params *ret = NULL;
++    size_t dos_paths_size = 0;
++    WCHAR *dos_paths;
++
++    dos_paths = uri_list_to_dos_paths( data, size, &dos_paths_size );
++    if (dos_paths)
++    {
++        *ret_size = FIELD_OFFSET( struct dnd_post_drop_params, drop_files[sizeof(DROPFILES) + dos_paths_size] );
++        if ((ret = malloc( *ret_size )))
++        {
++            DROPFILES *dropFiles = (void*)ret->drop_files;
++            dropFiles->pFiles = sizeof(DROPFILES);
++            dropFiles->pt.x = 0;
++            dropFiles->pt.y = 0;
++            dropFiles->fNC = 0;
++            dropFiles->fWide = TRUE;
++            memcpy( (char*)dropFiles + dropFiles->pFiles, dos_paths, dos_paths_size );
++        }
++    }
++    free( dos_paths );
++    return ret;
++}
++
++
+ /**************************************************************************
+  *      import_text_uri_list
+  *
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -1854,8 +1854,9 @@ static HWND find_drop_window( HWND hQueryWnd, LPPOINT lpPt )
+     return hQueryWnd;
+ }
+ 
+-static void post_drop( HWND hwnd, DROPFILES *drop, ULONG size )
++static void post_drop( HWND hwnd, struct dnd_post_drop_params *params, ULONG size )
+ {
++    DROPFILES *drop = (void*)params->drop_files;
+     drop->fWide = HandleToUlong( hwnd ); /* abuse fWide to pass window handle */
+     x11drv_client_func( client_func_dnd_post_drop, drop, size );
+ }
+@@ -1904,14 +1905,14 @@ static void EVENT_DropFromOffiX( HWND hWnd, XClientMessageEvent *event )
+ 
+     if (!aux_long && p_data)  /* don't bother if > 64K */
+     {
+-        DROPFILES *drop;
+-        size_t drop_size;
++        struct dnd_post_drop_params *params;
++        size_t params_size;
+ 
+-        drop = file_list_to_drop_files( p_data, get_property_size( format, data_length ), &drop_size );
+-        if (drop)
++        params = file_list_to_post_drop_params( p_data, get_property_size( format, data_length ), &params_size );
++        if (params)
+         {
+-            post_drop( hWnd, drop, drop_size );
+-            free( drop );
++            post_drop( hWnd, params, params_size );
++            free( params );
+         }
+     }
+ 
+@@ -1933,7 +1934,6 @@ static void EVENT_DropURLs( HWND hWnd, XClientMessageEvent *event )
+   unsigned long	aux_long;
+   unsigned char	*p_data = NULL; /* property data */
+   int		x, y;
+-  DROPFILES *drop;
+   int format;
+   union {
+     Atom	atom_aux;
+@@ -1954,11 +1954,13 @@ static void EVENT_DropURLs( HWND hWnd, XClientMessageEvent *event )
+ 
+   if (!aux_long && p_data) /* don't bother if > 64K */
+   {
+-      size_t drop_size;
+-      drop = uri_list_to_drop_files( p_data, get_property_size( format, data_length ), &drop_size );
++      struct dnd_post_drop_params *params;
++      size_t params_size;
++      params = uri_list_to_post_drop_params( p_data, get_property_size( format, data_length ), &params_size );
+ 
+-      if (drop)
++      if (params)
+       {
++          DROPFILES *drop = (void*)params->drop_files;
+           XQueryPointer( event->display, root_window, &u.w_aux, &u.w_aux,
+                          &x, &y, &u.i, &u.i, &u.u);
+           drop->pt = root_to_virtual_screen( x, y );
+@@ -1973,8 +1975,8 @@ static void EVENT_DropURLs( HWND hWnd, XClientMessageEvent *event )
+               release_win_data( win_data );
+           }
+ 
+-          post_drop( hWnd, drop, drop_size );
+-          free( drop );
++          post_drop( hWnd, params, params_size );
++          free( params );
+       }
+   }
+   if (p_data) XFree( p_data );
+diff --git a/dlls/winex11.drv/unixlib.h b/dlls/winex11.drv/unixlib.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/unixlib.h
++++ b/dlls/winex11.drv/unixlib.h
+@@ -127,6 +127,11 @@ struct dnd_position_event_params
+     DWORD effect;
+ };
+ 
++struct dnd_post_drop_params
++{
++    char drop_files[1];
++};
++
+ struct systray_change_owner_params
+ {
+     UINT64 event_handle;
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -703,8 +703,10 @@ extern void change_systray_owner( Display *display, Window systray_window ) DECL
+ extern HWND create_foreign_window( Display *display, Window window ) DECLSPEC_HIDDEN;
+ extern BOOL update_clipboard( HWND hwnd ) DECLSPEC_HIDDEN;
+ extern void init_win_context(void) DECLSPEC_HIDDEN;
+-extern void *file_list_to_drop_files( const void *data, size_t size, size_t *ret_size ) DECLSPEC_HIDDEN;
+-extern void *uri_list_to_drop_files( const void *data, size_t size, size_t *ret_size ) DECLSPEC_HIDDEN;
++extern struct dnd_post_drop_params *file_list_to_post_drop_params( const void *data, size_t size,
++                                                                   size_t *ret_size ) DECLSPEC_HIDDEN;
++extern struct dnd_post_drop_params *uri_list_to_post_drop_params( const void *data, size_t size,
++                                                                  size_t *ret_size ) DECLSPEC_HIDDEN;
+ 
+ static inline void mirror_rect( const RECT *window_rect, RECT *rect )
+ {
+diff --git a/dlls/winex11.drv/x11drv_dll.h b/dlls/winex11.drv/x11drv_dll.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv_dll.h
++++ b/dlls/winex11.drv/x11drv_dll.h
+@@ -29,7 +29,7 @@
+ 
+ extern NTSTATUS WINAPI x11drv_dnd_enter_event( void *params, ULONG size ) DECLSPEC_HIDDEN;
+ extern NTSTATUS WINAPI x11drv_dnd_position_event( void *params, ULONG size ) DECLSPEC_HIDDEN;
+-extern NTSTATUS WINAPI x11drv_dnd_post_drop( void *data, ULONG size ) DECLSPEC_HIDDEN;
++extern NTSTATUS WINAPI x11drv_dnd_post_drop( void *params, ULONG size ) DECLSPEC_HIDDEN;
+ extern NTSTATUS WINAPI x11drv_ime_set_composition_string( void *params, ULONG size ) DECLSPEC_HIDDEN;
+ extern NTSTATUS WINAPI x11drv_ime_set_result( void *params, ULONG size ) DECLSPEC_HIDDEN;
+ extern NTSTATUS WINAPI x11drv_systray_change_owner( void *params, ULONG size ) DECLSPEC_HIDDEN;
+diff --git a/dlls/winex11.drv/xdnd.c b/dlls/winex11.drv/xdnd.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/xdnd.c
++++ b/dlls/winex11.drv/xdnd.c
+@@ -718,15 +718,16 @@ static IDataObjectVtbl xdndDataObjectVtbl =
+ 
+ static IDataObject XDNDDataObject = { &xdndDataObjectVtbl };
+ 
+-NTSTATUS WINAPI x11drv_dnd_post_drop( void *data, ULONG size )
++NTSTATUS WINAPI x11drv_dnd_post_drop( void *arg, ULONG size )
+ {
++    struct dnd_post_drop_params *params = arg;
+     HDROP handle;
+ 
+     if ((handle = GlobalAlloc( GMEM_SHARE, size )))
+     {
+         DROPFILES *ptr = GlobalLock( handle );
+         HWND hwnd;
+-        memcpy( ptr, data, size );
++        memcpy( ptr, params->drop_files, size - FIELD_OFFSET( struct dnd_post_drop_params, drop_files[0] ) );
+         hwnd = UlongToHandle( ptr->fWide );
+         ptr->fWide = TRUE;
+         GlobalUnlock( handle );
+-- 
+2.39.0
+

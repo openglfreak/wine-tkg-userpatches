@@ -1,0 +1,68 @@
+From 6446d4006185796fede61e7dbef59bc1300ba1c9 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Mon, 24 Oct 2022 19:30:25 +0200
+Subject: [PATCH 1/4] ntdll: Align stack pointer when calling
+ KiUserCallbackDispatcher.
+
+Overwatch hooks KiUserCallbackDispatcher and expects the stack pointer to be aligned to a multiple of 16 bytes,
+instead of the usual 8-byte misalignment, otherwise it will crash on a misaligned movaps.
+
+Fix this by aligning the stack pointer when calling the dispatcher and again inside the dispatcher.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/ntdll/signal_x86_64.c      | 18 ++++++++++++------
+ dlls/ntdll/unix/signal_x86_64.c |  1 +
+ 2 files changed, 13 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/ntdll/signal_x86_64.c b/dlls/ntdll/signal_x86_64.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/signal_x86_64.c
++++ b/dlls/ntdll/signal_x86_64.c
+@@ -675,12 +675,7 @@ __ASM_GLOBAL_FUNC( KiUserApcDispatcher,
+                    "int3")
+ 
+ 
+-/*******************************************************************
+- *		KiUserCallbackDispatcher (NTDLL.@)
+- *
+- * FIXME: not binary compatible
+- */
+-void WINAPI KiUserCallbackDispatcher( ULONG id, void *args, ULONG len )
++void WINAPI user_callback_dispatcher( ULONG id, void *args, ULONG len )
+ {
+     NTSTATUS status;
+ 
+@@ -699,6 +694,17 @@ void WINAPI KiUserCallbackDispatcher( ULONG id, void *args, ULONG len )
+     RtlRaiseStatus( status );
+ }
+ 
++/*******************************************************************
++ *		KiUserCallbackDispatcher (NTDLL.@)
++ *
++ * FIXME: not binary compatible
++ */
++__ASM_GLOBAL_FUNC( KiUserCallbackDispatcher,
++                  "andq $0xFFFFFFFFFFFFFFF0, %rsp\n\t"
++                  __ASM_SEH(".seh_endprologue\n\t")
++                  "call " __ASM_NAME("user_callback_dispatcher") "\n\t"
++                  "int3")
++
+ 
+ static ULONG64 get_int_reg( CONTEXT *context, int reg )
+ {
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -1747,6 +1747,7 @@ NTSTATUS WINAPI KeUserModeCallback( ULONG id, const void *args, ULONG len, void
+ 
+     memcpy( args_data, args, len );
+     *(--stack) = 0;
++    *(--stack) = 0;
+     *(--stack) = len;
+     *(--stack) = (ULONG_PTR)args_data;
+     *(--stack) = id;
+-- 
+2.39.0
+

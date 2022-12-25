@@ -1,0 +1,366 @@
+From 9b0b37954a057df41de2662b2a953b559f5c0ee3 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Wed, 7 Sep 2022 16:10:53 +0200
+Subject: [PATCH 1/5] ntdll: Implement NtFlushProcessWriteBuffers.
+
+Based on a patch by Jinoh Kang from February 2022 [1]. The following
+description is copied from said patch:
+
+NtFlushProcessWriteBuffers is the NT equivalent of Linux membarrier()
+system call.  The .NET Framework garbage collector uses it to
+synchronize with other threads, and thus is required to avoid silent
+memory corruption.
+
+[1] https://www.winehq.org/mailman3/hyperkitty/list/wine-devel@winehq.org/message/F33GVEUQ4MXD6IXOEG56DNVVXC2D4AM2/
+---
+ dlls/ntdll/unix/server.c  |   6 ++
+ dlls/ntdll/unix/virtual.c |  27 ++++++++-
+ server/protocol.def       |  19 +++++-
+ server/thread.c           | 119 ++++++++++++++++++++++++++++++++++++++
+ server/thread.h           |   1 +
+ 5 files changed, 168 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -662,6 +662,12 @@ static void invoke_system_apc( const apc_call_t *call, apc_result_t *result, BOO
+         if (!self) NtClose( wine_server_ptr_handle(call->dup_handle.dst_process) );
+         break;
+     }
++    case APC_MEMORY_BARRIER:
++    {
++        MemoryBarrier();
++        result->type = call->type;
++        break;
++    }
+     default:
+         server_protocol_error( "get_apc_request: bad type %d\n", call->type );
+         break;
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -5836,8 +5836,31 @@ NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T
+  */
+ void WINAPI NtFlushProcessWriteBuffers(void)
+ {
+-    static int once = 0;
+-    if (!once++) FIXME( "stub\n" );
++    static pthread_mutex_t apc_memorybarrier_mutex = PTHREAD_MUTEX_INITIALIZER;
++    NTSTATUS status;
++
++    pthread_mutex_lock( &apc_memorybarrier_mutex );
++
++    do
++    {
++        SERVER_START_REQ( flush_process_write_buffers )
++        {
++            status = wine_server_call( req );
++        }
++        SERVER_END_REQ;
++    }
++    while (status);
++
++    do
++    {
++        select_op_t select_op;
++        select_op.membarrier.op = SELECT_MEMBARRIER;
++        status = server_select( &select_op, sizeof(select_op.membarrier), SELECT_INTERRUPTIBLE,
++                                TIMEOUT_INFINITE, NULL, NULL );
++    }
++    while (status);
++
++    pthread_mutex_unlock( &apc_memorybarrier_mutex );
+ }
+ 
+ 
+diff --git a/server/protocol.def b/server/protocol.def
+index 11111111111..11111111111 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -462,7 +462,8 @@ enum select_op
+     SELECT_WAIT_ALL,
+     SELECT_SIGNAL_AND_WAIT,
+     SELECT_KEYED_EVENT_WAIT,
+-    SELECT_KEYED_EVENT_RELEASE
++    SELECT_KEYED_EVENT_RELEASE,
++    SELECT_MEMBARRIER
+ };
+ 
+ typedef union
+@@ -485,6 +486,10 @@ typedef union
+         obj_handle_t    handle;
+         client_ptr_t    key;
+     } keyed_event;
++    struct
++    {
++        enum select_op  op;      /* SELECT_MEMBARRIER */
++    } membarrier;
+ } select_op_t;
+ 
+ enum apc_type
+@@ -503,7 +508,8 @@ enum apc_type
+     APC_MAP_VIEW,
+     APC_UNMAP_VIEW,
+     APC_CREATE_THREAD,
+-    APC_DUP_HANDLE
++    APC_DUP_HANDLE,
++    APC_MEMORY_BARRIER
+ };
+ 
+ typedef struct
+@@ -623,6 +629,10 @@ typedef union
+         unsigned int     attributes;   /* object attributes */
+         unsigned int     options;      /* duplicate options */
+     } dup_handle;
++    struct
++    {
++        enum apc_type    type;      /* APC_MEMORY_BARRIER */
++    } memory_barrier;
+ } apc_call_t;
+ 
+ typedef union
+@@ -1691,6 +1701,11 @@ enum server_fd_type
+ @END
+ 
+ 
++/* Issue a memory barrier on other threads in the same process */
++@REQ(flush_process_write_buffers)
++@END
++
++
+ struct thread_info
+ {
+     timeout_t       start_time;
+diff --git a/server/thread.c b/server/thread.c
+index 11111111111..11111111111 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -196,6 +196,44 @@ static const struct object_ops thread_apc_ops =
+     thread_apc_destroy          /* destroy */
+ };
+ 
++/* process-wide memory barriers */
++
++struct memory_barrier
++{
++    struct object   obj;      /* object header */
++};
++
++static void dump_memory_barrier( struct object *obj, int verbose );
++static int memory_barrier_signaled( struct object *obj, struct wait_queue_entry *entry );
++
++static const struct object_ops memory_barrier_ops =
++{
++    sizeof(struct memory_barrier),      /* size */
++    &no_type,                           /* type */
++    dump_memory_barrier,                /* dump */
++    add_queue,                          /* add_queue */
++    remove_queue,                       /* remove_queue */
++    memory_barrier_signaled,            /* signaled */
++    NULL,                               /* get_esync_fd */
++    NULL,                               /* get_fsync_idx */
++    no_satisfied,                       /* satisfied */
++    no_signal,                          /* signal */
++    no_get_fd,                          /* get_fd */
++    default_map_access,                 /* map_access */
++    default_get_sd,                     /* get_sd */
++    default_set_sd,                     /* set_sd */
++    no_get_full_name,                   /* get_full_name */
++    no_lookup_name,                     /* lookup_name */
++    no_link_name,                       /* link_name */
++    NULL,                               /* unlink_name */
++    no_open_file,                       /* open_file */
++    no_kernel_obj_list,                 /* get_kernel_obj_list */
++    no_get_fast_sync,                   /* get_fast_sync */
++    no_close_handle,                    /* close_handle */
++    no_destroy                          /* destroy */
++};
++
++struct memory_barrier *memory_barrier_obj;
+ 
+ /* thread CPU context */
+ 
+@@ -356,6 +394,7 @@ static inline void init_thread_structure( struct thread *thread )
+     thread->queue_shared         = NULL;
+     thread->input_shared_mapping = NULL;
+     thread->input_shared         = NULL;
++    thread->mb_apcs_pending = 0;
+ 
+     thread->creation_time = current_time;
+     thread->exit_time     = 0;
+@@ -465,6 +504,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+     struct thread *thread;
+     int request_pipe[2];
+ 
++    if (memory_barrier_obj)
++        grab_object( &memory_barrier_obj->obj );
++    else if (!(memory_barrier_obj = alloc_object( &memory_barrier_ops )))
++        return NULL;
++
+     if (fd == -1)
+     {
+         if (pipe( request_pipe ) == -1)
+@@ -638,12 +682,14 @@ static void cleanup_thread( struct thread *thread )
+     thread->desktop = 0;
+     thread->desc = NULL;
+     thread->desc_len = 0;
++    thread->mb_apcs_pending = 0;
+ }
+ 
+ /* destroy a thread when its refcount is 0 */
+ static void destroy_thread( struct object *obj )
+ {
+     struct thread *thread = (struct thread *)obj;
++    struct memory_barrier *mb = memory_barrier_obj;
+     assert( obj->ops == &thread_ops );
+ 
+     list_remove( &thread->entry );
+@@ -654,6 +700,9 @@ static void destroy_thread( struct object *obj )
+     if (thread->token) release_object( thread->token );
+     if (thread->fast_sync) release_object( thread->fast_sync );
+     if (thread->fast_alert_event) release_object( thread->fast_alert_event );
++    if (mb->obj.refcount == 1)
++        memory_barrier_obj = NULL;
++    release_object( &mb->obj );
+ 
+     if (do_esync())
+         close( thread->esync_fd );
+@@ -744,6 +793,18 @@ static struct thread_apc *create_apc( struct object *owner, const apc_call_t *ca
+     return apc;
+ }
+ 
++static void dump_memory_barrier( struct object *obj, int verbose )
++{
++    assert( obj->ops == &memory_barrier_ops );
++    fprintf( stderr, "Memory barrier\n" );
++}
++
++static int memory_barrier_signaled( struct object *obj, struct wait_queue_entry *entry )
++{
++    struct thread *thread = entry->wait->thread;
++    return !thread->mb_apcs_pending;
++}
++
+ /* get a thread pointer from a thread id (and increment the refcount) */
+ struct thread *get_thread_from_id( thread_id_t id )
+ {
+@@ -1434,6 +1495,13 @@ static int select_on( const select_op_t *select_op, data_size_t op_size, client_
+         current->wait->key = select_op->keyed_event.key;
+         break;
+ 
++    case SELECT_MEMBARRIER:
++        object = &memory_barrier_obj->obj;
++        if (!object) return 1;
++        ret = wait_on( select_op, 1, &object, flags, when );
++        if (!ret) return 1;
++        break;
++
+     default:
+         set_error( STATUS_INVALID_PARAMETER );
+         return 1;
+@@ -1587,6 +1655,16 @@ int thread_queue_apc( struct process *process, struct thread *thread, struct obj
+     return ret;
+ }
+ 
++static void finish_membarrier_apc( struct thread_apc *apc )
++{
++    struct thread *thread = (struct thread *)apc->owner;
++
++    assert( thread );
++    assert( thread->mb_apcs_pending > 0 );
++    if (--thread->mb_apcs_pending)
++        wake_up( &memory_barrier_obj->obj, 1 );
++}
++
+ /* cancel the async procedure call owned by a specific object */
+ void thread_cancel_apc( struct thread *thread, struct object *owner, enum apc_type type )
+ {
+@@ -1598,6 +1676,8 @@ void thread_cancel_apc( struct thread *thread, struct object *owner, enum apc_ty
+         if (apc->owner != owner) continue;
+         list_remove( &apc->entry );
+         apc->executed = 1;
++        if (apc->call.type == APC_MEMORY_BARRIER)
++            finish_membarrier_apc( apc );
+         wake_up( &apc->obj, 0 );
+         release_object( apc );
+         if (list_empty( &thread->user_apc ) && thread->fast_alert_event)
+@@ -1640,6 +1720,8 @@ static void clear_apc_queue( struct list *queue )
+         struct thread_apc *apc = LIST_ENTRY( ptr, struct thread_apc, entry );
+         list_remove( &apc->entry );
+         apc->executed = 1;
++        if (apc->call.type == APC_MEMORY_BARRIER)
++            finish_membarrier_apc( apc );
+         wake_up( &apc->obj, 0 );
+         release_object( apc );
+     }
+@@ -2123,6 +2205,8 @@ DECL_HANDLER(select)
+             apc->result.create_thread.handle = handle;
+             clear_error();  /* ignore errors from the above calls */
+         }
++        if (apc->call.type == APC_MEMORY_BARRIER)   /* wake up caller if membarriers done */
++            finish_membarrier_apc( apc );
+         wake_up( &apc->obj, 0 );
+         close_handle( current->process, req->prev_apc );
+         release_object( apc );
+@@ -2144,6 +2228,8 @@ DECL_HANDLER(select)
+         else
+         {
+             apc->executed = 1;
++            if (apc->call.type == APC_MEMORY_BARRIER)
++                finish_membarrier_apc( apc );
+             wake_up( &apc->obj, 0 );
+         }
+         release_object( apc );
+@@ -2493,3 +2579,36 @@ DECL_HANDLER(get_fast_alert_event)
+     if (current->fast_alert_event)
+         reply->handle = alloc_handle( current->process, current->fast_alert_event, SYNCHRONIZE, 0 );
+ }
++
++DECL_HANDLER(flush_process_write_buffers)
++{
++    struct process *process = current->process;
++    struct thread *thread;
++    apc_call_t call;
++
++    assert( memory_barrier_obj );
++
++    memset( &call, 0, sizeof(call) );
++    call.memory_barrier.type = APC_MEMORY_BARRIER;
++
++    LIST_FOR_EACH_ENTRY( thread, &process->thread_list, struct thread, proc_entry )
++    {
++        struct thread_apc *apc;
++        int success;
++
++        if (thread == current || thread->state == TERMINATED) continue;
++
++        if (!(apc = create_apc( &current->obj, &call ))) break;
++
++        if ((success = queue_apc( NULL, thread, apc )))
++            thread->mb_apcs_pending++;
++
++        release_object( apc );
++
++        if (!success)
++        {
++            set_error( STATUS_UNSUCCESSFUL );
++            break;
++        }
++    }
++}
+diff --git a/server/thread.h b/server/thread.h
+index 11111111111..11111111111 100644
+--- a/server/thread.h
++++ b/server/thread.h
+@@ -105,6 +105,7 @@ struct thread
+     volatile struct queue_shared_memory *queue_shared;  /* thread queue shared memory ptr */
+     struct object         *input_shared_mapping; /* thread input shared memory mapping */
+     volatile struct input_shared_memory *input_shared;  /* thread input shared memory ptr */
++    int                    mb_apcs_pending; /* number of APCs left for the current memory barrier */
+ };
+ 
+ extern struct thread *current;
+
+

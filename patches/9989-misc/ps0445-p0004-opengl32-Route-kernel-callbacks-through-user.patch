@@ -1,0 +1,275 @@
+From 63a772a7e227c46a85183ec4e43135b9d14476fa Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Tue, 22 Nov 2022 18:18:20 +0100
+Subject: [PATCH 04/11] opengl32: Route kernel callbacks through user32.
+
+Signed-off-by: Torge Matthies <tmatthies@codeweavers.com>
+---
+ dlls/opengl32/make_opengl   | 14 +++++++++++++-
+ dlls/opengl32/unix_thunks.c |  2 ++
+ dlls/opengl32/unix_wgl.c    | 13 +++++++++++--
+ dlls/opengl32/unixlib.h     | 10 ++++++++++
+ dlls/opengl32/wgl.c         | 13 ++++++++-----
+ dlls/wow64win/user.c        |  8 --------
+ include/ntuser.h            |  2 --
+ include/wine/wgl_driver.h   |  2 +-
+ 8 files changed, 45 insertions(+), 19 deletions(-)
+
+diff --git a/dlls/opengl32/make_opengl b/dlls/opengl32/make_opengl
+index 11111111111..11111111111 100755
+--- a/dlls/opengl32/make_opengl
++++ b/dlls/opengl32/make_opengl
+@@ -994,10 +994,18 @@ print OUT "#define WIN32_NO_STATUS\n";
+ print OUT "#include \"windef.h\"\n";
+ print OUT "#include \"winbase.h\"\n";
+ print OUT "#include \"winternl.h\"\n";
+-print OUT "#include \"wingdi.h\"\n\n";
++print OUT "#include \"wingdi.h\"\n";
++print OUT "#include \"ntuser.h\"\n\n";
+ print OUT "#include \"wine/wgl.h\"\n";
+ print OUT "#include \"wine/unixlib.h\"\n\n";
+ 
++print OUT "struct wine_gl_debug_message_params;\n\n";
++
++print OUT "struct wglInit_params\n";
++print OUT "{\n";
++print OUT "    BOOL (*WINAPI call_opengl_debug_message_callback)( void *args, ULONG len );\n";
++print OUT "};\n\n";
++
+ foreach (sort keys %wgl_functions)
+ {
+     next if defined $manual_win_functions{$_};
+@@ -1016,6 +1024,7 @@ foreach (sort keys %ext_functions)
+ 
+ print OUT "enum unix_funcs\n";
+ print OUT "{\n";
++print OUT "    unix_wglInit,\n";
+ print OUT "    unix_thread_attach,\n";
+ print OUT "    unix_process_detach,\n";
+ foreach (sort keys %wgl_functions)
+@@ -1038,6 +1047,7 @@ print OUT "};\n\n";
+ print OUT "typedef void (WINAPI *gl_debug_cb)(GLenum, GLenum, GLuint, GLenum, GLsizei, const GLchar *, const void *);\n";
+ print OUT "struct wine_gl_debug_message_params\n";
+ print OUT "{\n";
++print OUT "    struct user32_callback_params cbparams;\n";
+ print OUT "    gl_debug_cb user_callback;\n";
+ print OUT "    const void *user_data;\n";
+ print OUT "\n";
+@@ -1139,6 +1149,7 @@ print OUT "#ifdef _WIN64\n";
+ print OUT "WINE_DEFAULT_DEBUG_CHANNEL(opengl);\n";
+ print OUT "#endif\n\n";
+ 
++print OUT "extern NTSTATUS wgl_wglInit( void *args ) DECLSPEC_HIDDEN;\n";
+ print OUT "extern NTSTATUS thread_attach( void *args ) DECLSPEC_HIDDEN;\n";
+ print OUT "extern NTSTATUS process_detach( void *args ) DECLSPEC_HIDDEN;\n";
+ foreach (sort keys %wgl_functions)
+@@ -1185,6 +1196,7 @@ foreach (sort keys %ext_functions)
+ 
+ print OUT "const unixlib_entry_t __wine_unix_call_funcs[] =\n";
+ print OUT "{\n";
++print OUT "    &wgl_wglInit,\n";
+ print OUT "    &thread_attach,\n";
+ print OUT "    &process_detach,\n";
+ foreach (sort keys %wgl_functions)
+diff --git a/dlls/opengl32/unix_thunks.c b/dlls/opengl32/unix_thunks.c
+index 11111111111..11111111111 100644
+--- a/dlls/opengl32/unix_thunks.c
++++ b/dlls/opengl32/unix_thunks.c
+@@ -22,6 +22,7 @@
+ WINE_DEFAULT_DEBUG_CHANNEL(opengl);
+ #endif
+ 
++extern NTSTATUS wgl_wglInit( void *args ) DECLSPEC_HIDDEN;
+ extern NTSTATUS thread_attach( void *args ) DECLSPEC_HIDDEN;
+ extern NTSTATUS process_detach( void *args ) DECLSPEC_HIDDEN;
+ extern NTSTATUS wgl_wglCopyContext( void *args ) DECLSPEC_HIDDEN;
+@@ -24204,6 +24205,7 @@ static NTSTATUS ext_wglSwapIntervalEXT( void *args )
+ 
+ const unixlib_entry_t __wine_unix_call_funcs[] =
+ {
++    &wgl_wglInit,
+     &thread_attach,
+     &process_detach,
+     &wgl_wglCopyContext,
+diff --git a/dlls/opengl32/unix_wgl.c b/dlls/opengl32/unix_wgl.c
+index 11111111111..11111111111 100644
+--- a/dlls/opengl32/unix_wgl.c
++++ b/dlls/opengl32/unix_wgl.c
+@@ -43,6 +43,8 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(opengl);
+ 
++static BOOL (*WINAPI call_opengl_debug_message_callback)( void *args, ULONG len );
++
+ static pthread_mutex_t wgl_lock = PTHREAD_MUTEX_INITIALIZER;
+ 
+ /* handle management */
+@@ -814,6 +816,7 @@ static void gl_debug_message_callback( GLenum source, GLenum type, GLuint id, GL
+ {
+     struct wine_gl_debug_message_params params =
+     {
++        .cbparams = { .func = (ULONG_PTR)call_opengl_debug_message_callback, },
+         .source = source,
+         .type = type,
+         .id = id,
+@@ -828,8 +831,7 @@ static void gl_debug_message_callback( GLenum source, GLenum type, GLuint id, GL
+     if (!(params.user_callback = ptr->u.context->debug_callback)) return;
+     params.user_data = ptr->u.context->debug_user;
+ 
+-    KeUserModeCallback( NtUserCallOpenGLDebugMessageCallback, &params, sizeof(params),
+-                        &ret_ptr, &ret_len );
++    KeUserModeCallback( NtUserDispatchCallback, &params.cbparams, sizeof(params), &ret_ptr, &ret_len );
+ }
+ 
+ static void wrap_glDebugMessageCallback( TEB *teb, GLDEBUGPROC callback, const void *userParam )
+@@ -868,6 +870,13 @@ static void wrap_glDebugMessageCallbackARB( TEB *teb, GLDEBUGPROCARB callback, c
+     funcs->ext.p_glDebugMessageCallbackARB( gl_debug_message_callback, ptr );
+ }
+ 
++NTSTATUS wgl_wglInit( void *args )
++{
++    struct wglInit_params *params = args;
++    call_opengl_debug_message_callback = params->call_opengl_debug_message_callback;
++    return STATUS_SUCCESS;
++}
++
+ NTSTATUS wgl_wglCopyContext( void *args )
+ {
+     struct wglCopyContext_params *params = args;
+diff --git a/dlls/opengl32/unixlib.h b/dlls/opengl32/unixlib.h
+index 11111111111..11111111111 100644
+--- a/dlls/opengl32/unixlib.h
++++ b/dlls/opengl32/unixlib.h
+@@ -12,10 +12,18 @@
+ #include "winbase.h"
+ #include "winternl.h"
+ #include "wingdi.h"
++#include "ntuser.h"
+ 
+ #include "wine/wgl.h"
+ #include "wine/unixlib.h"
+ 
++struct wine_gl_debug_message_params;
++
++struct wglInit_params
++{
++    BOOL (*WINAPI call_opengl_debug_message_callback)( void *args, ULONG len );
++};
++
+ struct wglCopyContext_params
+ {
+     TEB *teb;
+@@ -25333,6 +25341,7 @@ struct wglSwapIntervalEXT_params
+ 
+ enum unix_funcs
+ {
++    unix_wglInit,
+     unix_thread_attach,
+     unix_process_detach,
+     unix_wglCopyContext,
+@@ -28380,6 +28389,7 @@ enum unix_funcs
+ typedef void (WINAPI *gl_debug_cb)(GLenum, GLenum, GLuint, GLenum, GLsizei, const GLchar *, const void *);
+ struct wine_gl_debug_message_params
+ {
++    struct user32_callback_params cbparams;
+     gl_debug_cb user_callback;
+     const void *user_data;
+ 
+diff --git a/dlls/opengl32/wgl.c b/dlls/opengl32/wgl.c
+index 11111111111..11111111111 100644
+--- a/dlls/opengl32/wgl.c
++++ b/dlls/opengl32/wgl.c
+@@ -1270,8 +1270,10 @@ GLboolean WINAPI glUnmapNamedBufferEXT( GLuint buffer )
+     return gl_unmap_named_buffer( unix_glUnmapNamedBufferEXT, buffer );
+ }
+ 
+-static BOOL WINAPI call_opengl_debug_message_callback( struct wine_gl_debug_message_params *params, ULONG size )
++static BOOL WINAPI call_opengl_debug_message_callback( void *args, ULONG len )
+ {
++    struct wine_gl_debug_message_params *params =
++        CONTAINING_RECORD( args, struct wine_gl_debug_message_params, cbparams );
+     params->user_callback( params->source, params->type, params->id, params->severity,
+                            params->length, params->message, params->user_data );
+     return TRUE;
+@@ -1282,21 +1284,22 @@ static BOOL WINAPI call_opengl_debug_message_callback( struct wine_gl_debug_mess
+  */
+ BOOL WINAPI DllMain( HINSTANCE hinst, DWORD reason, LPVOID reserved )
+ {
+-    void **kernel_callback_table;
+     NTSTATUS status;
+ 
+     switch(reason)
+     {
+     case DLL_PROCESS_ATTACH:
++    {
++        struct wglInit_params args = { (void*)call_opengl_debug_message_callback, };
++
+         if ((status = __wine_init_unix_call()))
+         {
+             ERR( "Failed to load unixlib, status %#lx\n", status );
+             return FALSE;
+         }
+ 
+-        kernel_callback_table = NtCurrentTeb()->Peb->KernelCallbackTable;
+-        kernel_callback_table[NtUserCallOpenGLDebugMessageCallback] = call_opengl_debug_message_callback;
+-        /* fallthrough */
++        return !UNIX_CALL( wglInit, &args );
++    }
+     case DLL_THREAD_ATTACH:
+         if ((status = UNIX_CALL( thread_attach, NtCurrentTeb() )))
+         {
+diff --git a/dlls/wow64win/user.c b/dlls/wow64win/user.c
+index 11111111111..11111111111 100644
+--- a/dlls/wow64win/user.c
++++ b/dlls/wow64win/user.c
+@@ -1023,12 +1023,6 @@ static NTSTATUS WINAPI wow64_NtUserThunkLock( void *arg, ULONG size )
+     return dispatch_callback( NtUserThunkLock, arg, size );
+ }
+ 
+-static NTSTATUS WINAPI wow64_NtUserCallOpenGLDebugMessageCallback( void *arg, ULONG size )
+-{
+-    FIXME( "\n" );
+-    return 0;
+-}
+-
+ static NTSTATUS WINAPI wow64_NtUserDriverCallbackFirst0( void *arg, ULONG size )
+ {
+     return dispatch_callback( NtUserDriverCallbackFirst + 0, arg, size );
+@@ -1105,8 +1099,6 @@ user_callback user_callbacks[] =
+     /* win16 hooks */
+     wow64_NtUserCallFreeIcon,
+     wow64_NtUserThunkLock,
+-    /* OpenGL support */
+-    wow64_NtUserCallOpenGLDebugMessageCallback,
+     /* Driver-specific callbacks */
+     wow64_NtUserDriverCallbackFirst0,
+     wow64_NtUserDriverCallbackFirst1,
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 11111111111..11111111111 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -51,8 +51,6 @@ enum
+     /* win16 hooks */
+     NtUserCallFreeIcon,
+     NtUserThunkLock,
+-    /* OpenGL support */
+-    NtUserCallOpenGLDebugMessageCallback,
+     /* Driver-specific callbacks */
+     NtUserDriverCallbackFirst,
+     NtUserDriverCallbackLast = NtUserDriverCallbackFirst + 9,
+diff --git a/include/wine/wgl_driver.h b/include/wine/wgl_driver.h
+index 11111111111..11111111111 100644
+--- a/include/wine/wgl_driver.h
++++ b/include/wine/wgl_driver.h
+@@ -7,7 +7,7 @@
+ #define WINE_GLAPI
+ #endif
+ 
+-#define WINE_WGL_DRIVER_VERSION 23
++#define WINE_WGL_DRIVER_VERSION 24
+ 
+ struct wgl_context;
+ struct wgl_pbuffer;
+-- 
+2.39.0
+

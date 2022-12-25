@@ -26,7 +26,7 @@ diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -555,6 +555,37 @@ static inline BOOL can_activate_window( HWND hwnd )
+@@ -549,6 +549,37 @@ static inline BOOL can_activate_window( HWND hwnd )
  }
  
  
@@ -64,7 +64,7 @@ index 11111111111..11111111111 100644
  /**********************************************************************
   *              set_input_focus
   *
-@@ -622,6 +653,14 @@ static HWND find_activatable_window( HWND hwnd, Time time, BOOL check )
+@@ -614,6 +645,14 @@ static HWND find_activatable_window( HWND hwnd, Time time, BOOL check )
      return hwnd;
  }
  
@@ -72,41 +72,41 @@ index 11111111111..11111111111 100644
 +{
 +    struct x11drv_thread_data *thread_data = x11drv_thread_data();
 +    thread_data->activating_hwnd = hwnd;
-+    NtUserSetForegroundWindow( hwnd, FALSE );
++    NtUserSetForegroundWindow( hwnd );
 +    thread_data->activating_hwnd = 0;
 +}
 +
  /**********************************************************************
   *              set_focus
   */
-@@ -635,7 +674,7 @@ static void set_focus( Display *display, HWND hwnd, Time time, BOOL check )
+@@ -627,7 +666,7 @@ static void set_focus( Display *display, HWND hwnd, Time time, BOOL check )
  
      if (!(focus = find_activatable_window( hwnd, time, check ))) return;
      TRACE( "setting foreground window to %p\n", focus );
--    NtUserSetForegroundWindow( hwnd, FALSE );
+-    NtUserSetForegroundWindow( hwnd );
 +    set_foreground_window( focus );
  
      /* Some applications expect that a being deactivated topmost window
       * receives the WM_WINDOWPOSCHANGING/WM_WINDOWPOSCHANGED messages,
-@@ -865,7 +904,7 @@ static void focus_out( Display *display , HWND hwnd )
+@@ -861,7 +900,7 @@ static void focus_out( Display *display , HWND hwnd )
          if (hwnd == NtUserGetForegroundWindow())
          {
              TRACE( "lost focus, setting fg to desktop\n" );
--            NtUserSetForegroundWindow( NtUserGetDesktopWindow(), FALSE );
+-            NtUserSetForegroundWindow( NtUserGetDesktopWindow() );
 +            set_foreground_window( NtUserGetDesktopWindow() );
          }
      }
   }
-@@ -1344,7 +1383,7 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event, BOOL updat
+@@ -1347,7 +1386,7 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event, BOOL updat
                  TRACE( "restoring win %p/%lx\n", data->hwnd, data->whole_window );
                  release_win_data( data );
                  if ((style & (WS_MINIMIZE | WS_VISIBLE)) == (WS_MINIMIZE | WS_VISIBLE))
--                    NtUserSetForegroundWindow( hwnd, FALSE );
+-                    NtUserSetForegroundWindow( hwnd );
 +                    set_foreground_window( hwnd );
                  send_message( hwnd, WM_SYSCOMMAND, SC_RESTORE, 0 );
                  return;
              }
-@@ -1492,6 +1531,39 @@ void X11DRV_SetFocus( HWND hwnd )
+@@ -1524,6 +1563,39 @@ void X11DRV_SetFocus( HWND hwnd )
  }
  
  
@@ -162,7 +162,7 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -948,6 +948,11 @@ Window init_clip_window(void)
+@@ -950,6 +950,11 @@ Window init_clip_window(void)
  }
  
  
@@ -174,8 +174,8 @@ index 11111111111..11111111111 100644
  /***********************************************************************
   *     set_window_user_time
   */
-@@ -962,6 +967,37 @@ void set_window_user_time( Display *display, Window window, Time time )
-                           PropModeReplace, (unsigned char *)&time, 1 );
+@@ -1130,6 +1135,37 @@ void read_net_wm_states( Display* display, struct x11drv_win_data *data )
+     data->net_wm_state = new_state;
  }
  
 +/***********************************************************************
@@ -211,20 +211,20 @@ index 11111111111..11111111111 100644
 +
  
  /***********************************************************************
-  *     update_net_wm_states
+  *     set_xembed_flags
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -360,6 +360,7 @@ struct x11drv_thread_data
-     HWND     grab_hwnd;            /* window that currently grabs the mouse */
+@@ -373,6 +373,7 @@ struct x11drv_thread_data
      HWND     last_focus;           /* last window that had focus */
+     HWND     keymapnotify_hwnd;    /* window that should receive modifier release events */
      DWORD    activating_time;      /* time of the last SetActiveWindow call */
 +    HWND     activating_hwnd;      /* window currently activating */
      XIM      xim;                  /* input method */
      HWND     last_xic_hwnd;        /* last xic window */
      XFontSet font_set;             /* international text drawing font set */
-@@ -655,6 +656,7 @@ extern void vulkan_thread_detach(void) DECLSPEC_HIDDEN;
+@@ -669,6 +670,7 @@ extern void vulkan_thread_detach(void) DECLSPEC_HIDDEN;
  extern void wait_for_withdrawn_state( HWND hwnd, BOOL set ) DECLSPEC_HIDDEN;
  extern Window init_clip_window(void) DECLSPEC_HIDDEN;
  extern void set_window_user_time( Display *display, Window window, Time time ) DECLSPEC_HIDDEN;
@@ -232,7 +232,7 @@ index 11111111111..11111111111 100644
  extern void read_net_wm_states( Display *display, struct x11drv_win_data *data ) DECLSPEC_HIDDEN;
  extern void update_net_wm_states( struct x11drv_win_data *data ) DECLSPEC_HIDDEN;
  extern void make_window_embedded( struct x11drv_win_data *data ) DECLSPEC_HIDDEN;
-@@ -683,6 +685,7 @@ extern XContext winContext DECLSPEC_HIDDEN;
+@@ -697,6 +699,7 @@ extern XContext winContext DECLSPEC_HIDDEN;
  extern XContext cursor_context DECLSPEC_HIDDEN;
  
  extern void X11DRV_SetFocus( HWND hwnd ) DECLSPEC_HIDDEN;
@@ -241,5 +241,5 @@ index 11111111111..11111111111 100644
  extern void sync_window_cursor( Window window ) DECLSPEC_HIDDEN;
  extern LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd ) DECLSPEC_HIDDEN;
 -- 
-2.36.1
+2.39.0
 

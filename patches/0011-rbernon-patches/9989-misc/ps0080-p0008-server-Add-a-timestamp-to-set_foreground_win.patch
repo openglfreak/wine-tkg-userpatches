@@ -8,6 +8,7 @@ We call SetForegroundWindow in event handlers and sometimes overwrite
 the foreground window with an older event. Having a timestamp will help
 discarding old events.
 ---
+ dlls/win32u/defwnd.c         |  2 +-
  dlls/win32u/input.c          |  3 ++-
  dlls/win32u/message.c        |  2 +-
  dlls/win32u/win32u_private.h |  2 +-
@@ -16,13 +17,26 @@ discarding old events.
  server/queue.c               | 10 ++++++++--
  server/user.h                |  1 +
  server/winstation.c          |  1 +
- 8 files changed, 18 insertions(+), 8 deletions(-)
+ 9 files changed, 19 insertions(+), 9 deletions(-)
 
+diff --git a/dlls/win32u/defwnd.c b/dlls/win32u/defwnd.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/defwnd.c
++++ b/dlls/win32u/defwnd.c
+@@ -2183,7 +2183,7 @@ static LRESULT handle_nc_lbutton_down( HWND hwnd, WPARAM wparam, LPARAM lparam )
+                 top = parent;
+             }
+ 
+-            if (set_foreground_window( top, TRUE ) || (get_active_window() == top))
++            if (set_foreground_window( top, TRUE, NtGetTickCount() ) || (get_active_window() == top))
+                 send_message( hwnd, WM_SYSCOMMAND, SC_MOVE + HTCAPTION, lparam );
+             break;
+         }
 diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/input.c
 +++ b/dlls/win32u/input.c
-@@ -1754,7 +1754,7 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
+@@ -1749,7 +1749,7 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
  /*******************************************************************
   *		set_foreground_window
   */
@@ -31,7 +45,7 @@ index 11111111111..11111111111 100644
  {
      BOOL ret, send_msg_old = FALSE, send_msg_new = FALSE;
      HWND previous = 0;
-@@ -1765,6 +1765,7 @@ BOOL set_foreground_window( HWND hwnd, BOOL mouse )
+@@ -1760,6 +1760,7 @@ BOOL set_foreground_window( HWND hwnd, BOOL mouse )
      SERVER_START_REQ( set_foreground_window )
      {
          req->handle = wine_server_user_handle( hwnd );
@@ -43,7 +57,7 @@ diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/message.c
 +++ b/dlls/win32u/message.c
-@@ -1589,7 +1589,7 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+@@ -1756,7 +1756,7 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
                      /* fall through */
                  case MA_ACTIVATE:
                  case 0:
@@ -56,29 +70,29 @@ diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/win32u_private.h
 +++ b/dlls/win32u/win32u_private.h
-@@ -380,7 +380,7 @@ extern BOOL WINAPI release_capture(void) DECLSPEC_HIDDEN;
+@@ -277,7 +277,7 @@ extern BOOL WINAPI release_capture(void) DECLSPEC_HIDDEN;
  extern BOOL set_capture_window( HWND hwnd, UINT gui_flags, HWND *prev_ret ) DECLSPEC_HIDDEN;
  extern BOOL set_caret_blink_time( unsigned int time ) DECLSPEC_HIDDEN;
  extern BOOL set_caret_pos( int x, int y ) DECLSPEC_HIDDEN;
 -extern BOOL set_foreground_window( HWND hwnd, BOOL mouse ) DECLSPEC_HIDDEN;
 +extern BOOL set_foreground_window( HWND hwnd, BOOL mouse, DWORD time ) DECLSPEC_HIDDEN;
+ extern HWND set_progman_window( HWND hwnd ) DECLSPEC_HIDDEN;
+ extern HWND set_taskman_window( HWND hwnd ) DECLSPEC_HIDDEN;
  extern void toggle_caret( HWND hwnd ) DECLSPEC_HIDDEN;
- extern void update_mouse_tracking_info( HWND hwnd ) DECLSPEC_HIDDEN;
- 
 diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/window.c
 +++ b/dlls/win32u/window.c
-@@ -3442,7 +3442,7 @@ BOOL set_window_pos( WINDOWPOS *winpos, int parent_x, int parent_y )
+@@ -3436,7 +3436,7 @@ BOOL set_window_pos( WINDOWPOS *winpos, int parent_x, int parent_y )
          if ((get_window_long( winpos->hwnd, GWL_STYLE ) & (WS_CHILD | WS_POPUP)) == WS_CHILD)
              send_message( winpos->hwnd, WM_CHILDACTIVATE, 0, 0 );
-         else if (user_callbacks)
+         else
 -            set_foreground_window( winpos->hwnd, FALSE );
 +            set_foreground_window( winpos->hwnd, FALSE, NtGetTickCount() );
      }
  
      if(!(orig_flags & SWP_DEFERERASE))
-@@ -3782,7 +3782,7 @@ static void activate_other_window( HWND hwnd )
+@@ -3776,7 +3776,7 @@ static void activate_other_window( HWND hwnd )
      TRACE( "win = %p fg = %p\n", hwnd_to, fg );
      if (!fg || hwnd == fg)
      {
@@ -87,20 +101,20 @@ index 11111111111..11111111111 100644
      }
      if (NtUserSetActiveWindow( hwnd_to )) NtUserSetActiveWindow( 0 );
  }
-@@ -5432,7 +5432,7 @@ ULONG_PTR WINAPI NtUserCallHwndParam( HWND hwnd, DWORD_PTR param, DWORD code )
-         return screen_to_client( hwnd, (POINT *)param );
+@@ -5429,7 +5429,7 @@ ULONG_PTR WINAPI NtUserCallHwnd( HWND hwnd, DWORD code )
+         return is_window_visible( hwnd );
  
-     case NtUserCallHwndParam_SetForegroundWindow:
--        return set_foreground_window( hwnd, param );
-+        return set_foreground_window( hwnd, param, NtGetTickCount() );
+     case NtUserCallHwnd_SetForegroundWindow:
+-        return set_foreground_window( hwnd, FALSE );
++        return set_foreground_window( hwnd, FALSE, NtGetTickCount() );
  
-     case NtUserCallHwndParam_SetWindowPixelFormat:
-         return set_window_pixel_format( hwnd, param );
+     case NtUserCallHwnd_SetProgmanWindow:
+         return HandleToUlong( set_progman_window( hwnd ));
 diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -2840,6 +2840,7 @@ enum coords_relative
+@@ -2888,6 +2888,7 @@ enum coords_relative
  /* Set the system foreground window */
  @REQ(set_foreground_window)
      user_handle_t  handle;        /* handle to the foreground window */
@@ -112,7 +126,7 @@ diff --git a/server/queue.c b/server/queue.c
 index 11111111111..11111111111 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -3470,20 +3470,26 @@ DECL_HANDLER(set_foreground_window)
+@@ -3447,20 +3447,26 @@ DECL_HANDLER(set_foreground_window)
      struct thread *thread = NULL;
      struct desktop *desktop;
      struct msg_queue *queue = get_current_queue();
@@ -166,5 +180,5 @@ index 11111111111..11111111111 100644
              desktop->cursor_clip_msg = 0;
              desktop->cursor_win = 0;
 -- 
-2.36.1
+2.39.0
 

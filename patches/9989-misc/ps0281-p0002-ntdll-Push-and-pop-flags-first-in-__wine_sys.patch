@@ -6,42 +6,51 @@ Subject: [PATCH 2/4] ntdll: Push and pop flags first in
 
 So that we don't unnecessarily overwrite the return address.
 ---
- dlls/ntdll/unix/signal_i386.c   | 2 +-
+ dlls/ntdll/unix/signal_i386.c   | 4 ++--
  dlls/ntdll/unix/signal_x86_64.c | 2 +-
- 2 files changed, 2 insertions(+), 2 deletions(-)
+ 2 files changed, 3 insertions(+), 3 deletions(-)
 
 diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/signal_i386.c
 +++ b/dlls/ntdll/unix/signal_i386.c
-@@ -2586,11 +2586,11 @@ __ASM_GLOBAL_FUNC( signal_exit_thread,
+@@ -2633,8 +2633,6 @@ __ASM_GLOBAL_FUNC( signal_exit_thread,
  __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                     "movl %fs:0x1f8,%ecx\n\t"       /* x86_thread_data()->syscall_frame */
                     "movw $0,0x02(%ecx)\n\t"        /* frame->restore_flags */
 -                   "popl 0x08(%ecx)\n\t"           /* frame->eip */
+-                   __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t")
+                    __ASM_CFI_REG_IS_AT1(eip, ecx, 0x08)
                     "pushfl\n\t"
-                    "pushl $0x202\n\t"
-                    "popfl\n\t"
-                    "popl 0x04(%ecx)\n"             /* frame->eflags */
+                    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t")
+@@ -2644,6 +2642,8 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t")
+                    "popl 0x04(%ecx)\n\t"           /* frame->eflags */
+                    __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t")
 +                   "popl 0x08(%ecx)\n\t"           /* frame->eip */
++                   __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t")
+                    ".globl " __ASM_NAME("__wine_syscall_dispatcher_prolog_end") "\n"
                     __ASM_NAME("__wine_syscall_dispatcher_prolog_end") ":\n\t"
                     "movl %esp,0x0c(%ecx)\n\t"      /* frame->esp */
-                    "movw %cs,0x10(%ecx)\n\t"
 diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
-@@ -3472,9 +3472,9 @@ __ASM_GLOBAL_FUNC( signal_exit_thread,
- __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
-                    "movq %gs:0x30,%rcx\n\t"
-                    "movq 0x328(%rcx),%rcx\n\t"     /* amd64_thread_data()->syscall_frame */
+@@ -2904,13 +2904,13 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+ #else
+                    "movq %gs:0x328,%rcx\n\t"       /* amd64_thread_data()->syscall_frame */
+ #endif
 -                   "popq 0x70(%rcx)\n\t"           /* frame->rip */
+                    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
+                    __ASM_CFI_REG_IS_AT2(rip, rcx, 0xf0,0x00)
                     "pushfq\n\t"
+                    __ASM_CFI(".cfi_adjust_cfa_offset 8\n\t")
                     "popq 0x80(%rcx)\n\t"
+                    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
 +                   "popq 0x70(%rcx)\n\t"           /* frame->rip */
                     "movl $0,0x94(%rcx)\n\t"        /* frame->restore_flags */
+                    ".globl " __ASM_NAME("__wine_syscall_dispatcher_prolog_end") "\n"
                     __ASM_NAME("__wine_syscall_dispatcher_prolog_end") ":\n\t"
-                    "movq %rax,0x00(%rcx)\n\t"
 -- 
-2.36.1
+2.39.0
 

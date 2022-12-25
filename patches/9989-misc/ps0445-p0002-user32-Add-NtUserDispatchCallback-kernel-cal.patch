@@ -1,0 +1,98 @@
+From a3c46c14273c688aea63f13065a56f4c84e3234c Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Tue, 22 Nov 2022 18:18:20 +0100
+Subject: [PATCH 02/11] user32: Add NtUserDispatchCallback kernel callback.
+
+Signed-off-by: Torge Matthies <tmatthies@codeweavers.com>
+---
+ dlls/user32/user_main.c | 8 ++++++++
+ dlls/wow64win/user.c    | 6 ++++++
+ include/ntuser.h        | 8 ++++++++
+ 3 files changed, 22 insertions(+)
+
+diff --git a/dlls/user32/user_main.c b/dlls/user32/user_main.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/user_main.c
++++ b/dlls/user32/user_main.c
+@@ -18,6 +18,8 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
+ #include "user_private.h"
+ #include "controls.h"
+ #include "imm.h"
+@@ -199,6 +201,11 @@ static NTSTATUS WINAPI User32UnpackDDEMessage( const struct unpack_dde_message_p
+     return TRUE;
+ }
+ 
++static NTSTATUS WINAPI User32DispatchCallback( const struct user32_callback_params *params, ULONG size )
++{
++    return ((user32_callback_func)(ULONG_PTR)params->func)( params, size );
++}
++
+ static void WINAPI User32CallFreeIcon( ULONG *param, ULONG size )
+ {
+     if (wow_handlers.call_free_icon)
+@@ -231,6 +238,7 @@ static const void *kernel_callback_table[NtUserCallCount] =
+     User32PostDDEMessage,
+     User32RenderSsynthesizedFormat,
+     User32UnpackDDEMessage,
++    User32DispatchCallback,
+     User32CallFreeIcon,
+     User32ThunkLock,
+ };
+diff --git a/dlls/wow64win/user.c b/dlls/wow64win/user.c
+index 11111111111..11111111111 100644
+--- a/dlls/wow64win/user.c
++++ b/dlls/wow64win/user.c
+@@ -1008,6 +1008,11 @@ static NTSTATUS WINAPI wow64_NtUserUnpackDDEMessage( void *arg, ULONG size )
+     return TRUE;
+ }
+ 
++static NTSTATUS WINAPI wow64_NtUserDispatchCallback( void *arg, ULONG size )
++{
++    return dispatch_callback( NtUserDispatchCallback, arg, size );
++}
++
+ static NTSTATUS WINAPI wow64_NtUserCallFreeIcon( void *arg, ULONG size )
+ {
+     return dispatch_callback( NtUserCallFreeIcon, arg, size );
+@@ -1108,6 +1113,7 @@ user_callback user_callbacks[] =
+     wow64_NtUserPostDDEMessage,
+     wow64_NtUserRenderSynthesizedFormat,
+     wow64_NtUserUnpackDDEMessage,
++    wow64_NtUserDispatchCallback,
+     /* win16 hooks */
+     wow64_NtUserCallFreeIcon,
+     wow64_NtUserThunkLock,
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 11111111111..11111111111 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -47,6 +47,7 @@ enum
+     NtUserPostDDEMessage,
+     NtUserRenderSynthesizedFormat,
+     NtUserUnpackDDEMessage,
++    NtUserDispatchCallback,
+     /* win16 hooks */
+     NtUserCallFreeIcon,
+     NtUserThunkLock,
+@@ -270,6 +271,13 @@ struct unpack_dde_message_params
+     char data[1];
+ };
+ 
++typedef NTSTATUS (WINAPI *user32_callback_func)( void *args, ULONG len );
++
++struct user32_callback_params
++{
++    UINT64 func;
++};
++
+ /* process DPI awareness contexts */
+ #define NTUSER_DPI_UNAWARE                0x00006010
+ #define NTUSER_DPI_SYSTEM_AWARE           0x00006011
+-- 
+2.39.0
+

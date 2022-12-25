@@ -1,0 +1,94 @@
+From bdafce376cd69e42a106c56a08d1decf6889b173 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Wed, 7 Sep 2022 16:10:53 +0200
+Subject: [PATCH 3/5] ntdll: Add MADV_DONTNEED-based fast path for
+ NtFlushProcessWriteBuffers.
+
+Credits to Avi Kivity (scylladb) and Aliaksei Kandratsenka (gperftools) for this trick, see [1].
+
+[1] https://github.com/scylladb/seastar/commit/77a58e4dc020233f66fccb8d9e8f7a8b7f9210c4
+---
+ dlls/ntdll/unix/virtual.c | 54 ++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 50 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -227,6 +227,11 @@ struct range_entry
+ static struct range_entry *free_ranges;
+ static struct range_entry *free_ranges_end;
+ 
++#if defined(__linux__) && (defined(__i386__) || defined(__x86_64__))
++static void *dontneed_page;
++static pthread_mutex_t dontneed_page_mutex = PTHREAD_MUTEX_INITIALIZER;
++#endif
++
+ 
+ static inline BOOL is_beyond_limit( const void *addr, size_t size, const void *limit )
+ {
+@@ -5831,10 +5836,40 @@ NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T
+ }
+ 
+ 
+-/**********************************************************************
+- *           NtFlushProcessWriteBuffers  (NTDLL.@)
+- */
+-void WINAPI NtFlushProcessWriteBuffers(void)
++#if defined(__linux__) && (defined(__i386__) || defined(__x86_64__))
++static int try_madvise( void )
++{
++    int ret = 0;
++    char *mem;
++
++    pthread_mutex_lock(&dontneed_page_mutex);
++    /* Credits to Avi Kivity (scylladb) and Aliaksei Kandratsenka (gperftools) for this trick,
++     * see https://github.com/scylladb/seastar/commit/77a58e4dc020233f66fccb8d9e8f7a8b7f9210c4 */
++    mem = dontneed_page;
++    if (!mem)
++    {
++        mem = anon_mmap_alloc( page_size, PROT_READ | PROT_WRITE );
++        if (mem == MAP_FAILED)
++            goto failed;
++        if (mlock( mem, page_size ))
++        {
++            munmap( mem, page_size );
++            goto failed;
++        }
++        dontneed_page = mem;
++    }
++    *mem = 3;
++    ret = !madvise( mem, page_size, MADV_DONTNEED );
++failed:
++    pthread_mutex_unlock(&dontneed_page_mutex);
++    return ret;
++}
++#else
++static int try_madvise( void ) { return 0; }
++#endif
++
++
++static void do_apc_memorybarrier( void )
+ {
+     static pthread_mutex_t apc_memorybarrier_mutex = PTHREAD_MUTEX_INITIALIZER;
+     NTSTATUS status;
+@@ -5864,6 +5899,17 @@ void WINAPI NtFlushProcessWriteBuffers(void)
+ }
+ 
+ 
++/**********************************************************************
++ *           NtFlushProcessWriteBuffers  (NTDLL.@)
++ */
++void WINAPI NtFlushProcessWriteBuffers(void)
++{
++    if (try_madvise())
++        return;
++    do_apc_memorybarrier();
++}
++
++
+ /**********************************************************************
+  *           NtCreatePagingFile  (NTDLL.@)
+  */
+
+

@@ -9,16 +9,16 @@ to trigger low-level hooks callbacks when clipping cursor. This is for
 instance used in our dinput implementation.
 ---
  dlls/winex11.drv/event.c       | 10 +++-
- dlls/winex11.drv/mouse.c       | 97 +++++++++++++++++++++++++++++++---
+ dlls/winex11.drv/mouse.c       | 96 ++++++++++++++++++++++++++++++++--
  dlls/winex11.drv/x11drv.h      |  1 +
  dlls/winex11.drv/x11drv_main.c |  2 +
- 4 files changed, 102 insertions(+), 8 deletions(-)
+ 4 files changed, 102 insertions(+), 7 deletions(-)
 
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -334,6 +334,10 @@ static enum event_merge_action merge_raw_motion_events( XIRawEvent *prev, XIRawE
+@@ -328,6 +328,10 @@ static enum event_merge_action merge_raw_motion_events( XIRawEvent *prev, XIRawE
   */
  static enum event_merge_action merge_events( XEvent *prev, XEvent *next )
  {
@@ -29,7 +29,7 @@ index 11111111111..11111111111 100644
      switch (prev->type)
      {
      case ConfigureNotify:
-@@ -365,19 +369,21 @@ static enum event_merge_action merge_events( XEvent *prev, XEvent *next )
+@@ -359,19 +363,21 @@ static enum event_merge_action merge_events( XEvent *prev, XEvent *next )
          case GenericEvent:
              if (next->xcookie.extension != xinput2_opcode) break;
              if (next->xcookie.evtype != XI_RawMotion) break;
@@ -57,7 +57,7 @@ diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
-@@ -395,6 +395,11 @@ void X11DRV_XInput2_Enable( Display *display, Window window, long event_mask )
+@@ -393,6 +393,11 @@ void X11DRV_XInput2_Enable( Display *display, Window window, long event_mask )
      mask.deviceid = XIAllMasterDevices;
      memset( mask_bits, 0, sizeof(mask_bits) );
  
@@ -69,15 +69,15 @@ index 11111111111..11111111111 100644
      if (event_mask & PointerMotionMask)
      {
          event_mask &= ~PointerMotionMask;
-@@ -702,7 +707,6 @@ static void map_event_coords( HWND hwnd, Window window, Window event_root, int x
- static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPUT *input )
- {
-     struct x11drv_win_data *data;
--    RAWINPUT rawinput;
- 
-     input->type = INPUT_MOUSE;
- 
-@@ -719,7 +723,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
+#@@ -701,7 +706,6 @@ static void map_event_coords( HWND hwnd, Window window, Window event_root, int x
+# static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPUT *input )
+# {
+#     struct x11drv_win_data *data;
+#-    RAWINPUT rawinput;
+# 
+#     input->type = INPUT_MOUSE;
+# 
+@@ -719,7 +724,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
              sync_window_cursor( window );
              last_cursor_change = input->u.mi.time;
          }
@@ -86,7 +86,7 @@ index 11111111111..11111111111 100644
          return;
      }
  
-@@ -759,7 +763,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
+@@ -760,7 +765,7 @@ static void send_mouse_input( HWND hwnd, Window window, unsigned int state, INPU
          SERVER_END_REQ;
      }
  
@@ -95,7 +95,7 @@ index 11111111111..11111111111 100644
  }
  
  #ifdef SONAME_LIBXCURSOR
-@@ -1733,7 +1737,6 @@ void move_resize_window( HWND hwnd, int dir )
+@@ -1743,7 +1748,6 @@ void move_resize_window( HWND hwnd, int dir )
      {
          MSG msg;
          INPUT input;
@@ -103,7 +103,7 @@ index 11111111111..11111111111 100644
          int x, y, rootX, rootY;
  
          if (!XQueryPointer( display, root_window, &root, &child, &rootX, &rootY, &x, &y, &xstate )) break;
-@@ -1749,7 +1752,7 @@ void move_resize_window( HWND hwnd, int dir )
+@@ -1759,7 +1763,7 @@ void move_resize_window( HWND hwnd, int dir )
              input.u.mi.dwFlags     = button_up_flags[button - 1] | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
              input.u.mi.time        = NtGetTickCount();
              input.u.mi.dwExtraInfo = 0;
@@ -112,7 +112,7 @@ index 11111111111..11111111111 100644
          }
  
          while (NtUserPeekMessage( &msg, 0, 0, 0, PM_REMOVE ))
-@@ -1959,6 +1962,7 @@ static BOOL map_raw_event_coords( XIRawEvent *event, INPUT *input )
+@@ -1971,6 +1975,7 @@ static BOOL map_raw_event_coords( XIRawEvent *event, INPUT *input )
   */
  static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
  {
@@ -120,7 +120,7 @@ index 11111111111..11111111111 100644
      XIRawEvent *event = xev->data;
      RAWINPUT rawinput;
      INPUT input;
-@@ -1978,7 +1982,84 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+@@ -1990,7 +1995,84 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
      input.u.mi.dy          = 0;
      if (!map_raw_event_coords( event, &input )) return FALSE;
  
@@ -206,7 +206,7 @@ index 11111111111..11111111111 100644
      return TRUE;
  }
  
-@@ -2163,6 +2244,10 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+@@ -2175,6 +2257,10 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
      case XI_RawMotion:
          ret = X11DRV_RawMotion( event );
          break;
@@ -221,7 +221,7 @@ diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -378,6 +378,7 @@ struct x11drv_thread_data
+@@ -391,6 +391,7 @@ struct x11drv_thread_data
      XIValuatorClassInfo x_valuator;
      XIValuatorClassInfo y_valuator;
      int      xi2_core_pointer;     /* XInput2 core pointer id */
@@ -233,7 +233,7 @@ diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv_main.c
 +++ b/dlls/winex11.drv/x11drv_main.c
-@@ -985,6 +985,8 @@ struct x11drv_thread_data *x11drv_init_thread_data(void)
+@@ -974,6 +974,8 @@ struct x11drv_thread_data *x11drv_init_thread_data(void)
      if (use_xim) X11DRV_SetupXIM();
  
      X11DRV_XInput2_Init();
@@ -243,5 +243,5 @@ index 11111111111..11111111111 100644
      return data;
  }
 -- 
-2.36.1
+2.39.0
 

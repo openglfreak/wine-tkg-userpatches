@@ -1,0 +1,115 @@
+From a39c77f06d4e9862ff8bf7d1db47d3e8f2680782 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Thu, 17 Nov 2022 09:20:37 +0100
+Subject: [PATCH 2/6] httpapi: Implement HttpSendResponseEntityBody.
+
+Signed-off-by: Torge Matthies <tmatthies@codeweavers.com>
+---
+ dlls/httpapi/httpapi.spec   |  2 +-
+ dlls/httpapi/httpapi_main.c | 63 +++++++++++++++++++++++++++++++++++--
+ 2 files changed, 62 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/httpapi/httpapi.spec b/dlls/httpapi/httpapi.spec
+index 11111111111..11111111111 100644
+--- a/dlls/httpapi/httpapi.spec
++++ b/dlls/httpapi/httpapi.spec
+@@ -25,7 +25,7 @@
+ @ stdcall HttpRemoveUrl(ptr wstr)
+ @ stdcall HttpRemoveUrlFromUrlGroup(int64 wstr long)
+ @ stdcall HttpSendHttpResponse(ptr int64 long ptr ptr ptr ptr long ptr ptr)
+-@ stub HttpSendResponseEntityBody
++@ stdcall HttpSendResponseEntityBody(ptr int64 long long ptr ptr ptr long ptr ptr)
+ @ stdcall HttpSetRequestQueueProperty(ptr long ptr long long ptr)
+ @ stdcall HttpSetServerSessionProperty(int64 long ptr long)
+ @ stdcall HttpSetServiceConfiguration(ptr long ptr long ptr)
+diff --git a/dlls/httpapi/httpapi_main.c b/dlls/httpapi/httpapi_main.c
+index 11111111111..11111111111 100644
+--- a/dlls/httpapi/httpapi_main.c
++++ b/dlls/httpapi/httpapi_main.c
+@@ -430,7 +430,7 @@ ULONG WINAPI HttpSendHttpResponse(HANDLE queue, HTTP_REQUEST_ID id, ULONG flags,
+             queue, wine_dbgstr_longlong(id), flags, response, cache_policy,
+             ret_size, reserved1, reserved2, ovl, log_data);
+ 
+-    if (flags)
++    if (flags & ~(HTTP_SEND_RESPONSE_FLAG_MORE_DATA))
+         FIXME("Unhandled flags %#lx.\n", flags);
+     if (response->s.Flags)
+         FIXME("Unhandled response flags %#lx.\n", response->s.Flags);
+@@ -473,7 +473,7 @@ ULONG WINAPI HttpSendHttpResponse(HANDLE queue, HTTP_REQUEST_ID id, ULONG flags,
+         return ERROR_OUTOFMEMORY;
+     buffer->id = id;
+     buffer->is_body = FALSE;
+-    buffer->more_data = FALSE;
++    buffer->more_data = !!(flags & HTTP_SEND_RESPONSE_FLAG_MORE_DATA);
+     buffer->len = len;
+     sprintf(buffer->buffer, "HTTP/1.1 %u %.*s\r\n", response->s.StatusCode,
+             response->s.ReasonLength, response->s.pReason);
+@@ -517,6 +517,65 @@ ULONG WINAPI HttpSendHttpResponse(HANDLE queue, HTTP_REQUEST_ID id, ULONG flags,
+     return ret;
+ }
+ 
++/***********************************************************************
++ *        HttpSendHttpResponse     (HTTPAPI.@)
++ */
++ULONG WINAPI HttpSendResponseEntityBody(HANDLE queue, HTTP_REQUEST_ID id,
++        ULONG flags, USHORT count, HTTP_DATA_CHUNK *chunks, ULONG *ret_size,
++        void *reserved1, ULONG reserved2, OVERLAPPED *ovl, HTTP_LOG_DATA *log_data)
++{
++    struct http_response *buffer;
++    OVERLAPPED dummy_ovl = {};
++    ULONG ret = ERROR_SUCCESS;
++    int len;
++    char *p;
++    USHORT i;
++
++    TRACE("queue %p, id %s, flags %#lx, count %lu, chunks %p, ret_size %p, "
++            "reserved1 %p, reserved2 %#lx, ovl %p, log_data %p.\n",
++            queue, wine_dbgstr_longlong(id), flags, count, chunks, ret_size,
++            reserved1, reserved2, ovl, log_data);
++
++    if (flags & ~(HTTP_SEND_RESPONSE_FLAG_MORE_DATA))
++        FIXME("Unhandled flags %#lx.\n", flags);
++    if (log_data)
++        WARN("Ignoring log_data.\n");
++
++    len = 0;
++    for (i = 0; i < count; ++i)
++    {
++        if (chunks[i].DataChunkType != HttpDataChunkFromMemory)
++        {
++            FIXME("Unhandled data chunk type %u.\n", chunks[i].DataChunkType);
++            return ERROR_CALL_NOT_IMPLEMENTED;
++        }
++        len += chunks[i].FromMemory.BufferLength;
++    }
++
++    if (!(buffer = malloc(offsetof(struct http_response, buffer[len]))))
++        return ERROR_OUTOFMEMORY;
++    buffer->id = id;
++    buffer->is_body = TRUE;
++    buffer->more_data = !!(flags & HTTP_SEND_RESPONSE_FLAG_MORE_DATA);
++    buffer->len = len;
++    p = buffer->buffer;
++    for (i = 0; i < count; ++i)
++    {
++        memcpy(p, chunks[i].FromMemory.pBuffer, chunks[i].FromMemory.BufferLength);
++        p += chunks[i].FromMemory.BufferLength;
++    }
++
++    if (!ovl)
++        ovl = &dummy_ovl;
++
++    if (!DeviceIoControl(queue, IOCTL_HTTP_SEND_RESPONSE, buffer,
++            offsetof(struct http_response, buffer[len]), NULL, 0, NULL, ovl))
++        ret = GetLastError();
++
++    free(buffer);
++    return ret;
++}
++
+ struct url_group
+ {
+     struct list entry, session_entry;
+-- 
+2.39.0
+

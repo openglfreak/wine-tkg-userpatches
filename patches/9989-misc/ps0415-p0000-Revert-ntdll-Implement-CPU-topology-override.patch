@@ -24,15 +24,15 @@ diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/server.c
 +++ b/dlls/ntdll/unix/server.c
-@@ -1645,7 +1645,6 @@ size_t server_init_process(void)
+@@ -1682,7 +1682,6 @@ size_t server_init_process(void)
  void server_init_process_done(void)
  {
      void *entry, *teb;
 -    struct cpu_topology_override *cpu_override = get_cpu_topology_override();
-     NTSTATUS status;
+     unsigned int status;
      int suspend;
      FILE_FS_DEVICE_INFORMATION info;
-@@ -1671,8 +1670,6 @@ void server_init_process_done(void)
+@@ -1708,8 +1707,6 @@ void server_init_process_done(void)
      /* Signal the parent process to continue */
      SERVER_START_REQ( init_process_done )
      {
@@ -52,8 +52,8 @@ index 11111111111..11111111111 100644
 -#include <assert.h>
  #include <sys/time.h>
  #include <time.h>
- #ifdef HAVE_SYS_PARAM_H
-@@ -235,12 +234,6 @@ static SYSTEM_LOGICAL_PROCESSOR_INFORMATION *logical_proc_info;
+ #include <dirent.h>
+@@ -234,12 +233,6 @@ static SYSTEM_LOGICAL_PROCESSOR_INFORMATION *logical_proc_info;
  static unsigned int logical_proc_info_len, logical_proc_info_alloc_len;
  static SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *logical_proc_info_ex;
  static unsigned int logical_proc_info_ex_size, logical_proc_info_ex_alloc_size;
@@ -64,9 +64,9 @@ index 11111111111..11111111111 100644
 -}
 -cpu_override;
  
- static int get_possible_cpus(void)
- {
-@@ -576,88 +569,6 @@ static void get_cpuinfo( SYSTEM_CPU_INFORMATION *info )
+ static pthread_mutex_t timezone_mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
+@@ -577,88 +570,6 @@ static void get_cpuinfo( SYSTEM_CPU_INFORMATION *info )
  
  #endif /* End architecture specific feature detection for CPUs */
  
@@ -155,7 +155,7 @@ index 11111111111..11111111111 100644
  #ifdef linux
  
  static BOOL grow_logical_proc_buf(void)
-@@ -945,8 +856,7 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -952,8 +863,7 @@ static NTSTATUS create_logical_proc_info(void)
      static const char core_info[] = "/sys/devices/system/cpu/cpu%u/topology/%s";
      static const char cache_info[] = "/sys/devices/system/cpu/cpu%u/cache/index%u/%s";
      static const char numa_info[] = "/sys/devices/system/node/node%u/cpumap";
@@ -163,9 +163,9 @@ index 11111111111..11111111111 100644
 -    BOOL fake_logical_cpus_as_cores = env_fake_logical_cores && atoi(env_fake_logical_cores);
 +
      FILE *fcpu_list, *fnuma_list, *f;
-     DWORD beg, end, i, j, r, num_cpus = 0, max_cpus = 0;
+     unsigned int beg, end, i, j, r, num_cpus = 0, max_cpus = 0;
      char op, name[MAX_PATH];
-@@ -975,12 +885,6 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -982,12 +892,6 @@ static NTSTATUS create_logical_proc_info(void)
          if (op == '-') fscanf(fcpu_list, "%u%c ", &end, &op);
          else end = beg;
  
@@ -177,8 +177,8 @@ index 11111111111..11111111111 100644
 -
          for(i = beg; i <= end; i++)
          {
-             DWORD phys_core = 0;
-@@ -992,9 +896,7 @@ static NTSTATUS create_logical_proc_info(void)
+             unsigned int phys_core = 0;
+@@ -999,9 +903,7 @@ static NTSTATUS create_logical_proc_info(void)
                  continue;
              }
  
@@ -189,7 +189,7 @@ index 11111111111..11111111111 100644
              f = fopen(name, "r");
              if (f)
              {
-@@ -1021,34 +923,19 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1028,34 +930,19 @@ static NTSTATUS create_logical_proc_info(void)
  
              /* Mask of logical threads sharing same physical core in kernel core numbering. */
              sprintf(name, core_info, i, "thread_siblings");
@@ -231,7 +231,7 @@ index 11111111111..11111111111 100644
  
              if (!logical_proc_info_add_by_id( RelationProcessorCore, phys_core, thread_mask ))
              {
-@@ -1056,40 +943,36 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1063,40 +950,36 @@ static NTSTATUS create_logical_proc_info(void)
                  return STATUS_NO_MEMORY;
              }
  
@@ -277,7 +277,7 @@ index 11111111111..11111111111 100644
                  f = fopen(name, "r");
                  if(!f) continue;
                  fscanf(f, "%u%c", &r, &op);
-@@ -1098,7 +981,7 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1105,7 +988,7 @@ static NTSTATUS create_logical_proc_info(void)
                      WARN("unknown cache size %u%c\n", r, op);
                  cache.Size = (op=='K' ? r*1024 : r);
  
@@ -286,7 +286,7 @@ index 11111111111..11111111111 100644
                  f = fopen(name, "r");
                  if(!f) continue;
                  fscanf(f, "%s", name);
-@@ -1110,19 +993,6 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1117,19 +1000,6 @@ static NTSTATUS create_logical_proc_info(void)
                  else
                      cache.Type = CacheUnified;
  
@@ -306,7 +306,7 @@ index 11111111111..11111111111 100644
                  if (!logical_proc_info_add_cache( mask, &cache ))
                  {
                      fclose(fcpu_list);
-@@ -1130,9 +1000,6 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1137,9 +1007,6 @@ static NTSTATUS create_logical_proc_info(void)
                  }
              }
          }
@@ -316,7 +316,7 @@ index 11111111111..11111111111 100644
      }
      fclose(fcpu_list);
  
-@@ -1352,11 +1219,7 @@ void init_cpu_info(void)
+@@ -1359,11 +1226,7 @@ void init_cpu_info(void)
      num = 1;
      FIXME("Detecting the number of processors is not supported.\n");
  #endif
@@ -328,12 +328,12 @@ index 11111111111..11111111111 100644
 +    peb->NumberOfProcessors = num;
      get_cpuinfo( &cpu_info );
      TRACE( "<- CPU arch %d, level %d, rev %d, features 0x%x\n",
-            cpu_info.ProcessorArchitecture, cpu_info.ProcessorLevel, cpu_info.ProcessorRevision,
+            (int)cpu_info.ProcessorArchitecture, (int)cpu_info.ProcessorLevel,
 diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/thread.c
 +++ b/dlls/ntdll/unix/thread.c
-@@ -2325,20 +2325,7 @@ ULONG WINAPI NtGetCurrentProcessorNumber(void)
+@@ -2470,20 +2470,7 @@ ULONG WINAPI NtGetCurrentProcessorNumber(void)
  
  #if defined(__linux__) && defined(__NR_getcpu)
      int res = syscall(__NR_getcpu, &processor, NULL, NULL);
@@ -359,13 +359,13 @@ diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/unix_private.h
 +++ b/dlls/ntdll/unix/unix_private.h
-@@ -289,7 +289,6 @@ extern NTSTATUS open_unix_file( HANDLE *handle, const char *unix_name, ACCESS_MA
+@@ -296,7 +296,6 @@ extern NTSTATUS open_unix_file( HANDLE *handle, const char *unix_name, ACCESS_MA
  extern NTSTATUS get_device_info( int fd, struct _FILE_FS_DEVICE_INFORMATION *info ) DECLSPEC_HIDDEN;
  extern void init_files(void) DECLSPEC_HIDDEN;
  extern void init_cpu_info(void) DECLSPEC_HIDDEN;
 -extern struct cpu_topology_override *get_cpu_topology_override(void) DECLSPEC_HIDDEN;
  extern void add_completion( HANDLE handle, ULONG_PTR value, NTSTATUS status, ULONG info, BOOL async ) DECLSPEC_HIDDEN;
- extern void set_async_direct_result( HANDLE *optional_handle, NTSTATUS status, ULONG_PTR information, BOOL mark_pending );
+ extern void set_async_direct_result( HANDLE *async_handle, NTSTATUS status, ULONG_PTR information, BOOL mark_pending ) DECLSPEC_HIDDEN;
  
 diff --git a/server/process.c b/server/process.c
 index 11111111111..11111111111 100644
@@ -379,7 +379,7 @@ index 11111111111..11111111111 100644
  
  static const struct object_ops process_ops =
  {
-@@ -715,7 +714,6 @@ struct process *create_process( int fd, struct process *parent, unsigned int fla
+@@ -717,7 +716,6 @@ struct process *create_process( int fd, struct process *parent, unsigned int fla
      process->fast_sync       = NULL;
      process->esync_fd        = -1;
      process->fsync_idx       = 0;
@@ -387,7 +387,7 @@ index 11111111111..11111111111 100644
      list_init( &process->kernel_object );
      list_init( &process->thread_list );
      list_init( &process->locks );
-@@ -1485,8 +1483,6 @@ DECL_HANDLER(get_startup_info)
+@@ -1479,8 +1477,6 @@ DECL_HANDLER(get_startup_info)
  DECL_HANDLER(init_process_done)
  {
      struct process *process = current->process;
@@ -396,7 +396,7 @@ index 11111111111..11111111111 100644
      struct memory_view *view;
      client_ptr_t base;
      const pe_image_info_t *image_info;
-@@ -1519,9 +1515,6 @@ DECL_HANDLER(init_process_done)
+@@ -1513,9 +1509,6 @@ DECL_HANDLER(init_process_done)
      if (process->debug_obj) set_process_debug_flag( process, 1 );
      reply->entry = current->entry_point;
      reply->suspend = (current->suspend || process->suspend);
@@ -410,7 +410,7 @@ diff --git a/server/process.h b/server/process.h
 index 11111111111..11111111111 100644
 --- a/server/process.h
 +++ b/server/process.h
-@@ -93,7 +93,6 @@ struct process
+@@ -88,7 +88,6 @@ struct process
      struct fast_sync    *fast_sync;       /* fast synchronization object */
      int                  esync_fd;        /* esync file descriptor (signaled on exit) */
      unsigned int         fsync_idx;
@@ -422,7 +422,7 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -847,12 +847,6 @@ typedef struct
+@@ -876,12 +876,6 @@ typedef struct
      lparam_t info;
  } cursor_pos_t;
  
@@ -439,7 +439,7 @@ diff --git a/server/thread.c b/server/thread.c
 index 11111111111..11111111111 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -797,19 +797,8 @@ int set_thread_affinity( struct thread *thread, affinity_t affinity )
+@@ -858,19 +858,8 @@ int set_thread_affinity( struct thread *thread, affinity_t affinity )
  
          CPU_ZERO( &set );
          for (i = 0, mask = 1; mask; i++, mask <<= 1)
@@ -465,7 +465,7 @@ diff --git a/server/trace.c b/server/trace.c
 index 11111111111..11111111111 100644
 --- a/server/trace.c
 +++ b/server/trace.c
-@@ -1337,24 +1337,6 @@ static void dump_varargs_handle_infos( const char *prefix, data_size_t size )
+@@ -1344,24 +1344,6 @@ static void dump_varargs_handle_infos( const char *prefix, data_size_t size )
      fprintf( stderr, "%s", prefix );
  }
  

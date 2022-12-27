@@ -1,0 +1,167 @@
+From a1ca5ad8c01f07a216780fbb0af511d00009cbd8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sat, 21 May 2022 13:00:55 +0200
+Subject: [PATCH 1/6] ntdll: Implement HeapCompatibilityInformation for
+ Rtl(Query|Set)HeapInformation.
+
+---
+ dlls/kernel32/tests/heap.c | 10 -------
+ dlls/ntdll/heap.c          | 53 +++++++++++++++++++++++++++++++-------
+ 2 files changed, 44 insertions(+), 19 deletions(-)
+
+diff --git a/dlls/kernel32/tests/heap.c b/dlls/kernel32/tests/heap.c
+index 11111111111..11111111111 100644
+--- a/dlls/kernel32/tests/heap.c
++++ b/dlls/kernel32/tests/heap.c
+@@ -827,11 +827,8 @@ static void test_HeapCreate(void)
+     size = 0;
+     SetLastError( 0xdeadbeef );
+     ret = pHeapQueryInformation( 0, HeapCompatibilityInformation, &compat_info, sizeof(compat_info), &size );
+-    todo_wine
+     ok( !ret, "HeapQueryInformation succeeded\n" );
+-    todo_wine
+     ok( GetLastError() == ERROR_NOACCESS, "got error %lu\n", GetLastError() );
+-    todo_wine
+     ok( size == 0, "got size %Iu\n", size );
+ 
+     size = 0;
+@@ -871,7 +868,6 @@ static void test_HeapCreate(void)
+     ok( ret, "HeapSetInformation failed, error %lu\n", GetLastError() );
+     ret = pHeapQueryInformation( heap, HeapCompatibilityInformation, &compat_info, sizeof(compat_info), &size );
+     ok( ret, "HeapQueryInformation failed, error %lu\n", GetLastError() );
+-    todo_wine
+     ok( compat_info == 2, "got HeapCompatibilityInformation %lu\n", compat_info );
+ 
+     /* cannot be undone */
+@@ -879,20 +875,15 @@ static void test_HeapCreate(void)
+     compat_info = 0;
+     SetLastError( 0xdeadbeef );
+     ret = pHeapSetInformation( heap, HeapCompatibilityInformation, &compat_info, sizeof(compat_info) );
+-    todo_wine
+     ok( !ret, "HeapSetInformation succeeded\n" );
+-    todo_wine
+     ok( GetLastError() == ERROR_GEN_FAILURE, "got error %lu\n", GetLastError() );
+     compat_info = 1;
+     SetLastError( 0xdeadbeef );
+     ret = pHeapSetInformation( heap, HeapCompatibilityInformation, &compat_info, sizeof(compat_info) );
+-    todo_wine
+     ok( !ret, "HeapSetInformation succeeded\n" );
+-    todo_wine
+     ok( GetLastError() == ERROR_GEN_FAILURE, "got error %lu\n", GetLastError() );
+     ret = pHeapQueryInformation( heap, HeapCompatibilityInformation, &compat_info, sizeof(compat_info), &size );
+     ok( ret, "HeapQueryInformation failed, error %lu\n", GetLastError() );
+-    todo_wine
+     ok( compat_info == 2, "got HeapCompatibilityInformation %lu\n", compat_info );
+ 
+     ret = HeapDestroy( heap );
+@@ -931,7 +922,6 @@ static void test_HeapCreate(void)
+     ok( ret, "HeapSetInformation failed, error %lu\n", GetLastError() );
+     ret = pHeapQueryInformation( heap, HeapCompatibilityInformation, &compat_info, sizeof(compat_info), &size );
+     ok( ret, "HeapQueryInformation failed, error %lu\n", GetLastError() );
+-    todo_wine
+     ok( compat_info == 2, "got HeapCompatibilityInformation %lu\n", compat_info );
+ 
+     for (i = 0; i < 0x11; i++) ptrs[i] = pHeapAlloc( heap, 0, 24 + 2 * sizeof(void *) );
+diff --git a/dlls/ntdll/heap.c b/dlls/ntdll/heap.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/heap.c
++++ b/dlls/ntdll/heap.c
+@@ -39,6 +39,13 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(heap);
+ 
++/* HeapCompatibilityInformation values */
++
++#define HEAP_STD 0
++#define HEAP_LAL 1
++#define HEAP_LFH 2
++
++
+ /* undocumented RtlWalkHeap structure */
+ 
+ struct rtl_heap_entry
+@@ -194,6 +201,7 @@ struct heap
+     DWORD            force_flags;   /* 0044/0074 */
+     /* end of the Windows 10 compatible struct layout */
+ 
++    volatile LONG    compat_info;   /* HeapCompatibilityInformation / heap frontend type */
+     struct list      entry;         /* Entry in process heap list */
+     struct list      subheap_list;  /* Sub-heap list */
+     struct list      large_list;    /* Large blocks list */
+@@ -1343,6 +1351,7 @@ HANDLE WINAPI RtlCreateHeap( ULONG flags, void *addr, SIZE_T total_size, SIZE_T
+     heap->ffeeffee      = 0xffeeffee;
+     heap->auto_flags    = (flags & HEAP_GROWABLE);
+     heap->flags         = (flags & ~HEAP_SHARED);
++    heap->compat_info   = HEAP_STD;
+     heap->magic         = HEAP_MAGIC;
+     heap->grow_size     = max( HEAP_DEF_SIZE, total_size );
+     heap->min_size      = commit_size;
+@@ -2004,21 +2013,24 @@ ULONG WINAPI RtlGetProcessHeaps( ULONG count, HANDLE *heaps )
+  *           RtlQueryHeapInformation    (NTDLL.@)
+  */
+ NTSTATUS WINAPI RtlQueryHeapInformation( HANDLE handle, HEAP_INFORMATION_CLASS info_class,
+-                                         void *info, SIZE_T size_in, PSIZE_T size_out )
++                                         void *info, SIZE_T size_in, SIZE_T *size_out )
+ {
++    struct heap *heap;
++    ULONG heap_flags;
++
++    TRACE( "handle %p, info_class %u, info %p, size_in %Iu, size_out %p.\n", handle, info_class, info, size_in, size_out );
++
+     switch (info_class)
+     {
+     case HeapCompatibilityInformation:
++        if (!(heap = unsafe_heap_from_handle( handle, 0, &heap_flags ))) return STATUS_ACCESS_VIOLATION;
+         if (size_out) *size_out = sizeof(ULONG);
+-
+-        if (size_in < sizeof(ULONG))
+-            return STATUS_BUFFER_TOO_SMALL;
+-
+-        *(ULONG *)info = 0; /* standard heap */
++        if (size_in < sizeof(ULONG)) return STATUS_BUFFER_TOO_SMALL;
++        *(ULONG *)info = heap->compat_info;
+         return STATUS_SUCCESS;
+ 
+     default:
+-        FIXME("Unknown heap information class %u\n", info_class);
++        FIXME( "HEAP_INFORMATION_CLASS %u not implemented!\n", info_class );
+         return STATUS_INVALID_INFO_CLASS;
+     }
+ }
+@@ -2028,8 +2040,31 @@ NTSTATUS WINAPI RtlQueryHeapInformation( HANDLE handle, HEAP_INFORMATION_CLASS i
+  */
+ NTSTATUS WINAPI RtlSetHeapInformation( HANDLE handle, HEAP_INFORMATION_CLASS info_class, void *info, SIZE_T size )
+ {
+-    FIXME( "handle %p, info_class %d, info %p, size %Id stub!\n", handle, info_class, info, size );
+-    return STATUS_SUCCESS;
++    struct heap *heap;
++    ULONG heap_flags;
++
++    TRACE( "handle %p, info_class %u, info %p, size %Iu.\n", handle, info_class, info, size );
++
++    switch (info_class)
++    {
++    case HeapCompatibilityInformation:
++    {
++        ULONG compat_info;
++
++        if (size < sizeof(ULONG)) return STATUS_BUFFER_TOO_SMALL;
++        if (!(heap = unsafe_heap_from_handle( handle, 0, &heap_flags ))) return STATUS_INVALID_HANDLE;
++
++        compat_info = *(ULONG *)info;
++        if (compat_info) FIXME( "HeapCompatibilityInformation %lu not implemented!\n", compat_info );
++        if (compat_info != HEAP_STD && compat_info != HEAP_LFH) return STATUS_UNSUCCESSFUL;
++        if (InterlockedCompareExchange( &heap->compat_info, compat_info, HEAP_STD )) return STATUS_UNSUCCESSFUL;
++        return STATUS_SUCCESS;
++    }
++
++    default:
++        FIXME( "HEAP_INFORMATION_CLASS %u not implemented!\n", info_class );
++        return STATUS_SUCCESS;
++    }
+ }
+ 
+ /***********************************************************************
+-- 
+2.39.0
+

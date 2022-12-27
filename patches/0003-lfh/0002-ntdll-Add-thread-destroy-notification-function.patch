@@ -1,0 +1,67 @@
+From a1b7ed7342251b5849ec25204710cd7d21ca0f7b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Wed, 28 Aug 2019 22:24:40 +0200
+Subject: [PATCH 2/6] ntdll: Add thread destroy notification function.
+
+This will be used in LFH to recycle the thread local data.
+
+CW-Bug-Id: #16549
+---
+ dlls/ntdll/heap.c       | 4 ++++
+ dlls/ntdll/loader.c     | 1 +
+ dlls/ntdll/ntdll_misc.h | 2 ++
+ dlls/ntdll/thread.c     | 1 +
+ 4 files changed, 8 insertions(+)
+
+diff --git a/dlls/ntdll/heap.c b/dlls/ntdll/heap.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/heap.c
++++ b/dlls/ntdll/heap.c
+@@ -2186,3 +2186,7 @@ BOOLEAN WINAPI RtlSetUserFlagsHeap( HANDLE handle, ULONG flags, void *ptr, ULONG
+ 
+     return ret;
+ }
++
++void HEAP_notify_thread_destroy( BOOLEAN last )
++{
++}
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -3808,6 +3808,7 @@ void WINAPI RtlExitUserProcess( DWORD status )
+     RtlAcquirePebLock();
+     NtTerminateProcess( 0, status );
+     LdrShutdownProcess();
++    HEAP_notify_thread_destroy(TRUE);
+     for (;;) NtTerminateProcess( GetCurrentProcess(), status );
+ }
+ 
+diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/ntdll_misc.h
++++ b/dlls/ntdll/ntdll_misc.h
+@@ -155,6 +155,8 @@ static inline TEB64 *NtCurrentTeb64(void) { return NULL; }
+ static inline TEB64 *NtCurrentTeb64(void) { return (TEB64 *)NtCurrentTeb()->GdiBatchCount; }
+ #endif
+ 
++void HEAP_notify_thread_destroy( BOOLEAN last );
++
+ #define HASH_STRING_ALGORITHM_DEFAULT  0
+ #define HASH_STRING_ALGORITHM_X65599   1
+ #define HASH_STRING_ALGORITHM_INVALID  0xffffffff
+diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/thread.c
++++ b/dlls/ntdll/thread.c
+@@ -234,6 +234,7 @@ void WINAPI RtlExitUserThread( ULONG status )
+     NtQueryInformationThread( GetCurrentThread(), ThreadAmILastThread, &last, sizeof(last), NULL );
+     if (last) RtlExitUserProcess( status );
+     LdrShutdownThread();
++    HEAP_notify_thread_destroy(FALSE);
+     for (;;) NtTerminateThread( GetCurrentThread(), status );
+ }
+ 
+-- 
+2.39.0
+

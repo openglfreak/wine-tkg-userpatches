@@ -1,0 +1,59 @@
+From f34b81d52cdfcc76a99fba30674b299d2dbf1353 Mon Sep 17 00:00:00 2001
+From: Paul Gofman <pgofman@codeweavers.com>
+Date: Thu, 2 Feb 2023 14:48:37 -0600
+Subject: [PATCH 2/4] ntdll: Factor out prepend_system_dir() function.
+
+---
+ dlls/ntdll/loader.c | 26 ++++++++++++++++++--------
+ 1 file changed, 18 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -3112,6 +3112,23 @@ done:
+ }
+ 
+ 
++/******************************************************************************
++ *	prepend_system_dir
++ */
++static NTSTATUS prepend_system_dir( const WCHAR *name, ULONG name_length, WCHAR **fullname )
++{
++    ULONG len;
++
++    len = wcslen( system_dir ) + name_length;
++    if (!(*fullname = RtlAllocateHeap( GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR) )))
++        return STATUS_NO_MEMORY;
++    wcscpy( *fullname, system_dir );
++    memcpy( *fullname + wcslen( system_dir ), name, name_length * sizeof(WCHAR) );
++    (*fullname)[len] = 0;
++
++    return STATUS_SUCCESS;
++}
++
+ 
+ /******************************************************************************
+  *	find_apiset_dll
+@@ -3121,18 +3138,11 @@ static NTSTATUS find_apiset_dll( const WCHAR *name, WCHAR **fullname )
+     const API_SET_NAMESPACE *map = NtCurrentTeb()->Peb->ApiSetMap;
+     const API_SET_NAMESPACE_ENTRY *entry;
+     UNICODE_STRING str;
+-    ULONG len;
+ 
+     if (get_apiset_entry( map, name, wcslen(name), &entry )) return STATUS_APISET_NOT_PRESENT;
+     if (get_apiset_target( map, entry, NULL, &str )) return STATUS_DLL_NOT_FOUND;
+ 
+-    len = wcslen( system_dir ) + str.Length / sizeof(WCHAR);
+-    if (!(*fullname = RtlAllocateHeap( GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR) )))
+-        return STATUS_NO_MEMORY;
+-    wcscpy( *fullname, system_dir );
+-    memcpy( *fullname + wcslen( system_dir ), str.Buffer, str.Length );
+-    (*fullname)[len] = 0;
+-    return STATUS_SUCCESS;
++    return prepend_system_dir( str.Buffer, str.Length / sizeof(WCHAR), fullname );
+ }
+ 
+ 
+
+

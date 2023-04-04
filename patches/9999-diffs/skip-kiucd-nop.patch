@@ -1,0 +1,60 @@
+diff --git a/dlls/ntdll/signal_x86_64.c b/dlls/ntdll/signal_x86_64.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/signal_x86_64.c
++++ b/dlls/ntdll/signal_x86_64.c
+@@ -613,6 +613,7 @@ NTSTATUS WINAPI dispatch_wow_exception( EXCEPTION_RECORD *rec_ptr, CONTEXT *cont
+  *		KiUserExceptionDispatcher (NTDLL.@)
+  */
+ __ASM_GLOBAL_FUNC( KiUserExceptionDispatcher,
++                  ".byte 0x0f, 0x1f, 0x44, 0x00, 0x00\n\t"
+                   "mov 0x98(%rsp),%rcx\n\t" /* context->Rsp */
+                   "movw %cs,%ax\n\t"
+                   "cmpw %ax,0x38(%rsp)\n\t" /* context->SegCs */
+@@ -658,6 +659,7 @@ void WINAPI dispatch_apc( CONTEXT *context, ULONG_PTR arg1, ULONG_PTR arg2, ULON
+ }
+ 
+ __ASM_GLOBAL_FUNC( KiUserApcDispatcher,
++                  ".byte 0x0f, 0x1f, 0x44, 0x00, 0x00\n\t"
+                   "addq $0x8,%rsp\n\t"
+                   "mov 0x98(%rcx),%r10\n\t" /* context->Rsp */
+                   "mov 0xf8(%rcx),%r11\n\t" /* context->Rip */
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -1491,7 +1491,7 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
+     }
+ 
+     CS_sig(sigcontext)  = cs64_sel;
+-    RIP_sig(sigcontext) = (ULONG_PTR)pKiUserExceptionDispatcher;
++    RIP_sig(sigcontext) = (ULONG_PTR)pKiUserExceptionDispatcher + 5;
+     RSP_sig(sigcontext) = (ULONG_PTR)stack;
+     /* clear single-step, direction, and align check flag */
+     EFL_sig(sigcontext) &= ~(0x100|0x400|0x40000);
+@@ -1541,7 +1541,7 @@ NTSTATUS call_user_apc_dispatcher( CONTEXT *context, ULONG_PTR arg1, ULONG_PTR a
+     }
+     frame->rbp = stack->context.Rbp;
+     frame->rsp = (ULONG64)stack - 8;
+-    frame->rip = (ULONG64)pKiUserApcDispatcher;
++    frame->rip = (ULONG64)pKiUserApcDispatcher + 5;
+     frame->rcx = (ULONG64)&stack->context;
+     frame->rdx = arg1;
+     frame->r8  = arg2;
+@@ -1590,7 +1590,7 @@ NTSTATUS call_user_exception_dispatcher( EXCEPTION_RECORD *rec, CONTEXT *context
+     if (stack->rec.ExceptionCode == EXCEPTION_BREAKPOINT) stack->context.Rip--;
+     frame->rbp = context->Rbp;
+     frame->rsp = (ULONG64)stack;
+-    frame->rip = (ULONG64)pKiUserExceptionDispatcher;
++    frame->rip = (ULONG64)pKiUserExceptionDispatcher + 5;
+     frame->restore_flags |= CONTEXT_CONTROL;
+     return status;
+ }
+@@ -1764,7 +1764,7 @@ NTSTATUS WINAPI KeUserModeCallback( ULONG id, const void *args, ULONG len, void
+     *(--stack) = (ULONG_PTR)args_data;
+     stack = stack - 4;
+ 
+-    return call_user_mode_callback( pKiUserCallbackDispatcher, stack, ret_ptr, ret_len, NtCurrentTeb() );
++    return call_user_mode_callback( (char*)pKiUserCallbackDispatcher + 5, stack, ret_ptr, ret_len, NtCurrentTeb() );
+ }
+ 
+ 

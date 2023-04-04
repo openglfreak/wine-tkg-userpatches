@@ -52,17 +52,17 @@ diff --git a/dlls/winegstreamer/media_source.c b/dlls/winegstreamer/media_source
 index 11111111111..11111111111 100644
 --- a/dlls/winegstreamer/media_source.c
 +++ b/dlls/winegstreamer/media_source.c
-@@ -1345,7 +1345,8 @@ static HRESULT WINAPI media_source_Shutdown(IMFMediaSource *iface)
- 
+@@ -1346,7 +1346,8 @@ static HRESULT WINAPI media_source_Shutdown(IMFMediaSource *iface)
      IMFPresentationDescriptor_Release(source->pres_desc);
      IMFMediaEventQueue_Shutdown(source->event_queue);
+     IMFByteStream_Close(source->byte_stream);
 -    IMFByteStream_Release(source->byte_stream);
 +    if (source->byte_stream)
 +        IMFByteStream_Release(source->byte_stream);
  
      for (i = 0; i < source->stream_count; i++)
      {
-@@ -1386,45 +1387,21 @@ static const IMFMediaSourceVtbl IMFMediaSource_vtbl =
+@@ -1387,45 +1388,21 @@ static const IMFMediaSourceVtbl IMFMediaSource_vtbl =
      media_source_Shutdown,
  };
  
@@ -109,7 +109,7 @@ index 11111111111..11111111111 100644
      object->rate = 1.0f;
  
      if (FAILED(hr = MFCreateEventQueue(&object->event_queue)))
-@@ -1433,24 +1410,9 @@ static HRESULT media_source_constructor(IMFByteStream *bytestream, struct media_
+@@ -1434,24 +1411,9 @@ static HRESULT media_source_constructor(IMFByteStream *bytestream, struct media_
      if (FAILED(hr = MFAllocateWorkQueue(&object->async_commands_queue)))
          goto fail;
  
@@ -135,7 +135,7 @@ index 11111111111..11111111111 100644
          goto fail;
  
      stream_count = wg_parser_get_stream_count(parser);
-@@ -1556,7 +1518,6 @@ static HRESULT media_source_constructor(IMFByteStream *bytestream, struct media_
+@@ -1557,7 +1519,6 @@ static HRESULT media_source_constructor(IMFByteStream *bytestream, struct media_
  
      object->state = SOURCE_STOPPED;
  
@@ -143,7 +143,7 @@ index 11111111111..11111111111 100644
      return S_OK;
  
      fail:
-@@ -1593,6 +1554,87 @@ static HRESULT media_source_constructor(IMFByteStream *bytestream, struct media_
+@@ -1594,6 +1555,87 @@ static HRESULT media_source_constructor(IMFByteStream *bytestream, struct media_
          MFUnlockWorkQueue(object->async_commands_queue);
      if (object->event_queue)
          IMFMediaEventQueue_Release(object->event_queue);
@@ -235,7 +235,7 @@ diff --git a/dlls/winegstreamer/quartz_parser.c b/dlls/winegstreamer/quartz_pars
 index 11111111111..11111111111 100644
 --- a/dlls/winegstreamer/quartz_parser.c
 +++ b/dlls/winegstreamer/quartz_parser.c
-@@ -1223,7 +1223,7 @@ static HRESULT parser_sink_connect(struct strmbase_sink *iface, IPin *peer, cons
+@@ -1261,7 +1261,7 @@ static HRESULT parser_sink_connect(struct strmbase_sink *iface, IPin *peer, cons
      filter->sink_connected = true;
      filter->read_thread = CreateThread(NULL, 0, read_thread, filter, 0, NULL);
  
@@ -248,7 +248,7 @@ diff --git a/dlls/winegstreamer/unixlib.h b/dlls/winegstreamer/unixlib.h
 index 11111111111..11111111111 100644
 --- a/dlls/winegstreamer/unixlib.h
 +++ b/dlls/winegstreamer/unixlib.h
-@@ -170,6 +170,7 @@ C_ASSERT(sizeof(struct wg_parser_buffer) == 32);
+@@ -185,6 +185,7 @@ C_ASSERT(sizeof(struct wg_parser_buffer) == 32);
  enum wg_parser_type
  {
      WG_PARSER_DECODEBIN,
@@ -256,7 +256,7 @@ index 11111111111..11111111111 100644
      WG_PARSER_AVIDEMUX,
      WG_PARSER_MPEGAUDIOPARSE,
      WG_PARSER_WAVPARSE,
-@@ -187,6 +188,7 @@ struct wg_parser_create_params
+@@ -202,6 +203,7 @@ struct wg_parser_create_params
  struct wg_parser_connect_params
  {
      struct wg_parser *parser;
@@ -268,7 +268,7 @@ diff --git a/dlls/winegstreamer/wg_parser.c b/dlls/winegstreamer/wg_parser.c
 index 11111111111..11111111111 100644
 --- a/dlls/winegstreamer/wg_parser.c
 +++ b/dlls/winegstreamer/wg_parser.c
-@@ -71,6 +71,7 @@ struct wg_parser
+@@ -72,6 +72,7 @@ struct wg_parser
  
      guint64 file_size, start_offset, next_offset, stop_offset;
      guint64 next_pull_offset;
@@ -276,8 +276,8 @@ index 11111111111..11111111111 100644
  
      pthread_t push_thread;
  
-@@ -1322,10 +1323,21 @@ static void query_tags(struct wg_parser_stream *stream)
-     gst_event_unref(tag_event);
+@@ -1356,10 +1357,21 @@ static void query_tags(struct wg_parser_stream *stream)
+     }
  }
  
 -static NTSTATUS wg_parser_connect(void *args)
@@ -299,7 +299,7 @@ index 11111111111..11111111111 100644
      const struct wg_parser_connect_params *params = args;
      struct wg_parser *parser = params->parser;
      unsigned int i;
-@@ -1333,6 +1345,16 @@ static NTSTATUS wg_parser_connect(void *args)
+@@ -1367,6 +1379,16 @@ static NTSTATUS wg_parser_connect(void *args)
  
      parser->file_size = params->file_size;
      parser->sink_connected = true;
@@ -316,7 +316,7 @@ index 11111111111..11111111111 100644
  
      if (!parser->bus)
      {
-@@ -1343,13 +1365,6 @@ static NTSTATUS wg_parser_connect(void *args)
+@@ -1377,13 +1399,6 @@ static NTSTATUS wg_parser_connect(void *args)
      parser->container = gst_bin_new(NULL);
      gst_element_set_bus(parser->container, parser->bus);
  
@@ -330,7 +330,7 @@ index 11111111111..11111111111 100644
      parser->start_offset = parser->next_offset = parser->stop_offset = 0;
      parser->next_pull_offset = 0;
      parser->error = false;
-@@ -1505,8 +1520,10 @@ static NTSTATUS wg_parser_disconnect(void *args)
+@@ -1542,8 +1557,10 @@ static NTSTATUS wg_parser_disconnect(void *args)
      pthread_mutex_unlock(&parser->mutex);
  
      gst_element_set_state(parser->container, GST_STATE_NULL);
@@ -343,7 +343,7 @@ index 11111111111..11111111111 100644
      parser->my_src = parser->their_sink = NULL;
  
      pthread_mutex_lock(&parser->mutex);
-@@ -1557,6 +1574,8 @@ static BOOL decodebin_parser_init_gst(struct wg_parser *parser)
+@@ -1597,6 +1614,8 @@ static BOOL decodebin_parser_init_gst(struct wg_parser *parser)
      parser->no_more_pads = false;
      pthread_mutex_unlock(&parser->mutex);
  
@@ -352,7 +352,7 @@ index 11111111111..11111111111 100644
      if ((ret = gst_pad_link(parser->my_src, parser->their_sink)) < 0)
      {
          GST_ERROR("Failed to link pads, error %d.", ret);
-@@ -1566,6 +1585,35 @@ static BOOL decodebin_parser_init_gst(struct wg_parser *parser)
+@@ -1606,6 +1625,35 @@ static BOOL decodebin_parser_init_gst(struct wg_parser *parser)
      return TRUE;
  }
  
@@ -388,7 +388,7 @@ index 11111111111..11111111111 100644
  static BOOL avi_parser_init_gst(struct wg_parser *parser)
  {
      GstElement *element;
-@@ -1586,6 +1634,8 @@ static BOOL avi_parser_init_gst(struct wg_parser *parser)
+@@ -1626,6 +1674,8 @@ static BOOL avi_parser_init_gst(struct wg_parser *parser)
      parser->no_more_pads = false;
      pthread_mutex_unlock(&parser->mutex);
  
@@ -397,7 +397,7 @@ index 11111111111..11111111111 100644
      if ((ret = gst_pad_link(parser->my_src, parser->their_sink)) < 0)
      {
          GST_ERROR("Failed to link pads, error %d.", ret);
-@@ -1616,6 +1666,8 @@ static BOOL mpeg_audio_parser_init_gst(struct wg_parser *parser)
+@@ -1656,6 +1706,8 @@ static BOOL mpeg_audio_parser_init_gst(struct wg_parser *parser)
      if (!(stream = create_stream(parser)))
          return FALSE;
  
@@ -406,7 +406,7 @@ index 11111111111..11111111111 100644
      gst_object_ref(stream->their_src = gst_element_get_static_pad(element, "src"));
      if ((ret = gst_pad_link(stream->their_src, stream->my_sink)) < 0)
      {
-@@ -1640,6 +1692,8 @@ static BOOL wave_parser_init_gst(struct wg_parser *parser)
+@@ -1680,6 +1732,8 @@ static BOOL wave_parser_init_gst(struct wg_parser *parser)
  
      gst_bin_add(GST_BIN(parser->container), element);
  
@@ -415,7 +415,7 @@ index 11111111111..11111111111 100644
      parser->their_sink = gst_element_get_static_pad(element, "sink");
      if ((ret = gst_pad_link(parser->my_src, parser->their_sink)) < 0)
      {
-@@ -1698,6 +1752,7 @@ static NTSTATUS wg_parser_create(void *args)
+@@ -1738,6 +1792,7 @@ static NTSTATUS wg_parser_create(void *args)
      static const init_gst_cb init_funcs[] =
      {
          [WG_PARSER_DECODEBIN] = decodebin_parser_init_gst,
@@ -423,7 +423,7 @@ index 11111111111..11111111111 100644
          [WG_PARSER_AVIDEMUX] = avi_parser_init_gst,
          [WG_PARSER_MPEGAUDIOPARSE] = mpeg_audio_parser_init_gst,
          [WG_PARSER_WAVPARSE] = wave_parser_init_gst,
-@@ -1740,6 +1795,7 @@ static NTSTATUS wg_parser_destroy(void *args)
+@@ -1780,6 +1835,7 @@ static NTSTATUS wg_parser_destroy(void *args)
      pthread_cond_destroy(&parser->read_cond);
      pthread_cond_destroy(&parser->read_done_cond);
  

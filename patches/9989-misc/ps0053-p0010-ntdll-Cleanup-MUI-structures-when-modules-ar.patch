@@ -16,7 +16,7 @@ diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/loader.c
 +++ b/dlls/ntdll/loader.c
-@@ -3925,12 +3925,42 @@ static void free_modref( WINE_MODREF *wm )
+@@ -3976,12 +3976,17 @@ static void free_modref( WINE_MODREF *wm )
   * for the library type.
   *
   * The loader_section must be locked while calling this function.
@@ -32,23 +32,23 @@ index 11111111111..11111111111 100644
      WINE_MODREF*wm;
 +    unsigned int max_num_modules = 0;
 +    void **m;
-+
-+    mark = &NtCurrentTeb()->Peb->LdrData->InInitializationOrderModuleList;
-+    for (entry = mark->Blink; entry != mark; entry = prev)
-+    {
-+        mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InInitializationOrderLinks);
-+        wm = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
-+        prev = entry->Blink;
+ 
+     mark = &NtCurrentTeb()->Peb->LdrData->InInitializationOrderModuleList;
+     for (entry = mark->Blink; entry != mark; entry = prev)
+@@ -3989,7 +3994,7 @@ static void MODULE_FlushModrefs(void)
+         mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InInitializationOrderLinks);
+         wm = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
+         prev = entry->Blink;
+-        if (!mod->LoadCount) free_modref( wm );
 +        if (!mod->LoadCount) max_num_modules++;
-+    }
-+
-+    /* check load order list too for modules that haven't been initialized yet */
-+    mark = &NtCurrentTeb()->Peb->LdrData->InLoadOrderModuleList;
-+    for (entry = mark->Blink; entry != mark; entry = prev)
-+    {
-+        mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
-+        wm = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
-+        prev = entry->Blink;
+     }
+ 
+     /* check load order list too for modules that haven't been initialized yet */
+@@ -3999,7 +4004,52 @@ static void MODULE_FlushModrefs(void)
+         mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+         wm = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
+         prev = entry->Blink;
+-        if (!mod->LoadCount) free_modref( wm );
 +        if (!mod->LoadCount) max_num_modules++;
 +    }
 +
@@ -57,14 +57,13 @@ index 11111111111..11111111111 100644
 +
 +    *modules = m = RtlAllocateHeap( GetProcessHeap(), 0, sizeof(void*) * max_num_modules);
 +    *num_modules = 0;
- 
-     mark = &NtCurrentTeb()->Peb->LdrData->InInitializationOrderModuleList;
-     for (entry = mark->Blink; entry != mark; entry = prev)
-@@ -3938,7 +3968,17 @@ static void MODULE_FlushModrefs(void)
-         mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InInitializationOrderLinks);
-         wm = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
-         prev = entry->Blink;
--        if (!mod->LoadCount) free_modref( wm );
++
++    mark = &NtCurrentTeb()->Peb->LdrData->InInitializationOrderModuleList;
++    for (entry = mark->Blink; entry != mark; entry = prev)
++    {
++        mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InInitializationOrderLinks);
++        wm = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
++        prev = entry->Blink;
 +        if (!mod->LoadCount)
 +        {
 +            if (m)
@@ -76,14 +75,15 @@ index 11111111111..11111111111 100644
 +
 +            free_modref( wm );
 +        }
-     }
- 
-     /* check load order list too for modules that haven't been initialized yet */
-@@ -3948,7 +3988,17 @@ static void MODULE_FlushModrefs(void)
-         mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
-         wm = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
-         prev = entry->Blink;
--        if (!mod->LoadCount) free_modref( wm );
++    }
++
++    /* check load order list too for modules that haven't been initialized yet */
++    mark = &NtCurrentTeb()->Peb->LdrData->InLoadOrderModuleList;
++    for (entry = mark->Blink; entry != mark; entry = prev)
++    {
++        mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
++        wm = CONTAINING_RECORD(mod, WINE_MODREF, ldr);
++        prev = entry->Blink;
 +        if (!mod->LoadCount)
 +        {
 +            if (m)
@@ -98,7 +98,7 @@ index 11111111111..11111111111 100644
      }
  }
  
-@@ -3993,6 +4043,8 @@ NTSTATUS WINAPI LdrUnloadDll( HMODULE hModule )
+@@ -4044,6 +4094,8 @@ NTSTATUS WINAPI LdrUnloadDll( HMODULE hModule )
  {
      WINE_MODREF *wm;
      NTSTATUS retv = STATUS_SUCCESS;
@@ -107,7 +107,7 @@ index 11111111111..11111111111 100644
  
      if (process_detaching) return retv;
  
-@@ -4012,7 +4064,7 @@ NTSTATUS WINAPI LdrUnloadDll( HMODULE hModule )
+@@ -4063,7 +4115,7 @@ NTSTATUS WINAPI LdrUnloadDll( HMODULE hModule )
          if ( free_lib_count <= 1 )
          {
              process_detach();
@@ -116,7 +116,7 @@ index 11111111111..11111111111 100644
          }
  
          TRACE("END\n");
-@@ -4024,6 +4076,18 @@ NTSTATUS WINAPI LdrUnloadDll( HMODULE hModule )
+@@ -4075,6 +4127,18 @@ NTSTATUS WINAPI LdrUnloadDll( HMODULE hModule )
  
      RtlLeaveCriticalSection( &loader_section );
  
@@ -228,5 +228,5 @@ index 11111111111..11111111111 100644
  #endif
 
 -- 
-2.39.0
+2.40.0
 

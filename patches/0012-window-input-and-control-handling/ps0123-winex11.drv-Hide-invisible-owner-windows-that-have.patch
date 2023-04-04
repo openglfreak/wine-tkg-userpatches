@@ -1,0 +1,142 @@
+From 578f820a8dcf0f8682300144c828a81b880fa463 Mon Sep 17 00:00:00 2001
+From: Zhiyi Zhang <zzhang@codeweavers.com>
+Date: Sun, 20 Nov 2022 22:51:36 +0800
+Subject: [PATCH] winex11.drv: Hide invisible owner windows that have visible
+ owned windows in pager.
+
+Manual tests on XP, Win7 and Win10 show that such windows are not shown in pager.
+---
+ dlls/win32u/sysparams.c   | 35 +++++++++++++++++++++++++++++++++++
+ dlls/winex11.drv/window.c | 23 +++++++++++++++++++++++
+ include/ntuser.h          |  6 ++++++
+ 3 files changed, 64 insertions(+)
+
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -2109,6 +2109,38 @@ static BOOL is_window_rect_full_screen( const RECT *rect )
+     return ret;
+ }
+ 
++static BOOL has_visible_owned_window( HWND owner )
++{
++    BOOL ret = FALSE;
++    UINT i, dpi;
++    DWORD style;
++    HWND *list;
++    RECT rect;
++
++    if (!(list = list_window_children( 0, get_desktop_window(), NULL, 0 )))
++        return FALSE;
++
++    dpi = get_thread_dpi();
++    for (i = 0; list[i]; i++)
++    {
++        if (NtUserGetWindowRelative( list[i], GW_OWNER ) != owner)
++            continue;
++
++        style = get_window_long( list[i], GWL_STYLE );
++        if (!(style & WS_VISIBLE))
++            continue;
++
++        get_window_rect( list[i], &rect, dpi );
++        if (!IsRectEmpty( &rect ))
++        {
++            ret = TRUE;
++            break;
++        }
++    }
++    free( list );
++    return ret;
++}
++
+ RECT get_display_rect( const WCHAR *display )
+ {
+     struct monitor *monitor;
+@@ -5773,6 +5805,9 @@ ULONG_PTR WINAPI NtUserCallOneParam( ULONG_PTR arg, ULONG code )
+     case NtUserCallOneParam_GetSysColor:
+         return get_sys_color( arg );
+ 
++    case NtUserCallOneParam_HasVisibleOwnedWindow:
++        return has_visible_owned_window( UlongToHandle(arg) );
++
+     case NtUserCallOneParam_IsWindowRectFullScreen:
+         return is_window_rect_full_screen( (const RECT *)arg );
+ 
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1067,14 +1067,24 @@ static void update_net_wm_fullscreen_monitors( struct x11drv_win_data *data )
+     }
+ }
+ 
++static BOOL is_invisible_owner_window( const struct x11drv_win_data *data, UINT style )
++{
++    if ((style & WS_VISIBLE) && !IsRectEmpty( &data->whole_rect ))
++        return FALSE;
++
++    return NtUserHasVisibleOwnedWindow( data->hwnd );
++}
++
+ /***********************************************************************
+  *     update_net_wm_states
+  */
+ void update_net_wm_states( struct x11drv_win_data *data )
+ {
+     UINT i, style, ex_style, new_state = 0;
++    struct x11drv_win_data *owner_data;
+     RECT window_rect, client_rect;
+     BOOL fullscreen;
++    HWND owner;
+     unsigned long net_wm_bypass_compositor = 0;
+ 
+     if (!data->managed) return;
+@@ -1119,6 +1129,19 @@ void update_net_wm_states( struct x11drv_win_data *data )
+             new_state |= (1 << NET_WM_STATE_SKIP_TASKBAR);
+     }
+ 
++    /* If this window has no WS_EX_APPWINDOW and is invisible and has a visible owned window, then
++     * such a window should not be shown in pager and KDE switcher */
++    if (!(ex_style & WS_EX_APPWINDOW) && is_invisible_owner_window( data, style ))
++        new_state |= (1 << NET_WM_STATE_SKIP_PAGER) | (1 << KDE_NET_WM_STATE_SKIP_SWITCHER);
++
++    /* Update owner as well because a window may be newly owned */
++    owner = NtUserGetWindowRelative( data->hwnd, GW_OWNER );
++    if (owner && owner != data->hwnd && (owner_data = get_win_data( owner )))
++    {
++        update_net_wm_states( owner_data );
++        release_win_data( owner_data );
++    }
++
+     if (!data->mapped)  /* set the _NET_WM_STATE atom directly */
+     {
+         Atom atoms[NB_NET_WM_STATES+1];
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 11111111111..11111111111 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -1036,6 +1036,7 @@ enum
+     NtUserCallOneParam_GetSysColorPen,
+     NtUserCallOneParam_GetSystemMetrics,
+     NtUserCallOneParam_GetVirtualScreenRect,
++    NtUserCallOneParam_HasVisibleOwnedWindow,
+     NtUserCallOneParam_IsWindowRectFullScreen,
+     NtUserCallOneParam_MessageBeep,
+     NtUserCallOneParam_RealizePalette,
+@@ -1135,6 +1136,11 @@ static inline RECT NtUserGetVirtualScreenRect(void)
+     return virtual;
+ }
+ 
++static inline BOOL NtUserHasVisibleOwnedWindow( HWND owner )
++{
++    return NtUserCallOneParam( HandleToUlong(owner), NtUserCallOneParam_HasVisibleOwnedWindow );
++}
++
+ static inline BOOL NtUserIsWindowRectFullScreen( const RECT *rect )
+ {
+     return NtUserCallOneParam( (UINT_PTR)rect, NtUserCallOneParam_IsWindowRectFullScreen );
+-- 
+2.40.0
+

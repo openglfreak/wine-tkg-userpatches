@@ -1,26 +1,36 @@
 From b7a8b42e4aa284288672c04ade38e5c50f918b52 Mon Sep 17 00:00:00 2001
 From: Torge Matthies <openglfreak@googlemail.com>
 Date: Mon, 15 Aug 2022 21:04:27 +0200
-Subject: [PATCH 6/6] HACK: server: Spin on the request futex for a little bit
+Subject: [PATCH 6/7] HACK: server: Spin on the request futex for a little bit
  after completing a request.
 
 ---
- server/thread.c | 6 +++++-
- 1 file changed, 5 insertions(+), 1 deletion(-)
+ server/thread.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
 
 diff --git a/server/thread.c b/server/thread.c
 index 11111111111..11111111111 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -482,6 +482,7 @@ static void *request_shm_thread(void *param)
+@@ -24,6 +24,7 @@
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <pthread.h>
++#include <sched.h>
+ #include <signal.h>
+ #include <stdarg.h>
+ #include <stdio.h>
+@@ -480,14 +481,20 @@ static void *request_shm_thread(void *param)
      for (;;)
      {
          int val;
-+        int spincount = 4000;
++        int spincount = 2000;
  
++        if ((val = request_shm->futex) != 1)
++            sched_yield();
          while ((val = request_shm->futex) != 1)
          {
-@@ -489,7 +490,10 @@ static void *request_shm_thread(void *param)
+             if (val == -1)
                  goto done;
              else if (val != 0)
                  fatal_protocol_error( thread, "unknown futex state %d\n", val );
@@ -33,5 +43,5 @@ index 11111111111..11111111111 100644
  
          pthread_mutex_lock( &global_lock );
 -- 
-2.39.0
+2.40.0
 

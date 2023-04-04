@@ -1,0 +1,178 @@
+From fed639261695c8106cfd6c88c38f73c0c4a88277 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Tue, 7 Mar 2023 06:35:53 +0100
+Subject: [PATCH 4/4] win32u: Re-use fontconfig FT_Face if possible instead of
+ creating a new one.
+
+---
+ dlls/win32u/freetype.c | 44 ++++++++++++++++++++++++++++--------------
+ 1 file changed, 30 insertions(+), 14 deletions(-)
+
+diff --git a/dlls/win32u/freetype.c b/dlls/win32u/freetype.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/freetype.c
++++ b/dlls/win32u/freetype.c
+@@ -176,6 +176,7 @@ MAKE_FUNCPTR(FT_Outline_Get_Bitmap);
+ MAKE_FUNCPTR(FT_Outline_Get_CBox);
+ MAKE_FUNCPTR(FT_Outline_Transform);
+ MAKE_FUNCPTR(FT_Outline_Translate);
++MAKE_FUNCPTR(FT_Reference_Face);
+ MAKE_FUNCPTR(FT_Render_Glyph);
+ MAKE_FUNCPTR(FT_Set_Charmap);
+ MAKE_FUNCPTR(FT_Set_Pixel_Sizes);
+@@ -200,6 +201,7 @@ MAKE_FUNCPTR(FcInit);
+ MAKE_FUNCPTR(FcPatternAddString);
+ MAKE_FUNCPTR(FcPatternCreate);
+ MAKE_FUNCPTR(FcPatternDestroy);
++MAKE_FUNCPTR(FcPatternGet);
+ MAKE_FUNCPTR(FcPatternGetBool);
+ MAKE_FUNCPTR(FcPatternGetInteger);
+ MAKE_FUNCPTR(FcPatternGetString);
+@@ -1001,13 +1003,17 @@ static inline void get_fontsig( FT_Face ft_face, FONTSIGNATURE *fs )
+ }
+ 
+ static FT_Face new_ft_face( const char *file, void *font_data_ptr, UINT font_data_size,
+-                            FT_Long face_index, BOOL allow_bitmap )
++                            FT_Long face_index, BOOL allow_bitmap, FT_Face ft_face )
+ {
+     FT_Error err;
+     TT_OS2 *pOS2;
+-    FT_Face ft_face;
+ 
+-    if (file)
++    if (ft_face)
++    {
++        TRACE("Using existing freetype face %p\n", ft_face);
++        err = pFT_Reference_Face(ft_face);
++    }
++    else if (file)
+     {
+         TRACE("Loading font file %s index %ld\n", debugstr_a(file), face_index);
+         err = pFT_New_Face(library, file, face_index, &ft_face);
+@@ -1167,7 +1173,7 @@ struct unix_face
+ };
+ 
+ static struct unix_face *unix_face_create( const char *unix_name, void *data_ptr, UINT data_size,
+-                                           UINT face_index, UINT flags )
++                                           UINT face_index, UINT flags, FT_Face face )
+ {
+     static const WCHAR space_w[] = {' ',0};
+ 
+@@ -1183,7 +1189,7 @@ static struct unix_face *unix_face_create( const char *unix_name, void *data_ptr
+     TRACE( "unix_name %s, face_index %u, data_ptr %p, data_size %u, flags %#x\n",
+            unix_name, face_index, data_ptr, data_size, flags );
+ 
+-    if (unix_name)
++    if (unix_name && !face)
+     {
+         if ((fd = open( unix_name, O_RDONLY )) == -1) return NULL;
+         if (fstat( fd, &st ) == -1)
+@@ -1199,7 +1205,8 @@ static struct unix_face *unix_face_create( const char *unix_name, void *data_ptr
+ 
+     if (!(This = calloc( 1, sizeof(*This) ))) goto done;
+ 
+-    if (opentype_get_ttc_sfnt_v1( data_ptr, data_size, face_index, &face_count, &ttc_sfnt_v1 ) &&
++    if (!face &&
++        opentype_get_ttc_sfnt_v1( data_ptr, data_size, face_index, &face_count, &ttc_sfnt_v1 ) &&
+         opentype_get_tt_name_v0( data_ptr, data_size, ttc_sfnt_v1, &tt_name_v0 ) &&
+         opentype_get_properties( data_ptr, data_size, ttc_sfnt_v1, &This->font_version,
+                                  &This->fs, &This->ntm_flags ))
+@@ -1244,7 +1251,8 @@ static struct unix_face *unix_face_create( const char *unix_name, void *data_ptr
+             WARN( "full name not found, using %s instead\n", debugstr_w(This->full_name) );
+         }
+     }
+-    else if (winfnt_parse_font_face( data_ptr, data_size, face_index, &face_count,
++    else if (!face &&
++             winfnt_parse_font_face( data_ptr, data_size, face_index, &face_count,
+                                      &family_name_a, &style_name_a, &This->fs, &This->ntm_flags,
+                                      &width, &height, &points, &ppem, &in_leading ))
+     {
+@@ -1271,9 +1279,10 @@ static struct unix_face *unix_face_create( const char *unix_name, void *data_ptr
+         This->size.x_ppem = ppem;
+         This->size.internal_leading = in_leading;
+     }
+-    else if ((This->ft_face = new_ft_face( unix_name, data_ptr, data_size, face_index, flags & ADDFONT_ALLOW_BITMAP )))
++    else if ((This->ft_face = new_ft_face( unix_name, data_ptr, data_size, face_index, flags & ADDFONT_ALLOW_BITMAP, face )))
+     {
+-        WARN( "unable to parse font, falling back to FreeType\n" );
++        if (This->ft_face != face)
++            WARN( "unable to parse font, falling back to FreeType\n" );
+         This->scalable = FT_IS_SCALABLE( This->ft_face );
+         This->num_faces = This->ft_face->num_faces;
+ 
+@@ -1307,7 +1316,7 @@ static struct unix_face *unix_face_create( const char *unix_name, void *data_ptr
+     }
+ 
+ done:
+-    if (unix_name) munmap( data_ptr, data_size );
++    if (unix_name && !face) munmap( data_ptr, data_size );
+     return This;
+ }
+ 
+@@ -1322,14 +1331,14 @@ static void unix_face_destroy( struct unix_face *This )
+ }
+ 
+ static int add_unix_face( const char *unix_name, const WCHAR *file, void *data_ptr, SIZE_T data_size,
+-                          DWORD face_index, DWORD flags, DWORD *num_faces )
++                          DWORD face_index, DWORD flags, DWORD *num_faces, FT_Face face )
+ {
+     struct unix_face *unix_face;
+     int ret;
+ 
+     if (num_faces) *num_faces = 0;
+ 
+-    if (!(unix_face = unix_face_create( unix_name, data_ptr, data_size, face_index, flags )))
++    if (!(unix_face = unix_face_create( unix_name, data_ptr, data_size, face_index, flags, face )))
+         return 0;
+ 
+     if (unix_face->family_name[0] == '.') /* Ignore fonts with names beginning with a dot */
+@@ -1430,7 +1439,7 @@ static INT AddFontToList(const WCHAR *dos_name, const char *unix_name, void *fon
+     if (!dos_name && unix_name) dos_name = filename = get_dos_file_name( unix_name );
+ 
+     do
+-        ret += add_unix_face( unix_name, dos_name, font_data_ptr, font_data_size, face_index, flags, &num_faces );
++        ret += add_unix_face( unix_name, dos_name, font_data_ptr, font_data_size, face_index, flags, &num_faces, NULL );
+     while (num_faces > ++face_index);
+ 
+     free( filename );
+@@ -1560,6 +1569,8 @@ static void fontconfig_add_font( FcPattern *pattern, UINT flags )
+     FcBool scalable;
+     DWORD aa_flags;
+     int face_index;
++    FcValue face_val;
++    FT_Face face = NULL;
+ 
+     TRACE( "(%p %#x)\n", pattern, flags );
+ 
+@@ -1593,8 +1604,11 @@ static void fontconfig_add_font( FcPattern *pattern, UINT flags )
+     if (pFcPatternGetInteger( pattern, FC_INDEX, 0, &face_index ) != FcResultMatch)
+         face_index = 0;
+ 
++    if (pFcPatternGet( pattern, "ftface", face_index, &face_val ) == FcResultMatch && face_val.type == FcTypeFTFace)
++        face = (FT_Face)face_val.u.f;
++
+     dos_name = get_dos_file_name( unix_name );
+-    add_unix_face( unix_name, dos_name, NULL, 0, face_index, flags, NULL );
++    add_unix_face( unix_name, dos_name, NULL, 0, face_index, flags, NULL, face );
+     free( dos_name );
+ }
+ 
+@@ -1618,6 +1632,7 @@ static void init_fontconfig(void)
+     LOAD_FUNCPTR(FcPatternAddString);
+     LOAD_FUNCPTR(FcPatternCreate);
+     LOAD_FUNCPTR(FcPatternDestroy);
++    LOAD_FUNCPTR(FcPatternGet);
+     LOAD_FUNCPTR(FcPatternGetBool);
+     LOAD_FUNCPTR(FcPatternGetInteger);
+     LOAD_FUNCPTR(FcPatternGetString);
+@@ -1854,6 +1869,7 @@ static BOOL init_freetype(void)
+     LOAD_FUNCPTR(FT_Outline_Get_CBox)
+     LOAD_FUNCPTR(FT_Outline_Transform)
+     LOAD_FUNCPTR(FT_Outline_Translate)
++    LOAD_FUNCPTR(FT_Reference_Face)
+     LOAD_FUNCPTR(FT_Render_Glyph)
+     LOAD_FUNCPTR(FT_Set_Charmap)
+     LOAD_FUNCPTR(FT_Set_Pixel_Sizes)
+-- 
+2.40.0
+

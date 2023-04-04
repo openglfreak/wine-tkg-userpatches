@@ -1,0 +1,136 @@
+From 7c5ac625f7de548148aab8abd6db7a0dbc91e98a Mon Sep 17 00:00:00 2001
+From: David Kahurani <k.kahurani@gmail.com>
+Date: Wed, 10 Aug 2022 15:41:14 +0300
+Subject: [PATCH 1/2] riched20: Cache script_cache alongside font cache
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=46475
+Signed-off-by: David Kahurani <k.kahurani@gmail.com>
+---
+ dlls/riched20/editor.c  | 4 ++++
+ dlls/riched20/editstr.h | 3 ++-
+ dlls/riched20/paint.c   | 2 +-
+ dlls/riched20/style.c   | 5 +++--
+ dlls/riched20/wrap.c    | 4 ++--
+ 5 files changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/riched20/editor.c b/dlls/riched20/editor.c
+index 11111111111..11111111111 100644
+--- a/dlls/riched20/editor.c
++++ b/dlls/riched20/editor.c
+@@ -3004,6 +3004,7 @@ ME_TextEditor *ME_MakeEditor(ITextHost *texthost, BOOL bEmulateVersion10)
+     ed->pFontCache[i].nRefs = 0;
+     ed->pFontCache[i].nAge = 0;
+     ed->pFontCache[i].hFont = NULL;
++    ed->pScriptCache[i] = NULL;
+   }
+ 
+   ME_CheckCharOffsets(ed);
+@@ -3089,6 +3090,9 @@ void ME_DestroyEditor(ME_TextEditor *editor)
+   {
+     if (editor->pFontCache[i].hFont)
+       DeleteObject(editor->pFontCache[i].hFont);
++
++    if (editor->pScriptCache[i])
++      ScriptFreeCache(&editor->pScriptCache[i]);
+   }
+   if(editor->lpOleCallback)
+     IRichEditOleCallback_Release(editor->lpOleCallback);
+diff --git a/dlls/riched20/editstr.h b/dlls/riched20/editstr.h
+index 11111111111..11111111111 100644
+--- a/dlls/riched20/editstr.h
++++ b/dlls/riched20/editstr.h
+@@ -74,7 +74,7 @@ typedef struct tagME_Style
+   ME_FontCacheItem *font_cache; /* cached font for the style */
+   TEXTMETRICW tm; /* cached font metrics for the style */
+   int nRefs; /* reference count */
+-  SCRIPT_CACHE script_cache;
++  SCRIPT_CACHE *script_cache;
+   struct list entry;
+ } ME_Style;
+ 
+@@ -413,6 +413,7 @@ typedef struct tagME_TextEditor
+   LONG nLastSelStart, nLastSelEnd;
+   ME_Paragraph *last_sel_start_para, *last_sel_end_para;
+   ME_FontCacheItem pFontCache[HFONT_CACHE_SIZE];
++  SCRIPT_CACHE pScriptCache[HFONT_CACHE_SIZE];
+   int nZoomNumerator, nZoomDenominator;
+   RECT rcFormat;
+   BOOL bWordWrap;
+diff --git a/dlls/riched20/paint.c b/dlls/riched20/paint.c
+index 11111111111..11111111111 100644
+--- a/dlls/riched20/paint.c
++++ b/dlls/riched20/paint.c
+@@ -365,7 +365,7 @@ static void draw_text( ME_Context *c, ME_Run *run, int x, int y, BOOL selected,
+     if (paint_bg) old_back = SetBkColor( c->hDC, back_color );
+ 
+     if (run->para->nFlags & MEPF_COMPLEX)
+-        ScriptTextOut( c->hDC, &run->style->script_cache, x, y, paint_bg ? ETO_OPAQUE : 0, sel_rect,
++        ScriptTextOut( c->hDC, run->style->script_cache, x, y, paint_bg ? ETO_OPAQUE : 0, sel_rect,
+                        &run->script_analysis, NULL, 0, run->glyphs, run->num_glyphs, run->advances,
+                        NULL, run->offsets );
+     else
+diff --git a/dlls/riched20/style.c b/dlls/riched20/style.c
+index 11111111111..11111111111 100644
+--- a/dlls/riched20/style.c
++++ b/dlls/riched20/style.c
+@@ -400,6 +400,7 @@ void select_style( ME_Context *c, ME_Style *s )
+         if (i < HFONT_CACHE_SIZE) /* found */
+         {
+             item = &c->editor->pFontCache[i];
++            s->script_cache = &c->editor->pScriptCache[i];
+             TRACE_(richedit_style)( "font reused %d\n", i );
+             item->nRefs++;
+         }
+@@ -407,10 +408,12 @@ void select_style( ME_Context *c, ME_Style *s )
+         {
+             assert(empty != -1);
+             item = &c->editor->pFontCache[empty];
++            s->script_cache = &c->editor->pScriptCache[empty];
+             if (item->hFont)
+             {
+                 TRACE_(richedit_style)( "font deleted %d\n", empty );
+                 DeleteObject(item->hFont);
++                ScriptFreeCache(s->script_cache);
+                 item->hFont = NULL;
+             }
+             item->hFont = CreateFontIndirectW( &lf );
+@@ -447,7 +450,6 @@ void ME_DestroyStyle(ME_Style *s)
+     release_font_cache( s->font_cache );
+     s->font_cache = NULL;
+   }
+-  ScriptFreeCache( &s->script_cache );
+   heap_free(s);
+ }
+ 
+@@ -534,7 +536,6 @@ void ME_SetDefaultCharFormat(ME_TextEditor *editor, CHARFORMAT2W *mod)
+         release_font_cache( def->font_cache );
+         def->font_cache = NULL;
+     }
+-    ScriptFreeCache( &def->script_cache );
+     ME_ReleaseStyle( style );
+     editor_mark_rewrap_all( editor );
+ }
+diff --git a/dlls/riched20/wrap.c b/dlls/riched20/wrap.c
+index 11111111111..11111111111 100644
+--- a/dlls/riched20/wrap.c
++++ b/dlls/riched20/wrap.c
+@@ -83,7 +83,7 @@ static HRESULT shape_run( ME_Context *c, ME_Run *run )
+     select_style( c, run->style );
+     while (1)
+     {
+-        hr = ScriptShape( c->hDC, &run->style->script_cache, get_text( run, 0 ), run->len, run->max_glyphs,
++        hr = ScriptShape( c->hDC, run->style->script_cache, get_text( run, 0 ), run->len, run->max_glyphs,
+                           &run->script_analysis, run->glyphs, run->clusters, run->vis_attrs, &run->num_glyphs );
+         if (hr != E_OUTOFMEMORY) break;
+         if (run->max_glyphs > 10 * run->len) break; /* something has clearly gone wrong */
+@@ -92,7 +92,7 @@ static HRESULT shape_run( ME_Context *c, ME_Run *run )
+     }
+ 
+     if (SUCCEEDED(hr))
+-        hr = ScriptPlace( c->hDC, &run->style->script_cache, run->glyphs, run->num_glyphs, run->vis_attrs,
++        hr = ScriptPlace( c->hDC, run->style->script_cache, run->glyphs, run->num_glyphs, run->vis_attrs,
+                           &run->script_analysis, run->advances, run->offsets, NULL );
+ 
+     if (SUCCEEDED(hr))
+
+

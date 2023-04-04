@@ -1,0 +1,401 @@
+From f889f6bba27d2d16bfc3b1fe5c1228cf83711011 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Sun, 5 Mar 2023 08:53:59 +0100
+Subject: [PATCH 2/4] win32u: Do font initialization on demand.
+
+---
+ dlls/win32u/font.c          | 128 ++++++++++++++++++++++++------------
+ dlls/win32u/gdiobj.c        |   3 +-
+ dlls/win32u/ntgdi_private.h |   2 +-
+ 3 files changed, 89 insertions(+), 44 deletions(-)
+
+diff --git a/dlls/win32u/font.c b/dlls/win32u/font.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -468,6 +468,10 @@ static const struct nls_update_font_list
+ 
+ static pthread_mutex_t font_lock = PTHREAD_MUTEX_INITIALIZER;
+ 
++static pthread_once_t font_init_once = PTHREAD_ONCE_INIT;
++DWORD font_init_disposition;
++static void font_init(void);
++
+ #ifndef WINE_FONT_DIR
+ #define WINE_FONT_DIR "fonts"
+ #endif
+@@ -3247,6 +3251,7 @@ static BOOL CDECL font_CreateDC( PHYSDEV *dev, LPCWSTR device, LPCWSTR output,
+ {
+     struct font_physdev *physdev;
+ 
++    pthread_once( &font_init_once, font_init );
+     if (!font_funcs) return TRUE;
+     if (!(physdev = calloc( 1, sizeof(*physdev) ))) return FALSE;
+     push_dc_driver( dev, &physdev->dev, &font_driver );
+@@ -3543,6 +3548,8 @@ static BOOL CDECL font_EnumFonts( PHYSDEV dev, LOGFONTW *lf, FONTENUMPROCW proc,
+     struct enum_charset enum_charsets[32];
+     UINT count, charset;
+ 
++    pthread_once( &font_init_once, font_init );
++
+     charset = lf ? lf->lfCharSet : DEFAULT_CHARSET;
+ 
+     count = create_enum_charset_list( charset, enum_charsets );
+@@ -3932,6 +3939,8 @@ static BOOL CDECL font_GetCharABCWidths( PHYSDEV dev, UINT first, UINT count,
+ 
+     TRACE( "%p, %u, %u, %p\n", physdev->font, first, count, buffer );
+ 
++    pthread_once( &font_init_once, font_init );
++
+     pthread_mutex_lock( &font_lock );
+     for (i = 0; i < count; i++)
+     {
+@@ -3959,6 +3968,8 @@ static BOOL CDECL font_GetCharABCWidthsI( PHYSDEV dev, UINT first, UINT count, W
+ 
+     TRACE( "%p, %u, %u, %p\n", physdev->font, first, count, buffer );
+ 
++    pthread_once( &font_init_once, font_init );
++
+     pthread_mutex_lock( &font_lock );
+     for (c = 0; c < count; c++, buffer++)
+         get_glyph_outline( physdev->font, gi ? gi[c] : first + c, GGO_METRICS | GGO_GLYPH_INDEX,
+@@ -3986,6 +3997,8 @@ static BOOL CDECL font_GetCharWidth( PHYSDEV dev, UINT first, UINT count,
+ 
+     TRACE( "%p, %d, %d, %p\n", physdev->font, first, count, buffer );
+ 
++    pthread_once( &font_init_once, font_init );
++
+     pthread_mutex_lock( &font_lock );
+     for (i = 0; i < count; i++)
+     {
+@@ -4014,6 +4027,8 @@ static BOOL CDECL font_GetCharWidthInfo( PHYSDEV dev, void *ptr )
+         return dev->funcs->pGetCharWidthInfo( dev, ptr );
+     }
+ 
++    pthread_once( &font_init_once, font_init );
++
+     info->unk = 0;
+     if (!physdev->font->scalable || !font_funcs->get_char_width_info( physdev->font, info ))
+         info->lsb = info->rsb = 0;
+@@ -4034,6 +4049,7 @@ static DWORD CDECL font_GetFontData( PHYSDEV dev, DWORD table, DWORD offset, voi
+         dev = GET_NEXT_PHYSDEV( dev, pGetFontData );
+         return dev->funcs->pGetFontData( dev, table, offset, buf, size );
+     }
++    pthread_once( &font_init_once, font_init );
+     return font_funcs->get_font_data( physdev->font, table, offset, buf, size );
+ }
+ 
+@@ -4054,6 +4070,8 @@ static BOOL CDECL font_GetFontRealizationInfo( PHYSDEV dev, void *ptr )
+ 
+     TRACE( "(%p, %p)\n", physdev->font, info);
+ 
++    pthread_once( &font_init_once, font_init );
++
+     info->flags = 1;
+     if (physdev->font->scalable) info->flags |= 2;
+ 
+@@ -4085,6 +4103,8 @@ static DWORD CDECL font_GetFontUnicodeRanges( PHYSDEV dev, GLYPHSET *glyphset )
+         return dev->funcs->pGetFontUnicodeRanges( dev, glyphset );
+     }
+ 
++    pthread_once( &font_init_once, font_init );
++
+     num_ranges = font_funcs->get_unicode_ranges( physdev->font, glyphset );
+     size = offsetof( GLYPHSET, ranges[num_ranges] );
+     if (glyphset)
+@@ -4114,6 +4134,8 @@ static DWORD CDECL font_GetGlyphIndices( PHYSDEV dev, const WCHAR *str, INT coun
+         return dev->funcs->pGetGlyphIndices( dev, str, count, gi, flags );
+     }
+ 
++    pthread_once( &font_init_once, font_init );
++
+     if (flags & GGI_MARK_NONEXISTING_GLYPHS)
+     {
+         default_char = 0xffff;  /* XP would use 0x1f for bitmap fonts */
+@@ -4168,6 +4190,7 @@ static DWORD CDECL font_GetGlyphOutline( PHYSDEV dev, UINT glyph, UINT format,
+         dev = GET_NEXT_PHYSDEV( dev, pGetGlyphOutline );
+         return dev->funcs->pGetGlyphOutline( dev, glyph, format, gm, buflen, buf, mat );
+     }
++    pthread_once( &font_init_once, font_init );
+     pthread_mutex_lock( &font_lock );
+     ret = get_glyph_outline( physdev->font, glyph, format, gm, NULL, buflen, buf, mat );
+     pthread_mutex_unlock( &font_lock );
+@@ -4188,6 +4211,8 @@ static DWORD CDECL font_GetKerningPairs( PHYSDEV dev, DWORD count, KERNINGPAIR *
+         return dev->funcs->pGetKerningPairs( dev, count, pairs );
+     }
+ 
++    pthread_once( &font_init_once, font_init );
++
+     pthread_mutex_lock( &font_lock );
+     if (physdev->font->kern_count == -1)
+         physdev->font->kern_count = font_funcs->get_kerning_pairs( physdev->font,
+@@ -4285,6 +4310,8 @@ static UINT CDECL font_GetOutlineTextMetrics( PHYSDEV dev, UINT size, OUTLINETEX
+ 
+     if (!physdev->font->scalable) return 0;
+ 
++    pthread_once( &font_init_once, font_init );
++
+     pthread_mutex_lock( &font_lock );
+     if (font_funcs->set_outline_text_metrics( physdev->font ))
+     {
+@@ -4346,6 +4373,8 @@ static BOOL CDECL font_GetTextExtentExPoint( PHYSDEV dev, const WCHAR *str, INT
+ 
+     TRACE( "%p, %s, %d\n", physdev->font, debugstr_wn(str, count), count );
+ 
++    pthread_once( &font_init_once, font_init );
++
+     pthread_mutex_lock( &font_lock );
+     for (i = pos = 0; i < count; i++)
+     {
+@@ -4375,6 +4404,8 @@ static BOOL CDECL font_GetTextExtentExPointI( PHYSDEV dev, const WORD *indices,
+ 
+     TRACE( "%p, %p, %d\n", physdev->font, indices, count );
+ 
++    pthread_once( &font_init_once, font_init );
++
+     pthread_mutex_lock( &font_lock );
+     for (i = pos = 0; i < count; i++)
+     {
+@@ -4472,6 +4503,8 @@ static BOOL CDECL font_GetTextMetrics( PHYSDEV dev, TEXTMETRICW *metrics )
+         return dev->funcs->pGetTextMetrics( dev, metrics );
+     }
+ 
++    pthread_once( &font_init_once, font_init );
++
+     pthread_mutex_lock( &font_lock );
+     if (font_funcs->set_outline_text_metrics( physdev->font ) ||
+         font_funcs->set_bitmap_text_metrics( physdev->font ))
+@@ -4675,6 +4708,8 @@ static HFONT CDECL font_SelectFont( PHYSDEV dev, HFONT hfont, UINT *aa_flags )
+         }
+         TRACE( "DC transform %f %f %f %f\n", dcmat.eM11, dcmat.eM12, dcmat.eM21, dcmat.eM22 );
+ 
++        pthread_once( &font_init_once, font_init );
++
+         pthread_mutex_lock( &font_lock );
+ 
+         font = select_font( &lf, dcmat, can_use_bitmap );
+@@ -4814,7 +4849,42 @@ static BOOL get_key_value( HKEY key, const char *name, DWORD *value )
+     return !!count;
+ }
+ 
+-static UINT init_font_options(void)
++static HKEY open_hkcu(void)
++{
++    char buffer[256];
++    WCHAR bufferW[256];
++    DWORD_PTR sid_data[(sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE) / sizeof(DWORD_PTR)];
++    DWORD i, len = sizeof(sid_data);
++    SID *sid;
++
++    if (NtQueryInformationToken( GetCurrentThreadEffectiveToken(), TokenUser, sid_data, len, &len ))
++        return 0;
++
++    sid = ((TOKEN_USER *)sid_data)->User.Sid;
++    len = sprintf( buffer, "\\Registry\\User\\S-%u-%u", (int)sid->Revision,
++            (int)MAKELONG( MAKEWORD( sid->IdentifierAuthority.Value[5], sid->IdentifierAuthority.Value[4] ),
++                           MAKEWORD( sid->IdentifierAuthority.Value[3], sid->IdentifierAuthority.Value[2] )));
++    for (i = 0; i < sid->SubAuthorityCount; i++)
++        len += sprintf( buffer + len, "-%u", (int)sid->SubAuthority[i] );
++    ascii_to_unicode( bufferW, buffer, len + 1 );
++
++    return reg_open_key( NULL, bufferW, len * sizeof(WCHAR) );
++}
++
++static void init_reg_keys(void)
++{
++    static const WCHAR wine_fonts_keyW[] =
++        {'S','o','f','t','w','a','r','e','\\','W','i','n','e','\\','F','o','n','t','s'};
++
++    if (!hkcu_key && !(hkcu_key = open_hkcu())) return;
++    if (!wine_fonts_key)
++        wine_fonts_key = reg_create_key( hkcu_key, wine_fonts_keyW, sizeof(wine_fonts_keyW), 0, NULL );
++}
++
++/***********************************************************************
++ *              init_font_options
++ */
++UINT init_font_options(void)
+ {
+     char value_buffer[FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data[20 * sizeof(WCHAR)])];
+     KEY_VALUE_PARTIAL_INFORMATION *info = (void *)value_buffer;
+@@ -4822,6 +4892,8 @@ static UINT init_font_options(void)
+     DWORD i, val, gamma = 1400;
+     UINT dpi = 0;
+ 
++    init_reg_keys();
++
+     if (query_reg_ascii_value( wine_fonts_key, "AntialiasFakeBoldOrItalic",
+                                info, sizeof(value_buffer) ) && info->Type == REG_SZ)
+     {
+@@ -4993,6 +5065,7 @@ UINT WINAPI NtGdiGetTextCharsetInfo( HDC hdc, FONTSIGNATURE *fs, DWORD flags )
+ 
+     if (dc)
+     {
++        pthread_once( &font_init_once, font_init );
+         ret = get_text_charset_info( dc, fs, flags );
+         release_dc_ptr( dc );
+     }
+@@ -6354,6 +6427,7 @@ BOOL CDECL __wine_get_file_outline_text_metric( const WCHAR *path, OUTLINETEXTME
+ 
+     if (!(font = alloc_gdi_font( path, NULL, 0 ))) goto done;
+     font->lf.lfHeight = 100;
++    pthread_once( &font_init_once, font_init );
+     if (!font_funcs->load_font( font )) goto done;
+     if (!font_funcs->set_outline_text_metrics( font )) goto done;
+     *otm = font->otm;
+@@ -6765,42 +6839,7 @@ static void load_registry_fonts(void)
+     NtClose( hkey );
+ }
+ 
+-static HKEY open_hkcu(void)
+-{
+-    char buffer[256];
+-    WCHAR bufferW[256];
+-    DWORD_PTR sid_data[(sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE) / sizeof(DWORD_PTR)];
+-    DWORD i, len = sizeof(sid_data);
+-    SID *sid;
+-
+-    if (NtQueryInformationToken( GetCurrentThreadEffectiveToken(), TokenUser, sid_data, len, &len ))
+-        return 0;
+-
+-    sid = ((TOKEN_USER *)sid_data)->User.Sid;
+-    len = sprintf( buffer, "\\Registry\\User\\S-%u-%u", (int)sid->Revision,
+-            (int)MAKELONG( MAKEWORD( sid->IdentifierAuthority.Value[5], sid->IdentifierAuthority.Value[4] ),
+-                           MAKEWORD( sid->IdentifierAuthority.Value[3], sid->IdentifierAuthority.Value[2] )));
+-    for (i = 0; i < sid->SubAuthorityCount; i++)
+-        len += sprintf( buffer + len, "-%u", (int)sid->SubAuthority[i] );
+-    ascii_to_unicode( bufferW, buffer, len + 1 );
+-
+-    return reg_open_key( NULL, bufferW, len * sizeof(WCHAR) );
+-}
+-
+-static void init_reg_keys(void)
+-{
+-    static const WCHAR wine_fonts_keyW[] =
+-        {'S','o','f','t','w','a','r','e','\\','W','i','n','e','\\','F','o','n','t','s'};
+-
+-    if (!hkcu_key && !(hkcu_key = open_hkcu())) return;
+-    if (!wine_fonts_key)
+-        wine_fonts_key = reg_create_key( hkcu_key, wine_fonts_keyW, sizeof(wine_fonts_keyW), 0, NULL );
+-}
+-
+-/***********************************************************************
+- *              font_init
+- */
+-UINT font_init(void)
++static void font_init(void)
+ {
+     OBJECT_ATTRIBUTES attr = { sizeof(attr) };
+     UNICODE_STRING name;
+@@ -6814,13 +6853,13 @@ UINT font_init(void)
+     static const WCHAR cacheW[] = {'C','a','c','h','e'};
+ 
+     init_reg_keys();
+-    if (!hkcu_key) return 0;
++    if (!hkcu_key) return;
+     if (wine_fonts_key) dpi = init_font_options();
+-    if (!dpi) return 96;
++    if (!dpi) return;
+     update_codepage( dpi );
+ 
+     if (!(font_funcs = init_freetype_lib()))
+-        return dpi;
++        return;
+ 
+     load_system_bitmap_fonts();
+     load_file_system_fonts();
+@@ -6831,7 +6870,7 @@ UINT font_init(void)
+     name.Buffer = wine_font_mutexW;
+     name.Length = name.MaximumLength = sizeof(wine_font_mutexW);
+ 
+-    if (NtCreateMutant( &mutex, MUTEX_ALL_ACCESS, &attr, FALSE ) < 0) return dpi;
++    if (NtCreateMutant( &mutex, MUTEX_ALL_ACCESS, &attr, FALSE ) < 0) return;
+     NtWaitForSingleObject( mutex, FALSE, NULL );
+ 
+     wine_fonts_cache_key = reg_create_key( wine_fonts_key, cacheW, sizeof(cacheW),
+@@ -6857,7 +6896,6 @@ UINT font_init(void)
+     load_system_links();
+     dump_gdi_font_list();
+     dump_gdi_font_subst();
+-    return dpi;
+ }
+ 
+ /***********************************************************************
+@@ -6866,6 +6904,7 @@ UINT font_init(void)
+ INT WINAPI NtGdiAddFontResourceW( const WCHAR *str, ULONG size, ULONG files, DWORD flags,
+                                   DWORD tid, void *dv )
+ {
++    pthread_once( &font_init_once, font_init );
+     if (!font_funcs) return 1;
+     return add_font_resource( str, flags );
+ }
+@@ -6885,6 +6924,7 @@ HANDLE WINAPI NtGdiAddFontMemResourceEx( void *ptr, DWORD size, void *dv, ULONG
+         RtlSetLastWin32Error(ERROR_INVALID_PARAMETER);
+         return NULL;
+     }
++    pthread_once( &font_init_once, font_init );
+     if (!font_funcs) return NULL;
+     if (!(copy = malloc( size ))) return NULL;
+     memcpy( copy, ptr, size );
+@@ -6934,6 +6974,7 @@ BOOL WINAPI NtGdiRemoveFontMemResourceEx( HANDLE handle )
+ BOOL WINAPI NtGdiRemoveFontResourceW( const WCHAR *str, ULONG size, ULONG files, DWORD flags,
+                                       DWORD tid, void *dv )
+ {
++    pthread_once( &font_init_once, font_init );
+     if (!font_funcs) return TRUE;
+     return remove_font_resource( str, flags );
+ }
+@@ -7012,6 +7053,7 @@ BOOL WINAPI NtGdiGetRealizationInfo( HDC hdc, struct font_realization_info *info
+  */
+ BOOL WINAPI NtGdiGetRasterizerCaps( RASTERIZER_STATUS *status, UINT size )
+ {
++    pthread_once( &font_init_once, font_init );
+     status->nSize = sizeof(RASTERIZER_STATUS);
+     status->wFlags = font_funcs ? (TT_AVAILABLE | TT_ENABLED) : 0;
+     status->nLanguageID = 0;
+@@ -7028,6 +7070,7 @@ BOOL WINAPI NtGdiGetFontFileData( DWORD instance_id, DWORD file_index, UINT64 *o
+     DWORD tag = 0, size;
+     BOOL ret = FALSE;
+ 
++    pthread_once( &font_init_once, font_init );
+     if (!font_funcs) return FALSE;
+     pthread_mutex_lock( &font_lock );
+     if ((font = get_font_from_handle( instance_id )))
+@@ -7053,6 +7096,7 @@ BOOL WINAPI NtGdiGetFontFileInfo( DWORD instance_id, DWORD file_index, struct fo
+     struct gdi_font *font;
+     BOOL ret = FALSE;
+ 
++    pthread_once( &font_init_once, font_init );
+     pthread_mutex_lock( &font_lock );
+ 
+     if ((font = get_font_from_handle( instance_id )))
+diff --git a/dlls/win32u/gdiobj.c b/dlls/win32u/gdiobj.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/gdiobj.c
++++ b/dlls/win32u/gdiobj.c
+@@ -1168,7 +1168,8 @@ void gdi_init(void)
+     init_gdi_shared();
+     if (!gdi_shared) return;
+ 
+-    dpi = font_init();
++    dpi = init_font_options();
++    if (!dpi) dpi = 96;
+     init_stock_objects( dpi );
+ }
+ 
+diff --git a/dlls/win32u/ntgdi_private.h b/dlls/win32u/ntgdi_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/ntgdi_private.h
++++ b/dlls/win32u/ntgdi_private.h
+@@ -338,7 +338,7 @@ extern int add_gdi_face( const WCHAR *family_name, const WCHAR *second_name,
+                          void *data_ptr, SIZE_T data_size, UINT index, FONTSIGNATURE fs,
+                          DWORD ntmflags, DWORD version, DWORD flags,
+                          const struct bitmap_font_size *size ) DECLSPEC_HIDDEN;
+-extern UINT font_init(void) DECLSPEC_HIDDEN;
++extern UINT init_font_options(void) DECLSPEC_HIDDEN;
+ extern const struct font_backend_funcs *init_freetype_lib(void) DECLSPEC_HIDDEN;
+ 
+ /* opentype.c */
+-- 
+2.40.0
+

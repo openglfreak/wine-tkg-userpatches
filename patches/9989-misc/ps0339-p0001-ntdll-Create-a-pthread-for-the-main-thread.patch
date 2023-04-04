@@ -1,0 +1,70 @@
+From 974fffc4be472650d6d1613fc886ccd7a48753bb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 18 Oct 2022 16:40:08 +0200
+Subject: [PATCH 1/4] ntdll: Create a pthread for the main thread.
+
+So that we can safely call pthread_exit from the unix main thread, and
+wait for all other threads to exit. The last win32 thread will actually
+terminate the process directly by calling _exit.
+
+We need to use pthread_join here, and not pthread_detach, because the
+process will otherwise be considered as zombie, which breaks several
+process-level features.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52213
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=54346
+---
+ dlls/ntdll/unix/loader.c | 27 +++++++++++++++++++++++----
+ 1 file changed, 23 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2115,14 +2115,13 @@ static void hacks_init(void)
+         setenv("WINESTEAMNOEXEC", "1", 0);
+ }
+ 
+-/***********************************************************************
+- *           start_main_thread
+- */
+-static void start_main_thread(void)
++static void *pthread_main_wrapper( void *arg )
+ {
+     SYSTEM_SERVICE_TABLE syscall_table = { (ULONG_PTR *)syscalls, NULL, ARRAY_SIZE(syscalls), syscall_args };
+     TEB *teb = virtual_alloc_first_teb();
++    sigset_t *blocked_signals = arg;
+ 
++    pthread_sigmask( SIG_UNBLOCK, blocked_signals, NULL );
+     signal_init_threading();
+     signal_alloc_thread( teb );
+     dbg_init();
+@@ -2144,6 +2143,26 @@ static void start_main_thread(void)
+     load_apiset_dll();
+     ntdll_init_syscalls( 0, &syscall_table, p__wine_syscall_dispatcher );
+     server_init_process_done();
++    return 0;
++}
++
++/***********************************************************************
++ *           start_main_thread
++ */
++static void start_main_thread(void)
++{
++    sigset_t blocked_signals;
++    pthread_t thread;
++    void *ret;
++
++    /* block all signals for this thread, it cannot handle them */
++    sigfillset( &blocked_signals );
++    pthread_sigmask( SIG_BLOCK, &blocked_signals, NULL );
++    pthread_create( &thread, NULL, pthread_main_wrapper, &blocked_signals );
++
++    /* wait for it to return, so the process isn't considered a zombie */
++    pthread_join( thread, &ret );
++    pthread_exit( ret );
+ }
+ 
+ #ifdef __ANDROID__
+
+

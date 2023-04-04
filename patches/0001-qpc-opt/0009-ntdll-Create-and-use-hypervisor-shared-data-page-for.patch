@@ -82,19 +82,19 @@ diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/loader.c
 +++ b/dlls/ntdll/unix/loader.c
-@@ -2158,6 +2158,7 @@ static void start_main_thread(void)
+@@ -2129,6 +2129,7 @@ static void start_main_thread(void)
      fsync_init();
      esync_init();
      virtual_map_user_shared_data();
 +    virtual_map_hypervisor_shared_data();
      init_cpu_info();
      init_files();
-     load_libwine();
+     init_startup_info();
 diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/system.c
 +++ b/dlls/ntdll/unix/system.c
-@@ -3324,6 +3324,18 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+@@ -3363,6 +3363,18 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
          break;
      }
  
@@ -117,15 +117,15 @@ diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/unix_private.h
 +++ b/dlls/ntdll/unix/unix_private.h
-@@ -141,6 +141,7 @@ extern BOOL process_exiting DECLSPEC_HIDDEN;
+@@ -168,6 +168,7 @@ extern BOOL process_exiting DECLSPEC_HIDDEN;
  extern HANDLE keyed_event DECLSPEC_HIDDEN;
  extern timeout_t server_start_time DECLSPEC_HIDDEN;
  extern sigset_t server_block_set DECLSPEC_HIDDEN;
 +extern void *hypervisor_shared_data DECLSPEC_HIDDEN;
  extern struct _KUSER_SHARED_DATA *user_shared_data DECLSPEC_HIDDEN;
  extern SYSTEM_CPU_INFORMATION cpu_info DECLSPEC_HIDDEN;
- #ifndef _WIN64
-@@ -217,6 +218,7 @@ extern NTSTATUS virtual_clear_tls_index( ULONG index ) DECLSPEC_HIDDEN;
+ #ifdef __i386__
+@@ -242,6 +243,7 @@ extern NTSTATUS virtual_clear_tls_index( ULONG index ) DECLSPEC_HIDDEN;
  extern NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR zero_bits, SIZE_T reserve_size,
                                              SIZE_T commit_size, SIZE_T extra_size ) DECLSPEC_HIDDEN;
  extern void virtual_map_user_shared_data(void) DECLSPEC_HIDDEN;
@@ -137,7 +137,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -181,6 +181,7 @@ static void *user_space_limit    = (void *)0x7fff0000;
+@@ -182,6 +182,7 @@ static void *user_space_limit    = (void *)0x7fff0000;
  static void *working_set_limit   = (void *)0x7fff0000;
  #endif
  
@@ -145,7 +145,7 @@ index 11111111111..11111111111 100644
  struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
  
  /* TEB allocation blocks */
-@@ -3191,6 +3192,14 @@ TEB *virtual_alloc_first_teb(void)
+@@ -3164,6 +3165,14 @@ TEB *virtual_alloc_first_teb(void)
          exit(1);
      }
  
@@ -160,7 +160,7 @@ index 11111111111..11111111111 100644
      NtAllocateVirtualMemory( NtCurrentProcess(), &teb_block, is_win64 ? 0x7fffffff : 0, &total,
                               MEM_RESERVE | MEM_TOP_DOWN, PAGE_READWRITE );
      teb_block_pos = 30;
-@@ -3490,6 +3499,35 @@ static BOOL is_inside_thread_stack( void *ptr, struct thread_stack_info *stack )
+@@ -3462,6 +3471,35 @@ BOOL CDECL __wine_needs_override_large_address_aware(void)
  }
  
  
@@ -200,7 +200,7 @@ diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
 index 11111111111..11111111111 100644
 --- a/programs/wineboot/wineboot.c
 +++ b/programs/wineboot/wineboot.c
-@@ -420,6 +420,81 @@ static void initialize_qpc_features( struct _KUSER_SHARED_DATA *data, UINT64 *ts
+@@ -421,6 +421,81 @@ static void initialize_qpc_features( struct _KUSER_SHARED_DATA *data, UINT64 *ts
  
  #endif
  
@@ -282,7 +282,7 @@ index 11111111111..11111111111 100644
  static void create_user_shared_data( UINT64 *tsc_frequency )
  {
      struct _KUSER_SHARED_DATA *data;
-@@ -2017,6 +2092,7 @@ int __cdecl main( int argc, char *argv[] )
+@@ -2079,6 +2154,7 @@ int __cdecl main( int argc, char *argv[] )
      ResetEvent( event );  /* in case this is a restart */
  
      create_user_shared_data( &tsc_frequency );
@@ -396,7 +396,7 @@ diff --git a/server/mapping.c b/server/mapping.c
 index 11111111111..11111111111 100644
 --- a/server/mapping.c
 +++ b/server/mapping.c
-@@ -1120,6 +1120,20 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
+@@ -1117,6 +1117,20 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
      return &mapping->obj;
  }
  

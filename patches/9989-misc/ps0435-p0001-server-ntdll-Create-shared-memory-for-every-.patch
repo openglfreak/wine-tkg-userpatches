@@ -1,7 +1,7 @@
 From 0ad5a65f071a1e759b852eb82da66ec1e18cc72b Mon Sep 17 00:00:00 2001
 From: Torge Matthies <openglfreak@googlemail.com>
 Date: Sun, 31 Jul 2022 15:09:23 +0200
-Subject: [PATCH 1/4] server,ntdll: Create shared memory for every thread.
+Subject: [PATCH 1/7] server,ntdll: Create shared memory for every thread.
 
 ---
  dlls/ntdll/unix/server.c       | 65 +++++++++++++++++++++++++++++++++-
@@ -18,7 +18,7 @@ diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/server.c
 +++ b/dlls/ntdll/unix/server.c
-@@ -1560,6 +1560,13 @@ size_t server_init_process(void)
+@@ -1588,6 +1588,13 @@ size_t server_init_process(void)
      struct sigaction sig_act;
      size_t info_size;
      DWORD pid, tid;
@@ -32,7 +32,7 @@ index 11111111111..11111111111 100644
  
      server_pid = -1;
      if (env_socket)
-@@ -1622,6 +1629,7 @@ size_t server_init_process(void)
+@@ -1650,6 +1657,7 @@ size_t server_init_process(void)
  
      reply_pipe = init_thread_pipe();
  
@@ -40,7 +40,7 @@ index 11111111111..11111111111 100644
      SERVER_START_REQ( init_first_thread )
      {
          req->unix_pid    = getpid();
-@@ -1636,9 +1644,18 @@ size_t server_init_process(void)
+@@ -1664,9 +1672,18 @@ size_t server_init_process(void)
          peb->SessionId    = reply->session_id;
          info_size         = reply->info_size;
          server_start_time = reply->server_start;
@@ -59,7 +59,7 @@ index 11111111111..11111111111 100644
      close( reply_pipe );
  
      if (ret) server_protocol_error( "init_first_thread failed with status %x\n", ret );
-@@ -1670,9 +1687,25 @@ size_t server_init_process(void)
+@@ -1697,9 +1714,25 @@ size_t server_init_process(void)
      set_thread_id( NtCurrentTeb(), pid, tid );
  
      for (i = 0; i < supported_machines_count; i++)
@@ -86,7 +86,7 @@ index 11111111111..11111111111 100644
  }
  
  
-@@ -1735,10 +1768,18 @@ void server_init_thread( void *entry_point, BOOL *suspend )
+@@ -1760,10 +1793,18 @@ void server_init_thread( void *entry_point, BOOL *suspend )
  {
      void *teb;
      int reply_pipe = init_thread_pipe();
@@ -105,7 +105,7 @@ index 11111111111..11111111111 100644
      SERVER_START_REQ( init_thread )
      {
          req->unix_tid  = get_unix_tid();
-@@ -1748,9 +1789,31 @@ void server_init_thread( void *entry_point, BOOL *suspend )
+@@ -1773,9 +1814,31 @@ void server_init_thread( void *entry_point, BOOL *suspend )
          req->wait_fd   = ntdll_get_thread_data()->wait_fd[1];
          wine_server_call( req );
          *suspend = reply->suspend;
@@ -141,8 +141,8 @@ diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/unix_private.h
 +++ b/dlls/ntdll/unix/unix_private.h
-@@ -53,6 +53,19 @@ static inline BOOL is_machine_64bit( WORD machine )
-     return (machine == IMAGE_FILE_MACHINE_AMD64 || machine == IMAGE_FILE_MACHINE_ARM64);
+@@ -80,6 +80,19 @@ static inline BOOL is_old_wow64(void)
+     return !is_win64 && wow_peb;
  }
  
 +#ifdef __linux__
@@ -161,7 +161,7 @@ index 11111111111..11111111111 100644
  /* thread private data, stored in NtCurrentTeb()->GdiTebBatch */
  struct ntdll_thread_data
  {
-@@ -63,6 +76,10 @@ struct ntdll_thread_data
+@@ -90,6 +103,10 @@ struct ntdll_thread_data
      int                request_fd;    /* fd for sending server requests */
      int                reply_fd;      /* fd for receiving server replies */
      int                wait_fd[2];    /* fd for sleeping server requests */
@@ -176,7 +176,7 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -3200,6 +3200,10 @@ static TEB *init_teb( void *ptr, BOOL is_wow )
+@@ -3170,6 +3170,10 @@ static TEB *init_teb( void *ptr, BOOL is_wow )
      thread_data->reply_fd   = -1;
      thread_data->wait_fd[0] = -1;
      thread_data->wait_fd[1] = -1;
@@ -213,7 +213,7 @@ diff --git a/server/mapping.c b/server/mapping.c
 index 11111111111..11111111111 100644
 --- a/server/mapping.c
 +++ b/server/mapping.c
-@@ -1197,6 +1197,22 @@ struct object *create_shared_mapping( struct object *root, const struct unicode_
+@@ -1184,6 +1184,22 @@ struct object *create_shared_mapping( struct object *root, const struct unicode_
      return &mapping->obj;
  }
  
@@ -249,7 +249,7 @@ index 11111111111..11111111111 100644
  struct request_header
  {
      int          req;          /* request code */
-@@ -1027,6 +1029,7 @@ struct directory_entry
+@@ -1029,6 +1031,7 @@ struct directory_entry
      timeout_t    server_start; /* server start time */
      unsigned int session_id;   /* process session id */
      data_size_t  info_size;    /* total size of startup info */
@@ -257,7 +257,7 @@ index 11111111111..11111111111 100644
      VARARG(machines,ushorts);  /* array of supported machines */
  @END
  
-@@ -1040,6 +1043,7 @@ struct directory_entry
+@@ -1042,6 +1045,7 @@ struct directory_entry
      client_ptr_t entry;        /* entry point (in thread address space) */
  @REPLY
      int          suspend;      /* is thread suspended? */
@@ -277,7 +277,7 @@ index 11111111111..11111111111 100644
  #include <unistd.h>
  #include <time.h>
  #include <poll.h>
-@@ -377,6 +378,10 @@ static inline void init_thread_structure( struct thread *thread )
+@@ -375,6 +376,10 @@ static inline void init_thread_structure( struct thread *thread )
      thread->request_fd      = NULL;
      thread->reply_fd        = NULL;
      thread->wait_fd         = NULL;
@@ -288,7 +288,7 @@ index 11111111111..11111111111 100644
      thread->state           = RUNNING;
      thread->exit_code       = 0;
      thread->priority        = 0;
-@@ -579,6 +584,14 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+@@ -577,6 +582,14 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
          }
      }
  
@@ -303,7 +303,7 @@ index 11111111111..11111111111 100644
      if (do_fsync())
      {
          thread->fsync_idx = fsync_alloc_shm( 0, 0 );
-@@ -656,6 +669,10 @@ static void cleanup_thread( struct thread *thread )
+@@ -654,6 +667,10 @@ static void cleanup_thread( struct thread *thread )
      if (thread->request_fd) release_object( thread->request_fd );
      if (thread->reply_fd) release_object( thread->reply_fd );
      if (thread->wait_fd) release_object( thread->wait_fd );
@@ -314,7 +314,7 @@ index 11111111111..11111111111 100644
      cleanup_clipboard_thread(thread);
      destroy_thread_windows( thread );
      free_msg_queue( thread );
-@@ -679,6 +696,10 @@ static void cleanup_thread( struct thread *thread )
+@@ -677,6 +694,10 @@ static void cleanup_thread( struct thread *thread )
      thread->request_fd = NULL;
      thread->reply_fd = NULL;
      thread->wait_fd = NULL;
@@ -325,7 +325,7 @@ index 11111111111..11111111111 100644
      thread->desktop = 0;
      thread->desc = NULL;
      thread->desc_len = 0;
-@@ -1988,8 +2009,11 @@ DECL_HANDLER(init_first_thread)
+@@ -1998,8 +2019,11 @@ DECL_HANDLER(init_first_thread)
      reply->session_id   = process->session_id;
      reply->info_size    = get_process_startup_info_size( process );
      reply->server_start = server_start_time;
@@ -337,7 +337,7 @@ index 11111111111..11111111111 100644
  }
  
  /* initialize a new thread */
-@@ -2016,6 +2040,9 @@ DECL_HANDLER(init_thread)
+@@ -2026,6 +2050,9 @@ DECL_HANDLER(init_thread)
          set_thread_affinity( current, current->affinity );
  
      reply->suspend = (current->suspend || current->process->suspend || current->context != NULL);
@@ -383,5 +383,5 @@ index 11111111111..11111111111 100644
      int                    exit_code;     /* thread exit code */
      int                    unix_pid;      /* Unix pid of client */
 -- 
-2.39.0
+2.40.0
 

@@ -1,0 +1,61 @@
+From 480299bfd0a995e7f26e0e6429cc017ec96814af Mon Sep 17 00:00:00 2001
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Date: Fri, 22 Jul 2022 02:31:13 +0900
+Subject: [PATCH] server: Allow cancelling alerted asyncs.
+
+---
+ server/async.c | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/server/async.c b/server/async.c
+index 11111111111..11111111111 100644
+--- a/server/async.c
++++ b/server/async.c
+@@ -44,6 +44,7 @@ struct async
+     struct fd           *fd;              /* fd associated with an unqueued async */
+     struct timeout_user *timeout;
+     unsigned int         timeout_status;  /* status to report upon timeout */
++    unsigned int         terminate_status;/* pending termination status, or STATUS_PENDING */
+     struct event        *event;
+     async_data_t         data;            /* data for async I/O call */
+     struct iosb         *iosb;            /* I/O status block */
+@@ -168,6 +169,11 @@ void async_terminate( struct async *async, unsigned int status )
+ {
+     struct iosb *iosb = async->iosb;
+ 
++    if (status != STATUS_ALERTED && async->terminate_status == STATUS_PENDING)
++    {
++        async->terminate_status = status;
++    }
++
+     if (async->terminated) return;
+ 
+     async->terminated = 1;
+@@ -271,6 +277,7 @@ struct async *create_async( struct fd *fd, struct thread *thread, const async_da
+     async->queue         = NULL;
+     async->fd            = (struct fd *)grab_object( fd );
+     async->initial_status = STATUS_PENDING;
++    async->terminate_status = STATUS_PENDING;
+     async->signaled      = 0;
+     async->pending       = 1;
+     async->wait_handle   = 0;
+@@ -500,7 +507,15 @@ void async_set_result( struct object *obj, unsigned int status, apc_param_t tota
+     {
+         async->terminated = 0;
+         async->alerted = 0;
+-        async_reselect( async );
++
++        if (async->terminate_status != STATUS_PENDING)
++        {
++            async_terminate( async, async->terminate_status );
++        }
++        else
++        {
++            async_reselect( async );
++        }
+     }
+     else
+     {
+-- 
+2.40.0
+

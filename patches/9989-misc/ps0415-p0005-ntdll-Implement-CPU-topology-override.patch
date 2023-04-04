@@ -19,15 +19,15 @@ diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/server.c
 +++ b/dlls/ntdll/unix/server.c
-@@ -1681,6 +1681,7 @@ size_t server_init_process(void)
+@@ -1708,6 +1708,7 @@ size_t server_init_process(void)
   */
- void server_init_process_done(void)
+ void server_init_process_done( void **entry, BOOL *suspend )
  {
 +    struct cpu_topology_override *cpu_override = get_cpu_topology_override();
-     void *entry, *teb;
+     void *teb;
      unsigned int status;
-     int suspend;
-@@ -1707,6 +1708,8 @@ void server_init_process_done(void)
+     FILE_FS_DEVICE_INFORMATION info;
+@@ -1733,6 +1734,8 @@ void server_init_process_done( void **entry, BOOL *suspend )
      /* Signal the parent process to continue */
      SERVER_START_REQ( init_process_done )
      {
@@ -48,7 +48,7 @@ index 11111111111..11111111111 100644
  #include <sys/time.h>
  #include <time.h>
  #include <dirent.h>
-@@ -261,6 +262,13 @@ static int get_possible_cpus(void)
+@@ -263,6 +264,13 @@ static int get_possible_cpus(void)
      return ret;
  }
  
@@ -62,7 +62,7 @@ index 11111111111..11111111111 100644
  /*******************************************************************************
   * Architecture specific feature detection for CPUs
   *
-@@ -572,6 +580,91 @@ static void get_cpuinfo( SYSTEM_CPU_INFORMATION *info )
+@@ -594,6 +602,91 @@ static void get_cpuinfo( SYSTEM_CPU_INFORMATION *info )
  
  #ifdef linux
  
@@ -154,7 +154,7 @@ index 11111111111..11111111111 100644
  static BOOL grow_logical_proc_buf(void)
  {
      SYSTEM_LOGICAL_PROCESSOR_INFORMATION *new_data;
-@@ -863,11 +956,13 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -885,11 +978,13 @@ static NTSTATUS create_logical_proc_info(void)
      static const char core_info[] = "/sys/devices/system/cpu/cpu%u/topology/%s";
      static const char cache_info[] = "/sys/devices/system/cpu/cpu%u/cache/index%u/%s";
      static const char numa_info[] = "/sys/devices/system/node/node%u/cpumap";
@@ -169,7 +169,7 @@ index 11111111111..11111111111 100644
  
      /* On systems with a large number of CPU cores (32 or 64 depending on 32-bit or 64-bit),
       * we have issues parsing processor information:
-@@ -892,6 +987,12 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -914,6 +1009,12 @@ static NTSTATUS create_logical_proc_info(void)
          if (op == '-') fscanf(fcpu_list, "%u%c ", &end, &op);
          else end = beg;
  
@@ -182,7 +182,7 @@ index 11111111111..11111111111 100644
          for(i = beg; i <= end; i++)
          {
              unsigned int phys_core = 0;
-@@ -903,7 +1004,7 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -925,7 +1026,7 @@ static NTSTATUS create_logical_proc_info(void)
                  continue;
              }
  
@@ -191,7 +191,7 @@ index 11111111111..11111111111 100644
              f = fopen(name, "r");
              if (f)
              {
-@@ -930,19 +1031,32 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -952,19 +1053,32 @@ static NTSTATUS create_logical_proc_info(void)
  
              /* Mask of logical threads sharing same physical core in kernel core numbering. */
              sprintf(name, core_info, i, "thread_siblings");
@@ -232,7 +232,7 @@ index 11111111111..11111111111 100644
  
              if (!logical_proc_info_add_by_id( RelationProcessorCore, phys_core, thread_mask ))
              {
-@@ -950,36 +1064,38 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -972,36 +1086,38 @@ static NTSTATUS create_logical_proc_info(void)
                  return STATUS_NO_MEMORY;
              }
  
@@ -277,7 +277,7 @@ index 11111111111..11111111111 100644
                  f = fopen(name, "r");
                  if(!f) continue;
                  fscanf(f, "%u%c", &r, &op);
-@@ -988,7 +1104,7 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1010,7 +1126,7 @@ static NTSTATUS create_logical_proc_info(void)
                      WARN("unknown cache size %u%c\n", r, op);
                  cache.Size = (op=='K' ? r*1024 : r);
  
@@ -286,7 +286,7 @@ index 11111111111..11111111111 100644
                  f = fopen(name, "r");
                  if(!f) continue;
                  fscanf(f, "%s", name);
-@@ -1000,6 +1116,19 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1022,6 +1138,19 @@ static NTSTATUS create_logical_proc_info(void)
                  else
                      cache.Type = CacheUnified;
  
@@ -306,7 +306,7 @@ index 11111111111..11111111111 100644
                  if (!logical_proc_info_add_cache( mask, &cache ))
                  {
                      fclose(fcpu_list);
-@@ -1007,6 +1136,9 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1029,6 +1158,9 @@ static NTSTATUS create_logical_proc_info(void)
                  }
              }
          }
@@ -316,7 +316,7 @@ index 11111111111..11111111111 100644
      }
      fclose(fcpu_list);
  
-@@ -1226,7 +1358,11 @@ void init_cpu_info(void)
+@@ -1248,7 +1380,11 @@ void init_cpu_info(void)
      num = 1;
      FIXME("Detecting the number of processors is not supported.\n");
  #endif
@@ -333,7 +333,7 @@ diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/thread.c
 +++ b/dlls/ntdll/unix/thread.c
-@@ -2470,7 +2470,20 @@ ULONG WINAPI NtGetCurrentProcessorNumber(void)
+@@ -2520,7 +2520,20 @@ ULONG WINAPI NtGetCurrentProcessorNumber(void)
  
  #if defined(__linux__) && defined(__NR_getcpu)
      int res = syscall(__NR_getcpu, &processor, NULL, NULL);
@@ -359,14 +359,14 @@ diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/unix_private.h
 +++ b/dlls/ntdll/unix/unix_private.h
-@@ -298,6 +298,7 @@ extern void init_files(void) DECLSPEC_HIDDEN;
+@@ -325,6 +325,7 @@ extern void init_files(void) DECLSPEC_HIDDEN;
  extern void init_cpu_info(void) DECLSPEC_HIDDEN;
  extern void add_completion( HANDLE handle, ULONG_PTR value, NTSTATUS status, ULONG info, BOOL async ) DECLSPEC_HIDDEN;
  extern void set_async_direct_result( HANDLE *async_handle, NTSTATUS status, ULONG_PTR information, BOOL mark_pending ) DECLSPEC_HIDDEN;
 +extern struct cpu_topology_override *get_cpu_topology_override(void) DECLSPEC_HIDDEN;
  
- extern void dbg_init(void) DECLSPEC_HIDDEN;
- 
+ extern NTSTATUS unixcall_wine_dbg_write( void *args ) DECLSPEC_HIDDEN;
+ extern NTSTATUS unixcall_wine_needs_override_large_address_aware( void *args ) DECLSPEC_HIDDEN;
 diff --git a/server/process.c b/server/process.c
 index 11111111111..11111111111 100644
 --- a/server/process.c
@@ -459,7 +459,7 @@ index 11111111111..11111111111 100644
  struct shared_cursor
  {
      int                  x;                /* cursor position */
-@@ -1003,6 +1009,7 @@ struct directory_entry
+@@ -1005,6 +1011,7 @@ struct directory_entry
      client_ptr_t ldt_copy;     /* address of LDT copy (in process address space) */
  @REPLY
      client_ptr_t entry;        /* process entry point */
@@ -471,7 +471,7 @@ diff --git a/server/thread.c b/server/thread.c
 index 11111111111..11111111111 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -858,8 +858,19 @@ int set_thread_affinity( struct thread *thread, affinity_t affinity )
+@@ -856,8 +856,19 @@ int set_thread_affinity( struct thread *thread, affinity_t affinity )
  
          CPU_ZERO( &set );
          for (i = 0, mask = 1; mask; i++, mask <<= 1)
@@ -493,7 +493,7 @@ index 11111111111..11111111111 100644
          ret = sched_setaffinity( thread->unix_tid, sizeof(set), &set );
      }
  #endif
-@@ -877,8 +888,21 @@ affinity_t get_thread_affinity( struct thread *thread )
+@@ -875,8 +886,21 @@ affinity_t get_thread_affinity( struct thread *thread )
          unsigned int i;
  
          if (!sched_getaffinity( thread->unix_tid, sizeof(set), &set ))

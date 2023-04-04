@@ -8,12 +8,12 @@ Signed-off-by: Huw Davies <huw@codeweavers.com>
 ---
  dlls/win32u/hook.c           |  2 --
  dlls/win32u/input.c          | 38 +++++++++---------------------------
- dlls/win32u/message.c        | 16 ++-------------
+ dlls/win32u/message.c        |  9 ++-------
  dlls/win32u/ntuser_private.h |  1 -
  dlls/win32u/sysparams.c      |  2 --
  dlls/win32u/win32u_private.h |  1 -
  dlls/win32u/winstation.c     |  2 --
- 7 files changed, 11 insertions(+), 51 deletions(-)
+ 7 files changed, 11 insertions(+), 44 deletions(-)
 
 diff --git a/dlls/win32u/hook.c b/dlls/win32u/hook.c
 index 11111111111..11111111111 100644
@@ -32,7 +32,7 @@ diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/input.c
 +++ b/dlls/win32u/input.c
-@@ -277,52 +277,32 @@ static void check_for_events( UINT flags )
+@@ -798,52 +798,32 @@ static void check_for_events( UINT flags )
   */
  SHORT WINAPI NtUserGetAsyncKeyState( INT key )
  {
@@ -98,37 +98,14 @@ diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/message.c
 +++ b/dlls/win32u/message.c
-@@ -2579,10 +2579,8 @@ LRESULT send_internal_message_timeout( DWORD dest_pid, DWORD dest_tid,
-  */
- NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *rawinput, UINT flags )
- {
--    struct user_key_state_info *key_state_info = get_user_thread_info()->key_state;
-     struct send_message_info info;
-     int prev_x, prev_y, new_x, new_y;
--    INT counter = global_key_state_counter;
-     USAGE hid_usage_page, hid_usage;
-     NTSTATUS ret;
-     BOOL wait;
-@@ -2666,8 +2664,6 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
-             }
-             break;
-         }
--        if (key_state_info) wine_server_set_reply( req, key_state_info->state,
--                                                   sizeof(key_state_info->state) );
-         ret = wine_server_call( req );
-         wait = reply->wait;
-         prev_x = reply->prev_x;
-@@ -2677,16 +2673,8 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
+@@ -2684,13 +2684,8 @@ NTSTATUS send_hardware_message( HWND hwnd, const INPUT *input, const RAWINPUT *r
      }
      SERVER_END_REQ;
  
 -    if (!ret)
 -    {
--        if (key_state_info)
--        {
--            key_state_info->time    = NtGetTickCount();
--            key_state_info->counter = counter;
--        }
+-        if (affects_key_state)
+-            InterlockedIncrement( &global_key_state_counter ); /* force refreshing the key state cache */
 -        if ((flags & SEND_HWMSG_INJECTED) && (prev_x != new_x || prev_y != new_y))
 -            user_driver->pSetCursorPos( new_x, new_y );
 -    }
@@ -141,7 +118,7 @@ diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/ntuser_private.h
 +++ b/dlls/win32u/ntuser_private.h
-@@ -129,7 +129,6 @@ struct user_thread_info
+@@ -125,7 +125,6 @@ struct user_thread_info
      HHOOK                         hook;                   /* Current hook */
      UINT                          active_hooks;           /* Bitmap of active hooks */
      struct received_message_info *receive_info;           /* Message being currently received */
@@ -153,7 +130,7 @@ diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/sysparams.c
 +++ b/dlls/win32u/sysparams.c
-@@ -5404,8 +5404,6 @@ static void thread_detach(void)
+@@ -5564,8 +5564,6 @@ static void thread_detach(void)
  
      user_driver->pThreadDetach();
  

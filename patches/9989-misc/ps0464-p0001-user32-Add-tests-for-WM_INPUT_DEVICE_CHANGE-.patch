@@ -1,0 +1,119 @@
+From 23b088a270eb4ed800691b18cac774b08245b946 Mon Sep 17 00:00:00 2001
+From: Evan Tang <etang@codeweavers.com>
+Date: Mon, 23 Jan 2023 16:14:19 -0600
+Subject: [PATCH 1/2] user32: Add tests for WM_INPUT_DEVICE_CHANGE messages
+
+When registering for WM_INPUT_DEVICE_CHANGE messages, one should be sent
+for every existing matching device.
+---
+ dlls/user32/tests/input.c | 49 +++++++++++++++++++++++++++++++++++----
+ 1 file changed, 44 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/user32/tests/input.c b/dlls/user32/tests/input.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/tests/input.c
++++ b/dlls/user32/tests/input.c
+@@ -2111,7 +2111,9 @@ static void test_RegisterRawInputDevices(void)
+     DestroyWindow(hwnd);
+ }
+ 
+-static int rawinputbuffer_wndproc_count;
++static int rawinputbuffer_wndproc_wm_input_count;
++static int rawinputbuffer_wndproc_wm_input_device_change_count;
++static int rawinputbuffer_wndproc_other_msg_count;
+ 
+ typedef struct
+ {
+@@ -2152,7 +2154,7 @@ static int rawinput_buffer_mouse_x(void *buffer, size_t index)
+ 
+ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+ {
+-    UINT i, size, count, status, rawinput_size, iteration = rawinputbuffer_wndproc_count++;
++    UINT i, size, count, status, rawinput_size;
+     RAWINPUT ri;
+     char buffer[16 * sizeof(RAWINPUT64)];
+     MSG message;
+@@ -2162,6 +2164,8 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
+ 
+     if (msg == WM_INPUT)
+     {
++        UINT iteration = rawinputbuffer_wndproc_wm_input_count++;
++
+         SetLastError(0xdeadbeef);
+         count = GetRawInputBuffer(NULL, NULL, sizeof(RAWINPUTHEADER));
+         ok(count == ~0U, "GetRawInputBuffer succeeded\n");
+@@ -2299,19 +2303,39 @@ static LRESULT CALLBACK rawinputbuffer_wndproc(HWND hwnd, UINT msg, WPARAM wpara
+ 
+         return 0;
+     }
++    else if (msg == WM_INPUT_DEVICE_CHANGE)
++    {
++        ok(rawinputbuffer_wndproc_wm_input_count == 0, "device change event came after input event\n");
++        rawinputbuffer_wndproc_wm_input_device_change_count++;
++    }
++    else
++    {
++        rawinputbuffer_wndproc_other_msg_count++;
++    }
+ 
+     return DefWindowProcA(hwnd, msg, wparam, lparam);
+ }
+ 
+ static void test_GetRawInputBuffer(void)
+ {
+-    unsigned int size, count, rawinput_size, header_size, scan_code;
++    unsigned int i, size, count, rawinput_size, header_size, scan_code, num_mice = 0;
+     RAWINPUTDEVICE raw_devices[1];
++    RAWINPUTDEVICELIST *raw_device_list;
+     char buffer[16 * sizeof(RAWINPUT64)];
+     HWND hwnd;
+     BOOL ret;
+     POINT pt;
+ 
++    GetRawInputDeviceList(NULL, &count, sizeof(RAWINPUTDEVICELIST));
++    raw_device_list = malloc(sizeof(RAWINPUTDEVICELIST) * count);
++    GetRawInputDeviceList(raw_device_list, &count, sizeof(RAWINPUTDEVICELIST));
++    for (i = 0; i < count; i++)
++    {
++        if (raw_device_list[i].dwType == RIM_TYPEMOUSE)
++            num_mice++;
++    }
++    free(raw_device_list);
++
+ #define HEADER_FIELD(field) (is_wow64 ? ((RAWINPUT64 *)buffer)->header.field : ((RAWINPUT *)buffer)->header.field)
+ 
+     if (is_wow64) rawinput_size = sizeof(RAWINPUT64);
+@@ -2424,14 +2448,29 @@ static void test_GetRawInputBuffer(void)
+     count = GetRawInputBuffer((RAWINPUT*)buffer, &size, sizeof(RAWINPUTHEADER));
+     ok(count == 0U, "GetRawInputBuffer returned %u\n", count);
+ 
++    raw_devices[0].dwFlags = RIDEV_REMOVE;
++    raw_devices[0].hwndTarget = 0;
++    SetLastError(0xdeadbeef);
++    ret = RegisterRawInputDevices(raw_devices, ARRAY_SIZE(raw_devices), sizeof(RAWINPUTDEVICE));
++    ok(ret, "RegisterRawInputDevices failed\n");
++    ok(GetLastError() == 0xdeadbeef, "RegisterRawInputDevices returned %08lx\n", GetLastError());
++
++    raw_devices[0].dwFlags = RIDEV_INPUTSINK | RIDEV_DEVNOTIFY;
++    raw_devices[0].hwndTarget = hwnd;
++    SetLastError(0xdeadbeef);
++    ret = RegisterRawInputDevices(raw_devices, ARRAY_SIZE(raw_devices), sizeof(RAWINPUTDEVICE));
++    ok(ret, "RegisterRawInputDevices failed\n");
++    ok(GetLastError() == 0xdeadbeef, "RegisterRawInputDevices returned %08lx\n", GetLastError());
+ 
+-    rawinputbuffer_wndproc_count = 0;
++    rawinputbuffer_wndproc_wm_input_count = 0;
++    rawinputbuffer_wndproc_wm_input_device_change_count = 0;
+     mouse_event(MOUSEEVENTF_MOVE, 1, 0, 0, 0);
+     mouse_event(MOUSEEVENTF_MOVE, 2, 0, 0, 0);
+     mouse_event(MOUSEEVENTF_MOVE, 3, 0, 0, 0);
+     mouse_event(MOUSEEVENTF_MOVE, 4, 0, 0, 0);
+     empty_message_queue();
+-    ok(rawinputbuffer_wndproc_count == 2, "Spurious WM_INPUT messages\n");
++    ok(rawinputbuffer_wndproc_wm_input_count == 2, "Spurious WM_INPUT messages\n");
++    todo_wine ok(rawinputbuffer_wndproc_wm_input_device_change_count == num_mice, "Got %d WM_INPUT_DEVICE_CHANGE messages (expected %d)\n", rawinputbuffer_wndproc_wm_input_device_change_count, num_mice);
+ 
+     raw_devices[0].dwFlags = RIDEV_REMOVE;
+     raw_devices[0].hwndTarget = 0;
+
+

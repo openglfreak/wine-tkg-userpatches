@@ -13,10 +13,10 @@ diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
-@@ -2940,6 +2940,18 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
-                    "movq %rdx,0x2f0(%rcx)\n\t"
-                    "movq %rdx,0x2f8(%rcx)\n\t"
-                    "xsavec64 0xc0(%rcx)\n\t"
+@@ -2949,6 +2949,18 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    /* The xsavec instruction is not supported by
+                     * binutils < 2.25. */
+                    ".byte 0x48, 0x0f, 0xc7, 0xa1, 0xc0, 0x00, 0x00, 0x00\n\t" /* xsavec64 0xc0(%rcx) */
 +                   "testq $2,0x2c0(%rcx)\n\t"          /* frame->xstate.Mask */
 +                   "jnz 3f\n\t"
 +                   "movdqa %xmm6,0x1c0(%rcx)\n\t"
@@ -32,7 +32,7 @@ index 11111111111..11111111111 100644
                     "jmp 3f\n"
                     "1:\txsave64 0xc0(%rcx)\n\t"
                     "jmp 3f\n"
-@@ -2972,7 +2984,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+@@ -2981,7 +2993,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                     "leaq -0x98(%rbp),%rcx\n"
                     "2:\n\t"
  #endif
@@ -41,7 +41,7 @@ index 11111111111..11111111111 100644
                     "movq %rcx,%rsp\n\t"
                     "movq 0x00(%rcx),%rax\n\t"
                     "movq 0x18(%rcx),%rdx\n\t"
-@@ -2986,7 +2998,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+@@ -2995,7 +3007,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                     "jae 5f\n\t"
                     "movq 24(%rbx),%rcx\n\t"        /* table->ArgumentTable */
                     "movzbl (%rcx,%rax),%ecx\n\t"
@@ -50,7 +50,7 @@ index 11111111111..11111111111 100644
                     "jbe 1f\n\t"
                     "subq %rcx,%rsp\n\t"
                     "shrq $3,%rcx\n\t"
-@@ -2994,13 +3006,30 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+@@ -3003,13 +3015,30 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                     "movq %rsp,%rdi\n\t"
                     "cld\n\t"
                     "rep; movsq\n"
@@ -69,7 +69,7 @@ index 11111111111..11111111111 100644
                     /* $rcx is now pointing to "frame" again */
                     __ASM_CFI(".cfi_restore_state\n")
 +                   "testl $0x8,0x94(%rcx)\n\t"     /* frame->restore_flags */
-+                   "jnz .L__wine_syscall_dispatcher_return\n\t"
++                   "jnz " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") "\n\t"
 +                   "movdqa 0x1c0(%rcx),%xmm6\n\t"
 +                   "movdqa 0x1d0(%rcx),%xmm7\n\t"
 +                   "movdqa 0x1e0(%rcx),%xmm8\n\t"
@@ -80,7 +80,7 @@ index 11111111111..11111111111 100644
 +                   "movdqa 0x230(%rcx),%xmm13\n\t"
 +                   "movdqa 0x240(%rcx),%xmm14\n\t"
 +                   "movdqa 0x250(%rcx),%xmm15\n\t"
-                    ".L__wine_syscall_dispatcher_return:\n\t"
+                    __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") ":\n\t"
                     "movl 0x94(%rcx),%edx\n\t"  /* frame->restore_flags */
  #ifdef __linux__
 diff --git a/include/windef.h b/include/windef.h
@@ -100,5 +100,5 @@ index 11111111111..11111111111 100644
  /* Misc. constants. */
  
 -- 
-2.39.0
+2.40.0
 

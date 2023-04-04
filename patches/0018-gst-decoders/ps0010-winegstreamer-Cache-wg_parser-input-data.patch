@@ -1,0 +1,176 @@
+From 35262ac8908b74148025eab34af291dbd915fb56 Mon Sep 17 00:00:00 2001
+From: Derek Lesho <dlesho@codeweavers.com>
+Date: Mon, 13 Mar 2023 16:13:30 +0100
+Subject: [PATCH] winegstreamer: Cache wg_parser input data.
+
+In order to reduce wg_parser initialization time by skipping the round-trip to the PE thread.
+
+Signed-off-by: Derek Lesho <dlesho@codeweavers.com>
+---
+ dlls/winegstreamer/wg_parser.c | 117 +++++++++++++++++++++++++++++++++
+ 1 file changed, 117 insertions(+)
+
+diff --git a/dlls/winegstreamer/wg_parser.c b/dlls/winegstreamer/wg_parser.c
+index 11111111111..11111111111 100644
+--- a/dlls/winegstreamer/wg_parser.c
++++ b/dlls/winegstreamer/wg_parser.c
+@@ -59,6 +59,12 @@ GST_DEBUG_CATEGORY(wine);
+ 
+ typedef BOOL (*init_gst_cb)(struct wg_parser *parser);
+ 
++struct input_cache_chunk
++{
++    guint64 offset;
++    uint8_t *data;
++};
++
+ struct wg_parser
+ {
+     init_gst_cb init_gst;
+@@ -95,7 +101,10 @@ struct wg_parser
+     bool sink_connected;
+ 
+     gchar *sink_caps;
++
++    struct input_cache_chunk input_cache_chunks[4];
+ };
++static unsigned int wg_parser_chunk_size = 512 << 10;
+ 
+ struct wg_parser_stream
+ {
+@@ -971,10 +980,87 @@ static void pad_removed_cb(GstElement *element, GstPad *pad, gpointer user)
+     g_free(name);
+ }
+ 
++static GstFlowReturn read_input_cache(struct wg_parser *parser, guint64 offset, guint size, GstBuffer *buffer)
++{
++    unsigned int read_size, bytes_read = 0;
++    struct input_cache_chunk chunk;
++    GstBuffer *chunk_buffer;
++    GstFlowReturn ret;
++    int i;
++
++    while (size)
++    {
++        for (i = 0; i < ARRAY_SIZE(parser->input_cache_chunks); i++)
++        {
++            chunk = parser->input_cache_chunks[i];
++
++            if (chunk.data && offset - chunk.offset < wg_parser_chunk_size)
++            {
++                read_size = min(size, wg_parser_chunk_size - (offset - chunk.offset));
++                gst_buffer_fill(buffer, bytes_read, chunk.data + (offset - chunk.offset), read_size);
++
++                if (i != 0)
++                {
++                    memmove(&parser->input_cache_chunks[1], &parser->input_cache_chunks[0], i);
++                    parser->input_cache_chunks[0] = chunk;
++                }
++
++                size -= read_size;
++                offset += read_size;
++                bytes_read += read_size;
++
++                break;
++            }
++        }
++
++        if (i != ARRAY_SIZE(parser->input_cache_chunks))
++            continue;
++
++        chunk = parser->input_cache_chunks[ ARRAY_SIZE(parser->input_cache_chunks) - 1 ];
++
++        chunk.offset = offset - (offset % wg_parser_chunk_size);
++        if (!chunk.data)
++            chunk.data = malloc(wg_parser_chunk_size);
++
++        chunk_buffer = gst_buffer_new_wrapped_full(0, chunk.data, wg_parser_chunk_size, 0, wg_parser_chunk_size, NULL, NULL);
++
++        pthread_mutex_lock(&parser->mutex);
++
++        assert(!parser->read_request.size);
++        parser->read_request.buffer = chunk_buffer;
++        parser->read_request.offset = chunk.offset;
++        parser->read_request.size = wg_parser_chunk_size;
++        parser->read_request.done = false;
++        pthread_cond_signal(&parser->read_cond);
++
++        while (!parser->read_request.done)
++            pthread_cond_wait(&parser->read_done_cond, &parser->mutex);
++
++        ret = parser->read_request.ret;
++
++        pthread_mutex_unlock(&parser->mutex);
++
++        gst_buffer_unref(chunk_buffer);
++
++        if (ret != GST_FLOW_OK)
++        {
++            if (!parser->input_cache_chunks[ ARRAY_SIZE(parser->input_cache_chunks) - 1 ].data)
++                free(chunk.data);
++            return ret;
++        }
++
++        memmove(&parser->input_cache_chunks[1], &parser->input_cache_chunks[0], ARRAY_SIZE(parser->input_cache_chunks) - 1);
++        parser->input_cache_chunks[0] = chunk;
++    }
++
++    return GST_FLOW_OK;
++}
++
+ static GstFlowReturn src_getrange_cb(GstPad *pad, GstObject *parent,
+         guint64 offset, guint size, GstBuffer **buffer)
+ {
+     struct wg_parser *parser = gst_pad_get_element_private(pad);
++    GstBuffer *working_buffer = *buffer;
+     GstFlowReturn ret;
+ 
+     GST_LOG("pad %p, offset %" G_GINT64_MODIFIER "u, size %u, buffer %p.", pad, offset, size, *buffer);
+@@ -995,6 +1081,28 @@ static GstFlowReturn src_getrange_cb(GstPad *pad, GstObject *parent,
+         return GST_FLOW_OK;
+     }
+ 
++    if (size < wg_parser_chunk_size)
++    {
++        if (offset >= parser->file_size)
++            return GST_FLOW_EOS;
++
++        if ((offset + size) >= parser->file_size)
++            size = parser->file_size - offset;
++
++        if (!working_buffer)
++            working_buffer = gst_buffer_new_and_alloc(size);
++
++        if ((ret = read_input_cache(parser, offset, size, working_buffer)) != GST_FLOW_OK)
++        {
++            if (!*buffer)
++                gst_buffer_unref(working_buffer);
++            return ret;
++        }
++
++        *buffer = working_buffer;
++        return GST_FLOW_OK;
++    }
++
+     pthread_mutex_lock(&parser->mutex);
+ 
+     assert(!parser->read_request.size);
+@@ -1582,6 +1690,15 @@ static NTSTATUS wg_parser_disconnect(void *args)
+     g_free(parser->sink_caps);
+     parser->sink_caps = NULL;
+ 
++    for (i = 0; i < ARRAY_SIZE(parser->input_cache_chunks); i++)
++    {
++        if (parser->input_cache_chunks[i].data)
++        {
++            free(parser->input_cache_chunks[i].data);
++            parser->input_cache_chunks[i].data = NULL;
++        }
++    }
++
+     return S_OK;
+ }
+ 
+-- 
+2.40.0
+

@@ -1,0 +1,87 @@
+From f93326d16d9ac2f3cbd14e6f77744424c23dc698 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sun, 5 Feb 2023 11:26:39 +0100
+Subject: [PATCH 2/4] ntdll: Return entry and suspend from
+ server_init_process_done.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52213
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=54346
+---
+ dlls/ntdll/unix/loader.c       |  5 ++++-
+ dlls/ntdll/unix/server.c       | 10 ++++------
+ dlls/ntdll/unix/unix_private.h |  2 +-
+ 3 files changed, 9 insertions(+), 8 deletions(-)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2120,6 +2120,8 @@ static void *pthread_main_wrapper( void *arg )
+     SYSTEM_SERVICE_TABLE syscall_table = { (ULONG_PTR *)syscalls, NULL, ARRAY_SIZE(syscalls), syscall_args };
+     TEB *teb = virtual_alloc_first_teb();
+     sigset_t *blocked_signals = arg;
++    BOOL suspend;
++    void *entry;
+ 
+     pthread_sigmask( SIG_UNBLOCK, blocked_signals, NULL );
+     signal_init_threading();
+@@ -2142,7 +2144,8 @@ static void *pthread_main_wrapper( void *arg )
+     if (main_image_info.Machine != current_machine) load_wow64_ntdll( main_image_info.Machine );
+     load_apiset_dll();
+     ntdll_init_syscalls( 0, &syscall_table, p__wine_syscall_dispatcher );
+-    server_init_process_done();
++    server_init_process_done( &entry, &suspend );
++    signal_start_thread( entry, peb, suspend, NtCurrentTeb() );
+     return 0;
+ }
+ 
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1697,12 +1697,11 @@ size_t server_init_process(void)
+ /***********************************************************************
+  *           server_init_process_done
+  */
+-void server_init_process_done(void)
++void server_init_process_done( void **entry, BOOL *suspend )
+ {
+-    void *entry, *teb;
++    void *teb;
+     struct cpu_topology_override *cpu_override = get_cpu_topology_override();
+     unsigned int status;
+-    int suspend;
+     FILE_FS_DEVICE_INFORMATION info;
+ 
+     if (!get_device_info( initial_cwd, &info ) && (info.Characteristics & FILE_REMOVABLE_MEDIA))
+@@ -1734,13 +1733,12 @@ void server_init_process_done(void)
+         req->ldt_copy = wine_server_client_ptr( &__wine_ldt_copy );
+ #endif
+         status = wine_server_call( req );
+-        suspend = reply->suspend;
+-        entry = wine_server_get_ptr( reply->entry );
++        *suspend = reply->suspend;
++        *entry = wine_server_get_ptr( reply->entry );
+     }
+     SERVER_END_REQ;
+ 
+     assert( !status );
+-    signal_start_thread( entry, peb, suspend, NtCurrentTeb() );
+ }
+ 
+ 
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -212,7 +212,7 @@ extern int server_get_unix_fd( HANDLE handle, unsigned int wanted_access, int *u
+ extern void wine_server_send_fd( int fd ) DECLSPEC_HIDDEN;
+ extern void process_exit_wrapper( int status ) DECLSPEC_HIDDEN;
+ extern size_t server_init_process(void) DECLSPEC_HIDDEN;
+-extern void server_init_process_done(void) DECLSPEC_HIDDEN;
++extern void server_init_process_done( void **entry, BOOL *suspend ) DECLSPEC_HIDDEN;
+ extern void server_init_thread( void *entry_point, BOOL *suspend ) DECLSPEC_HIDDEN;
+ extern int server_pipe( int fd[2] ) DECLSPEC_HIDDEN;
+ 
+
+

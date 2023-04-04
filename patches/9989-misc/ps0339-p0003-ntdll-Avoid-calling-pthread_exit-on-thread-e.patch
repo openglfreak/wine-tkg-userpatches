@@ -1,0 +1,305 @@
+From 722b34e9db1d1e0ef6d6c127e58dfb583b033bbb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sun, 5 Feb 2023 11:28:04 +0100
+Subject: [PATCH 3/4] ntdll: Avoid calling pthread_exit on thread exit.
+
+Using a dedicated exit jmpbuf and removing the need for assembly
+routines.
+
+When Wine handles an exception in unix code, we return to user mode by
+jumping to the last syscall frame. This can leave some pthread cancel
+cleanups registered, in the pthread internal linked list, and at the
+same time later overwrite the stack frame they were registered for.
+
+In the same way, jumping to the exit frame on thread exit or abort, can
+also leave some cleanup handlers registered for invalid stack frames.
+
+Depending on the implementation, calling pthread_exit will cause all the
+registered pthread cleanup handlers to be called, possibly jumping back
+to now overwritten stack frames and causing segmentation faults.
+
+Exiting a pthread normally, by returning from its procedure doesn't run
+pthread_exit and doesn't call cleanup handlers, avoiding that situation.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52213
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=54346
+---
+ dlls/ntdll/unix/loader.c        |  3 +-
+ dlls/ntdll/unix/signal_arm.c    | 14 --------
+ dlls/ntdll/unix/signal_arm64.c  | 12 -------
+ dlls/ntdll/unix/signal_i386.c   | 25 -------------
+ dlls/ntdll/unix/signal_x86_64.c | 21 -----------
+ dlls/ntdll/unix/thread.c        | 64 ++++++++++++++++++++++-----------
+ dlls/ntdll/unix/unix_private.h  |  4 ++-
+ 7 files changed, 47 insertions(+), 96 deletions(-)
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2145,8 +2145,7 @@ static void *pthread_main_wrapper( void *arg )
+     load_apiset_dll();
+     ntdll_init_syscalls( 0, &syscall_table, p__wine_syscall_dispatcher );
+     server_init_process_done( &entry, &suspend );
+-    signal_start_thread( entry, peb, suspend, NtCurrentTeb() );
+-    return 0;
++    return thread_start( entry, peb, suspend, NtCurrentTeb() );
+ }
+ 
+ /***********************************************************************
+diff --git a/dlls/ntdll/unix/signal_arm.c b/dlls/ntdll/unix/signal_arm.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_arm.c
++++ b/dlls/ntdll/unix/signal_arm.c
+@@ -1648,20 +1648,6 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
+                    "bl " __ASM_NAME("call_init_thunk") )
+ 
+ 
+-/***********************************************************************
+- *           signal_exit_thread
+- */
+-__ASM_GLOBAL_FUNC( signal_exit_thread,
+-                   __ASM_EHABI(".cantunwind\n\t")
+-                   "ldr r3, [r2, #0x1d4]\n\t"  /* arm_thread_data()->exit_frame */
+-                   "mov ip, #0\n\t"
+-                   "str ip, [r2, #0x1d4]\n\t"
+-                   "cmp r3, ip\n\t"
+-                   "it ne\n\t"
+-                   "movne sp, r3\n\t"
+-                   "blx r1" )
+-
+-
+ /***********************************************************************
+  *           __wine_syscall_dispatcher
+  */
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -1689,18 +1689,6 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
+                    "1:\tmov sp, x8\n\t"
+                    "bl " __ASM_NAME("call_init_thunk") )
+ 
+-/***********************************************************************
+- *           signal_exit_thread
+- */
+-__ASM_GLOBAL_FUNC( signal_exit_thread,
+-                   "stp x29, x30, [sp,#-16]!\n\t"
+-                   "ldr x3, [x2, #0x2f0]\n\t"  /* arm64_thread_data()->exit_frame */
+-                   "str xzr, [x2, #0x2f0]\n\t"
+-                   "cbz x3, 1f\n\t"
+-                   "mov sp, x3\n"
+-                   "1:\tldp x29, x30, [sp], #16\n\t"
+-                   "br x1" )
+-
+ 
+ /***********************************************************************
+  *           __wine_syscall_dispatcher
+diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_i386.c
++++ b/dlls/ntdll/unix/signal_i386.c
+@@ -2614,31 +2614,6 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
+                    "call " __ASM_NAME("call_init_thunk") )
+ 
+ 
+-/***********************************************************************
+- *           signal_exit_thread
+- */
+-__ASM_GLOBAL_FUNC( signal_exit_thread,
+-                   "movl 8(%esp),%ecx\n\t"
+-                   "movl 12(%esp),%esi\n\t"
+-                   "xorl %edx,%edx\n\t"
+-                   /* fetch exit frame */
+-                   "xchgl %edx,0x1f4(%esi)\n\t"    /* x86_thread_data()->exit_frame */
+-                   "testl %edx,%edx\n\t"
+-                   "jnz 1f\n\t"
+-                   "jmp *%ecx\n\t"
+-                   /* switch to exit frame stack */
+-                   "1:\tmovl 4(%esp),%eax\n\t"
+-                   "movl %edx,%ebp\n\t"
+-                   __ASM_CFI(".cfi_def_cfa %ebp,4\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %ebp,0\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %ebx,-4\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %esi,-8\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %edi,-12\n\t")
+-                   "leal -20(%ebp),%esp\n\t"
+-                   "pushl %eax\n\t"
+-                   "call *%ecx" )
+-
+-
+ /***********************************************************************
+  *           __wine_syscall_dispatcher
+  */
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -2891,27 +2891,6 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
+                    "call " __ASM_NAME("call_init_thunk"))
+ 
+ 
+-/***********************************************************************
+- *           signal_exit_thread
+- */
+-__ASM_GLOBAL_FUNC( signal_exit_thread,
+-                   /* fetch exit frame */
+-                   "xorl %ecx,%ecx\n\t"
+-                   "xchgq %rcx,0x320(%rdx)\n\t"      /* amd64_thread_data()->exit_frame */
+-                   "testq %rcx,%rcx\n\t"
+-                   "jnz 1f\n\t"
+-                   "jmp *%rsi\n"
+-                   /* switch to exit frame stack */
+-                   "1:\tmovq %rcx,%rsp\n\t"
+-                   __ASM_CFI(".cfi_adjust_cfa_offset 56\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %rbp,48\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %rbx,40\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %r12,32\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %r13,24\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %r14,16\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %r15,8\n\t")
+-                   "call *%rsi" )
+-
+ /***********************************************************************
+  *           __wine_syscall_dispatcher
+  */
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1079,36 +1079,58 @@ static void contexts_from_server( CONTEXT *context, context_t server_contexts[2]
+     else context_from_server( wow_context, &server_contexts[0], main_image_info.Machine );
+ }
+ 
+-
+ /***********************************************************************
+- *           pthread_exit_wrapper
+- */
+-static void pthread_exit_wrapper( int status )
+-{
+-    close( ntdll_get_thread_data()->wait_fd[0] );
+-    close( ntdll_get_thread_data()->wait_fd[1] );
+-    close( ntdll_get_thread_data()->reply_fd );
+-    close( ntdll_get_thread_data()->request_fd );
+-    pthread_exit( UIntToPtr(status) );
+-}
+-
+-
+-/***********************************************************************
+- *           start_thread
++ *           pthread_start_wrapper
+  *
+  * Startup routine for a newly created thread.
+  */
+-static void start_thread( TEB *teb )
++static void *pthread_start_wrapper( void *arg )
+ {
++    TEB *teb = arg;
+     struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
+     BOOL suspend;
+ 
+     thread_data->pthread_id = pthread_self();
+     pthread_setspecific( teb_key, teb );
+     server_init_thread( thread_data->start, &suspend );
+-    signal_start_thread( thread_data->start, thread_data->param, suspend, teb );
++    return thread_start( thread_data->start, thread_data->param, suspend, teb );
++}
++
++static void thread_exit_cleanup( struct ntdll_thread_data *thread_data )
++{
++    close( thread_data->wait_fd[0] );
++    close( thread_data->wait_fd[1] );
++    close( thread_data->reply_fd );
++    close( thread_data->request_fd );
++}
++
++void *thread_start( PRTL_THREAD_START_ROUTINE entry, void *arg, BOOL suspend, TEB *teb )
++{
++    struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
++    __wine_jmp_buf exit_buf = {0};
++    int ret;
++
++    if (!(ret = __wine_setjmpex( (thread_data->exit_buf = &exit_buf), NULL )))
++        signal_start_thread( entry, arg, suspend, teb );
++
++    if (ret > 0) thread_exit_cleanup( thread_data );
++    else process_exit_wrapper( (UINT_PTR)thread_data->param );
++    return thread_data->param;
+ }
+ 
++static void DECLSPEC_NORETURN thread_exit( int status, BOOL process, TEB *teb )
++{
++    struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
++
++    thread_data->param = (void *)(UINT_PTR)status;
++
++    /* return to thread_start and exit thread to avoid calling cancel handlers */
++    if (thread_data->exit_buf) __wine_longjmp( thread_data->exit_buf, process ? -1 : 1 );
++
++    /* if thread isn't started yet, just call pthread_exit */
++    thread_exit_cleanup( thread_data );
++    pthread_exit( thread_data->param );
++}
+ 
+ /***********************************************************************
+  *           get_machine_context_size
+@@ -1386,7 +1408,7 @@ NTSTATUS WINAPI NtCreateThreadEx( HANDLE *handle, ACCESS_MASK access, OBJECT_ATT
+     pthread_attr_setguardsize( &pthread_attr, 0 );
+     pthread_attr_setscope( &pthread_attr, PTHREAD_SCOPE_SYSTEM ); /* force creating a kernel thread */
+     InterlockedIncrement( &nb_threads );
+-    if (pthread_create( &pthread_id, &pthread_attr, (void * (*)(void *))start_thread, teb ))
++    if (pthread_create( &pthread_id, &pthread_attr, pthread_start_wrapper, teb ))
+     {
+         InterlockedDecrement( &nb_threads );
+         virtual_free_teb( teb );
+@@ -1414,7 +1436,7 @@ void abort_thread( int status )
+ {
+     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
+     if (InterlockedDecrement( &nb_threads ) <= 0) abort_process( status );
+-    signal_exit_thread( status, pthread_exit_wrapper, NtCurrentTeb() );
++    thread_exit( status, FALSE, NtCurrentTeb() );
+ }
+ 
+ 
+@@ -1447,7 +1469,7 @@ static DECLSPEC_NORETURN void exit_thread( int status )
+             virtual_free_teb( teb );
+         }
+     }
+-    signal_exit_thread( status, pthread_exit_wrapper, NtCurrentTeb() );
++    thread_exit( status, FALSE, NtCurrentTeb() );
+ }
+ 
+ 
+@@ -1457,7 +1479,7 @@ static DECLSPEC_NORETURN void exit_thread( int status )
+ void exit_process( int status )
+ {
+     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
+-    signal_exit_thread( get_unix_exit_code( status ), process_exit_wrapper, NtCurrentTeb() );
++    thread_exit( get_unix_exit_code( status ), TRUE, NtCurrentTeb() );
+ }
+ 
+ 
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -95,6 +95,7 @@ struct ntdll_thread_data
+     PRTL_THREAD_START_ROUTINE start;  /* thread entry point */
+     void              *param;         /* thread entry point parameter */
+     void              *jmp_buf;       /* setjmp buffer for exception handling */
++    void              *exit_buf;      /* setjmp buffer for thread exit */
+     unsigned int       fast_alert_obj; /* linux object for the fast alert event */
+ };
+ 
+@@ -280,7 +281,8 @@ extern void signal_init_process(void) DECLSPEC_HIDDEN;
+ extern void signal_init_early(void) DECLSPEC_HIDDEN;
+ extern void DECLSPEC_NORETURN signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg,
+                                                    BOOL suspend, TEB *teb ) DECLSPEC_HIDDEN;
+-extern void DECLSPEC_NORETURN signal_exit_thread( int status, void (*func)(int), TEB *teb ) DECLSPEC_HIDDEN;
++extern void *thread_start( PRTL_THREAD_START_ROUTINE entry, void *arg,
++                           BOOL suspend, TEB *teb ) DECLSPEC_HIDDEN;
+ extern SYSTEM_SERVICE_TABLE KeServiceDescriptorTable[4] DECLSPEC_HIDDEN;
+ extern void __wine_syscall_dispatcher(void) DECLSPEC_HIDDEN;
+ extern void WINAPI DECLSPEC_NORETURN __wine_syscall_dispatcher_return( void *frame, ULONG_PTR retval ) DECLSPEC_HIDDEN;
+
+

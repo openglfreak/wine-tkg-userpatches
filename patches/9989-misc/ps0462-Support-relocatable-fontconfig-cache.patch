@@ -1,0 +1,65 @@
+From 60a3abc5256ad19bee541a3960ac00f51b1ba1b5 Mon Sep 17 00:00:00 2001
+From: catsout <outline941@live.com>
+Date: Wed, 1 Feb 2023 12:58:07 +0800
+Subject: [PATCH] Support relocatable fontconfig cache
+
+---
+ dlls/win32u/freetype.c | 23 +++++++++++++++++++----
+ 1 file changed, 19 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/win32u/freetype.c b/dlls/win32u/freetype.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/freetype.c
++++ b/dlls/win32u/freetype.c
+@@ -1562,11 +1562,12 @@ static FcPattern *create_family_pattern( const char *name, FcPattern **cached )
+     return ret;
+ }
+ 
+-static void fontconfig_add_font( FcPattern *pattern, UINT flags )
++static void fontconfig_add_font( FcPattern *pattern, UINT flags, const char *cache_dir )
+ {
+-    const char *unix_name, *format;
++    char *unix_name;
++    const char *format, *basename;
+     WCHAR *dos_name;
+-    FcBool scalable;
++    FcBool scalable, reloc;
+     DWORD aa_flags;
+     int face_index;
+     FcValue face_val;
+@@ -1607,9 +1608,23 @@ static void fontconfig_add_font( FcPattern *pattern, UINT flags )
+     if (pFcPatternGet( pattern, "ftface", face_index, &face_val ) == FcResultMatch && face_val.type == FcTypeFTFace)
+         face = (FT_Face)face_val.u.f;
+ 
++    reloc = FcFalse;
++    if (strncmp( unix_name, cache_dir, strlen(cache_dir) ) != 0 && access( unix_name, F_OK ) != 0) {
++        basename = strrchr( unix_name, '/' );
++        basename = ( basename ? basename+1 : unix_name );
++        unix_name = malloc( strlen(cache_dir) + strlen(basename) + 2 );
++        if (unix_name) {
++            sprintf( unix_name, "%s/%s", cache_dir, basename );
++            reloc = FcTrue;
++        }
++    }
++
+     dos_name = get_dos_file_name( unix_name );
+     add_unix_face( unix_name, dos_name, NULL, 0, face_index, flags, NULL, face );
+     free( dos_name );
++
++    if (reloc == FcTrue)
++      free( unix_name );
+ }
+ 
+ static void init_fontconfig(void)
+@@ -1692,7 +1707,7 @@ static void fontconfig_add_fonts_from_dir_list( FcConfig *config, FcStrList *dir
+ 
+         if (!(font_set = pFcCacheCopySet( cache ))) goto done;
+         for (i = 0; i < font_set->nfont; i++)
+-            fontconfig_add_font( font_set->fonts[i], flags );
++            fontconfig_add_font( font_set->fonts[i], flags , (const char *)dir );
+         pFcFontSetDestroy( font_set );
+         font_set = NULL;
+ 
+-- 
+2.40.0
+

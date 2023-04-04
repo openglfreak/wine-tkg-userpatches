@@ -1,0 +1,36 @@
+From fe04347d25162a1c8e3992800d74a52321f63c0f Mon Sep 17 00:00:00 2001
+From: Eric Pouech <eric.pouech@gmail.com>
+Date: Fri, 10 Feb 2023 18:15:49 +0100
+Subject: [PATCH] ntdll/unix: Init the trap handler.
+
+Otherwise we get nested exceptions on linux on any breakpoint in
+a multi-arch wow64 (AMD64) configuration, running a 32bit debuggee.
+
+With this patch, winetest kernel32:debugger runs to the end (it times
+out without), yet spitting a couple of failures (that don't exist in
+old wow64 configuration).
+
+Signed-off-by: Eric Pouech <eric.pouech@gmail.com>
+---
+ dlls/ntdll/unix/signal_x86_64.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -2139,7 +2139,10 @@ static BOOL handle_syscall_fault( ucontext_t *sigcontext, EXCEPTION_RECORD *rec,
+  */
+ static BOOL handle_syscall_trap( ucontext_t *sigcontext )
+ {
+-    struct syscall_frame *frame = amd64_thread_data()->syscall_frame;
++    struct syscall_frame *frame;
++
++    init_handler( sigcontext );
++    frame = amd64_thread_data()->syscall_frame;
+ 
+     /* disallow single-stepping through a syscall */
+ 
+-- 
+2.40.0
+

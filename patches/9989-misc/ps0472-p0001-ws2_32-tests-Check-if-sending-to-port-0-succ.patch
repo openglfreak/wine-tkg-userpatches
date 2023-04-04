@@ -1,0 +1,55 @@
+From d04240192a5d8e97d8efe4b5d8640fa292b12811 Mon Sep 17 00:00:00 2001
+From: Jason Beetham <beefers331@gmail.com>
+Date: Sun, 5 Feb 2023 19:15:14 -0700
+Subject: [PATCH 1/2] ws2_32/tests: Check if sending to port 0 succeeds.
+
+---
+ dlls/ws2_32/tests/sock.c | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
+index 11111111111..11111111111 100644
+--- a/dlls/ws2_32/tests/sock.c
++++ b/dlls/ws2_32/tests/sock.c
+@@ -13680,6 +13680,31 @@ static void test_connect_udp(void)
+     closesocket(client);
+ }
+ 
++static void test_WSASendto_port0(void)
++{
++    SOCKET s;
++    struct sockaddr_in addr;
++    char buf[] = "hello world";
++    WSABUF data_buf;
++    DWORD bytes_sent = 0;
++    int ret;
++
++    addr.sin_family = AF_INET;
++    addr.sin_port = htons(0);
++    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
++    data_buf.len = sizeof(buf);
++    data_buf.buf = buf;
++
++    s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
++    ok(s != INVALID_SOCKET, "failed to create socket, error %u\n", WSAGetLastError());
++
++    ret = WSASendTo(s, &data_buf, 1, &bytes_sent, 0, (struct sockaddr *)&addr, sizeof(addr), NULL, NULL);
++    todo_wine ok(!ret, "got error %u\n", WSAGetLastError());
++    todo_wine ok(bytes_sent == sizeof(buf), "Failed to send full data(%Iu) only sent(%lu)\n", sizeof(buf), bytes_sent);
++    closesocket(s);
++}
++
++
+ START_TEST( sock )
+ {
+     int i;
+@@ -13761,6 +13786,7 @@ START_TEST( sock )
+     test_tcp_reset();
+     test_icmp();
+     test_connect_udp();
++    test_WSASendto_port0();
+ 
+     /* this is an io heavy test, do it at the end so the kernel doesn't start dropping packets */
+     test_send();
+
+

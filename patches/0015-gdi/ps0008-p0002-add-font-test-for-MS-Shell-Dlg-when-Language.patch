@@ -1,0 +1,106 @@
+From c19b7896432ad07aa70ad540b941177fdea84ee5 Mon Sep 17 00:00:00 2001
+From: Keming Liang <liangkeming@kylinos.cn>
+Date: Thu, 16 Feb 2023 16:48:11 +0800
+Subject: [PATCH 2/3] add font test for MS Shell Dlg when Language is Chinese.
+
+---
+ dlls/gdi32/tests/font.c | 56 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 56 insertions(+)
+
+diff --git a/dlls/gdi32/tests/font.c b/dlls/gdi32/tests/font.c
+index 11111111111..11111111111 100644
+--- a/dlls/gdi32/tests/font.c
++++ b/dlls/gdi32/tests/font.c
+@@ -89,6 +89,12 @@ static INT CALLBACK is_truetype_font_installed_proc(const LOGFONTA *elf, const T
+     return 0;
+ }
+ 
++static INT CALLBACK is_truetype_font_installed_procW(const LOGFONTW *elf, const TEXTMETRICW *ntm, DWORD type, LPARAM lParam)
++{
++    if (type != TRUETYPE_FONTTYPE) return 1;
++
++    return 0;
++}
+ static BOOL is_truetype_font_installed(const char *name)
+ {
+     HDC hdc = GetDC(0);
+@@ -101,6 +107,18 @@ static BOOL is_truetype_font_installed(const char *name)
+     return ret;
+ }
+ 
++static BOOL is_truetype_font_installedW(const WCHAR *name)
++{
++    HDC hdc = GetDC(0);
++    BOOL ret = FALSE;
++
++    if (!EnumFontFamiliesW(hdc, name, is_truetype_font_installed_procW, 0))
++        ret = TRUE;
++
++    ReleaseDC(0, hdc);
++    return ret;
++}
++
+ static INT CALLBACK is_font_installed_proc(const LOGFONTA *elf, const TEXTMETRICA *ntm, DWORD type, LPARAM lParam)
+ {
+     return 0;
+@@ -2957,6 +2975,33 @@ static void get_charset_statsW(struct enum_font_dataW *efd,
+     }
+ }
+ 
++
++static void test_EnumFontFamiliesW(const WCHAR *font_nameW, INT font_charset)
++{
++    struct enum_font_dataW efdw;
++    HDC hdc;
++    int ret;
++
++    if (!font_nameW )
++    {
++        skip("font_name is NULL\n");
++        return;
++    }
++    memset( &efdw, 0, sizeof(efdw) );
++
++    hdc = GetDC(0);
++
++    efdw.total = 0;
++    SetLastError(0xdeadbeef);
++    ret = EnumFontFamiliesW(hdc, font_nameW, arial_enum_procw, (LPARAM)&efdw);
++    ok(ret || GetLastError() == ERROR_CALL_NOT_IMPLEMENTED, "EnumFontFamiliesW error %lu\n", GetLastError());
++    if(ret)
++    {
++        ok(efdw.total > 0, "fonts %s enumerated: NULL\n",debugstr_w(font_nameW));
++    }
++}
++
++
+ static void test_EnumFontFamilies(const char *font_name, INT font_charset)
+ {
+     struct enum_font_data efd;
+@@ -7808,6 +7853,16 @@ START_TEST(font)
+     test_EnumFonts();
+     test_EnumFonts_subst();
+ 
++    /* test SimSun and MS Shell Dlg font when the language is Chinese Simplified.*/
++    if (PRIMARYLANGID(GetUserDefaultLangID()) == LANG_CHINESE_SIMPLIFIED)
++    {
++        if(is_truetype_font_installedW(L"SimSun"))
++        {
++            test_EnumFontFamiliesW(L"SimSun", DEFAULT_CHARSET);
++            test_EnumFontFamiliesW(L"MS Shell Dlg", DEFAULT_CHARSET);
++        }
++    }
++
+     /* On Windows Arial has a lot of default charset aliases such as Arial Cyr,
+      * I'd like to avoid them in this test.
+      */
+@@ -7822,6 +7877,7 @@ START_TEST(font)
+     }
+     else
+         skip("Arial Black or Symbol/Wingdings is not installed\n");
++
+     test_EnumFontFamiliesEx_default_charset();
+     test_GetTextMetrics();
+     test_RealizationInfo();
+
+

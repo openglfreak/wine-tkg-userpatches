@@ -3,18 +3,6 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-set -e 2>/dev/null ||:
-set +C 2>/dev/null ||:
-set +f 2>/dev/null ||:
-set -u 2>/dev/null ||:
-
-# zsh: Force word splitting.
-setopt SH_WORD_SPLIT 2>/dev/null ||:
-# zsh: Don't exit when a glob doesn't match.
-unsetopt NOMATCH 2>/dev/null ||:
-# zsh: Don't treat ! specially.
-unsetopt BANG_HIST 2>/dev/null ||:
-
 # description:
 #   Replaces each sequence of unsafe characters in the input with a dash (-),
 #   and removes trailing dashes and dots. This is the same algorithm that Git
@@ -197,7 +185,23 @@ _tty_filename() {
     ls -Fdpq1 "$1"
 }
 
+_setup_shell() {
+    set -e 2>/dev/null ||:
+    set +C 2>/dev/null ||:
+    set +f 2>/dev/null ||:
+    set -u 2>/dev/null ||:
+
+    # zsh: Force word splitting.
+    setopt SH_WORD_SPLIT 2>/dev/null ||:
+    # zsh: Don't exit when a glob doesn't match.
+    unsetopt NOMATCH 2>/dev/null ||:
+    # zsh: Don't treat ! specially.
+    unsetopt BANG_HIST 2>/dev/null ||:
+}
+
 main() (
+    _setup_shell
+
     answer=
     dry_run=false
     for arg; do

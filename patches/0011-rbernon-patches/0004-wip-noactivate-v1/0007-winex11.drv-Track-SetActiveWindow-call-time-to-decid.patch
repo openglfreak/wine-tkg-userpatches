@@ -1,7 +1,7 @@
-From 67103e26273bce52791cbb4ec2791bfc75286f36 Mon Sep 17 00:00:00 2001
+From f63292746d154c5f4ed47b0fdc6c77e076fbdfff Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Tue, 8 Mar 2022 14:07:52 +0100
-Subject: [PATCH 07/22] winex11.drv: Track SetActiveWindow call time to decide
+Subject: [PATCH 07/19] winex11.drv: Track SetActiveWindow call time to decide
  focus change type.
 
 If the focus change is caused by a window creation, quickly followed by
@@ -26,7 +26,7 @@ diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -570,8 +570,17 @@ static void set_input_focus( struct x11drv_win_data *data )
+@@ -568,10 +568,19 @@ static void set_input_focus( struct x11drv_win_data *data )
  }
  
  
@@ -36,6 +36,8 @@ index 11111111111..11111111111 100644
 +    struct x11drv_thread_data *thread_data = x11drv_thread_data();
 +    int time_since_activation = x11drv_time_to_ticks( time ) - thread_data->activating_time;
 +    HWND foreground = NtUserGetForegroundWindow();
+     LRESULT result;
+ 
 +    TRACE( "time_since_activation %d, hwnd %p, foreground %p\n", time_since_activation, hwnd, foreground );
 +
 +    /* prefer Wine foreground window over X11 window if SetActiveWindow was very recently called */
@@ -54,7 +56,7 @@ index 11111111111..11111111111 100644
      TRACE( "setting foreground window to %p\n", focus );
      NtUserSetForegroundWindow( hwnd );
  
-@@ -1473,6 +1482,23 @@ void wait_for_withdrawn_state( HWND hwnd, BOOL set )
+@@ -1445,6 +1454,23 @@ void wait_for_withdrawn_state( HWND hwnd, BOOL set )
  }
  
  
@@ -82,27 +84,27 @@ diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/init.c
 +++ b/dlls/winex11.drv/init.c
-@@ -437,6 +437,7 @@ static const struct user_driver_funcs x11drv_funcs =
+@@ -438,6 +438,7 @@ static const struct user_driver_funcs x11drv_funcs =
      .pProcessEvents = X11DRV_ProcessEvents,
      .pReleaseDC = X11DRV_ReleaseDC,
      .pScrollDC = X11DRV_ScrollDC,
 +    .pSetActiveWindow = X11DRV_SetActiveWindow,
      .pSetCapture = X11DRV_SetCapture,
+     .pSetDesktopWindow = X11DRV_SetDesktopWindow,
      .pSetFocus = X11DRV_SetFocus,
-     .pSetLayeredWindowAttributes = X11DRV_SetLayeredWindowAttributes,
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -228,6 +228,7 @@ extern void X11DRV_GetDC( HDC hdc, HWND hwnd, HWND top, const RECT *win_rect,
+@@ -231,6 +231,7 @@ extern void X11DRV_GetDC( HDC hdc, HWND hwnd, HWND top, const RECT *win_rect,
                            const RECT *top_rect, DWORD flags ) DECLSPEC_HIDDEN;
  extern void X11DRV_ReleaseDC( HWND hwnd, HDC hdc ) DECLSPEC_HIDDEN;
  extern BOOL X11DRV_ScrollDC( HDC hdc, INT dx, INT dy, HRGN update ) DECLSPEC_HIDDEN;
 +extern void X11DRV_SetActiveWindow( HWND hwnd, HWND prev ) DECLSPEC_HIDDEN;
  extern void X11DRV_SetCapture( HWND hwnd, UINT flags ) DECLSPEC_HIDDEN;
+ extern void X11DRV_SetDesktopWindow( HWND hwnd ) DECLSPEC_HIDDEN;
  extern void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha,
-                                                DWORD flags ) DECLSPEC_HIDDEN;
-@@ -372,6 +373,7 @@ struct x11drv_thread_data
+@@ -376,6 +377,7 @@ struct x11drv_thread_data
      HWND     grab_hwnd;            /* window that currently grabs the mouse */
      HWND     last_focus;           /* last window that had focus */
      HWND     keymapnotify_hwnd;    /* window that should receive modifier release events */
@@ -111,5 +113,5 @@ index 11111111111..11111111111 100644
      HWND     last_xic_hwnd;        /* last xic window */
      XFontSet font_set;             /* international text drawing font set */
 -- 
-2.40.0
+0.0.0
 

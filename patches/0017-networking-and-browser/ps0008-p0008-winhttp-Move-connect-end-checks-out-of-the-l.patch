@@ -7,21 +7,18 @@ This is only done when InitializeSecurityContextW returns SEC_E_OK,
 which will break out of the loop, and the checks forcefully break out
 of the loop if any failed.
 ---
- dlls/winhttp/net.c | 80 ++++++++++++++++++++++------------------------
- 1 file changed, 39 insertions(+), 41 deletions(-)
+ dlls/winhttp/net.c | 84 ++++++++++++++++++++++------------------------
+ 1 file changed, 41 insertions(+), 43 deletions(-)
 
 diff --git a/dlls/winhttp/net.c b/dlls/winhttp/net.c
 index 11111111111..11111111111 100644
 --- a/dlls/winhttp/net.c
 +++ b/dlls/winhttp/net.c
-@@ -384,60 +384,58 @@ DWORD netconn_secure_connect( struct netconn *conn, WCHAR *hostname, DWORD secur
+@@ -387,60 +387,58 @@ DWORD netconn_secure_connect( struct netconn *conn, WCHAR *hostname, DWORD secur
          status = InitializeSecurityContextW(cred_handle, &ctx, hostname,  isc_req_flags, 0, 0, &in_desc,
                  0, NULL, &out_desc, &attrs, NULL);
          TRACE( "InitializeSecurityContext ret %#lx\n", status );
-+        if(status == SEC_E_OK && in_bufs[1].BufferType == SECBUFFER_EXTRA)
-+            FIXME("SECBUFFER_EXTRA not supported\n");
-+    }
- 
+-
 -        if(status == SEC_E_OK) {
 -            if(in_bufs[1].BufferType == SECBUFFER_EXTRA)
 -                FIXME("SECBUFFER_EXTRA not supported\n");
@@ -31,8 +28,7 @@ index 11111111111..11111111111 100644
 -                WARN("Could not get sizes\n");
 -                break;
 -            }
-+    free(read_buf);
- 
+-
 -            status = QueryContextAttributesW(&ctx, SECPKG_ATTR_REMOTE_CERT_CONTEXT, (void*)&cert);
 -            if(status == SEC_E_OK) {
 -                res = netconn_verify_cert(cert, hostname, security_flags, check_revocation);
@@ -45,9 +41,7 @@ index 11111111111..11111111111 100644
 -                WARN("Could not get cert\n");
 -                break;
 -            }
-+    if(status != SEC_E_OK)
-+        goto failed;
- 
+-
 -            conn->ssl_read_buf = malloc(conn->ssl_sizes.cbHeader + conn->ssl_sizes.cbMaximumMessage + conn->ssl_sizes.cbTrailer);
 -            if(!conn->ssl_read_buf) {
 -                res = ERROR_OUTOFMEMORY;
@@ -59,18 +53,11 @@ index 11111111111..11111111111 100644
 -                break;
 -            }
 -        }
-+    status = QueryContextAttributesW(&ctx, SECPKG_ATTR_STREAM_SIZES, &conn->ssl_sizes);
-+    if(status != SEC_E_OK) {
-+        WARN("Could not get sizes\n");
-+        goto failed;
++        if(status == SEC_E_OK && in_bufs[1].BufferType == SECBUFFER_EXTRA)
++            FIXME("SECBUFFER_EXTRA not supported\n");
      }
  
--    free(read_buf);
-+    status = QueryContextAttributesW(&ctx, SECPKG_ATTR_REMOTE_CERT_CONTEXT, (void*)&cert);
-+    if(status != SEC_E_OK) {
-+        WARN("Could not get cert\n");
-+        goto failed;
-+    }
+     free(read_buf);
  
 -    if(status != SEC_E_OK || res != ERROR_SUCCESS) {
 -        WARN( "Failed to initialize security context: %#lx\n", status );
@@ -80,13 +67,28 @@ index 11111111111..11111111111 100644
 -        conn->ssl_write_buf = NULL;
 -        DeleteSecurityContext(&ctx);
 -        return ERROR_WINHTTP_SECURE_CHANNEL_ERROR;
++    if(status != SEC_E_OK)
++        goto failed;
++
++    status = QueryContextAttributesW(&ctx, SECPKG_ATTR_STREAM_SIZES, &conn->ssl_sizes);
++    if(status != SEC_E_OK) {
++        WARN("Could not get sizes\n");
++        goto failed;
+     }
+ 
++    status = QueryContextAttributesW(&ctx, SECPKG_ATTR_REMOTE_CERT_CONTEXT, (void*)&cert);
++    if(status != SEC_E_OK) {
++        WARN("Could not get cert\n");
++        goto failed;
++    }
++
 +    res = netconn_verify_cert(cert, hostname, security_flags, check_revocation);
 +    CertFreeCertificateContext(cert);
 +    if(res != ERROR_SUCCESS) {
 +        WARN("cert verify failed: %u\n", res);
 +        goto failed;
-     }
- 
++    }
++
 +    conn->ssl_read_buf = malloc(conn->ssl_sizes.cbHeader + conn->ssl_sizes.cbMaximumMessage + conn->ssl_sizes.cbTrailer);
 +    if(!conn->ssl_read_buf) {
 +        res = ERROR_OUTOFMEMORY;
@@ -115,5 +117,5 @@ index 11111111111..11111111111 100644
  
  static DWORD send_ssl_chunk( struct netconn *conn, const void *msg, size_t size, WSAOVERLAPPED *ovr )
 -- 
-2.40.0
+0.0.0
 

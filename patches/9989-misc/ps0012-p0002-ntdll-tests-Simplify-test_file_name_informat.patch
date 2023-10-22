@@ -7,14 +7,14 @@ References: <20200214050306.20219-1-z.figura12@gmail.com>
 
 Signed-off-by: Zebediah Figura <z.figura12@gmail.com>
 ---
- dlls/ntdll/tests/file.c | 133 ++++++++++------------------------------
- 1 file changed, 34 insertions(+), 99 deletions(-)
+ dlls/ntdll/tests/file.c | 135 +++++++++++-----------------------------
+ 1 file changed, 35 insertions(+), 100 deletions(-)
 
 diff --git a/dlls/ntdll/tests/file.c b/dlls/ntdll/tests/file.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/tests/file.c
 +++ b/dlls/ntdll/tests/file.c
-@@ -3502,131 +3502,66 @@ static void test_file_disposition_information(void)
+@@ -3808,131 +3808,66 @@ static void test_file_disposition_information(void)
  
  static void test_file_name_information(void)
  {
@@ -76,13 +76,13 @@ index 11111111111..11111111111 100644
 -    hr = pNtQueryInformationFile( h, &io, info, sizeof(*info), FileNameInformation );
 -    ok(hr == STATUS_BUFFER_OVERFLOW, "NtQueryInformationFile returned %#lx, expected %#lx.\n",
 -            hr, STATUS_BUFFER_OVERFLOW);
--    ok(U(io).Status == STATUS_BUFFER_OVERFLOW, "io.Status is %#lx, expected %#lx.\n",
--            U(io).Status, STATUS_BUFFER_OVERFLOW);
+-    ok(io.Status == STATUS_BUFFER_OVERFLOW, "io.Status is %#lx, expected %#lx.\n",
+-            io.Status, STATUS_BUFFER_OVERFLOW);
 -    ok(info->FileNameLength == lstrlenW( expected ) * sizeof(WCHAR), "info->FileNameLength is %lu\n", info->FileNameLength);
 +    memset( info, 0xcc, sizeof(buffer) );
 +    status = pNtQueryInformationFile( h, &io, info, sizeof(*info), FileNameInformation );
 +    ok(status == STATUS_BUFFER_OVERFLOW, "NtQueryInformationFile returned %#lx.\n", status);
-+    ok(U(io).Status == STATUS_BUFFER_OVERFLOW, "io.Status is %#lx.\n", U(io).Status);
++    ok(io.Status == STATUS_BUFFER_OVERFLOW, "io.Status is %#lx.\n", io.Status);
 +    ok(info->FileNameLength == wcslen( L"\\windows\\system32" ) * sizeof(WCHAR),
 +            "info->FileNameLength is %lu\n", info->FileNameLength);
 +    ok(!wcsnicmp( info->FileName, L"\\w", 2 ), "Got file name %s.\n", debugstr_wn( info->FileName, 2 ));
@@ -95,12 +95,12 @@ index 11111111111..11111111111 100644
 -    memset( info, 0xcc, info_size );
 -    hr = pNtQueryInformationFile( h, &io, info, info_size, FileNameInformation );
 -    ok(hr == STATUS_SUCCESS, "NtQueryInformationFile returned %#lx, expected %#lx.\n", hr, STATUS_SUCCESS);
--    ok(U(io).Status == STATUS_SUCCESS, "io.Status is %#lx, expected %#lx.\n", U(io).Status, STATUS_SUCCESS);
+-    ok(io.Status == STATUS_SUCCESS, "io.Status is %#lx, expected %#lx.\n", io.Status, STATUS_SUCCESS);
 -    ok(info->FileNameLength == lstrlenW( expected ) * sizeof(WCHAR), "info->FileNameLength is %lu\n", info->FileNameLength);
 +    memset( info, 0xcc, sizeof(buffer) );
 +    status = pNtQueryInformationFile( h, &io, info, sizeof(buffer), FileNameInformation );
 +    ok(!status, "Got status %#lx.\n", status);
-+    ok(!U(io).Status, "Got io.Status %#lx.\n", U(io).Status);
++    ok(!io.Status, "Got io.Status %#lx.\n", io.Status);
 +    ok(info->FileNameLength == wcslen( L"\\windows\\system32" ) * sizeof(WCHAR),
 +            "info->FileNameLength is %lu\n", info->FileNameLength);
      ok(info->FileName[info->FileNameLength / sizeof(WCHAR)] == 0xcccc, "info->FileName[len] is %#x, expected 0xcccc.\n",
@@ -124,7 +124,19 @@ index 11111111111..11111111111 100644
 -        skip("Not running on WoW64, skipping test.\n");
 -        HeapFree( GetProcessHeap(), 0, file_name );
 -        return;
--    }
++        h = CreateFileW( L"C:/windows/system32", GENERIC_READ,
++                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
++                NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0 );
++        ok(h != INVALID_HANDLE_VALUE, "Failed to open file.\n");
++
++        memset( info, 0xcc, sizeof(buffer) );
++        status = pNtQueryInformationFile( h, &io, info, sizeof(buffer), FileNameInformation );
++        ok(!status, "Got status %#lx.\n", status);
++        info->FileName[info->FileNameLength / sizeof(WCHAR)] = '\0';
++        ok(!wcsicmp( info->FileName, L"\\windows\\syswow64" ), "Got file name %s.\n", debugstr_w( info->FileName ));
++
++        CloseHandle( h );
+     }
 -
 -    h = CreateFileW( file_name, GENERIC_READ,
 -            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -143,11 +155,7 @@ index 11111111111..11111111111 100644
 -
 -    len = pGetVolumePathNameW( file_name, volume_prefix, file_name_size );
 -    ok(len, "GetVolumePathNameW failed.\n");
-+        h = CreateFileW( L"C:/windows/system32", GENERIC_READ,
-+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-+                NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0 );
-+        ok(h != INVALID_HANDLE_VALUE, "Failed to open file.\n");
- 
+-
 -    len = lstrlenW( volume_prefix );
 -    if (len && volume_prefix[len - 1] == '\\') --len;
 -    memcpy( expected, file_name + len, (file_name_size - len - 1) * sizeof(WCHAR) );
@@ -162,19 +170,12 @@ index 11111111111..11111111111 100644
 -    info->FileName[info->FileNameLength / sizeof(WCHAR)] = '\0';
 -    ok(!lstrcmpiW( info->FileName, expected ), "info->FileName is %s, expected %s.\n",
 -            wine_dbgstr_w( info->FileName ), wine_dbgstr_w( expected ));
-+        memset( info, 0xcc, sizeof(buffer) );
-+        status = pNtQueryInformationFile( h, &io, info, sizeof(buffer), FileNameInformation );
-+        ok(!status, "Got status %#lx.\n", status);
-+        info->FileName[info->FileNameLength / sizeof(WCHAR)] = '\0';
-+        ok(!wcsicmp( info->FileName, L"\\windows\\syswow64" ), "Got file name %s.\n", debugstr_w( info->FileName ));
- 
+-
 -    CloseHandle( h );
 -    HeapFree( GetProcessHeap(), 0, info );
 -    HeapFree( GetProcessHeap(), 0, expected );
 -    HeapFree( GetProcessHeap(), 0, volume_prefix );
 -    HeapFree( GetProcessHeap(), 0, file_name );
-+        CloseHandle( h );
-+    }
 +    else
 +        skip("Not running on WoW64, skipping test.\n");
  }

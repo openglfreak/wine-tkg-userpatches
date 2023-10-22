@@ -6,20 +6,19 @@ Subject: [PATCH 06/11] winemac.drv: Route kernel callbacks through user32.
 Signed-off-by: Torge Matthies <tmatthies@codeweavers.com>
 ---
  dlls/winemac.drv/dllmain.c     | 14 +++-----------
- dlls/winemac.drv/event.c       | 15 ++++++++++-----
- dlls/winemac.drv/image.c       |  3 ++-
+ dlls/winemac.drv/event.c       |  9 ++++++---
  dlls/winemac.drv/macdrv.h      |  4 ++--
  dlls/winemac.drv/macdrv_main.c |  8 ++++++--
- dlls/winemac.drv/unixlib.h     | 35 +++++++++++++++++++---------------
+ dlls/winemac.drv/unixlib.h     | 28 +++++++++++++++-------------
  dlls/winemac.drv/window.c      |  3 ++-
- 7 files changed, 45 insertions(+), 37 deletions(-)
+ 6 files changed, 34 insertions(+), 32 deletions(-)
 
 diff --git a/dlls/winemac.drv/dllmain.c b/dlls/winemac.drv/dllmain.c
 index 11111111111..11111111111 100644
 --- a/dlls/winemac.drv/dllmain.c
 +++ b/dlls/winemac.drv/dllmain.c
 @@ -366,8 +366,7 @@ cleanup:
-     return 0;
+     return NtCallbackReturn(entries, count * sizeof(entries[0]), 0);
  }
  
 -typedef NTSTATUS (WINAPI *kernel_callback)(void *params, ULONG size);
@@ -28,8 +27,8 @@ index 11111111111..11111111111 100644
  {
      macdrv_app_icon,
      macdrv_app_quit_request,
-@@ -378,13 +377,10 @@ static const kernel_callback kernel_callbacks[] =
-     macdrv_ime_set_text,
+@@ -376,13 +375,10 @@ static const kernel_callback kernel_callbacks[] =
+     macdrv_dnd_query_exited,
  };
  
 -C_ASSERT(NtUserDriverCallbackFirst + ARRAYSIZE(kernel_callbacks) == client_func_last);
@@ -42,7 +41,7 @@ index 11111111111..11111111111 100644
  
      struct localized_string *str;
      struct localized_string strings[] = {
-@@ -410,12 +406,8 @@ static BOOL process_attach(void)
+@@ -408,12 +404,8 @@ static BOOL process_attach(void)
      for (str = strings; str->id; str++)
          str->len = LoadStringW(macdrv_module, str->id, (WCHAR *)&str->str, 0);
      params.strings = strings;
@@ -61,24 +60,7 @@ diff --git a/dlls/winemac.drv/event.c b/dlls/winemac.drv/event.c
 index 11111111111..11111111111 100644
 --- a/dlls/winemac.drv/event.c
 +++ b/dlls/winemac.drv/event.c
-@@ -162,6 +162,7 @@ static void macdrv_im_set_text(const macdrv_event *event)
- 
-     size = offsetof(struct ime_set_text_params, text[length]);
-     if (!(params = malloc(size))) return;
-+    params->cbparams.func = (ULONG_PTR)client_funcs.ime_set_text;
-     params->hwnd = HandleToUlong(hwnd);
-     params->data = (UINT_PTR)event->im_set_text.data;
-     params->cursor_pos = event->im_set_text.cursor_pos;
-@@ -170,7 +171,7 @@ static void macdrv_im_set_text(const macdrv_event *event)
-     if (length)
-         CFStringGetCharacters(event->im_set_text.text, CFRangeMake(0, length), params->text);
- 
--    macdrv_client_func(client_func_ime_set_text, params, size);
-+    macdrv_client_func(&params->cbparams, sizeof(params));
- }
- 
- /***********************************************************************
-@@ -229,13 +230,14 @@ static BOOL query_drag_drop(macdrv_query *query)
+@@ -343,13 +343,14 @@ static BOOL query_drag_drop(macdrv_query *query)
          return FALSE;
      }
  
@@ -94,7 +76,7 @@ index 11111111111..11111111111 100644
  }
  
  /**************************************************************************
-@@ -244,8 +246,9 @@ static BOOL query_drag_drop(macdrv_query *query)
+@@ -358,8 +359,9 @@ static BOOL query_drag_drop(macdrv_query *query)
  static BOOL query_drag_exited(macdrv_query *query)
  {
      struct dnd_query_exited_params params;
@@ -105,7 +87,7 @@ index 11111111111..11111111111 100644
  }
  
  
-@@ -265,6 +268,7 @@ static BOOL query_drag_operation(macdrv_query *query)
+@@ -379,6 +381,7 @@ static BOOL query_drag_operation(macdrv_query *query)
          return FALSE;
      }
  
@@ -113,7 +95,7 @@ index 11111111111..11111111111 100644
      params.hwnd = HandleToUlong(hwnd);
      params.effect = drag_operations_to_dropeffects(query->drag_operation.offered_ops);
      params.x = query->drag_operation.x + data->whole_rect.left;
-@@ -272,7 +276,7 @@ static BOOL query_drag_operation(macdrv_query *query)
+@@ -386,7 +389,7 @@ static BOOL query_drag_operation(macdrv_query *query)
      params.handle = (UINT_PTR)query->drag_operation.pasteboard;
      release_win_data(data);
  
@@ -122,40 +104,11 @@ index 11111111111..11111111111 100644
      if (!effect) return FALSE;
  
      query->drag_operation.accepted_op = dropeffect_to_drag_operation(effect,
-@@ -297,12 +301,13 @@ BOOL query_ime_char_rect(macdrv_query* query)
-     TRACE_(imm)("win %p/%p himc %p range %ld-%ld\n", hwnd, query->window, himc, range->location,
-                 range->length);
- 
-+    params.cbparams.func = (ULONG_PTR)client_funcs.ime_query_char_rect;
-     params.hwnd = HandleToUlong(hwnd);
-     params.data = (UINT_PTR)himc;
-     params.result = (UINT_PTR)&result;
-     params.location = range->location;
-     params.length = range->length;
--    ret = macdrv_client_func(client_func_ime_query_char_rect, &params, sizeof(params));
-+    ret = macdrv_client_func(&params.cbparams, sizeof(params));
-     *range = CFRangeMake(result.location, result.length);
-     *rect = cgrect_from_rect(result.rect);
- 
-diff --git a/dlls/winemac.drv/image.c b/dlls/winemac.drv/image.c
-index 11111111111..11111111111 100644
---- a/dlls/winemac.drv/image.c
-+++ b/dlls/winemac.drv/image.c
-@@ -256,7 +256,8 @@ CFArrayRef create_app_icon_images(void)
- 
-     TRACE("()\n");
- 
--    macdrv_client_func(client_func_app_icon, &params, sizeof(params));
-+    params.cbparams.func = (ULONG_PTR)client_funcs.app_icon;
-+    macdrv_client_func(&params.cbparams, sizeof(params));
- 
-     if (!icons.count) return NULL;
- 
 diff --git a/dlls/winemac.drv/macdrv.h b/dlls/winemac.drv/macdrv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winemac.drv/macdrv.h
 +++ b/dlls/winemac.drv/macdrv.h
-@@ -35,6 +35,7 @@
+@@ -38,6 +38,7 @@
  #include "wine/gdi_driver.h"
  #include "unixlib.h"
  
@@ -163,8 +116,8 @@ index 11111111111..11111111111 100644
  
  extern BOOL skip_single_buffer_flushes DECLSPEC_HIDDEN;
  extern BOOL allow_vsync DECLSPEC_HIDDEN;
-@@ -280,8 +281,7 @@ extern CGImageRef create_cgimage_from_icon_bitmaps(HDC hdc, HANDLE icon, HBITMAP
- extern NTSTATUS macdrv_ime_process_text_input(void *arg) DECLSPEC_HIDDEN;
+@@ -284,8 +285,7 @@ extern CGImageRef create_cgimage_from_icon_bitmaps(HDC hdc, HANDLE icon, HBITMAP
+ extern NTSTATUS macdrv_dnd_retain(void *arg) DECLSPEC_HIDDEN;
  extern NTSTATUS macdrv_notify_icon(void *arg) DECLSPEC_HIDDEN;
  
 -extern NTSTATUS macdrv_client_func(enum macdrv_client_funcs func, const void *params,
@@ -186,7 +139,7 @@ index 11111111111..11111111111 100644
  int topmost_float_inactive = TOPMOST_FLOAT_INACTIVE_NONFULLSCREEN;
  int capture_displays_for_fullscreen = 0;
  BOOL skip_single_buffer_flushes = FALSE;
-@@ -441,6 +443,8 @@ static NTSTATUS macdrv_init(void *arg)
+@@ -443,6 +445,8 @@ static NTSTATUS macdrv_init(void *arg)
      if (status != noErr || !(attributes & sessionHasGraphicAccess))
          return STATUS_UNSUCCESSFUL;
  
@@ -195,7 +148,7 @@ index 11111111111..11111111111 100644
      init_win_context();
      setup_options();
      load_strings(params->strings);
-@@ -601,11 +605,11 @@ BOOL macdrv_SystemParametersInfo( UINT action, UINT int_param, void *ptr_param,
+@@ -603,11 +607,11 @@ BOOL macdrv_SystemParametersInfo( UINT action, UINT int_param, void *ptr_param,
  }
  
  
@@ -213,7 +166,7 @@ diff --git a/dlls/winemac.drv/unixlib.h b/dlls/winemac.drv/unixlib.h
 index 11111111111..11111111111 100644
 --- a/dlls/winemac.drv/unixlib.h
 +++ b/dlls/winemac.drv/unixlib.h
-@@ -79,9 +79,22 @@
+@@ -65,9 +65,20 @@
      UINT64 str;
  };
  
@@ -225,8 +178,6 @@ index 11111111111..11111111111 100644
 +    user32_callback_func dnd_query_drag;
 +    user32_callback_func dnd_query_drop;
 +    user32_callback_func dnd_query_exited;
-+    user32_callback_func ime_query_char_rect;
-+    user32_callback_func ime_set_text;
 +};
 +
  struct init_params
@@ -236,7 +187,7 @@ index 11111111111..11111111111 100644
  };
  
  /* macdrv_notify_icon params */
-@@ -97,19 +110,6 @@
+@@ -83,17 +94,6 @@
      int result;
  };
  
@@ -248,22 +199,13 @@ index 11111111111..11111111111 100644
 -    client_func_dnd_query_drag,
 -    client_func_dnd_query_drop,
 -    client_func_dnd_query_exited,
--    client_func_ime_query_char_rect,
--    client_func_ime_set_text,
 -    client_func_last
 -};
 -
  /* macdrv_app_icon result */
  struct app_icon_entry
  {
-@@ -129,18 +129,21 @@
- /* macdrv_app_icon params */
- struct app_icon_params
- {
-+    struct user32_callback_params cbparams;
-     UINT64 result; /* FIXME: Use NtCallbackReturn instead */
- };
- 
+@@ -107,12 +107,14 @@
  /* macdrv_app_quit_request params */
  struct app_quit_request_params
  {
@@ -278,7 +220,7 @@ index 11111111111..11111111111 100644
      UINT32 hwnd;
      UINT32 effect;
      INT32 x;
-@@ -151,6 +154,7 @@
+@@ -123,6 +125,7 @@
  /* macdrv_dnd_query_drop params */
  struct dnd_query_drop_params
  {
@@ -286,7 +228,7 @@ index 11111111111..11111111111 100644
      UINT32 hwnd;
      UINT32 effect;
      INT32 x;
-@@ -161,6 +165,7 @@
+@@ -133,6 +136,7 @@
  /* macdrv_dnd_query_exited params */
  struct dnd_query_exited_params
  {
@@ -294,23 +236,7 @@ index 11111111111..11111111111 100644
      UINT32 hwnd;
  };
  
-@@ -175,6 +180,7 @@
- /* macdrv_ime_query_char_rect params */
- struct ime_query_char_rect_params
- {
-+    struct user32_callback_params cbparams;
-     UINT32 hwnd;
-     UINT32 location;
-     UINT64 data;
-@@ -185,6 +191,7 @@
- /* macdrv_ime_set_text params */
- struct ime_set_text_params
- {
-+    struct user32_callback_params cbparams;
-     UINT32 hwnd;
-     UINT32 cursor_pos;
-     UINT64 data;
-@@ -196,5 +203,3 @@
+@@ -140,5 +144,3 @@
  {
      return (void *)(UINT_PTR)param;
  }
@@ -320,7 +246,7 @@ diff --git a/dlls/winemac.drv/window.c b/dlls/winemac.drv/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/winemac.drv/window.c
 +++ b/dlls/winemac.drv/window.c
-@@ -2675,7 +2675,8 @@ void macdrv_app_quit_requested(const macdrv_event *event)
+@@ -2680,7 +2680,8 @@ void macdrv_app_quit_requested(const macdrv_event *event)
      if (event->app_quit_requested.reason == QUIT_REASON_LOGOUT)
          params.flags = ENDSESSION_LOGOFF;
  
@@ -331,5 +257,5 @@ index 11111111111..11111111111 100644
  
  
 -- 
-2.40.0
+0.0.0
 

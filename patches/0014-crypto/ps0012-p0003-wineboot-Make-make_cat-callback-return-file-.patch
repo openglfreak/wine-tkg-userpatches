@@ -1,0 +1,208 @@
+From b1bb85c886dafa5c256ed6e5d379c12e1b0a1b85 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Fri, 29 Sep 2023 11:05:17 +0200
+Subject: [PATCH 3/3] wineboot: Make make_cat callback return file hashes instead
+ of file names.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ programs/wineboot/wineboot.c | 90 +++++++++++++++++++++---------------
+ 1 file changed, 54 insertions(+), 36 deletions(-)
+
+diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
+index 11111111111..11111111111 100644
+--- a/programs/wineboot/wineboot.c
++++ b/programs/wineboot/wineboot.c
+@@ -1958,8 +1958,16 @@ static inline LPSTR hash_alg_oid_from_hash_len( DWORD len )
+     return NULL;
+ }
+ 
++#define MAX_HASH_LEN 64
++
++struct file_hash
++{
++    DWORD hash_len;
++    BYTE hash[MAX_HASH_LEN];
++};
++
+ static BOOL make_cat( BYTE **cat_data, DWORD *cat_size, const CMSG_SIGNED_ENCODE_INFO *encode_info,
+-                      const WCHAR *(__cdecl *next_file)( void *param, const WCHAR *prev, BOOL error ), void *param )
++                      BOOL (__cdecl *next_hash)( void *param, struct file_hash *hash, BOOL *error ), void *param )
+ {
+     static char szOID_CATALOG_LIST_[] = szOID_CATALOG_LIST;
+     static char *pszOID_CATALOG_LIST[] = { szOID_CATALOG_LIST_ };
+@@ -1973,8 +1981,7 @@ static BOOL make_cat( BYTE **cat_data, DWORD *cat_size, const CMSG_SIGNED_ENCODE
+     static WCHAR empty[] = L"";
+ 
+     BYTE list_identifier[16], *content = NULL;
+-    HANDLE hfile = INVALID_HANDLE_VALUE;
+-    const WCHAR *file = NULL;
++    struct file_hash hash = {0};
+     BOOL ret = FALSE, b;
+     DWORD content_size;
+     HCRYPTPROV prov;
+@@ -1994,14 +2001,16 @@ static BOOL make_cat( BYTE **cat_data, DWORD *cat_size, const CMSG_SIGNED_ENCODE
+     ci.ListIdentifier.pbData = list_identifier;
+     ci.SubjectAlgorithm.pszObjId = szOID_CATALOG_LIST_MEMBER_V2_;
+ 
+-    while ((file = next_file( param, file, FALSE )))
++    while (!(b = FALSE) && next_hash( param, &hash, &b ))
+     {
+-        SPC_INDIRECT_DATA_CONTENT hash;
++        SPC_INDIRECT_DATA_CONTENT spcidc;
+         CTL_ENTRY *new_entries, *ce;
+         SPC_PE_IMAGE_DATA img_data;
+         SPC_LINK link;
+         BYTE flags;
+ 
++        if (b) goto done;
++
+         if (ci.rgCTLEntry)
+             new_entries = HeapReAlloc( GetProcessHeap(), 0, ci.rgCTLEntry, (ci.cCTLEntry + 1) * sizeof(CTL_ENTRY) );
+         else
+@@ -2012,16 +2021,10 @@ static BOOL make_cat( BYTE **cat_data, DWORD *cat_size, const CMSG_SIGNED_ENCODE
+         ci.rgCTLEntry = new_entries;
+         ci.cCTLEntry += 1;
+ 
+-        hfile = CreateFileW( file, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
+-        if (hfile == INVALID_HANDLE_VALUE) goto done;
+-        b = CryptCATAdminCalcHashFromFileHandle( hfile, &ce->SubjectIdentifier.cbData, NULL, 0 );
+-        if (!b) goto done;
+-        ce->SubjectIdentifier.pbData = HeapAlloc( GetProcessHeap(), 0, ce->SubjectIdentifier.cbData );
+-        b = CryptCATAdminCalcHashFromFileHandle( hfile, &ce->SubjectIdentifier.cbData, ce->SubjectIdentifier.pbData, 0 );
+-        if (!b) goto done;
+-        CloseHandle( hfile );
+-        hfile = INVALID_HANDLE_VALUE;
+-
++        ce->SubjectIdentifier.cbData = hash.hash_len;
++        ce->SubjectIdentifier.pbData = HeapAlloc( GetProcessHeap(), 0, hash.hash_len );
++        if (!ce->SubjectIdentifier.pbData) goto done;
++        memcpy( ce->SubjectIdentifier.pbData, hash.hash, hash.hash_len );
+         ce->cAttribute = 2;
+         ce->rgAttribute = HeapAlloc( GetProcessHeap(), 0, ce->cAttribute * sizeof(CRYPT_ATTRIBUTE) );
+         ce->rgAttribute[0].pszObjId = CAT_MEMBERINFO2_OBJID_;
+@@ -2039,30 +2042,30 @@ static BOOL make_cat( BYTE **cat_data, DWORD *cat_size, const CMSG_SIGNED_ENCODE
+         flags = 0xa0; /* (includeResources, !includeDebugInfo, includeImportAddressTable) << 5 */
+         img_data.Flags.cUnusedBits = 5;
+         img_data.pFile = &link;
+-        memset( &hash, 0, sizeof(hash) );
+-        hash.Data.pszObjId = SPC_PE_IMAGE_DATA_OBJID_;
++        memset( &spcidc, 0, sizeof(spcidc) );
++        spcidc.Data.pszObjId = SPC_PE_IMAGE_DATA_OBJID_;
+         b = CryptEncodeObjectEx( X509_ASN_ENCODING, SPC_PE_IMAGE_DATA_STRUCT, &img_data, 0, NULL, NULL,
+-                                 &hash.Data.Value.cbData );
++                                 &spcidc.Data.Value.cbData );
+         if (!b) goto done;
+-        hash.Data.Value.pbData = HeapAlloc( GetProcessHeap(), 0, hash.Data.Value.cbData );
++        spcidc.Data.Value.pbData = HeapAlloc( GetProcessHeap(), 0, spcidc.Data.Value.cbData );
+         b = CryptEncodeObjectEx( X509_ASN_ENCODING, SPC_PE_IMAGE_DATA_STRUCT, &img_data, 0, NULL,
+-                                 hash.Data.Value.pbData, &hash.Data.Value.cbData );
++                                 spcidc.Data.Value.pbData, &spcidc.Data.Value.cbData );
+         if (!b) goto free_data;
+-        hash.DigestAlgorithm.pszObjId = hash_alg_oid_from_hash_len( ce->SubjectIdentifier.cbData );
+-        if (!hash.DigestAlgorithm.pszObjId)
++        spcidc.DigestAlgorithm.pszObjId = hash_alg_oid_from_hash_len( ce->SubjectIdentifier.cbData );
++        if (!spcidc.DigestAlgorithm.pszObjId)
+         {
+             b = FALSE;
+             goto free_data;
+         }
+-        hash.Digest = ce->SubjectIdentifier;
+-        b = CryptEncodeObjectEx( X509_ASN_ENCODING, SPC_INDIRECT_DATA_CONTENT_STRUCT, &hash, 0, NULL, NULL,
++        spcidc.Digest = ce->SubjectIdentifier;
++        b = CryptEncodeObjectEx( X509_ASN_ENCODING, SPC_INDIRECT_DATA_CONTENT_STRUCT, &spcidc, 0, NULL, NULL,
+                                  &ce->rgAttribute[1].rgValue[0].cbData );
+         if (!b) goto free_data;
+         ce->rgAttribute[1].rgValue[0].pbData = HeapAlloc( GetProcessHeap(), 0, ce->rgAttribute[1].rgValue[0].cbData );
+-        b = CryptEncodeObjectEx( X509_ASN_ENCODING, SPC_INDIRECT_DATA_CONTENT_STRUCT, &hash, 0, NULL,
++        b = CryptEncodeObjectEx( X509_ASN_ENCODING, SPC_INDIRECT_DATA_CONTENT_STRUCT, &spcidc, 0, NULL,
+                                  ce->rgAttribute[1].rgValue[0].pbData, &ce->rgAttribute[1].rgValue[0].cbData );
+     free_data:
+-        HeapFree( GetProcessHeap(), 0, hash.Data.Value.pbData );
++        HeapFree( GetProcessHeap(), 0, spcidc.Data.Value.pbData );
+         if (!b) goto done;
+     }
+ 
+@@ -2105,20 +2108,19 @@ done:
+         }
+         HeapFree( GetProcessHeap(), 0, ci.rgCTLEntry );
+     }
+-    if (hfile != INVALID_HANDLE_VALUE) CloseHandle( hfile );
+-    if (file) while ((file = next_file( param, file, !ret )));
++    if (!ret) while ((b = TRUE) && next_hash( param, &hash, &b ));
+     return ret;
+ }
+ 
+ static BOOL write_cat( const WCHAR *path, const CMSG_SIGNED_ENCODE_INFO *encode_info,
+-                       const WCHAR *(__cdecl *next_file)( void *param, const WCHAR *prev, BOOL error ), void *param )
++                       BOOL (__cdecl *next_hash)( void *param, struct file_hash *hash, BOOL *error ), void *param )
+ {
+     DWORD cat_size = 0, total_written = 0, written = 0;
+     BYTE *cat_data = NULL;
+     HANDLE hfile;
+     BOOL ret;
+ 
+-    ret = make_cat( &cat_data, &cat_size, encode_info, next_file, param );
++    ret = make_cat( &cat_data, &cat_size, encode_info, next_hash, param );
+     if (!ret) return ret;
+     hfile = CreateFileW( path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL );
+     if (hfile == INVALID_HANDLE_VALUE) goto done;
+@@ -2212,7 +2214,23 @@ static const WCHAR *filter_files( struct enum_system_dlls_data *data )
+     return NULL;
+ }
+ 
+-static const WCHAR *__cdecl enum_system_dlls( void *param, const WCHAR *prev, BOOL error )
++static BOOL hash_file( const WCHAR *path, struct file_hash *hash, BOOL *error )
++{
++    HANDLE hfile;
++    *error = TRUE;
++    hfile = CreateFileW( path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
++    if (hfile == INVALID_HANDLE_VALUE) return FALSE;
++    *error = !CryptCATAdminCalcHashFromFileHandle( hfile, &hash->hash_len, NULL, 0 );
++    if (*error) goto done;
++    *error = hash->hash_len > MAX_HASH_LEN;
++    if (*error) goto done;
++    *error = !CryptCATAdminCalcHashFromFileHandle( hfile, &hash->hash_len, hash->hash, 0 );
++done:
++    CloseHandle( hfile );
++    return !*error;
++}
++
++static BOOL __cdecl enum_system_dlls( void *param, struct file_hash *hash, BOOL *error )
+ {
+     struct enum_system_dlls_data *data = param;
+     if (data->phase == 0)
+@@ -2220,7 +2238,7 @@ static const WCHAR *__cdecl enum_system_dlls( void *param, const WCHAR *prev, BO
+         data->find_handle = INVALID_HANDLE_VALUE;
+         data->phase += 1;
+     }
+-    if (error)
++    if (*error)
+         data->phase = 7;
+     while (data->phase < 7)
+     {
+@@ -2252,9 +2270,9 @@ static const WCHAR *__cdecl enum_system_dlls( void *param, const WCHAR *prev, BO
+         }
+         if (data->phase == 2 || data->phase == 4 || data->phase == 6)
+         {
+-            const WCHAR *ret = filter_files( data );
+-            if (ret)
+-                return ret;
++            const WCHAR *path = filter_files( data );
++            if (path)
++                return hash_file( path, hash, error );
+         }
+     }
+     if (data->phase == 7)
+@@ -2263,7 +2281,7 @@ static const WCHAR *__cdecl enum_system_dlls( void *param, const WCHAR *prev, BO
+             FindClose( data->find_handle );
+         data->phase += 1;
+     }
+-    return NULL;
++    return FALSE;
+ }
+ 
+ static void update_catalog_file(void)
+-- 
+0.0.0
+

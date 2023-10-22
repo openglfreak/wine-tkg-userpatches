@@ -1,0 +1,150 @@
+From 8f611b695c2f8a4965219bb79bf8a971dbab530c Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Mon, 7 Aug 2023 11:04:35 +0200
+Subject: [PATCH 13/15] wintrust/tests: Add test for missing SPC_INDIRECT_DATA
+ attribute.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/wintrust/tests/crypt.c | 99 +++++++++++++++++++++++++++++++++++++
+ 1 file changed, 99 insertions(+)
+
+diff --git a/dlls/wintrust/tests/crypt.c b/dlls/wintrust/tests/crypt.c
+index 11111111111..11111111111 100644
+--- a/dlls/wintrust/tests/crypt.c
++++ b/dlls/wintrust/tests/crypt.c
+@@ -24,6 +24,7 @@
+ 
+ #include "windows.h"
+ #include "wincrypt.h"
++#include "wintrust.h"
+ #include "mscat.h"
+ 
+ #include "wine/test.h"
+@@ -36,6 +37,10 @@ static CHAR catroot2[MAX_PATH];
+ static const WCHAR hashmeW[] = {'h','a','s','h','m','e',0};
+ static const WCHAR attr1W[] = {'a','t','t','r','1',0};
+ static const WCHAR attr2W[] = {'a','t','t','r','2',0};
++static const WCHAR member_tag[] = {
++    'B','E','E','C','B','E','9','6','5','6','E','D','2','2','C','6','3','B','5','D','E','E','1','4',
++    '4','C','D','C','E','F','A','7','E','F','C','B','F','D','B','5',0
++};
+ 
+ /*
+  * Minimalistic catalog file. To reconstruct, save text below as winetest.cdf,
+@@ -97,6 +102,17 @@ static const BYTE test_catalog[] = {
+     0x00, 0x74, 0x00, 0x74, 0x00, 0x72, 0x00, 0x31, 0x02, 0x04, 0x10, 0x01, 0x00, 0x01, 0x04, 0x0e,
+     0x76, 0x00, 0x61, 0x00, 0x6c, 0x00, 0x75, 0x00, 0x65, 0x00, 0x31, 0x00, 0x00, 0x00, 0x31, 0x00,
+ };
++static const BYTE test_catalog_missing_hash[] = {
++  0x30, 0x81, 0x87, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02, 0xa0, 0x7a,
++  0x30, 0x78, 0x02, 0x01, 0x01, 0x31, 0x00, 0x30, 0x6f, 0x06, 0x09, 0x2b, 0x06, 0x01, 0x04, 0x01,
++  0x82, 0x37, 0x0a, 0x01, 0xa0, 0x62, 0x30, 0x60, 0x30, 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04,
++  0x01, 0x82, 0x37, 0x0c, 0x01, 0x01, 0x04, 0x03, 0x66, 0x6f, 0x6f, 0x17, 0x0d, 0x32, 0x33, 0x30,
++  0x33, 0x31, 0x37, 0x31, 0x37, 0x32, 0x35, 0x33, 0x30, 0x5a, 0x30, 0x0e, 0x06, 0x0a, 0x2b, 0x06,
++  0x01, 0x04, 0x01, 0x82, 0x37, 0x0c, 0x01, 0x03, 0x05, 0x00, 0x30, 0x2c, 0x30, 0x2a, 0x04, 0x14,
++  0xbe, 0xec, 0xbe, 0x96, 0x56, 0xed, 0x22, 0xc6, 0x3b, 0x5d, 0xee, 0x14, 0x4c, 0xdc, 0xef, 0xa7,
++  0xef, 0xcb, 0xfd, 0xb5, 0x31, 0x12, 0x30, 0x10, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82,
++  0x37, 0x0c, 0x02, 0x03, 0x31, 0x02, 0x82, 0x00, 0x31, 0x00
++};
+ 
+ static BOOL (WINAPI * pCryptCATAdminAcquireContext)(HCATADMIN*, const GUID*, DWORD);
+ static BOOL (WINAPI * pCryptCATAdminReleaseContext)(HCATADMIN, DWORD);
+@@ -1336,6 +1352,88 @@ static void test_sip(void)
+     DeleteFileW(nameW);
+ }
+ 
++static void test_catalog_generated_indirect_data(void)
++{
++    static const GUID subject = {0xde351a42,0x8e59,0x11d0,{0x8c,0x47,0x00,0xc0,0x4f,0xc2,0x95,0xee}};
++
++    HANDLE file;
++    DWORD written;
++    HANDLE hcat;
++    CRYPTCATMEMBER *m;
++    CRYPTCATATTRIBUTE *attr;
++    char catalog[MAX_PATH];
++    WCHAR catalogW[MAX_PATH];
++    BOOL ret;
++    int attrcount = 0, membercount = 0;
++
++    if (!GetTempFileNameA(CURR_DIR, "cat", 0, catalog)) return;
++    file = CreateFileA(catalog, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
++    ok(file != INVALID_HANDLE_VALUE, "CreateFileA failed %lu\n", GetLastError());
++    WriteFile(file, test_catalog_missing_hash, sizeof(test_catalog_missing_hash), &written, NULL);
++    CloseHandle(file);
++
++    MultiByteToWideChar(CP_ACP, 0, catalog, -1, catalogW, MAX_PATH);
++
++    hcat = pCryptCATOpen(catalogW, 0, 0, 0, 0);
++    ok(hcat != INVALID_HANDLE_VALUE, "CryptCATOpen failed %lu\n", GetLastError());
++
++    m = NULL;
++    while ((m = pCryptCATEnumerateMember(hcat, m)))
++    {
++        ok(m->cbStruct == sizeof(CRYPTCATMEMBER), "unexpected size %lu\n", m->cbStruct);
++        ok(!lstrcmpW(m->pwszReferenceTag, member_tag), "unexpected tag\n");
++        ok(!memcmp(&m->gSubjectType, &subject, sizeof(subject)), "guid differs\n");
++        ok(!m->fdwMemberFlags, "got %lx expected 0\n", m->fdwMemberFlags);
++        todo_wine ok(m->dwCertVersion == 0x200, "got %lx expected 0x200\n", m->dwCertVersion);
++        ok(!m->dwReserved, "got %lx expected 0\n", m->dwReserved);
++        ok(m->hReserved == NULL, "got %p expected NULL\n", m->hReserved);
++
++        ok(m->sEncodedIndirectData.cbData == 0, "got %lu expected 0\n", m->sEncodedIndirectData.cbData);
++        ok(m->sEncodedIndirectData.pbData == NULL, "got %p expected NULL\n", m->sEncodedIndirectData.pbData);
++        ok(m->pIndirectData != NULL, "expected non-NULL\n");
++        ok(m->pIndirectData->Data.pszObjId != NULL, "expected non-NULL\n");
++        ok(!strcmp(m->pIndirectData->Data.pszObjId, SPC_CAB_DATA_OBJID), "got %s expected %s\n",
++           m->pIndirectData->Data.pszObjId, SPC_CAB_DATA_OBJID);
++        /* Native wintrust bug: The generated SPC_LINK is not encoded even though it should be. */
++        ok(m->pIndirectData->Data.Value.cbData == sizeof(SPC_LINK), "got %lu expected %Iu\n",
++           m->pIndirectData->Data.Value.cbData, sizeof(SPC_LINK));
++        ok(m->pIndirectData->Data.Value.pbData != NULL, "expected non-NULL\n");
++        if (m->pIndirectData->Data.Value.pbData)
++        {
++            SPC_LINK *link = (void*)m->pIndirectData->Data.Value.pbData;
++            ok(link->dwLinkChoice == SPC_FILE_LINK_CHOICE, "got %lx expected %d\n", link->dwLinkChoice,
++               SPC_FILE_LINK_CHOICE);
++            ok(link->pwszFile != NULL, "expected non-NULL\n");
++            if (link->pwszFile)
++                ok(link->pwszFile[0] == 0, "got %Iu-char string expected empty string\n", wcslen(link->pwszFile));
++        }
++        ok(!strcmp(m->pIndirectData->DigestAlgorithm.pszObjId, szOID_OIWSEC_sha1), "got %s expected %s\n",
++           m->pIndirectData->DigestAlgorithm.pszObjId, szOID_OIWSEC_sha1);
++        ok(m->pIndirectData->DigestAlgorithm.Parameters.cbData == 0, "got %lu expected 0\n",
++           m->pIndirectData->DigestAlgorithm.Parameters.cbData);
++        ok(m->pIndirectData->DigestAlgorithm.Parameters.pbData == NULL, "got %p expected NULL\n",
++           m->pIndirectData->DigestAlgorithm.Parameters.pbData);
++        ok(m->pIndirectData->Digest.cbData == 20, "got %lu expected 20\n", m->pIndirectData->Digest.cbData);
++        ok(m->pIndirectData->Digest.pbData != NULL, "expected non-NULL\n");
++
++        attr = pCryptCATEnumerateAttr(hcat, m, NULL);
++        ok(attr == NULL, "CryptCATEnumerateAttr succeeded\n");
++
++        membercount++;
++    }
++    todo_wine
++    ok(membercount == 1, "Expected 1 member, got %d\n", membercount);
++
++    attr = NULL;
++    while ((attr = pCryptCATEnumerateCatAttr(hcat, attr)))
++        attrcount++;
++    ok(attrcount == 0, "Expected no catalog attributes, got %d\n", attrcount);
++
++    ret = pCryptCATClose(hcat);
++    ok(ret, "CryptCATClose failed\n");
++    DeleteFileA( catalog );
++}
++
+ START_TEST(crypt)
+ {
+     char** myARGV;
+@@ -1371,4 +1469,5 @@ START_TEST(crypt)
+     test_create_catalog_file();
+     test_CryptCATAdminAddRemoveCatalog();
+     test_sip();
++    test_catalog_generated_indirect_data();
+ }
+-- 
+0.0.0
+

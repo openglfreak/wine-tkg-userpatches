@@ -1,0 +1,100 @@
+From 3787453cd7d228a9283cad8a66a32bdc0dcb04b9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Thu, 27 Jan 2022 18:26:41 +0100
+Subject: [PATCH 18/18] server: Drop pending internal messages in
+ set_active_window.
+
+When changing the active window in the foreground thread.
+---
+ dlls/user32/tests/msg.c | 10 +++++-----
+ dlls/win32u/input.c     |  1 +
+ server/protocol.def     |  1 +
+ server/queue.c          | 12 ++++++++++++
+ 4 files changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/tests/msg.c
++++ b/dlls/user32/tests/msg.c
+@@ -16197,15 +16197,15 @@ static void test_interthread_set_foreground_window(struct test_set_foreground_wi
+         { hwnd1, FALSE, FALSE, TRUE,   FALSE, WmEmptySeq, FALSE, WmEmptySeq, FALSE, sequence_2, FALSE, hwnd0 },
+         { hwnd1, TRUE, FALSE, TRUE,    FALSE, WmEmptySeq, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+ 
+-        { hwnd2, FALSE, FALSE, FALSE,  FALSE, WmEmptySeq, FALSE, sequence_3,  TRUE, sequence_0,  TRUE, hwnd1 },
+-        { hwnd2, TRUE, FALSE, FALSE,   FALSE, WmEmptySeq, FALSE, sequence_3,  TRUE, sequence_0,  TRUE, hwnd1 },
+-        { hwnd2, FALSE, TRUE, FALSE,   FALSE, sequence_3, FALSE, WmEmptySeq,  TRUE, sequence_0,  TRUE, hwnd1 },
++        { hwnd2, FALSE, FALSE, FALSE,  FALSE, WmEmptySeq, FALSE, sequence_3, FALSE, sequence_0, FALSE, hwnd1 },
++        { hwnd2, TRUE, FALSE, FALSE,   FALSE, WmEmptySeq, FALSE, sequence_3, FALSE, sequence_0, FALSE, hwnd1 },
++        { hwnd2, FALSE, TRUE, FALSE,   FALSE, sequence_3, FALSE, WmEmptySeq, FALSE, sequence_0, FALSE, hwnd1 },
+         { hwnd2, TRUE, TRUE, FALSE,    FALSE, sequence_4, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+-        { hwnd2, FALSE, FALSE, TRUE,   FALSE, sequence_5, FALSE, WmEmptySeq,  TRUE, sequence_0,  TRUE, hwnd1 },
++        { hwnd2, FALSE, FALSE, TRUE,   FALSE, sequence_5, FALSE, WmEmptySeq, FALSE, sequence_0, FALSE, hwnd1 },
+         { hwnd2, TRUE, FALSE, TRUE,    FALSE, sequence_6, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+ 
+         { hwnd0, FALSE, FALSE, FALSE,  FALSE, WmEmptySeq, FALSE, sequence_3, FALSE, sequence_0, FALSE, hwnd1 },
+-        { hwnd0, TRUE, FALSE, FALSE,   FALSE, WmEmptySeq, FALSE, sequence_3,  TRUE, sequence_0,  TRUE, hwnd1 },
++        { hwnd0, TRUE, FALSE, FALSE,   FALSE, WmEmptySeq, FALSE, sequence_3, FALSE, sequence_0, FALSE, hwnd1 },
+         { hwnd0, FALSE, TRUE, FALSE,   FALSE, sequence_3, FALSE, WmEmptySeq, FALSE, sequence_0, FALSE, hwnd1 },
+         { hwnd0, TRUE, TRUE, FALSE,    FALSE, sequence_4, FALSE, sequence_1, FALSE, sequence_2, FALSE, hwnd0 },
+         { hwnd0, FALSE, FALSE, TRUE,   FALSE, sequence_5, FALSE, WmEmptySeq, FALSE, sequence_0, FALSE, hwnd1 },
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -1852,6 +1852,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+     SERVER_START_REQ( set_active_window )
+     {
+         req->handle = wine_server_user_handle( hwnd );
++        req->internal_msg = WM_WINE_SETACTIVEWINDOW;
+         if ((ret = !wine_server_call_err( req )))
+             previous = wine_server_ptr_handle( reply->previous );
+     }
+diff --git a/server/protocol.def b/server/protocol.def
+index 11111111111..11111111111 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -2999,6 +2999,7 @@ enum coords_relative
+ /* Set the current thread active window */
+ @REQ(set_active_window)
+     user_handle_t  handle;        /* handle to the active window */
++    unsigned int   internal_msg;  /* set active window internal message */
+ @REPLY
+     user_handle_t  previous;      /* handle to the previous active window */
+ @END
+diff --git a/server/queue.c b/server/queue.c
+index 11111111111..11111111111 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -3585,7 +3585,11 @@ DECL_HANDLER(set_focus_window)
+ /* set the current thread active window */
+ DECL_HANDLER(set_active_window)
+ {
++    struct message *msg, *next;
+     struct msg_queue *queue = get_current_queue();
++    struct desktop *desktop;
++
++    if (!(desktop = get_thread_desktop( current, 0 ))) return;
+ 
+     reply->previous = 0;
+     if (queue && check_queue_input_window( queue, req->handle ))
+@@ -3596,9 +3600,17 @@ DECL_HANDLER(set_active_window)
+             SHARED_WRITE_BEGIN( &queue->input->shared->seq );
+             queue->input->shared->active = get_user_full_handle( req->handle );
+             SHARED_WRITE_END( &queue->input->shared->seq );
++
++            if (desktop->foreground_input == queue->input && req->handle != reply->previous)
++            {
++                LIST_FOR_EACH_ENTRY_SAFE( msg, next, &queue->msg_list[POST_MESSAGE], struct message, entry )
++                    if (msg->msg == req->internal_msg) remove_queue_message( queue, msg, POST_MESSAGE );
++            }
+         }
+         else set_error( STATUS_INVALID_HANDLE );
+     }
++
++    release_object( desktop );
+ }
+ 
+ 
+-- 
+0.0.0
+

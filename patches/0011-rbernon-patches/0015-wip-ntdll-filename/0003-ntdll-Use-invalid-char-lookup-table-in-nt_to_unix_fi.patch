@@ -1,0 +1,53 @@
+From 28efc604eaf3543d3c54619137ebe8453b49f000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 9 Dec 2022 09:57:09 +0100
+Subject: [PATCH 3/8] ntdll: Use invalid char lookup table in
+ nt_to_unix_file_name_no_root.
+
+To lookup invalid NT chars, instead of costly wcschr.
+---
+ dlls/ntdll/unix/file.c | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -445,6 +445,16 @@ static inline BOOL is_invalid_8dot3_char( WCHAR ch )
+     return ch <= 0x7f ? is_invalid[ch] : TRUE;
+ }
+ 
++static inline BOOL is_invalid_nt_char( WCHAR ch )
++{
++    static const char is_invalid[0x7f] =
++    {
++        1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
++        ['*'] = 1, ['?'] = 1, ['<'] = 1, ['>'] = 1, ['|'] = 1, ['"'] = 1,
++    };
++    return ch <= 0x7f ? is_invalid[ch] : FALSE;
++}
++
+ /* check if the device can be a mounted volume */
+ static inline BOOL is_valid_mounted_device( const struct stat *st )
+ {
+@@ -4404,7 +4414,6 @@ static NTSTATUS nt_to_unix_file_name_no_root( FILE_OBJECT *fileobj, char **unix_
+                                               UINT disposition )
+ {
+     static const WCHAR unixW[] = {'u','n','i','x'};
+-    static const WCHAR invalid_charsW[] = { INVALID_NT_CHARS, 0 };
+     const UNICODE_STRING *nameW = &fileobj->FileName;
+     NTSTATUS status = STATUS_SUCCESS;
+     const WCHAR *name;
+@@ -4431,8 +4440,7 @@ static NTSTATUS nt_to_unix_file_name_no_root( FILE_OBJECT *fileobj, char **unix_
+     for (pos = 0; pos < name_len && pos <= MAX_DIR_ENTRY_LEN; pos++)
+     {
+         if (name[pos] == '\\') break;
+-        if (name[pos] < 32 || wcschr( invalid_charsW, name[pos] ))
+-            return STATUS_OBJECT_NAME_INVALID;
++        if (is_invalid_nt_char( name[pos] )) return STATUS_OBJECT_NAME_INVALID;
+         prefix[pos] = (name[pos] >= 'A' && name[pos] <= 'Z') ? name[pos] + 'a' - 'A' : name[pos];
+     }
+     if (pos > MAX_DIR_ENTRY_LEN) return STATUS_OBJECT_NAME_INVALID;
+-- 
+0.0.0
+

@@ -1,0 +1,116 @@
+From cf91bc435224ddb29ff2508fbef65a615b3e892e Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Fri, 15 Sep 2023 08:56:48 +0200
+Subject: [PATCH 1001/1] ntdll: Use sendfile as fallback for copy_file_range.
+
+---
+ configure.ac           |  9 +++++++++
+ dlls/ntdll/unix/file.c | 26 +++++++++++++++++++++++---
+ include/config.h.in    |  6 ++++++
+ 3 files changed, 38 insertions(+), 3 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index 11111111111..11111111111 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -2095,6 +2095,15 @@ then
+   AC_DEFINE(HAVE_SCHED_SETAFFINITY, 1, [Define to 1 if you have the `sched_setaffinity' function.])
+ fi
+ 
++AC_CACHE_CHECK([for sendfile],wine_cv_have_sendfile,
++                AC_LINK_IFELSE([AC_LANG_PROGRAM(
++[[#include <sys/sendfile.h>]], [[sendfile(0, 0, 0, 0);]])],[wine_cv_have_sendfile=yes],[wine_cv_have_sendfile=no]))
++if test "$wine_cv_have_sched_setaffinity" = "yes"
++then
++  AC_DEFINE(HAVE_SYS_SENDFILE_H, 1, [Define to 1 if you have the <sys/sendfile.h> header file.])
++  AC_DEFINE(HAVE_SENDFILE, 1, [Define to 1 if you have the `sendfile' function.])
++fi
++
+ dnl **** Check for types ****
+ 
+ AC_C_INLINE
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -45,6 +45,9 @@
+ #endif
+ #include <poll.h>
+ #include <sys/stat.h>
++#ifdef HAVE_SYS_SENDFILE_H
++# include <sys/sendfile.h>
++#endif
+ #ifdef HAVE_SYS_STATVFS_H
+ # include <sys/statvfs.h>
+ #endif
+@@ -7372,7 +7375,7 @@ static NTSTATUS netfs_DeviceIoControl( HANDLE handle, HANDLE event, PIO_APC_ROUT
+         SRV_COPYCHUNK_RESPONSE *ccr = out_buffer;
+         int src_fd, dst_fd, src_needs_close, dst_needs_close;
+         void *buffer = NULL;
+-        BOOL fallback = FALSE;
++        int fallback = 0;
+         if (in_size < sizeof(*cc))
+         {
+             status = STATUS_INVALID_PARAMETER;
+@@ -7404,7 +7407,7 @@ static NTSTATUS netfs_DeviceIoControl( HANDLE handle, HANDLE event, PIO_APC_ROUT
+                 ssize_t res = copy_file_range( src_fd, &off_in, dst_fd, &off_out, len, 0 );
+                 if (res == -1)
+                 {
+-                    if (errno == EXDEV || errno == EINVAL || errno == ENOSYS || errno == EOPNOTSUPP || errno == EFBIG || errno == EOVERFLOW) fallback = TRUE;
++                    if (errno == EXDEV || errno == EINVAL || errno == ENOSYS || errno == EOPNOTSUPP || errno == EFBIG || errno == EOVERFLOW) fallback = 1;
+                     else goto copychunk_out;
+                 }
+                 else
+@@ -7412,7 +7415,24 @@ static NTSTATUS netfs_DeviceIoControl( HANDLE handle, HANDLE event, PIO_APC_ROUT
+                     ccr->ChunkBytesWritten = ccr->TotalBytesWritten = res;
+                 }
+             }
+-            if (fallback)
++            if (fallback == 1)
++#endif
++#ifdef HAVE_SENDFILE
++            {
++                ssize_t res;
++                if (lseek( dst_fd, off_out, SEEK_SET ) != off_out)
++                    fallback = 2;
++                else if ((res = sendfile( dst_fd, src_fd, &off_in, len )) == -1)
++                {
++                    if (errno == EXDEV || errno == EINVAL || errno == ENOSYS || errno == EOPNOTSUPP || errno == EFBIG || errno == EOVERFLOW) fallback = 2;
++                    else goto copychunk_out;
++                }
++                else
++                {
++                    ccr->ChunkBytesWritten = ccr->TotalBytesWritten = res;
++                }
++            }
++            if (fallback == 2)
+ #endif
+             {
+                 if (!buffer) buffer = malloc( buffer_size );
+diff --git a/include/config.h.in b/include/config.h.in
+index 11111111111..11111111111 100644
+--- a/include/config.h.in
++++ b/include/config.h.in
+@@ -381,6 +381,9 @@
+ /* Define to 1 if you have the <SDL.h> header file. */
+ #undef HAVE_SDL_H
+ 
++/* Define to 1 if you have the `sendfile' function. */
++#undef HAVE_SENDFILE
++
+ /* Define to 1 if you have the `setproctitle' function. */
+ #undef HAVE_SETPROCTITLE
+ 
+@@ -579,6 +582,9 @@
+ /* Define to 1 if you have the <sys/scsiio.h> header file. */
+ #undef HAVE_SYS_SCSIIO_H
+ 
++/* Define to 1 if you have the <sys/sendfile.h> header file. */
++#undef HAVE_SYS_SENDFILE_H
++
+ /* Define to 1 if you have the <sys/shm.h> header file. */
+ #undef HAVE_SYS_SHM_H
+ 
+-- 
+0.0.0
+

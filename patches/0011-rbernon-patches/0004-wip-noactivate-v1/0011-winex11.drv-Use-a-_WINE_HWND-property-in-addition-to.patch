@@ -1,7 +1,7 @@
-From 2cdfc3d1c3c9293654c2f5fca439cf262f4bbe19 Mon Sep 17 00:00:00 2001
+From eb5046d2f6c021cb090d06ca86f967aa7e037e88 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Tue, 8 Mar 2022 19:33:54 +0100
-Subject: [PATCH 11/22] winex11.drv: Use a _WINE_HWND property in addition to
+Subject: [PATCH 11/19] winex11.drv: Use a _WINE_HWND property in addition to
  an Xlib context.
 
 To track Window / HWND relationship.
@@ -13,16 +13,16 @@ CW-Bug-Id: #19553
 CW-Bug-Id: #19644
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=2155
 ---
- dlls/winex11.drv/window.c      | 24 ++++++++++++++++++++++--
+ dlls/winex11.drv/window.c      | 25 +++++++++++++++++++++++--
  dlls/winex11.drv/x11drv.h      |  1 +
  dlls/winex11.drv/x11drv_main.c |  3 +++
- 3 files changed, 26 insertions(+), 2 deletions(-)
+ 3 files changed, 27 insertions(+), 2 deletions(-)
 
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -3341,8 +3341,17 @@ void init_win_context(void)
+@@ -3345,8 +3345,17 @@ void init_win_context(void)
      cursor_context = XUniqueContext();
  }
  
@@ -40,7 +40,7 @@ index 11111111111..11111111111 100644
      HWND hwnd;
  
      if (!window) return 0;
-@@ -3352,8 +3361,15 @@ HWND get_hwnd_for_window( Display *display, Window window )
+@@ -3356,8 +3365,16 @@ HWND get_hwnd_for_window( Display *display, Window window )
  
      if (!XFindContext( display, window, winContext, (char **)&hwnd )) return hwnd;
  
@@ -53,12 +53,13 @@ index 11111111111..11111111111 100644
 +    if (!X11DRV_check_error() && count && format == 32 && property) hwnd = *(HWND *)property;
 +    else WARN("Failed to find HWND for window %lx\n", window);
 +    XFree(property);
++    if (hwnd) XSaveContext( display, window, winContext, (char *)hwnd );
 +
 +    return hwnd;
  }
  
  void set_hwnd_for_window( Display *display, Window window, HWND hwnd )
-@@ -3364,4 +3380,8 @@ void set_hwnd_for_window( Display *display, Window window, HWND hwnd )
+@@ -3368,4 +3385,8 @@ void set_hwnd_for_window( Display *display, Window window, HWND hwnd )
  
      if (!hwnd) XDeleteContext( display, window, winContext );
      else XSaveContext( display, window, winContext, (char *)hwnd );
@@ -71,7 +72,7 @@ diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -524,6 +524,7 @@ enum x11drv_atoms
+@@ -525,6 +525,7 @@ enum x11drv_atoms
      XATOM__GTK_WORKAREAS_D0,
      XATOM__XEMBED,
      XATOM__XEMBED_INFO,
@@ -83,7 +84,7 @@ diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv_main.c
 +++ b/dlls/winex11.drv/x11drv_main.c
-@@ -194,6 +194,7 @@ static const char * const atom_names[NB_XATOMS - FIRST_XATOM] =
+@@ -193,6 +193,7 @@ static const char * const atom_names[NB_XATOMS - FIRST_XATOM] =
      "_GTK_WORKAREAS_D0",
      "_XEMBED",
      "_XEMBED_INFO",
@@ -92,14 +93,14 @@ index 11111111111..11111111111 100644
      "XdndEnter",
      "XdndPosition",
 @@ -237,6 +238,8 @@ static inline BOOL ignore_error( Display *display, XErrorEvent *event )
- {
      if ((event->request_code == X_SetInputFocus ||
           event->request_code == X_ChangeWindowAttributes ||
+          event->request_code == X_ConfigureWindow ||
 +         event->request_code == X_ChangeProperty ||
 +         event->request_code == X_DeleteProperty ||
           event->request_code == X_SendEvent) &&
          (event->error_code == BadMatch ||
           event->error_code == BadWindow)) return TRUE;
 -- 
-2.40.0
+0.0.0
 

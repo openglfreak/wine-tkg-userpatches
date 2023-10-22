@@ -1,0 +1,80 @@
+From 40145ff85b39d69a0a53a8534e2431d75b51a765 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Sat, 24 Jun 2023 16:34:51 +0200
+Subject: [PATCH 8/8] HACK: ntdll: Track spin timeout counts and stop spinning
+ after a certain number of timeouts.
+
+---
+ dlls/ntdll/unix/server.c | 27 +++++++++++++++++++++++++--
+ server/thread.c          |  2 +-
+ 2 files changed, 26 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -231,6 +231,9 @@ static unsigned int send_request_shm( const struct __server_request_info *req )
+ 
+ static void read_reply_data( void *buffer, size_t size );
+ 
++unsigned int request_spin_timeout_count[REQ_NB_REQUESTS];
++unsigned int request_spin_success_count[REQ_NB_REQUESTS];
++
+ /***********************************************************************
+  *           wait_reply_shm
+  *
+@@ -241,16 +244,36 @@ static inline unsigned int wait_reply_shm( struct __server_request_info *req )
+     volatile struct request_shm *request_shm = ntdll_get_thread_data()->request_shm;
+     char *data_ptr = (char*)(request_shm + 1) + req->u.req.request_header.request_size;
+     unsigned int copy_limit = (char*)request_shm + REQUEST_SHM_SIZE - data_ptr;
++    enum request req_nr = req->u.req.request_header.req;
++    unsigned int spincount = 8000;
+     int val;
+ 
+-    while ((val = request_shm->futex) != 0)
++    if ((request_spin_timeout_count[req_nr] * 64) > request_spin_success_count[req_nr] + 2048)
++        goto no_spin;
++
++    while (spincount > 0 && (val = request_shm->futex) != 0)
+     {
+         if (val == -1)
+             abort_thread(0);
+-        //syscall( __NR_futex, &request_shm->futex, FUTEX_WAIT, val, NULL, NULL, 0 );
++        spincount--;
+         YieldProcessor();
+     }
+ 
++    if (spincount)
++        InterlockedIncrement( &request_spin_success_count[req_nr] );
++    else
++    {
++        InterlockedIncrement( &request_spin_timeout_count[req_nr] );
++
++    no_spin:;
++        while ((val = request_shm->futex) != 0)
++        {
++            if (val == -1)
++                abort_thread(0);
++            syscall( __NR_futex, &request_shm->futex, FUTEX_WAIT, val, NULL, NULL, 0 );
++        }
++    }
++
+     memcpy( &req->u.reply, (void*)&request_shm->u.reply, sizeof(req->u.reply) );
+     if (req->u.reply.reply_header.reply_size)
+     {
+diff --git a/server/thread.c b/server/thread.c
+index 11111111111..11111111111 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -521,7 +521,7 @@ static void *request_shm_thread(void *param)
+         else if (val != -1)
+             fatal_protocol_error( thread, "unknown futex state %d\n", val );
+         pthread_mutex_unlock( &global_lock );
+-        //syscall( __NR_futex, &request_shm->futex, FUTEX_WAKE, 1, NULL, NULL, 0 );
++        syscall( __NR_futex, &request_shm->futex, FUTEX_WAKE, 1, NULL, NULL, 0 );
+         if (poll_generation != generation)
+             force_exit_poll();
+     }
+-- 
+0.0.0
+

@@ -7,8 +7,8 @@ Signed-off-by: Zhiyi Zhang <zzhang@codeweavers.com>
 ---
  configure.ac                 |  48 ++++++
  dlls/winex11.drv/Makefile.in |   2 +-
- dlls/winex11.drv/xrandr.c    | 305 +++++++++++++++++++++++++++++++----
- 3 files changed, 320 insertions(+), 35 deletions(-)
+ dlls/winex11.drv/xrandr.c    | 303 +++++++++++++++++++++++++++++++----
+ 3 files changed, 319 insertions(+), 34 deletions(-)
 
 diff --git a/configure.ac b/configure.ac
 index 11111111111..11111111111 100644
@@ -33,15 +33,15 @@ index 11111111111..11111111111 100644
  AC_ARG_WITH(xcomposite,AS_HELP_STRING([--without-xcomposite],[do not use the Xcomposite extension]),
              [if test "x$withval" = "xno"; then ac_cv_header_X11_extensions_Xcomposite_h=no; fi])
  AC_ARG_WITH(xcursor,   AS_HELP_STRING([--without-xcursor],[do not use the Xcursor extension]),
-@@ -1161,6 +1166,7 @@ then
+@@ -1202,6 +1207,7 @@ then
+     X_LIBS="$X_LIBS -lX11"
+ 
+     xlib_includes="#include <X11/Xlib.h>
++#include <X11/Xlib-xcb.h>
+ #include <X11/Xutil.h>"
  
      dnl *** All of the following tests require X11/Xlib.h
-     AC_CHECK_HEADERS([X11/Xlib.h \
-+                      X11/Xlib-xcb.h \
-                       X11/XKBlib.h \
-                       X11/Xutil.h \
-                       X11/Xcursor/Xcursor.h \
-@@ -1262,6 +1268,48 @@ then
+@@ -1294,6 +1300,48 @@ then
          WINE_NOTICE_WITH(xrandr,[test "x$ac_cv_lib_soname_Xrandr" = "x"],
                           [libxrandr ${notice_platform}development files not found, XRandr won't be supported.])
  
@@ -107,15 +107,17 @@ diff --git a/dlls/winex11.drv/xrandr.c b/dlls/winex11.drv/xrandr.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/xrandr.c
 +++ b/dlls/winex11.drv/xrandr.c
-@@ -29,8 +29,20 @@
- #define NONAMELESSSTRUCT
- #define NONAMELESSUNION
+@@ -27,10 +27,22 @@
+ #include "config.h"
+ 
  #include <assert.h>
 +#include <stdlib.h>
 +#include <fcntl.h>
 +#include <unistd.h>
  #include <X11/Xlib.h>
+ #ifdef HAVE_X11_EXTENSIONS_XRANDR_H
  #include <X11/extensions/Xrandr.h>
+ #endif
 +#ifdef HAVE_X11_XLIB_XCB_H
 +#include <X11/Xlib-xcb.h>
 +#endif
@@ -160,7 +162,10 @@ index 11111111111..11111111111 100644
  
 -#define LOAD_FUNCPTR(f) \
 -        if((p##f = dlsym(xrandr_handle, #f)) == NULL) goto sym_not_found
--
++#define LOAD_SYMBOL(library, symbol) \
++        if((p##symbol = dlsym(library##_handle, #symbol)) == NULL) \
++            goto sym_not_found
+ 
 -        LOAD_FUNCPTR(XRRConfigCurrentConfiguration);
 -        LOAD_FUNCPTR(XRRConfigCurrentRate);
 -        LOAD_FUNCPTR(XRRFreeScreenConfigInfo);
@@ -171,10 +176,6 @@ index 11111111111..11111111111 100644
 -        LOAD_FUNCPTR(XRRSetScreenConfig);
 -        LOAD_FUNCPTR(XRRSetScreenConfigAndRate);
 -        LOAD_FUNCPTR(XRRSizes);
-+#define LOAD_SYMBOL(library, symbol) \
-+        if((p##symbol = dlsym(library##_handle, #symbol)) == NULL) \
-+            goto sym_not_found
-+
 +        LOAD_SYMBOL(xrandr, XRRConfigCurrentConfiguration);
 +        LOAD_SYMBOL(xrandr, XRRConfigCurrentRate);
 +        LOAD_SYMBOL(xrandr, XRRFreeScreenConfigInfo);
@@ -239,9 +240,7 @@ index 11111111111..11111111111 100644
 +            dri3_loaded = TRUE;
 +        }
 +#endif
- 
--sym_not_found:
--        if (!r)  TRACE("Unable to load function ptrs from XRandR library\n");
++
 +#ifdef SONAME_LIBDRM
 +        if ((drm_handle = dlopen(SONAME_LIBDRM, RTLD_NOW)))
 +        {
@@ -252,9 +251,11 @@ index 11111111111..11111111111 100644
 +#endif
 +
 +#undef LOAD_SYMBOL
-     }
-+
-+sym_not_found:
++    }
+ 
+ sym_not_found:
+-        if (!r)  TRACE("Unable to load function ptrs from XRandR library\n");
+-    }
 +    if (!r)
 +        TRACE("Unable to load function ptrs from XRandR library\n");
      return r;
@@ -442,7 +443,7 @@ index 11111111111..11111111111 100644
  VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkDisplayKHR)
  
  static BOOL get_gpu_properties_from_vulkan( struct gdi_gpu *gpu, const XRRProviderInfo *provider_info,
-@@ -805,11 +1036,17 @@ static BOOL xrandr14_get_gpus2( struct gdi_gpu **new_gpus, int *count, BOOL get_
+@@ -805,11 +1036,17 @@ static BOOL xrandr14_get_gpus( struct gdi_gpu **new_gpus, int *count, BOOL get_p
          if (get_properties)
          {
              if (!get_gpu_properties_from_vulkan( &gpus[i], provider_info, gpus, i ))

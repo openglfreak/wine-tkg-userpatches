@@ -1,0 +1,181 @@
+From 436ee39236fd9db67785d11305237c8a4f3a7cef Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 11 Apr 2023 15:19:19 +0200
+Subject: [PATCH 1/4] ntdll: Use is_inside_syscall more consistently.
+
+---
+ dlls/ntdll/unix/signal_arm.c    | 10 +++++-----
+ dlls/ntdll/unix/signal_arm64.c  | 12 ++++++------
+ dlls/ntdll/unix/signal_i386.c   | 11 ++++++-----
+ dlls/ntdll/unix/signal_x86_64.c | 13 +++++++------
+ 4 files changed, 24 insertions(+), 22 deletions(-)
+
+diff --git a/dlls/ntdll/unix/signal_arm.c b/dlls/ntdll/unix/signal_arm.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_arm.c
++++ b/dlls/ntdll/unix/signal_arm.c
+@@ -216,10 +216,10 @@ static inline struct arm_thread_data *arm_thread_data(void)
+     return (struct arm_thread_data *)ntdll_get_thread_data()->cpu_data;
+ }
+ 
+-static BOOL is_inside_syscall( ucontext_t *sigcontext )
++static BOOL is_inside_syscall( void *addr )
+ {
+-    return ((char *)SP_sig(sigcontext) >= (char *)ntdll_get_thread_data()->kernel_stack &&
+-            (char *)SP_sig(sigcontext) <= (char *)arm_thread_data()->syscall_frame);
++    return ((char *)addr >= (char *)ntdll_get_thread_data()->kernel_stack &&
++            (char *)addr <= (char *)arm_thread_data()->syscall_frame);
+ }
+ 
+ extern void raise_func_trampoline( EXCEPTION_RECORD *rec, CONTEXT *context, void *dispatcher );
+@@ -1240,7 +1240,7 @@ static BOOL handle_syscall_fault( ucontext_t *context, EXCEPTION_RECORD *rec )
+     struct syscall_frame *frame = arm_thread_data()->syscall_frame;
+     UINT i;
+ 
+-    if (!is_inside_syscall( context )) return FALSE;
++    if (!is_inside_syscall( (void *)SP_sig(context) )) return FALSE;
+ 
+     TRACE( "code=%lx flags=%lx addr=%p pc=%08lx\n",
+            rec->ExceptionCode, rec->ExceptionFlags, rec->ExceptionAddress, (DWORD)PC_sig(context) );
+@@ -1473,7 +1473,7 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+     CONTEXT context;
+ 
+-    if (is_inside_syscall( sigcontext ))
++    if (is_inside_syscall( (void *)SP_sig(sigcontext) ))
+     {
+         context.ContextFlags = CONTEXT_FULL;
+         NtGetContextThread( GetCurrentThread(), &context );
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -161,10 +161,10 @@ static inline struct arm64_thread_data *arm64_thread_data(void)
+     return (struct arm64_thread_data *)ntdll_get_thread_data()->cpu_data;
+ }
+ 
+-static BOOL is_inside_syscall( ucontext_t *sigcontext )
++static BOOL is_inside_syscall( void *addr )
+ {
+-    return ((char *)SP_sig(sigcontext) >= (char *)ntdll_get_thread_data()->kernel_stack &&
+-            (char *)SP_sig(sigcontext) <= (char *)arm64_thread_data()->syscall_frame);
++    return ((char *)addr >= (char *)ntdll_get_thread_data()->kernel_stack &&
++            (char *)addr <= (char *)arm64_thread_data()->syscall_frame);
+ }
+ 
+ extern void raise_func_trampoline( EXCEPTION_RECORD *rec, CONTEXT *context, void *dispatcher );
+@@ -1208,7 +1208,7 @@ static BOOL handle_syscall_fault( ucontext_t *context, EXCEPTION_RECORD *rec )
+     struct syscall_frame *frame = arm64_thread_data()->syscall_frame;
+     DWORD i;
+ 
+-    if (!is_inside_syscall( context )) return FALSE;
++    if (!is_inside_syscall( (void *)SP_sig(context) )) return FALSE;
+ 
+     TRACE( "code=%x flags=%x addr=%p pc=%p tid=%04x\n",
+            rec->ExceptionCode, rec->ExceptionFlags, rec->ExceptionAddress,
+@@ -1458,7 +1458,7 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+     CONTEXT context;
+ 
+-    if (is_inside_syscall( sigcontext ))
++    if (is_inside_syscall( (void *)SP_sig(sigcontext) ))
+     {
+         context.ContextFlags = CONTEXT_FULL;
+         NtGetContextThread( GetCurrentThread(), &context );
+@@ -1485,7 +1485,7 @@ static void usr2_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+     ucontext_t *context = sigcontext;
+     DWORD i;
+ 
+-    if (!is_inside_syscall( sigcontext )) return;
++    if (!is_inside_syscall( (void *)SP_sig(sigcontext) )) return;
+ 
+     FP_sig(context)     = frame->fp;
+     LR_sig(context)     = frame->lr;
+diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_i386.c
++++ b/dlls/ntdll/unix/signal_i386.c
+@@ -555,10 +555,10 @@ static inline TEB *get_current_teb(void)
+ /***********************************************************************
+  *           is_inside_syscall
+  */
+-static BOOL is_inside_syscall( ucontext_t *sigcontext )
++static BOOL is_inside_syscall( void *addr )
+ {
+-    return ((char *)ESP_sig(sigcontext) >= (char *)ntdll_get_thread_data()->kernel_stack &&
+-            (char *)ESP_sig(sigcontext) <= (char *)x86_thread_data()->syscall_frame);
++    return ((char *)addr >= (char *)ntdll_get_thread_data()->kernel_stack &&
++            (char *)addr <= (char *)x86_thread_data()->syscall_frame);
+ }
+ 
+ 
+@@ -1782,7 +1782,7 @@ static BOOL handle_syscall_fault( ucontext_t *sigcontext, void *stack_ptr,
+     struct syscall_frame *frame = x86_thread_data()->syscall_frame;
+     UINT i, *stack;
+ 
+-    if (!is_inside_syscall( sigcontext )) return FALSE;
++    if (!is_inside_syscall( (void *)ESP_sig(sigcontext) )) return FALSE;
+ 
+     TRACE( "code=%lx flags=%lx addr=%p ip=%08lx\n",
+            rec->ExceptionCode, rec->ExceptionFlags, rec->ExceptionAddress, context->Eip );
+@@ -2117,10 +2117,11 @@ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+  */
+ static void usr1_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
++    ucontext_t *ucontext = sigcontext;
+     struct xcontext xcontext;
+ 
+     init_handler( sigcontext );
+-    if (is_inside_syscall( sigcontext ))
++    if (is_inside_syscall( (void *)ESP_sig(ucontext) ))
+     {
+         DECLSPEC_ALIGN(64) XSTATE xs;
+         xcontext.c.ContextFlags = CONTEXT_FULL;
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -454,10 +454,10 @@ static inline TEB *get_current_teb(void)
+ }
+ #endif
+ 
+-static BOOL is_inside_syscall( const ucontext_t *sigcontext )
++static BOOL is_inside_syscall( void *addr )
+ {
+-    return ((char *)RSP_sig(sigcontext) >= (char *)ntdll_get_thread_data()->kernel_stack &&
+-            (char *)RSP_sig(sigcontext) <= (char *)amd64_thread_data()->syscall_frame);
++    return ((char *)addr >= (char *)ntdll_get_thread_data()->kernel_stack &&
++            (char *)addr <= (char *)amd64_thread_data()->syscall_frame);
+ }
+ 
+ 
+@@ -826,7 +826,8 @@ static inline ucontext_t *init_handler( void *sigcontext )
+ static inline void leave_handler( ucontext_t *sigcontext )
+ {
+ #ifdef __linux__
+-    if (fs32_sel && !is_inside_signal_stack( (void *)RSP_sig(sigcontext )) && !is_inside_syscall(sigcontext))
++    if (fs32_sel && !is_inside_signal_stack( (void *)RSP_sig(sigcontext )) &&
++        !is_inside_syscall( (void *)RSP_sig(sigcontext) ))
+         __asm__ volatile( "movw %0,%%fs" :: "r" (fs32_sel) );
+ #endif
+ #ifdef DS_sig
+@@ -2017,7 +2018,7 @@ static BOOL handle_syscall_fault( ucontext_t *sigcontext, EXCEPTION_RECORD *rec,
+     struct syscall_frame *frame = amd64_thread_data()->syscall_frame;
+     DWORD i;
+ 
+-    if (!is_inside_syscall( sigcontext )) return FALSE;
++    if (!is_inside_syscall( (void *)RSP_sig(sigcontext) )) return FALSE;
+ 
+     TRACE_(seh)( "code=%x flags=%x addr=%p ip=%lx tid=%04x\n",
+                  rec->ExceptionCode, rec->ExceptionFlags, rec->ExceptionAddress,
+@@ -2350,7 +2351,7 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+     ucontext_t *ucontext = init_handler( sigcontext );
+     struct xcontext context;
+ 
+-    if (is_inside_syscall( ucontext ))
++    if (is_inside_syscall( (void *)RSP_sig(ucontext) ))
+     {
+         DECLSPEC_ALIGN(64) XSTATE xs;
+
+
+         context.c.ContextFlags = CONTEXT_FULL | CONTEXT_SEGMENTS;

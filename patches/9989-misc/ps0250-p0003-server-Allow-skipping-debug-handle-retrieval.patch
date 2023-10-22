@@ -23,28 +23,28 @@ diff --git a/dlls/ntdll/unix/process.c b/dlls/ntdll/unix/process.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/process.c
 +++ b/dlls/ntdll/unix/process.c
-@@ -1354,19 +1354,16 @@ NTSTATUS WINAPI NtQueryInformationProcess( HANDLE handle, PROCESSINFOCLASS class
-             if (!info) ret = STATUS_ACCESS_VIOLATION;
-             else
-             {
--                HANDLE debug;
+@@ -1360,19 +1360,16 @@ NTSTATUS WINAPI NtQueryInformationProcess( HANDLE handle, PROCESSINFOCLASS class
+         if (!info) ret = STATUS_ACCESS_VIOLATION;
+         else
+         {
+-            HANDLE debug;
 -
-                 SERVER_START_REQ(get_process_debug_info)
-                 {
-                     req->handle = wine_server_obj_handle( handle );
-+                    req->want_debug_obj = 0;
-                     ret = wine_server_call( req );
--                    debug = wine_server_ptr_handle( reply->debug );
-                 }
-                 SERVER_END_REQ;
-                 if (ret == STATUS_SUCCESS)
-                 {
-                     *(DWORD_PTR *)info = ~0ul;
--                    NtClose( debug );
-                 }
-                 else if (ret == STATUS_PORT_NOT_SET)
-                 {
-@@ -1385,18 +1382,15 @@ NTSTATUS WINAPI NtQueryInformationProcess( HANDLE handle, PROCESSINFOCLASS class
+             SERVER_START_REQ(get_process_debug_info)
+             {
+                 req->handle = wine_server_obj_handle( handle );
++                req->want_debug_obj = 0;
+                 ret = wine_server_call( req );
+-                debug = wine_server_ptr_handle( reply->debug );
+             }
+             SERVER_END_REQ;
+             if (ret == STATUS_SUCCESS)
+             {
+                 *(DWORD_PTR *)info = ~0ul;
+-                NtClose( debug );
+             }
+             else if (ret == STATUS_PORT_NOT_SET)
+             {
+@@ -1390,18 +1387,15 @@ NTSTATUS WINAPI NtQueryInformationProcess( HANDLE handle, PROCESSINFOCLASS class
              if (!info) ret = STATUS_ACCESS_VIOLATION;
              else
              {
@@ -65,19 +65,19 @@ index 11111111111..11111111111 100644
              }
          }
          else ret = STATUS_INFO_LENGTH_MISMATCH;
-@@ -1418,6 +1412,7 @@ NTSTATUS WINAPI NtQueryInformationProcess( HANDLE handle, PROCESSINFOCLASS class
-                 SERVER_START_REQ(get_process_debug_info)
-                 {
-                     req->handle = wine_server_obj_handle( handle );
-+                    req->want_debug_obj = 1;
-                     ret = wine_server_call( req );
-                     *(HANDLE *)info = wine_server_ptr_handle( reply->debug );
-                 }
+@@ -1419,6 +1413,7 @@ NTSTATUS WINAPI NtQueryInformationProcess( HANDLE handle, PROCESSINFOCLASS class
+         SERVER_START_REQ(get_process_debug_info)
+         {
+             req->handle = wine_server_obj_handle( handle );
++            req->want_debug_obj = 1;
+             ret = wine_server_call( req );
+             *(HANDLE *)info = wine_server_ptr_handle( reply->debug );
+         }
 diff --git a/server/process.c b/server/process.c
 index 11111111111..11111111111 100644
 --- a/server/process.c
 +++ b/server/process.c
-@@ -1587,7 +1587,7 @@ DECL_HANDLER(get_process_debug_info)
+@@ -1592,7 +1592,7 @@ DECL_HANDLER(get_process_debug_info)
  
      reply->debug_children = process->debug_children;
      if (!process->debug_obj) set_error( STATUS_PORT_NOT_SET );
@@ -90,7 +90,7 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -1065,6 +1065,7 @@ struct input_shared_memory
+@@ -1092,6 +1092,7 @@ struct input_shared_memory
  /* Retrieve debug information about a process */
  @REQ(get_process_debug_info)
      obj_handle_t handle;           /* process handle */
@@ -100,5 +100,5 @@ index 11111111111..11111111111 100644
      int          debug_children;   /* inherit debugger to child processes */
 
 -- 
-2.40.0
+0.0.0
 

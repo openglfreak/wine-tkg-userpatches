@@ -1,0 +1,489 @@
+From 279667dc914a4aa53923eb190f098804c13ee4ea Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Wed, 20 Sep 2023 09:23:08 +0200
+Subject: [PATCH] wip font cache
+
+---
+ dlls/win32u/freetype.c | 401 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 401 insertions(+)
+
+diff --git a/dlls/win32u/freetype.c b/dlls/win32u/freetype.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/freetype.c
++++ b/dlls/win32u/freetype.c
+@@ -27,10 +27,12 @@
+ 
+ #include "config.h"
+ 
++#include <pthread.h>
+ #include <stdarg.h>
+ #include <stdlib.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
++#include <errno.h>
+ #include <fcntl.h>
+ #include <dlfcn.h>
+ #include <sys/mman.h>
+@@ -40,6 +42,8 @@
+ #include <assert.h>
+ #include <unistd.h>
+ 
++#include "wine/rbtree.h"
++
+ #ifdef __APPLE__
+ #define LoadResource __carbon_LoadResource
+ #define CheckMenuItem __carbon_CheckMenuItem
+@@ -1160,6 +1164,7 @@ static WCHAR *decode_opentype_name( struct opentype_name *name )
+ struct unix_face
+ {
+     FT_Face ft_face;
++    BOOL cached;
+     BOOL scalable;
+     UINT num_faces;
+     WCHAR *family_name;
+@@ -1172,6 +1177,46 @@ struct unix_face
+     struct bitmap_font_size size;
+ };
+ 
++struct font_cache_entry
++{
++    struct wine_rb_entry entry;
++    const char *unix_name;
++    UINT flags;
++    struct unix_face *face;
++};
++
++static int font_cache_compare( const void *key, const struct wine_rb_entry *entry )
++{
++    struct font_cache_entry *fcentry = WINE_RB_ENTRY_VALUE(entry, struct font_cache_entry, entry);
++    return strcmp( (const char*)key, fcentry->unix_name );
++}
++
++struct wine_rb_tree cached_fonts = { font_cache_compare };
++static pthread_mutex_t cached_fonts_mutex = PTHREAD_MUTEX_INITIALIZER;
++static BOOL font_cache_modified = FALSE;
++
++static struct unix_face *get_cached_font( const char *unix_name, UINT flags )
++{
++    struct wine_rb_entry *entry;
++    pthread_mutex_lock( &cached_fonts_mutex );
++    entry = wine_rb_get( &cached_fonts, unix_name );
++    pthread_mutex_unlock( &cached_fonts_mutex );
++    return entry ? WINE_RB_ENTRY_VALUE(entry, struct font_cache_entry, entry)->face : NULL;
++}
++
++static void cache_font( const char *unix_name, struct unix_face *face, UINT flags )
++{
++    struct font_cache_entry *entry = calloc( 1, sizeof(*entry) );
++    entry->unix_name = strdup( unix_name );
++    entry->flags = flags;
++    entry->face = face;
++    face->cached = TRUE;
++    pthread_mutex_lock( &cached_fonts_mutex );
++    wine_rb_put( &cached_fonts, entry->unix_name, &entry->entry );
++    font_cache_modified = TRUE;
++    pthread_mutex_unlock( &cached_fonts_mutex );
++}
++
+ static struct unix_face *unix_face_create( const char *unix_name, void *data_ptr, UINT data_size,
+                                            UINT face_index, UINT flags, FT_Face face )
+ {
+@@ -1189,6 +1234,12 @@ static struct unix_face *unix_face_create( const char *unix_name, void *data_ptr
+     TRACE( "unix_name %s, face_index %u, data_ptr %p, data_size %u, flags %#x\n",
+            unix_name, face_index, data_ptr, data_size, flags );
+ 
++    if (unix_name && (This = get_cached_font( unix_name, flags )))
++    {
++        TRACE( "Returning font face from cache: %p\n", This );
++        return This;
++    }
++
+     if (unix_name && !face)
+     {
+         if ((fd = open( unix_name, O_RDONLY )) == -1) return NULL;
+@@ -1315,6 +1366,12 @@ static struct unix_face *unix_face_create( const char *unix_name, void *data_ptr
+         This = NULL;
+     }
+ 
++    if (This && unix_name)
++    {
++        TRACE( "Caching font face: %p\n", This );
++        cache_font( unix_name, This, flags );
++    }
++
+ done:
+     if (unix_name && !face) munmap( data_ptr, data_size );
+     return This;
+@@ -1322,6 +1379,7 @@ done:
+ 
+ static void unix_face_destroy( struct unix_face *This )
+ {
++    if (This->cached) return;
+     if (This->ft_face) pFT_Done_Face( This->ft_face );
+     free( This->full_name );
+     free( This->style_name );
+@@ -1938,11 +1996,353 @@ sym_not_found:
+     return FALSE;
+ }
+ 
++#define TICKSPERSEC 10000000
++#define SECS_1601_TO_1970  ((369 * 365 + 89) * (ULONGLONG)86400)
++
++static inline ULONGLONG ticks_from_time_t( time_t time )
++{
++    if (sizeof(time_t) == sizeof(int))  /* time_t may be signed */
++        return ((ULONGLONG)(ULONG)time + SECS_1601_TO_1970) * TICKSPERSEC;
++    else
++        return ((ULONGLONG)time + SECS_1601_TO_1970) * TICKSPERSEC;
++}
++
++static BOOL is_valid_cache_time( struct stat *st )
++{
++    SYSTEM_TIMEOFDAY_INFORMATION ti;
++    NtQuerySystemInformation( SystemTimeOfDayInformation, &ti, sizeof(ti), NULL );
++    return ticks_from_time_t( st->st_mtime ) > ti.BootTime.QuadPart;
++}
++
++static BYTE *read_font_cache( size_t *data_size )
++{
++    WCHAR pathW[MAX_PATH];
++    size_t total_read = 0;
++    struct stat st;
++    BYTE *data;
++    off_t size;
++    char *path;
++    int fd;
++
++    asciiz_to_unicode( pathW, "\\??\\C:\\windows\\font_cache.bin" );
++    path = get_unix_file_name( pathW );
++    if (!path)
++        return NULL;
++    fd = open( path, O_RDONLY );
++    if (fd < 0)
++        return NULL;
++    if (fstat( fd, &st ) || !is_valid_cache_time( &st ))
++    {
++        close( fd );
++        return NULL;
++    }
++    *data_size = size = lseek( fd, 0, SEEK_END );
++    lseek( fd, 0, SEEK_SET );
++    if (size == (off_t)-1 || !(data = malloc( size )))
++    {
++        close( fd );
++        return NULL;
++    }
++    while (total_read < size)
++    {
++        ssize_t bytes_read = read( fd, data + total_read, size - total_read );
++        if (bytes_read == 0)
++            break;
++        else if (bytes_read == -1)
++        {
++            if (errno == EINTR)
++                continue;
++            break;
++        }
++        total_read += (size_t)bytes_read;
++    }
++    close( fd );
++    if (total_read < size)
++    {
++        free( data );
++        return NULL;
++    }
++    return data;
++}
++
++static char *read_cache_string( BYTE *data, size_t size, size_t *consumed )
++{
++    size_t len = strnlen( (char*)data, size );
++    char *str;
++    if (len >= size)
++        return NULL;
++    str = malloc( len + 1 );
++    if (!str)
++        return NULL;
++    memcpy( str, data, len + 1 );
++    *consumed += len + 1;
++    return str;
++}
++
++static inline size_t wcsnlen_win( const WCHAR *str, size_t len )
++{
++    const WCHAR *s;
++    for (s = str; len && *s; s++, len--) ;
++    return s - str;
++}
++
++static WCHAR *read_cache_wstring( BYTE *data, size_t size, size_t *consumed )
++{
++    size_t len = wcsnlen_win( (WCHAR*)data, size );
++    WCHAR *str;
++    if (len >= size - 1)
++        return NULL;
++    str = malloc( (len + 1) * sizeof(WCHAR) );
++    if (!str)
++        return NULL;
++    memcpy( str, data, (len + 1) * sizeof(WCHAR) );
++    *consumed += (len + 1) * sizeof(WCHAR);
++    return str;
++}
++
++static size_t read_cache_entry( struct font_cache_entry *entry, BYTE *data, size_t size )
++{
++    size_t consumed = 0;
++    UINT32 *pui32;
++    INT32 *pi32;
++
++    entry->unix_name = read_cache_string( data + consumed, size - consumed, &consumed );
++    if (!entry->unix_name)
++        return 0;
++    if (consumed + 4 > size) return 0;
++    entry->flags = *(UINT32*)(data + consumed);
++    consumed += 4;
++    if (consumed + 1 > size) return 0;
++    entry->face->scalable = *(data + consumed);
++    consumed += 1;
++    if (consumed + 4 > size) return 0;
++    entry->face->num_faces = *(UINT32*)(data + consumed);
++    consumed+= 4;
++    entry->face->family_name = read_cache_wstring( data + consumed, size - consumed, &consumed );
++    if (!entry->face->family_name)
++        return 0;
++    entry->face->second_name = read_cache_wstring( data + consumed, size - consumed, &consumed );
++    if (!entry->face->second_name)
++        return 0;
++    entry->face->style_name = read_cache_wstring( data + consumed, size - consumed, &consumed );
++    if (!entry->face->style_name)
++        return 0;
++    entry->face->full_name = read_cache_wstring( data + consumed, size - consumed, &consumed );
++    if (!entry->face->full_name)
++        return 0;
++    if (consumed + 4 > size) return 0;
++    entry->face->ntm_flags = *(UINT32*)(data + consumed);
++    consumed += 4;
++    if (consumed + 4 > size) return 0;
++    entry->face->font_version = *(UINT32*)(data + consumed);
++    consumed += 4;
++    if (consumed + 24 > size) return 0;
++    pui32 = (UINT32*)(data + consumed);
++    entry->face->fs.fsUsb[0] = pui32[0];
++    entry->face->fs.fsUsb[1] = pui32[1];
++    entry->face->fs.fsUsb[2] = pui32[2];
++    entry->face->fs.fsUsb[3] = pui32[3];
++    entry->face->fs.fsCsb[0] = pui32[4];
++    entry->face->fs.fsCsb[1] = pui32[5];
++    consumed += 24;
++    if (consumed + 24 > size) return 0;
++    pi32 = (INT32*)(data + consumed);
++    entry->face->size.width = pi32[0];
++    entry->face->size.height = pi32[1];
++    entry->face->size.size = pi32[2];
++    entry->face->size.x_ppem = pi32[3];
++    entry->face->size.y_ppem = pi32[4];
++    entry->face->size.internal_leading = pi32[5];
++    consumed += 24;
++    return consumed;
++}
++
++static void load_font_cache(void)
++{
++    size_t cache_size, consumed = 0;
++    BYTE *cache_data = read_font_cache( &cache_size );
++    if (!cache_data)
++        return;
++    pthread_mutex_lock( &cached_fonts_mutex );
++    while (consumed < cache_size)
++    {
++        struct font_cache_entry *entry = calloc( 1, sizeof(*entry) );
++        size_t c;
++
++        if (!entry)
++            break;
++        entry->face = calloc( 1, sizeof(*entry->face) );
++        if (!entry->face)
++        {
++            free( entry );
++            break;
++        }
++        c = read_cache_entry( entry, cache_data + consumed, cache_size - consumed );
++        if (!c)
++        {
++            if (entry->face)
++                unix_face_destroy( entry->face );
++            if (entry->unix_name)
++                free( (void*)entry->unix_name );
++            free( entry );
++            break;
++        }
++        entry->face->cached = TRUE;
++        wine_rb_put( &cached_fonts, entry->unix_name, &entry->entry );
++        consumed += c;
++    }
++    font_cache_modified = consumed < cache_size;
++    pthread_mutex_unlock( &cached_fonts_mutex );
++}
++
++static void write_cache_string( const char *str, size_t *size, BYTE *data )
++{
++    size_t len = strlen( str );
++    if (data) memcpy( data + *size, str, len + 1 );
++    *size += len + 1;
++}
++
++static void write_cache_wstring( const WCHAR *str, size_t *size, BYTE *data )
++{
++    static const WCHAR emptyW[] = {0};
++    size_t len;
++    if (!str) str = emptyW;
++    len = wcsnlen_win( str, ~(size_t)0 );
++    if (data) memcpy( data + *size, str, (len + 1) * sizeof(WCHAR) );
++    *size += (len + 1) * sizeof(WCHAR);
++}
++
++static void write_cache_entry( struct font_cache_entry *entry, size_t *size, BYTE *data )
++{
++    *size = 0;
++    write_cache_string( entry->unix_name, size, data );
++    if (data)
++        *(UINT32*)(data + *size) = entry->flags;
++    *size += 4;
++    if (data)
++        *(data + *size) = entry->face->scalable;
++    *size += 1;
++    if (data)
++        *(UINT32*)(data + *size) = entry->face->num_faces;
++    *size += 4;
++    write_cache_wstring( entry->face->family_name, size, data );
++    write_cache_wstring( entry->face->second_name, size, data );
++    write_cache_wstring( entry->face->style_name, size, data );
++    write_cache_wstring( entry->face->full_name, size, data );
++    if (data)
++        *(UINT32*)(data + *size) = entry->face->ntm_flags;
++    *size += 4;
++    if (data)
++        *(UINT32*)(data + *size) = entry->face->font_version;
++    *size += 4;
++    if (data)
++    {
++        UINT32 *p = (UINT32*)(data + *size);
++        p[0] = entry->face->fs.fsUsb[0];
++        p[1] = entry->face->fs.fsUsb[1];
++        p[2] = entry->face->fs.fsUsb[2];
++        p[3] = entry->face->fs.fsUsb[3];
++        p[4] = entry->face->fs.fsCsb[0];
++        p[5] = entry->face->fs.fsCsb[1];
++    }
++    *size += 24;
++    if (data)
++    {
++        INT32 *p = (INT32*)(data + *size);
++        p[0] = entry->face->size.width;
++        p[1] = entry->face->size.height;
++        p[2] = entry->face->size.size;
++        p[3] = entry->face->size.x_ppem;
++        p[4] = entry->face->size.y_ppem;
++        p[5] = entry->face->size.internal_leading;
++    }
++    *size += 24;
++}
++
++/* simplified version of mkstemps() */
++static int make_temp_file( char path[MAX_PATH], const char *dir )
++{
++    static unsigned int value;
++    unsigned int current_time = NtGetTickCount();
++    int i, fd = -1;
++
++    value += (current_time >> 16) + current_time;
++    for (i = 0; i < 0x8000 && fd < 0; i++, value += 7777)
++    {
++        sprintf( path, "%s/tmp%08x", dir, value );
++        fd = open( path, O_RDWR | O_CREAT | O_EXCL, 0600 );
++    }
++    return fd;
++}
++
++static void write_font_cache( const void *data, size_t size )
++{
++    WCHAR windir[MAX_PATH];
++    char *windir_unix, path[MAX_PATH], dest[MAX_PATH + 15];
++    size_t total_written = 0;
++    int fd;
++
++    asciiz_to_unicode( windir, "\\??\\C:\\windows" );
++    windir_unix = get_unix_file_name( windir );
++    if (!windir_unix)
++        return;
++    fd = make_temp_file( path, windir_unix );
++    if (fd < 0)
++        return;
++    while (total_written < size)
++    {
++        ssize_t written = write( fd, (const char*)data + total_written, size - total_written );
++        if (written == -1)
++        {
++            if (errno == EINTR)
++                continue;
++            break;
++        }
++        total_written += (size_t)written;
++    }
++    close( fd );
++    if (total_written < size)
++    {
++        unlink( path );
++        return;
++    }
++    sprintf( dest, "%s/font_cache.bin", windir_unix );
++    if (rename( path, dest ))
++        unlink( path );
++}
++
++static void save_font_cache(void)
++{
++    struct font_cache_entry *entry;
++    size_t total_size = 0, entry_size;
++    BYTE *data, *p;
++
++    if (!font_cache_modified)
++        return;
++    pthread_mutex_lock( &cached_fonts_mutex );
++    WINE_RB_FOR_EACH_ENTRY( entry, &cached_fonts, struct font_cache_entry, entry )
++    {
++        write_cache_entry( entry, &entry_size, NULL );
++        total_size += entry_size;
++    }
++    p = data = malloc( total_size + 100000 );
++    WINE_RB_FOR_EACH_ENTRY( entry, &cached_fonts, struct font_cache_entry, entry )
++    {
++        write_cache_entry( entry, &entry_size, p );
++        p += entry_size;
++    }
++    pthread_mutex_unlock( &cached_fonts_mutex );
++    assert( p - data == total_size );
++    write_font_cache( data, total_size );
++    free( data );
++}
++
+ /*************************************************************
+  * freetype_load_fonts
+  */
+ static void freetype_load_fonts(void)
+ {
++    load_font_cache();
+ #ifdef SONAME_LIBFONTCONFIG
+     load_fontconfig_fonts();
+ #elif defined(__APPLE__)
+@@ -1950,6 +2350,7 @@ static void freetype_load_fonts(void)
+ #elif defined(__ANDROID__)
+     ReadFontDir("/system/fonts", TRUE);
+ #endif
++    save_font_cache();
+ }
+ 
+ /* Some fonts have large usWinDescent values, as a result of storing signed short
+-- 
+0.0.0
+

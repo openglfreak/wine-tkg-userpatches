@@ -1,0 +1,109 @@
+From 493499505bff051236b2708270041a51eabb997f Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Fri, 29 Sep 2023 09:50:01 +0200
+Subject: [PATCH 2/3] makedep: Generate checksum file on installation.
+
+---
+ tools/makedep.c | 46 ++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 44 insertions(+), 2 deletions(-)
+
+diff --git a/tools/makedep.c b/tools/makedep.c
+index 11111111111..11111111111 100644
+--- a/tools/makedep.c
++++ b/tools/makedep.c
+@@ -217,6 +217,8 @@ struct makefile
+     struct strarray font_files;
+     struct strarray debug_files;
+     struct strarray dlldata_files;
++    struct strarray chksum_targets;
++    struct strarray chksum_files;
+     struct strarray phony_targets;
+     struct strarray dependencies;
+     struct strarray object_files[MAX_ARCHS];
+@@ -2550,7 +2552,10 @@ static void output_install_rules( struct makefile *make, enum install_rules rule
+     for (i = 0; i < files.count; i += 2)
+     {
+         const char *file = files.str[i];
+-        switch (*files.str[i + 1])
++        const char *dest = strmake( "$(DESTDIR)%s", files.str[i + 1] + 1 );
++        char type = *files.str[i + 1];
++
++        switch (type)
+         {
+         case '0': case '1': case '2': case '3': case '4':
+         case '5': case '6': case '7': case '8': case '9': /* arch-dependent program */
+@@ -2563,12 +2568,27 @@ static void output_install_rules( struct makefile *make, enum install_rules rule
+             strarray_add_uniq( &targets, tools_dir_path( make, file ));
+             break;
+         }
++
++        if (rules == INSTALL_LIB)
++            strarray_add_uniq( &make->chksum_files, dest );
+     }
+ 
+-    output( "%s %s::", obj_dir_path( make, "install" ), obj_dir_path( make, install_targets[rules] ));
++    if (rules == INSTALL_LIB)
++    {
++        char *tgt = strmake( "%s_", obj_dir_path( make, install_targets[rules] ));
++        output( "%s::", tgt );
++        strarray_add_uniq( &make->chksum_targets, tgt );
++    }
++    else
++        output( "%s %s::", obj_dir_path( make, "install" ), obj_dir_path( make, install_targets[rules] ));
+     output_filenames( targets );
+     output( "\n" );
+     output_install_commands( make, files );
++    if (rules == INSTALL_LIB)
++    {
++        char *tgt = obj_dir_path( make, install_targets[rules] );
++        output( "%s %s:: %s_ genchksums\n", obj_dir_path( make, "install" ), tgt, tgt);
++    }
+     strarray_add_uniq( &make->phony_targets, obj_dir_path( make, "install" ));
+     strarray_add_uniq( &make->phony_targets, obj_dir_path( make, install_targets[rules] ));
+ }
+@@ -3657,6 +3677,8 @@ static void output_subdirs( struct makefile *make )
+         strarray_addall( &subclean, get_removable_dirs( submakes[i]->clean_files ));
+         strarray_addall( &subclean, get_removable_dirs( submakes[i]->distclean_files ));
+         strarray_add( &makefile_deps, src_dir_path( submakes[i], "Makefile.in" ));
++        strarray_addall_uniq( &make->chksum_targets, submakes[i]->chksum_targets );
++        strarray_addall_uniq( &make->chksum_files, submakes[i]->chksum_files );
+         strarray_addall_uniq( &make->phony_targets, submakes[i]->phony_targets );
+         strarray_addall_uniq( &make->uninstall_files, submakes[i]->uninstall_files );
+         strarray_addall_uniq( &dependencies, submakes[i]->dependencies );
+@@ -3890,6 +3912,25 @@ static void output_sources( struct makefile *make )
+ }
+ 
+ 
++/*******************************************************************
++ *         output_sources
++ */
++static void output_genchksums( struct makefile *make )
++{
++    char *install_sh = root_src_dir_path( "tools/install-sh" );
++    char *genchksums = tools_path( make, "genchksums" );
++    unsigned int i;
++
++    output( "genchksums:: %s", genchksums );
++    output_filenames( make->chksum_targets );
++    output( "\n\t%s -m 755 $(INSTALL_DATA_FLAGS) -d $(DESTDIR)$(datadir)/wine\n", install_sh);
++    output( "\n\techo");
++    for (i = 0; i < make->chksum_files.count; i++)
++        output_filename( make->chksum_files.str[i] );
++    output( " | \\\n\t%s >$(DESTDIR)$(datadir)/wine/chksums.bin\n", genchksums);
++}
++
++
+ /*******************************************************************
+  *         create_temp_file
+  */
+@@ -4163,6 +4204,7 @@ static void output_top_makefile( struct makefile *make )
+     if (silent_rules) output_silent_rules();
+     for (i = 0; i < subdirs.count; i++) output_sources( submakes[i] );
+     output_sources( make );
++    output_genchksums( make );
+     /* disable implicit rules */
+     output( ".SUFFIXES:\n" );
+ 
+-- 
+0.0.0
+

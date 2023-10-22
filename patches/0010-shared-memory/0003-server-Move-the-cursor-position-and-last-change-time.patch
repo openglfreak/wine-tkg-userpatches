@@ -1,21 +1,21 @@
-From ca63abe8cd0110b9421dfd08c570b217356c482e Mon Sep 17 00:00:00 2001
+From 88d74ff71b36072e9cb5a38486e3828fa2c98000 Mon Sep 17 00:00:00 2001
 From: Huw Davies <huw@codeweavers.com>
 Date: Mon, 29 Jun 2020 11:30:14 +0100
-Subject: [PATCH 03/44] server: Move the cursor position and last change time
+Subject: [PATCH 03/40] server: Move the cursor position and last change time
  to the shared data.
 
 Signed-off-by: Huw Davies <huw@codeweavers.com>
 ---
  server/protocol.def |  9 ++++++-
- server/queue.c      | 58 ++++++++++++++++++++++-----------------------
+ server/queue.c      | 62 ++++++++++++++++++++++-----------------------
  server/user.h       |  3 ---
- 3 files changed, 37 insertions(+), 33 deletions(-)
+ 3 files changed, 39 insertions(+), 35 deletions(-)
 
 diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -872,9 +872,16 @@ struct cpu_topology_override
+@@ -898,9 +898,16 @@ struct cpu_topology_override
      unsigned char host_cpu_id[64];
  };
  
@@ -37,7 +37,18 @@ diff --git a/server/queue.c b/server/queue.c
 index 11111111111..11111111111 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -440,10 +440,10 @@ static int update_desktop_cursor_pos( struct desktop *desktop, int x, int y )
+@@ -447,8 +447,8 @@ static void queue_cursor_message( struct desktop *desktop, user_handle_t win, un
+     msg->msg = message;
+     msg->wparam = wparam;
+     msg->lparam = lparam;
+-    msg->x = desktop->cursor.x;
+-    msg->y = desktop->cursor.y;
++    msg->x = desktop->shared->cursor.x;
++    msg->y = desktop->shared->cursor.y;
+     if (!(msg->win = win) && (input = desktop->foreground_input)) msg->win = input->active;
+     queue_hardware_message( desktop, msg, 1 );
+ }
+@@ -483,10 +483,10 @@ static int update_desktop_cursor_pos( struct desktop *desktop, user_handle_t win
  
      x = max( min( x, desktop->cursor.clip.right - 1 ), desktop->cursor.clip.left );
      y = max( min( y, desktop->cursor.clip.bottom - 1 ), desktop->cursor.clip.top );
@@ -50,9 +61,9 @@ index 11111111111..11111111111 100644
 +    desktop->shared->cursor.y = y;
 +    desktop->shared->cursor.last_change = get_tick_count();
  
-     return updated;
- }
-@@ -474,8 +474,8 @@ static void get_message_defaults( struct msg_queue *queue, int *x, int *y, unsig
+     if (!win && (input = desktop->foreground_input)) win = input->capture;
+     if (!win || !is_window_visible( win ) || is_window_transparent( win ))
+@@ -535,8 +535,8 @@ static void get_message_defaults( struct msg_queue *queue, int *x, int *y, unsig
  {
      struct desktop *desktop = queue->input->desktop;
  
@@ -63,8 +74,8 @@ index 11111111111..11111111111 100644
      *time = get_tick_count();
  }
  
-@@ -502,9 +502,9 @@ static void set_clip_rectangle( struct desktop *desktop, const rectangle_t *rect
-         post_desktop_message( desktop, desktop->cursor.clip_msg, rect != NULL, 0 );
+@@ -560,9 +560,9 @@ void set_clip_rectangle( struct desktop *desktop, const rectangle_t *rect, unsig
+     else desktop->cursor.clip = top_rect;
  
      /* warp the mouse to be inside the clip rect */
 -    x = max( min( desktop->cursor.x, desktop->cursor.clip.right - 1 ), desktop->cursor.clip.left );
@@ -73,12 +84,12 @@ index 11111111111..11111111111 100644
 +    x = max( min( desktop->shared->cursor.x, desktop->cursor.clip.right - 1 ), desktop->cursor.clip.left );
 +    y = max( min( desktop->shared->cursor.y, desktop->cursor.clip.bottom - 1 ), desktop->cursor.clip.top );
 +    if (x != desktop->shared->cursor.x || y != desktop->shared->cursor.y) set_cursor_pos( desktop, x, y );
- }
  
- /* change the foreground input and reset the cursor clip rect */
-@@ -1681,8 +1681,8 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
-         if (desktop->keystate[VK_XBUTTON1] & 0x80) msg->wparam |= MK_XBUTTON1;
+     /* request clip cursor rectangle reset to the desktop thread */
+     if (reset) post_desktop_message( desktop, WM_WINE_CLIPCURSOR, flags, FALSE );
+@@ -1791,8 +1791,8 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
          if (desktop->keystate[VK_XBUTTON2] & 0x80) msg->wparam |= MK_XBUTTON2;
+         break;
      }
 -    msg->x = desktop->cursor.x;
 -    msg->y = desktop->cursor.y;
@@ -87,12 +98,12 @@ index 11111111111..11111111111 100644
  
      if (msg->win && (thread = get_window_thread( msg->win )))
      {
-@@ -1874,10 +1874,10 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
+@@ -1981,10 +1981,10 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
          WM_MOUSEHWHEEL   /* 0x1000 = MOUSEEVENTF_HWHEEL */
      };
  
--    update_desktop_cursor_pos( desktop, desktop->cursor.x, desktop->cursor.y ); /* Update last change time */
-+    update_desktop_cursor_pos( desktop, desktop->shared->cursor.x, desktop->shared->cursor.y ); /* Update last change time */
+-    update_desktop_cursor_pos( desktop, win, desktop->cursor.x, desktop->cursor.y ); /* Update last change time */
++    update_desktop_cursor_pos( desktop, win, desktop->shared->cursor.x, desktop->shared->cursor.y ); /* Update last change time */
      flags = input->mouse.flags;
      time  = input->mouse.time;
 -    if (!time) time = desktop->cursor.last_change;
@@ -100,7 +111,7 @@ index 11111111111..11111111111 100644
  
      if (flags & MOUSEEVENTF_MOVE)
      {
-@@ -1886,19 +1886,19 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
+@@ -1993,19 +1993,19 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
              x = input->mouse.x;
              y = input->mouse.y;
              if (flags & ~(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE) &&
@@ -125,7 +136,7 @@ index 11111111111..11111111111 100644
      }
  
      if ((req_flags & SEND_HWMSG_RAWINPUT) && (foreground = get_foreground_thread( desktop, win )))
-@@ -2145,8 +2145,8 @@ static void queue_custom_hardware_message( struct desktop *desktop, user_handle_
+@@ -2253,8 +2253,8 @@ static void queue_custom_hardware_message( struct desktop *desktop, user_handle_
      msg->msg       = input->hw.msg;
      msg->wparam    = 0;
      msg->lparam    = input->hw.lparam;
@@ -136,7 +147,7 @@ index 11111111111..11111111111 100644
  
      queue_hardware_message( desktop, msg, 1 );
  }
-@@ -2685,8 +2685,8 @@ DECL_HANDLER(send_hardware_message)
+@@ -2796,8 +2796,8 @@ DECL_HANDLER(send_hardware_message)
          }
      }
  
@@ -147,7 +158,7 @@ index 11111111111..11111111111 100644
  
      switch (req->input.type)
      {
-@@ -2704,8 +2704,8 @@ DECL_HANDLER(send_hardware_message)
+@@ -2815,8 +2815,8 @@ DECL_HANDLER(send_hardware_message)
      }
      if (thread) release_object( thread );
  
@@ -158,28 +169,28 @@ index 11111111111..11111111111 100644
      release_object( desktop );
  }
  
-@@ -3421,8 +3421,8 @@ DECL_HANDLER(set_cursor)
+@@ -3534,8 +3534,8 @@ DECL_HANDLER(set_cursor)
  
      reply->prev_handle = input->cursor;
      reply->prev_count  = input->cursor_count;
--    reply->prev_x      = input->desktop->cursor.x;
--    reply->prev_y      = input->desktop->cursor.y;
-+    reply->prev_x      = input->desktop->shared->cursor.x;
-+    reply->prev_y      = input->desktop->shared->cursor.y;
+-    reply->prev_x      = desktop->cursor.x;
+-    reply->prev_y      = desktop->cursor.y;
++    reply->prev_x      = desktop->shared->cursor.x;
++    reply->prev_y      = desktop->shared->cursor.y;
  
      if (req->flags & SET_CURSOR_HANDLE)
      {
-@@ -3453,10 +3453,10 @@ DECL_HANDLER(set_cursor)
-         set_clip_rectangle( desktop, (req->flags & SET_CURSOR_NOCLIP) ? NULL : &req->clip, 0 );
+@@ -3561,10 +3561,10 @@ DECL_HANDLER(set_cursor)
+         else update_desktop_cursor_handle( desktop, input->cursor );
      }
  
--    reply->new_x       = input->desktop->cursor.x;
--    reply->new_y       = input->desktop->cursor.y;
-+    reply->new_x       = input->desktop->shared->cursor.x;
-+    reply->new_y       = input->desktop->shared->cursor.y;
-     reply->new_clip    = input->desktop->cursor.clip;
--    reply->last_change = input->desktop->cursor.last_change;
-+    reply->last_change = input->desktop->shared->cursor.last_change;
+-    reply->new_x       = desktop->cursor.x;
+-    reply->new_y       = desktop->cursor.y;
++    reply->new_x       = desktop->shared->cursor.x;
++    reply->new_y       = desktop->shared->cursor.y;
+     reply->new_clip    = desktop->cursor.clip;
+-    reply->last_change = desktop->cursor.last_change;
++    reply->last_change = desktop->shared->cursor.last_change;
  }
  
  /* Get the history of the 64 last cursor positions */
@@ -187,16 +198,17 @@ diff --git a/server/user.h b/server/user.h
 index 11111111111..11111111111 100644
 --- a/server/user.h
 +++ b/server/user.h
-@@ -54,11 +54,8 @@ struct winstation
+@@ -54,10 +54,7 @@ struct winstation
  
  struct global_cursor
  {
 -    int                  x;                /* cursor position */
 -    int                  y;
      rectangle_t          clip;             /* cursor clip rectangle */
-     unsigned int         clip_msg;         /* message to post for cursor clip changes */
 -    unsigned int         last_change;      /* time of last position change */
      user_handle_t        win;              /* window that contains the cursor */
+     user_handle_t        handle;           /* last set cursor handle */
  };
- 
+-- 
+0.0.0
 

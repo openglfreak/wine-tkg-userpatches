@@ -18,18 +18,18 @@ index 11111111111..11111111111 100644
 --- a/server/user.h
 +++ b/server/user.h
 @@ -62,7 +62,6 @@ struct desktop
-     struct window                         *msg_window;       /* HWND_MESSAGE top window */
-     struct hook_table                     *global_hooks;     /* table of global hooks on this desktop */
-     struct list                            hotkeys;          /* list of registered hotkeys */
--    struct timeout_user                   *close_timeout;    /* timeout before closing the desktop */
-     struct thread_input                   *foreground_input; /* thread input of foreground thread */
-     unsigned int                           foreground_time;  /* time of last foreground input change */
-     unsigned int                           users;            /* processes and threads using this desktop */
+     struct window       *msg_window;       /* HWND_MESSAGE top window */
+     struct hook_table   *global_hooks;     /* table of global hooks on this desktop */
+     struct list          hotkeys;          /* list of registered hotkeys */
+-    struct timeout_user *close_timeout;    /* timeout before closing the desktop */
+     struct thread_input *foreground_input; /* thread input of foreground thread */
+     unsigned int         foreground_time;  /* time of last foreground input change */
+     unsigned int         users;            /* processes and threads using this desktop */
 diff --git a/server/winstation.c b/server/winstation.c
 index 11111111111..11111111111 100644
 --- a/server/winstation.c
 +++ b/server/winstation.c
-@@ -258,7 +258,6 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned
+@@ -259,7 +259,6 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned
              desktop->top_window = NULL;
              desktop->msg_window = NULL;
              desktop->global_hooks = NULL;
@@ -37,15 +37,15 @@ index 11111111111..11111111111 100644
              desktop->foreground_input = NULL;
              desktop->foreground_time = 0;
              desktop->users = 0;
-@@ -323,7 +322,6 @@ static void desktop_destroy( struct object *obj )
+@@ -328,7 +327,6 @@ static void desktop_destroy( struct object *obj )
      if (desktop->top_window) free_window_handle( desktop->top_window );
      if (desktop->msg_window) free_window_handle( desktop->msg_window );
      if (desktop->global_hooks) release_object( desktop->global_hooks );
 -    if (desktop->close_timeout) remove_timeout_user( desktop->close_timeout );
      list_remove( &desktop->entry );
-     release_object( desktop->shared_mapping );
-     release_object( desktop->winstation );
-@@ -339,7 +337,6 @@ static void close_desktop_timeout( void *private )
+     if (desktop->shared_mapping) release_object( desktop->shared_mapping );
+     desktop->shared_mapping = NULL;
+@@ -345,7 +343,6 @@ static void close_desktop_timeout( void *private )
  {
      struct desktop *desktop = private;
  
@@ -53,7 +53,7 @@ index 11111111111..11111111111 100644
      unlink_named_object( &desktop->obj );  /* make sure no other process can open it */
      post_desktop_message( desktop, WM_CLOSE, 0, 0 );  /* and signal the owner to quit */
  }
-@@ -348,11 +345,6 @@ static void close_desktop_timeout( void *private )
+@@ -354,11 +351,6 @@ static void close_desktop_timeout( void *private )
  static void add_desktop_user( struct desktop *desktop )
  {
      desktop->users++;
@@ -65,7 +65,7 @@ index 11111111111..11111111111 100644
  }
  
  /* remove a user of the desktop and start the close timeout if necessary */
-@@ -363,8 +355,8 @@ static void remove_desktop_user( struct desktop *desktop )
+@@ -369,8 +361,8 @@ static void remove_desktop_user( struct desktop *desktop )
      desktop->users--;
  
      /* if we have one remaining user, it has to be the manager of the desktop window */

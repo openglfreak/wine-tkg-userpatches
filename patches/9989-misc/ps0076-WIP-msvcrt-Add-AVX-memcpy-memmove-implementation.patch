@@ -5,8 +5,8 @@ Subject: [PATCH] WIP: msvcrt: Add AVX memcpy/memmove implementation.
 
 ---
  dlls/msvcrt/math.c   |  24 ++
- dlls/msvcrt/string.c | 715 +++++++++++++++++++++----------------------
- 2 files changed, 377 insertions(+), 362 deletions(-)
+ dlls/msvcrt/string.c | 713 +++++++++++++++++++++----------------------
+ 2 files changed, 376 insertions(+), 361 deletions(-)
 
 diff --git a/dlls/msvcrt/math.c b/dlls/msvcrt/math.c
 index 11111111111..11111111111 100644
@@ -64,8 +64,8 @@ index 11111111111..11111111111 100644
 +#endif
 +#endif /* __DISABLE_AVX__ */
  
- /* Copied from musl: src/internal/libm.h */
- static inline float fp_barrierf(float x)
+ #if defined(__i386__) || defined(__x86_64__)
+ static inline double ret_nan( BOOL update_sw )
 diff --git a/dlls/msvcrt/string.c b/dlls/msvcrt/string.c
 index 11111111111..11111111111 100644
 --- a/dlls/msvcrt/string.c
@@ -86,10 +86,15 @@ index 11111111111..11111111111 100644
 -#if defined(__i386__) || defined(__x86_64__)
 +extern BOOL sse2_supported;
 +extern BOOL avx_supported;
-+
+ 
+-#ifdef __i386__
 +#define likely(x) __builtin_expect(x, 1)
 +#define unlikely(x) __builtin_expect(x, 0)
-+
+ 
+-#define DEST_REG "%edi"
+-#define SRC_REG "%esi"
+-#define LEN_REG "%ecx"
+-#define TMP_REG "%edx"
 +#define MEMMOVEV_UNALIGNED_DECLARE(name, type, size, loadu, storeu) \
 +static FORCEINLINE void memmove_ ## name ## _unaligned(char *d, const char *s, size_t n) \
 +{ \
@@ -129,7 +134,15 @@ index 11111111111..11111111111 100644
 +    } \
 +    else memmove_c_unaligned_32(d, s, n); \
 +}
-+
+ 
+-#define MEMMOVE_INIT \
+-    "pushl " SRC_REG "\n\t" \
+-    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t") \
+-    "pushl " DEST_REG "\n\t" \
+-    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t") \
+-    "movl 12(%esp), " DEST_REG "\n\t" \
+-    "movl 16(%esp), " SRC_REG "\n\t" \
+-    "movl 20(%esp), " LEN_REG "\n\t"
 +#define MEMMOVEV_DECLARE(name, type, size, loadu, storeu, store) \
 +static void *__cdecl memmove_ ## name(char *d, const char *s, size_t n) \
 +{ \
@@ -263,11 +276,17 @@ index 11111111111..11111111111 100644
 +    } \
 +    return d; \
 +}
-+
+ 
+-#define MEMMOVE_CLEANUP \
+-    "movl 12(%esp), %eax\n\t" \
+-    "popl " DEST_REG "\n\t" \
+-    __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t") \
+-    "popl " SRC_REG "\n\t" \
+-    __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t")
 +static FORCEINLINE void __cdecl memmove_c_unaligned_32(char *d, const char *s, size_t n)
 +{
 +    uint64_t tmp0, tmp1, tmp2, tmpn;
-+
+ 
 +    if (unlikely(n >= 24))
 +    {
 +        tmp0 = *(uint64_t *)s;
@@ -385,44 +404,10 @@ index 11111111111..11111111111 100644
 +    }
 +    return d;
 +}
- 
--#ifdef __i386__
++
 +#ifndef __SSE2__
 +#ifdef __clang__
 +#pragma clang attribute push (__attribute__((target("sse2"))), apply_to=function)
-+#else
-+#pragma GCC push_options
-+#pragma GCC target("sse2")
-+#endif
-+#define __DISABLE_SSE2__
-+#endif /* __SSE2__ */
- 
--#define DEST_REG "%edi"
--#define SRC_REG "%esi"
--#define LEN_REG "%ecx"
--#define TMP_REG "%edx"
--
--#define MEMMOVE_INIT \
--    "pushl " SRC_REG "\n\t" \
--    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t") \
--    "pushl " DEST_REG "\n\t" \
--    __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t") \
--    "movl 12(%esp), " DEST_REG "\n\t" \
--    "movl 16(%esp), " SRC_REG "\n\t" \
--    "movl 20(%esp), " LEN_REG "\n\t"
--
--#define MEMMOVE_CLEANUP \
--    "movl 12(%esp), %eax\n\t" \
--    "popl " DEST_REG "\n\t" \
--    __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t") \
--    "popl " SRC_REG "\n\t" \
--    __ASM_CFI(".cfi_adjust_cfa_offset -4\n\t")
-+MEMMOVEV_UNALIGNED_DECLARE(sse2, __m128i, 16, _mm_loadu_si128, _mm_storeu_si128)
-+MEMMOVEV_DECLARE(sse2, __m128i, 16, _mm_loadu_si128, _mm_storeu_si128, _mm_store_si128)
- 
-+#ifdef __DISABLE_SSE2__
-+#ifdef __clang__
-+#pragma clang attribute pop
  #else
 -
 -#define DEST_REG "%rdi"
@@ -447,10 +432,11 @@ index 11111111111..11111111111 100644
 -    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t") \
 -    "popq " SRC_REG "\n\t" \
 -    __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
-+#pragma GCC pop_options
++#pragma GCC push_options
++#pragma GCC target("sse2")
  #endif
-+#undef __DISABLE_SSE2__
-+#endif /* __DISABLE_SSE2__ */
++#define __DISABLE_SSE2__
++#endif /* __SSE2__ */
  
 -void * __cdecl sse2_memmove(void *dst, const void *src, size_t n);
 -__ASM_GLOBAL_FUNC( sse2_memmove,
@@ -654,6 +640,25 @@ index 11111111111..11111111111 100644
 -        "1:\n\t"
 -        MEMMOVE_CLEANUP
 -        "ret" )
+-
+-#undef MEMMOVE_INIT
+-#undef MEMMOVE_CLEANUP
+-#undef DEST_REG
+-#undef SRC_REG
+-#undef LEN_REG
+-#undef TMP_REG
++MEMMOVEV_UNALIGNED_DECLARE(sse2, __m128i, 16, _mm_loadu_si128, _mm_storeu_si128)
++MEMMOVEV_DECLARE(sse2, __m128i, 16, _mm_loadu_si128, _mm_storeu_si128, _mm_store_si128)
+ 
++#ifdef __DISABLE_SSE2__
++#ifdef __clang__
++#pragma clang attribute pop
++#else
++#pragma GCC pop_options
+ #endif
++#undef __DISABLE_SSE2__
++#endif /* __DISABLE_SSE2__ */
++
 +#ifndef __AVX__
 +#ifdef __clang__
 +#pragma clang attribute push (__attribute__((target("avx"))), apply_to=function)
@@ -663,23 +668,17 @@ index 11111111111..11111111111 100644
 +#endif
 +#define __DISABLE_AVX__
 +#endif /* __AVX__ */
- 
--#undef MEMMOVE_INIT
--#undef MEMMOVE_CLEANUP
--#undef DEST_REG
--#undef SRC_REG
--#undef LEN_REG
--#undef TMP_REG
++
 +MEMMOVEV_UNALIGNED_DECLARE(avx, __m256i, 32, _mm256_loadu_si256, _mm256_storeu_si256)
 +MEMMOVEV_DECLARE(avx, __m256i, 32, _mm256_loadu_si256, _mm256_storeu_si256, _mm256_store_si256)
- 
++
 +#ifdef __DISABLE_AVX__
 +#undef __DISABLE_AVX__
 +#ifdef __clang__
 +#pragma clang attribute pop
 +#else
 +#pragma GCC pop_options
- #endif
++#endif
 +#endif /* __DISABLE_AVX__ */
  
  /*********************************************************************
@@ -827,5 +826,5 @@ index 11111111111..11111111111 100644
   *		    strchr (MSVCRT.@)
   */
 -- 
-2.40.0
+0.0.0
 

@@ -1,0 +1,112 @@
+From ced403d24a44b6983b58b119407d0643f38b4f3a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 11 Apr 2023 17:17:17 +0200
+Subject: [PATCH 3/4] ntdll: Avoid calling pthread_exit from abort_thread.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52213
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=54346
+---
+ dlls/ntdll/unix/server.c       | 12 ++++++++++++
+ dlls/ntdll/unix/thread.c       | 25 +++++++++----------------
+ dlls/ntdll/unix/unix_private.h |  3 ++-
+ 3 files changed, 23 insertions(+), 17 deletions(-)
+
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1844,6 +1844,18 @@ void server_init_thread( void *entry_point, BOOL *suspend )
+ }
+ 
+ 
++/***********************************************************************
++ *           server_exit_thread
++ */
++void server_exit_thread( void )
++{
++    close( ntdll_get_thread_data()->wait_fd[0] );
++    close( ntdll_get_thread_data()->wait_fd[1] );
++    close( ntdll_get_thread_data()->reply_fd );
++    close( ntdll_get_thread_data()->request_fd );
++}
++
++
+ /******************************************************************************
+  *           NtDuplicateObject
+  */
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1078,19 +1078,6 @@ static void contexts_from_server( CONTEXT *context, context_t server_contexts[2]
+ }
+ 
+ 
+-/***********************************************************************
+- *           pthread_exit_wrapper
+- */
+-static void pthread_exit_wrapper( int status )
+-{
+-    close( ntdll_get_thread_data()->wait_fd[0] );
+-    close( ntdll_get_thread_data()->wait_fd[1] );
+-    close( ntdll_get_thread_data()->reply_fd );
+-    close( ntdll_get_thread_data()->request_fd );
+-    pthread_exit( UIntToPtr(status) );
+-}
+-
+-
+ /***********************************************************************
+  *           start_thread
+  *
+@@ -1409,7 +1396,11 @@ void abort_thread( int status )
+ {
+     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
+     if (InterlockedDecrement( &nb_threads ) <= 0) abort_process( status );
+-    signal_exit_thread( status, pthread_exit_wrapper, NtCurrentTeb() );
++
++    /* pthread_exit isn't safe to call, wait for the process exit instead */
++    server_exit_thread();
++    select( 0, 0, 0, 0, 0 );
++    abort();
+ }
+ 
+ 
+@@ -1444,7 +1435,9 @@ static DECLSPEC_NORETURN void exit_thread( int status )
+             virtual_free_teb( teb );
+         }
+     }
+-    signal_exit_thread( status, pthread_exit_wrapper, NtCurrentTeb() );
++
++    server_exit_thread();
++    pthread_exit( UIntToPtr(status) );
+ }
+ 
+ 
+@@ -1454,7 +1447,7 @@ static DECLSPEC_NORETURN void exit_thread( int status )
+ void exit_process( int status )
+ {
+     pthread_sigmask( SIG_BLOCK, &server_block_set, NULL );
+-    signal_exit_thread( get_unix_exit_code( status ), process_exit_wrapper, NtCurrentTeb() );
++    process_exit_wrapper( get_unix_exit_code( status ) );
+ }
+ 
+ 
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -211,10 +211,11 @@ extern unsigned int server_queue_process_apc( HANDLE process, const apc_call_t *
+ extern int server_get_unix_fd( HANDLE handle, unsigned int wanted_access, int *unix_fd,
+                                int *needs_close, enum server_fd_type *type, unsigned int *options ) DECLSPEC_HIDDEN;
+ extern void wine_server_send_fd( int fd ) DECLSPEC_HIDDEN;
+-extern void process_exit_wrapper( int status ) DECLSPEC_HIDDEN;
++extern void DECLSPEC_NORETURN process_exit_wrapper( int status ) DECLSPEC_HIDDEN;
+ extern size_t server_init_process(void) DECLSPEC_HIDDEN;
+ extern void server_init_process_done(void) DECLSPEC_HIDDEN;
+ extern void server_init_thread( void *entry_point, BOOL *suspend ) DECLSPEC_HIDDEN;
++extern void server_exit_thread( void ) DECLSPEC_HIDDEN;
+ extern int server_pipe( int fd[2] ) DECLSPEC_HIDDEN;
+ 
+ extern void fpux_to_fpu( I386_FLOATING_SAVE_AREA *fpu, const XSAVE_FORMAT *fpux ) DECLSPEC_HIDDEN;
+
+

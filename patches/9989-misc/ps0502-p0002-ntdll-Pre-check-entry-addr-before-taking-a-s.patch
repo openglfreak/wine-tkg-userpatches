@@ -1,0 +1,36 @@
+From b749750139d2a97f13b45f3ad5b06c5ef862f9dd Mon Sep 17 00:00:00 2001
+From: Paul Gofman <pgofman@codeweavers.com>
+Date: Thu, 21 Sep 2023 16:29:14 -0600
+Subject: [PATCH 2/2] ntdll: Pre-check entry->addr before taking a spin lock in
+ RtlWaitOnAddress().
+
+---
+ dlls/ntdll/sync.c | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/sync.c b/dlls/ntdll/sync.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/sync.c
++++ b/dlls/ntdll/sync.c
+@@ -919,11 +919,14 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+ 
+     ret = NtWaitForAlertByThreadId( NULL, timeout );
+ 
+-    spin_lock( &queue->lock );
+-    /* We may have already been removed by a call to RtlWakeAddressSingle(). */
++    /* We may have already been removed by a call to RtlWakeAddressSingle() or RtlWakeAddressAll(). */
+     if (entry.addr)
+-        list_remove( &entry.entry );
+-    spin_unlock( &queue->lock );
++    {
++        spin_lock( &queue->lock );
++        if (entry.addr)
++            list_remove( &entry.entry );
++        spin_unlock( &queue->lock );
++    }
+ 
+     TRACE("returning %#lx\n", ret);
+ 
+-- 
+0.0.0
+

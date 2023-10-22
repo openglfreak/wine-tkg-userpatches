@@ -1,0 +1,144 @@
+From 9b08dad9594fec1b2c2a79456b89234d680a000d Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Sat, 12 Aug 2023 22:21:56 +0200
+Subject: [PATCH] ntdll: Detect no-yield in NtYieldExecution.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ configure.ac             |  1 +
+ dlls/ntdll/unix/server.c |  2 +-
+ dlls/ntdll/unix/sync.c   | 28 +++++++++++++++++++++++++++-
+ dlls/win32u/message.c    |  2 +-
+ include/config.h.in      |  3 +++
+ include/winternl.h       |  4 ++++
+ 6 files changed, 37 insertions(+), 3 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index 11111111111..11111111111 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -2122,6 +2122,7 @@ AC_CHECK_FUNCS(\
+ 	getauxval \
+ 	getifaddrs \
+ 	getrandom \
++	getrusage \
+ 	kqueue \
+ 	mach_continuous_time \
+ 	memfd_create \
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1052,7 +1052,7 @@ unsigned int server_wait( const select_op_t *select_op, data_size_t size, UINT f
+     /* A test on Windows 2000 shows that Windows always yields during
+        a wait, but a wait that is hit by an event gets a priority
+        boost as well.  This seems to model that behavior the closest.  */
+-    if (ret == STATUS_TIMEOUT) NtYieldExecution();
++    if (ret == STATUS_TIMEOUT) wine_yield_execution();
+     return ret;
+ }
+ 
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -39,6 +39,9 @@
+ #include <sys/types.h>
+ #include <sys/ioctl.h>
+ #include <sys/mman.h>
++#ifdef HAVE_SYS_RESOURCE_H
++#include <sys/resource.h>
++#endif
+ #ifdef HAVE_SYS_SYSCALL_H
+ #include <sys/syscall.h>
+ #endif
+@@ -2794,12 +2797,35 @@ NTSTATUS WINAPI NtSignalAndWaitForSingleObject( HANDLE signal, HANDLE wait,
+ }
+ 
+ 
++void wine_yield_execution(void)
++{
++#ifdef HAVE_SCHED_YIELD
++    sched_yield();
++#endif
++}
++
++
+ /******************************************************************
+  *		NtYieldExecution (NTDLL.@)
+  */
+ NTSTATUS WINAPI NtYieldExecution(void)
+ {
+ #ifdef HAVE_SCHED_YIELD
++#ifdef HAVE_GETRUSAGE
++    struct rusage rusg;
++    rusg.ru_nvcsw = 0;
++    rusg.ru_nivcsw = 0;
++    if (!getrusage( RUSAGE_THREAD, &rusg ) && rusg.ru_nvcsw + rusg.ru_nivcsw > 0)
++    {
++        unsigned long initial_ncsw = rusg.ru_nvcsw + rusg.ru_nivcsw;
++        sched_yield();
++        rusg.ru_nvcsw = 0;
++        rusg.ru_nivcsw = 0;
++        if (!getrusage( RUSAGE_THREAD, &rusg ) && rusg.ru_nvcsw + rusg.ru_nivcsw == initial_ncsw)
++            return STATUS_NO_YIELD_PERFORMED;
++    }
++    else
++#endif
+     sched_yield();
+     return STATUS_SUCCESS;
+ #else
+@@ -2849,7 +2875,7 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
+         }
+ 
+         /* Note that we yield after establishing the desired timeout */
+-        NtYieldExecution();
++        wine_yield_execution();
+         if (!when) return STATUS_SUCCESS;
+ 
+         for (;;)
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -3043,7 +3043,7 @@ static DWORD wait_message( DWORD count, const HANDLE *handles,
+     }
+     else ret = WAIT_TIMEOUT;
+ 
+-    if (ret == WAIT_TIMEOUT && !count && !timeout->QuadPart) NtYieldExecution();
++    if (ret == WAIT_TIMEOUT && !count && !timeout->QuadPart) wine_yield_execution();
+     if ((mask & QS_INPUT) == QS_INPUT) get_user_thread_info()->message_count = 0;
+ 
+     if (enable_thunk_lock)
+diff --git a/include/config.h.in b/include/config.h.in
+index 11111111111..11111111111 100644
+--- a/include/config.h.in
++++ b/include/config.h.in
+@@ -90,6 +90,9 @@
+ /* Define to 1 if you have the `getrandom' function. */
+ #undef HAVE_GETRANDOM
+ 
++/* Define to 1 if you have the `getrusage' function. */
++#undef HAVE_GETRUSAGE
++
+ /* Define to 1 if you have the <gettext-po.h> header file. */
+ #undef HAVE_GETTEXT_PO_H
+ 
+diff --git a/include/winternl.h b/include/winternl.h
+index 11111111111..11111111111 100644
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -5097,6 +5097,10 @@ NTSYSAPI NTSTATUS WINAPI wine_nt_to_unix_file_name( const OBJECT_ATTRIBUTES *att
+                                                     UINT disposition );
+ NTSYSAPI NTSTATUS WINAPI wine_unix_to_nt_file_name( const char *name, WCHAR *buffer, ULONG *size );
+ 
++#ifdef WINE_UNIX_LIB
++void wine_yield_execution(void);
++#endif
++
+ 
+ /***********************************************************************
+  * Inline functions
+-- 
+0.0.0
+

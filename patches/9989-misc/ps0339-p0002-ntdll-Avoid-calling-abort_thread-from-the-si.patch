@@ -1,0 +1,102 @@
+From 04e2b1a5d016a421776e92774a0dc17d3e0e70bc Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Tue, 11 Apr 2023 17:04:42 +0200
+Subject: [PATCH 2/4] ntdll: Avoid calling abort_thread from the signal stack.
+
+---
+ dlls/ntdll/unix/signal_arm.c    |  8 +++++++-
+ dlls/ntdll/unix/signal_arm64.c  |  8 +++++++-
+ dlls/ntdll/unix/signal_i386.c   | 12 ++++++++++--
+ dlls/ntdll/unix/signal_x86_64.c | 15 ++++++++++++---
+ 4 files changed, 36 insertions(+), 7 deletions(-)
+
+diff --git a/dlls/ntdll/unix/signal_arm.c b/dlls/ntdll/unix/signal_arm.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_arm.c
++++ b/dlls/ntdll/unix/signal_arm.c
+@@ -1460,7 +1460,13 @@ static void abrt_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+  */
+ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+-    abort_thread(0);
++    UINT_PTR *stack = (void *)SP_sig(sigcontext);
++
++    if (!is_inside_syscall( stack )) stack = (void *)arm_thread_data()->syscall_frame;
++
++    SP_sig(sigcontext)      = stack;
++    REGn_sig(0, sigcontext) = 0;
++    PC_sig(sigcontext)      = (ULONG_PTR)abort_thread;
+ }
+ 
+ 
+diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_arm64.c
++++ b/dlls/ntdll/unix/signal_arm64.c
+@@ -1445,7 +1445,13 @@ static void abrt_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+  */
+ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+-    abort_thread(0);
++    UINT_PTR *stack = (void *)SP_sig(sigcontext);
++
++    if (!is_inside_syscall( stack )) stack = (void *)arm64_thread_data()->syscall_frame;
++
++    SP_sig(sigcontext)      = stack;
++    REGn_sig(0, sigcontext) = 0;
++    PC_sig(sigcontext)      = (ULONG_PTR)abort_thread;
+ }
+ 
+ 
+diff --git a/dlls/ntdll/unix/signal_i386.c b/dlls/ntdll/unix/signal_i386.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_i386.c
++++ b/dlls/ntdll/unix/signal_i386.c
+@@ -2105,8 +2105,16 @@ static void abrt_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+  */
+ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+-    init_handler( sigcontext );
+-    abort_thread(0);
++    ucontext_t *ucontext = init_handler( sigcontext );
++    UINT_PTR *stack = (void *)ESP_sig(ucontext);
++
++    if (!is_inside_syscall( stack )) stack = (void *)x86_thread_data()->syscall_frame;
++
++    *(--stack) = 0;
++    *(--stack) = 0;
++    *(--stack) = 0xdeadbabe;  /* return address */
++    ESP_sig(ucontext) = (DWORD)stack;
++    EIP_sig(ucontext) = (DWORD)abort_thread;
+ }
+ 
+ 
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -2334,10 +2334,19 @@ static void abrt_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+  *
+  * Handler for SIGQUIT.
+  */
+-static void quit_handler( int signal, siginfo_t *siginfo, void *ucontext )
++static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
+ {
+-    init_handler( ucontext );
+-    abort_thread(0);
++    ucontext_t *ucontext = init_handler( sigcontext );
++    UINT_PTR *stack = (void *)RSP_sig(ucontext);
++
++    if (!is_inside_syscall( stack )) stack = (void *)amd64_thread_data()->syscall_frame;
++
++    *(--stack) = 0xdeadbabe;  /* return address */
++    RDI_sig(ucontext) = 0;
++    RSP_sig(ucontext) = (UINT_PTR)stack;
++    RIP_sig(ucontext) = (UINT_PTR)abort_thread;
++
++    leave_handler( sigcontext );
+ }
+ 
+ 
+
+

@@ -11,14 +11,14 @@ up in alloc_devnode() at the same time. One thread would start iterating
 through the table after devnode_table_size was set but before
 devnode_table was allocated, and crash.
 
- dlls/setupapi/devinst.c | 28 +++++++++++++++++++++++++---
- 1 file changed, 25 insertions(+), 3 deletions(-)
+ dlls/setupapi/devinst.c | 30 ++++++++++++++++++++++++++----
+ 1 file changed, 26 insertions(+), 4 deletions(-)
 
 diff --git a/dlls/setupapi/devinst.c b/dlls/setupapi/devinst.c
 index 11111111111..11111111111 100644
 --- a/dlls/setupapi/devinst.c
 +++ b/dlls/setupapi/devinst.c
-@@ -234,11 +234,21 @@ static inline void copy_device_iface_data(SP_DEVICE_INTERFACE_DATA *data,
+@@ -233,11 +233,21 @@ static inline void copy_device_iface_data(SP_DEVICE_INTERFACE_DATA *data,
  
  static struct device **devnode_table;
  static unsigned int devnode_table_size;
@@ -40,7 +40,7 @@ index 11111111111..11111111111 100644
      for (i = 0; i < devnode_table_size; ++i)
      {
          if (!devnode_table[i])
-@@ -261,21 +271,33 @@ static DEVINST alloc_devnode(struct device *device)
+@@ -260,21 +270,33 @@ static DEVINST alloc_devnode(struct device *device)
      }
  
      devnode_table[i] = device;
@@ -59,18 +59,19 @@ index 11111111111..11111111111 100644
  
  static struct device *get_devnode_device(DEVINST devnode)
  {
-+    struct device *device = NULL;
-+
-+    EnterCriticalSection(&devnode_table_cs);
-+
-     if (devnode < devnode_table_size)
+-    if (devnode < devnode_table_size)
 -        return devnode_table[devnode];
-+        device = devnode_table[devnode];
-+    else
-+        WARN("device node %lu not found\n", devnode);
++    struct device *device = NULL;
  
 -    WARN("device node %lu not found\n", devnode);
 -    return NULL;
++    EnterCriticalSection(&devnode_table_cs);
++
++    if (devnode < devnode_table_size)
++        device = devnode_table[devnode];
++    else
++        WARN("device node %lu not found\n", devnode);
++
 +    LeaveCriticalSection(&devnode_table_cs);
 +
 +    return device;
@@ -79,5 +80,5 @@ index 11111111111..11111111111 100644
  static void SETUPDI_GuidToString(const GUID *guid, LPWSTR guidStr)
 
 -- 
-2.40.0
+0.0.0
 

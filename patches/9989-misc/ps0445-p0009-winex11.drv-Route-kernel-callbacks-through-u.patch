@@ -5,19 +5,18 @@ Subject: [PATCH 09/11] winex11.drv: Route kernel callbacks through user32.
 
 Signed-off-by: Torge Matthies <tmatthies@codeweavers.com>
 ---
- dlls/winex11.drv/dllmain.c     | 14 +++----------
- dlls/winex11.drv/event.c       | 12 +++++++----
- dlls/winex11.drv/unixlib.h     | 34 +++++++++++++++++--------------
+ dlls/winex11.drv/dllmain.c     | 14 +++-----------
+ dlls/winex11.drv/event.c       | 12 ++++++++----
+ dlls/winex11.drv/unixlib.h     | 29 ++++++++++++++++-------------
  dlls/winex11.drv/x11drv.h      |  4 ++--
- dlls/winex11.drv/x11drv_main.c | 14 +++++++++----
- dlls/winex11.drv/xim.c         | 37 +++++++++++++++++++++-------------
- 6 files changed, 65 insertions(+), 50 deletions(-)
+ dlls/winex11.drv/x11drv_main.c | 14 ++++++++++----
+ 5 files changed, 39 insertions(+), 34 deletions(-)
 
 diff --git a/dlls/winex11.drv/dllmain.c b/dlls/winex11.drv/dllmain.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/dllmain.c
 +++ b/dlls/winex11.drv/dllmain.c
-@@ -45,8 +45,7 @@ static NTSTATUS WINAPI x11drv_callback( void *arg, ULONG size )
+@@ -40,8 +40,7 @@ static NTSTATUS WINAPI x11drv_callback( void *arg, ULONG size )
      return callback_funcs[params->id]( params->arg );
  }
  
@@ -27,7 +26,7 @@ index 11111111111..11111111111 100644
  {
      x11drv_callback,
      x11drv_dnd_enter_event,
-@@ -57,16 +56,13 @@ static const kernel_callback kernel_callbacks[] =
+@@ -50,16 +49,13 @@ static const kernel_callback kernel_callbacks[] =
      x11drv_systray_change_owner,
  };
  
@@ -45,7 +44,7 @@ index 11111111111..11111111111 100644
      };
  
      if (reason != DLL_PROCESS_ATTACH) return TRUE;
-@@ -74,11 +70,7 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, void *reserved )
+@@ -67,11 +63,7 @@ BOOL WINAPI DllMain( HINSTANCE instance, DWORD reason, void *reserved )
      DisableThreadLibraryCalls( instance );
      x11drv_module = instance;
      if (__wine_init_unix_call()) return FALSE;
@@ -57,12 +56,12 @@ index 11111111111..11111111111 100644
 +    return !X11DRV_CALL( init, &params );
  }
  
- 
+ /***********************************************************************
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -770,8 +770,9 @@ static void handle_manager_message( HWND hwnd, XEvent *xev )
+@@ -728,8 +728,9 @@ static void handle_manager_message( HWND hwnd, XEvent *xev )
  
          TRACE( "new owner %lx\n", event->data.l[2] );
  
@@ -73,7 +72,7 @@ index 11111111111..11111111111 100644
      }
  }
  
-@@ -1840,8 +1841,9 @@ static HWND find_drop_window( HWND hQueryWnd, LPPOINT lpPt )
+@@ -1787,8 +1788,9 @@ static HWND find_drop_window( HWND hQueryWnd, LPPOINT lpPt )
  static void post_drop( HWND hwnd, struct dnd_post_drop_params *params, ULONG size )
  {
      DROPFILES *drop = (void*)params->drop_files;
@@ -84,7 +83,7 @@ index 11111111111..11111111111 100644
  }
  
  /**********************************************************************
-@@ -2112,7 +2114,8 @@ static void handle_xdnd_enter_event( HWND hWnd, XEvent *xev )
+@@ -2059,7 +2061,8 @@ static void handle_xdnd_enter_event( HWND hWnd, XEvent *xev )
                                    xdndtypes, count, &size );
      if (data)
      {
@@ -94,7 +93,7 @@ index 11111111111..11111111111 100644
          free( data );
      }
  
-@@ -2164,11 +2167,12 @@ static void handle_xdnd_position_event( HWND hwnd, XEvent *xev )
+@@ -2111,11 +2114,12 @@ static void handle_xdnd_position_event( HWND hwnd, XEvent *xev )
      XClientMessageEvent e;
      UINT effect;
  
@@ -112,9 +111,9 @@ diff --git a/dlls/winex11.drv/unixlib.h b/dlls/winex11.drv/unixlib.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/unixlib.h
 +++ b/dlls/winex11.drv/unixlib.h
-@@ -45,11 +45,24 @@ struct create_desktop_params
-     UINT height;
- };
+@@ -35,11 +35,22 @@ enum x11drv_funcs
+ 
+ #define X11DRV_CALL(func, params) WINE_UNIX_CALL( unix_ ## func, params )
  
 +/* driver client callbacks called through NtUserDispatchCallback interface */
 +struct x11drv_client_funcs
@@ -123,8 +122,6 @@ index 11111111111..11111111111 100644
 +    user32_callback_func dnd_enter_event;
 +    user32_callback_func dnd_position_event;
 +    user32_callback_func dnd_post_drop;
-+    user32_callback_func ime_set_composition_string;
-+    user32_callback_func ime_set_result;
 +    user32_callback_func systray_change_owner;
 +};
 +
@@ -137,7 +134,7 @@ index 11111111111..11111111111 100644
  };
  
  struct systray_dock_params
-@@ -76,21 +89,6 @@ struct xim_preedit_state_params
+@@ -66,19 +77,6 @@ struct xim_preedit_state_params
      BOOL open;
  };
  
@@ -148,8 +145,6 @@ index 11111111111..11111111111 100644
 -    client_func_dnd_enter_event,
 -    client_func_dnd_position_event,
 -    client_func_dnd_post_drop,
--    client_func_ime_set_composition_string,
--    client_func_ime_set_result,
 -    client_func_systray_change_owner,
 -    client_func_last
 -};
@@ -159,7 +154,7 @@ index 11111111111..11111111111 100644
  /* simplified interface for client callbacks requiring only a single UINT parameter */
  enum client_callback
  {
-@@ -107,6 +105,7 @@ enum client_callback
+@@ -90,6 +88,7 @@ enum client_callback
  /* x11drv_callback params */
  struct client_callback_params
  {
@@ -167,7 +162,7 @@ index 11111111111..11111111111 100644
      UINT id;
      UINT arg;
  };
-@@ -114,6 +113,7 @@ struct client_callback_params
+@@ -97,6 +96,7 @@ struct client_callback_params
  /* x11drv_dnd_enter_event and x11drv_dnd_post_drop params */
  struct format_entry
  {
@@ -175,7 +170,7 @@ index 11111111111..11111111111 100644
      UINT format;
      UINT size;
      char data[1];
-@@ -122,6 +122,7 @@ struct format_entry
+@@ -105,6 +105,7 @@ struct format_entry
  /* x11drv_dnd_position_event params */
  struct dnd_position_event_params
  {
@@ -183,7 +178,7 @@ index 11111111111..11111111111 100644
      ULONG hwnd;
      POINT point;
      DWORD effect;
-@@ -129,15 +130,18 @@ struct dnd_position_event_params
+@@ -112,10 +113,12 @@ struct dnd_position_event_params
  
  struct dnd_post_drop_params
  {
@@ -196,17 +191,11 @@ index 11111111111..11111111111 100644
 +    struct user32_callback_params cbparams;
      UINT64 event_handle;
  };
- 
- struct ime_set_result_params
- {
-+    struct user32_callback_params cbparams;
-     WCHAR data[1];
- };
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -434,6 +434,7 @@ struct x11drv_ewmh_data
+@@ -439,6 +439,7 @@ struct x11drv_ewmh_data
      int has__net_wm_window_type_desktop : 1;
  };
  
@@ -214,9 +203,9 @@ index 11111111111..11111111111 100644
  extern XVisualInfo default_visual DECLSPEC_HIDDEN;
  extern XVisualInfo argb_visual DECLSPEC_HIDDEN;
  extern Colormap default_colormap DECLSPEC_HIDDEN;
-@@ -897,8 +898,7 @@ extern NTSTATUS x11drv_tablet_info( void *arg ) DECLSPEC_HIDDEN;
- extern NTSTATUS x11drv_xim_preedit_state( void *arg ) DECLSPEC_HIDDEN;
- extern NTSTATUS x11drv_xim_reset( void *arg ) DECLSPEC_HIDDEN;
+@@ -895,8 +896,7 @@ extern NTSTATUS x11drv_tablet_get_packet( void *arg ) DECLSPEC_HIDDEN;
+ extern NTSTATUS x11drv_tablet_load_info( void *arg ) DECLSPEC_HIDDEN;
+ extern NTSTATUS x11drv_tablet_info( void *arg ) DECLSPEC_HIDDEN;
  
 -extern NTSTATUS x11drv_client_func( enum x11drv_client_funcs func, const void *params,
 -                                    ULONG size ) DECLSPEC_HIDDEN;
@@ -237,7 +226,7 @@ index 11111111111..11111111111 100644
  XVisualInfo default_visual = { 0 };
  XVisualInfo argb_visual = { 0 };
  Colormap default_colormap = None;
-@@ -922,6 +924,8 @@ static NTSTATUS x11drv_init( void *arg )
+@@ -920,6 +922,8 @@ static NTSTATUS x11drv_init( void *arg )
      dlopen( SONAME_LIBXEXT, RTLD_NOW|RTLD_GLOBAL );
  #endif
  
@@ -246,7 +235,7 @@ index 11111111111..11111111111 100644
      setup_options();
  
      /* Open display */
-@@ -1570,18 +1574,18 @@ done:
+@@ -1576,18 +1580,18 @@ done:
      return status;
  }
  
@@ -269,7 +258,7 @@ index 11111111111..11111111111 100644
  }
  
  
-@@ -1613,11 +1617,13 @@ static NTSTATUS x11drv_wow64_init( void *arg )
+@@ -1616,11 +1620,13 @@ static NTSTATUS x11drv_wow64_init( void *arg )
      {
          ULONG foreign_window_proc;
          ULONG show_systray;
@@ -283,102 +272,6 @@ index 11111111111..11111111111 100644
      return x11drv_init( &params );
  }
  
-diff --git a/dlls/winex11.drv/xim.c b/dlls/winex11.drv/xim.c
-index 11111111111..11111111111 100644
---- a/dlls/winex11.drv/xim.c
-+++ b/dlls/winex11.drv/xim.c
-@@ -45,9 +45,15 @@ WINE_DEFAULT_DEBUG_CHANNEL(xim);
- 
- BOOL ximInComposeMode=FALSE;
- 
-+struct CompStringType
-+{
-+    struct user32_callback_params cbparams;
-+    BYTE data[1];
-+};
-+
- /* moved here from imm32 for dll separation */
- static DWORD dwCompStringLength = 0;
--static LPBYTE CompositionString = NULL;
-+static struct CompStringType *CompositionString = NULL;
- static DWORD dwCompStringSize = 0;
- 
- #define STYLE_OFFTHESPOT (XIMPreeditArea | XIMStatusArea)
-@@ -89,13 +95,15 @@ static void X11DRV_ImmSetInternalString(UINT offset, UINT selLength, LPWSTR lpCo
-     unsigned int byte_offset = offset * sizeof(WCHAR);
-     unsigned int byte_selection = selLength * sizeof(WCHAR);
-     int byte_expansion = byte_length - byte_selection;
--    LPBYTE ptr_new;
-+    size_t new_size = FIELD_OFFSET( struct CompStringType, data[dwCompStringSize + byte_expansion] );
-+    struct CompStringType *ptr_new;
-+    BYTE *data_ptr;
- 
-     TRACE("( %i, %i, %p, %d):\n", offset, selLength, lpComp, len );
- 
-     if (byte_expansion + dwCompStringLength >= dwCompStringSize)
-     {
--        ptr_new = realloc( CompositionString, dwCompStringSize + byte_expansion );
-+        ptr_new = realloc( CompositionString, new_size );
-         if (ptr_new == NULL)
-         {
-             ERR("Couldn't expand composition string buffer\n");
-@@ -106,14 +114,14 @@ static void X11DRV_ImmSetInternalString(UINT offset, UINT selLength, LPWSTR lpCo
-         dwCompStringSize += byte_expansion;
-     }
- 
--    ptr_new = CompositionString + byte_offset;
--    memmove(ptr_new + byte_length, ptr_new + byte_selection,
-+    CompositionString->cbparams.func = (ULONG_PTR)client_funcs.ime_set_composition_string;
-+    data_ptr = &CompositionString->data[byte_offset];
-+    memmove(data_ptr + byte_length, data_ptr + byte_selection,
-             dwCompStringLength - byte_offset - byte_selection);
--    if (lpComp) memcpy(ptr_new, lpComp, byte_length);
-+    if (lpComp) memcpy(data_ptr, lpComp, byte_length);
-     dwCompStringLength += byte_expansion;
- 
--    x11drv_client_func( client_func_ime_set_composition_string,
--                        CompositionString, dwCompStringLength );
-+    x11drv_client_func( &CompositionString->cbparams, new_size );
- }
- 
- void X11DRV_XIMLookupChars( const char *str, UINT count )
-@@ -124,9 +132,10 @@ void X11DRV_XIMLookupChars( const char *str, UINT count )
-     TRACE("%p %u\n", str, count);
- 
-     if (!(params = malloc( FIELD_OFFSET( struct ime_set_result_params, data[count] ) ))) return;
-+    params->cbparams.func = (ULONG_PTR)client_funcs.ime_set_result;
-     len = ntdll_umbstowcs( str, count, params->data, count );
- 
--    x11drv_client_func( client_func_ime_set_result, params, FIELD_OFFSET( struct ime_set_result_params, data[len] ) );
-+    x11drv_client_func( &params->cbparams, FIELD_OFFSET( struct ime_set_result_params, data[len] ) );
-     free( params );
- 
-     /*
-@@ -136,10 +145,11 @@ void X11DRV_XIMLookupChars( const char *str, UINT count )
-      * starting.
-      */
-     if (CompositionString && dwCompStringLength >= sizeof(WCHAR) &&
--        IsHangul(((const WCHAR*) CompositionString)[0]))
-+        IsHangul(((const WCHAR*) CompositionString->data)[0]))
-     {
--        x11drv_client_func( client_func_ime_set_composition_string,
--                            CompositionString, dwCompStringLength );
-+        size_t size = FIELD_OFFSET( struct CompStringType, data[dwCompStringSize] );
-+        CompositionString->cbparams.func = (ULONG_PTR)client_funcs.ime_set_composition_string;
-+        x11drv_client_func( &CompositionString->cbparams, size );
-     }
- }
- 
-@@ -184,8 +194,7 @@ static int xic_preedit_done( XIC xic, XPointer user, XPointer arg )
-     TRACE( "xic %p, hwnd %p, arg %p\n", xic, hwnd, arg );
- 
-     ximInComposeMode = FALSE;
--    if (dwCompStringSize)
--        free( CompositionString );
-+    free( CompositionString );
-     dwCompStringSize = 0;
-     dwCompStringLength = 0;
-     CompositionString = NULL;
 -- 
-2.40.0
+0.0.0
 

@@ -6,30 +6,31 @@ Subject: [PATCH 15/16] Revert "winex11.drv: Support XInput2 events for
 
 This reverts staging patch patches/user32-rawinput-mouse/0002-winex11.drv-Support-XInput2-events-for-individual-wi.patch
 ---
- dlls/winex11.drv/desktop.c |  1 -
+ dlls/winex11.drv/desktop.c |  2 --
  dlls/winex11.drv/event.c   |  7 -----
  dlls/winex11.drv/mouse.c   | 59 +++++++++++---------------------------
  dlls/winex11.drv/window.c  |  3 --
  dlls/winex11.drv/x11drv.h  | 12 +-------
- 5 files changed, 17 insertions(+), 65 deletions(-)
+ 5 files changed, 17 insertions(+), 66 deletions(-)
 
 diff --git a/dlls/winex11.drv/desktop.c b/dlls/winex11.drv/desktop.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/desktop.c
 +++ b/dlls/winex11.drv/desktop.c
-@@ -390,7 +390,6 @@ NTSTATUS x11drv_create_desktop( void *arg )
-                          0, 0, params->width, params->height, 0, default_visual.depth, InputOutput,
+@@ -86,8 +86,6 @@ BOOL X11DRV_CreateDesktop( const WCHAR *name, UINT width, UINT height )
+                          0, 0, width, height, 0, default_visual.depth, InputOutput,
                           default_visual.visual, CWEventMask | CWCursor | CWColormap, &win_attr );
      if (!win) return FALSE;
+-
 -    x11drv_xinput_enable( display, win, win_attr.event_mask );
-     if (!create_desktop_win_data( win )) return FALSE;
+     XFlush( display );
  
-     X11DRV_init_desktop( win, params->width, params->height );
+     X11DRV_init_desktop( win, width, height );
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -237,13 +237,6 @@ static Bool filter_event( Display *display, XEvent *event, char *arg )
+@@ -235,13 +235,6 @@ static Bool filter_event( Display *display, XEvent *event, char *arg )
          return (mask & QS_MOUSEBUTTON) != 0;
  #ifdef GenericEvent
      case GenericEvent:
@@ -47,7 +48,7 @@ diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
-@@ -305,32 +305,20 @@ void x11drv_xinput_init(void)
+@@ -280,32 +280,20 @@ void x11drv_xinput_init(void)
  
  
  /***********************************************************************
@@ -85,7 +86,7 @@ index 11111111111..11111111111 100644
  
      mask.mask     = mask_bits;
      mask.mask_len = sizeof(mask_bits);
-@@ -340,9 +328,8 @@ void x11drv_xinput_enable( Display *display, Window window, long event_mask )
+@@ -315,9 +303,8 @@ void x11drv_xinput_enable( Display *display, Window window, long event_mask )
      XISetMask( mask_bits, XI_RawMotion );
      XISetMask( mask_bits, XI_ButtonPress );
  
@@ -96,7 +97,7 @@ index 11111111111..11111111111 100644
      pointer_info = pXIQueryDevice( data->display, data->xi2_core_pointer, &count );
      update_relative_valuators( pointer_info->classes, pointer_info->num_classes );
      pXIFreeDeviceInfo( pointer_info );
-@@ -351,7 +338,7 @@ void x11drv_xinput_enable( Display *display, Window window, long event_mask )
+@@ -326,7 +313,7 @@ void x11drv_xinput_enable( Display *display, Window window, long event_mask )
       * no XI_DeviceChanged events happened. If any hierarchy change occurred that
       * might be relevant here (eg. user switching mice after (un)plugging), a
       * XI_DeviceChanged event will point us to the right slave. So this list is
@@ -105,7 +106,7 @@ index 11111111111..11111111111 100644
       */
      if (data->xi2_devices) pXIFreeDeviceInfo( data->xi2_devices );
      data->xi2_devices = pXIQueryDevice( data->display, XIAllDevices, &data->xi2_device_count );
-@@ -363,37 +350,24 @@ void x11drv_xinput_enable( Display *display, Window window, long event_mask )
+@@ -338,37 +325,24 @@ void x11drv_xinput_enable( Display *display, Window window, long event_mask )
  #endif
  
  /***********************************************************************
@@ -121,11 +122,11 @@ index 11111111111..11111111111 100644
      XIEventMask mask;
  
 -    TRACE( "state:%d window:%lx event_mask:%lx\n", xi2_state, window, event_mask );
--
--    if (xi2_state == xi_unavailable) return;
 +    TRACE( "state:%d\n", data->xi2_state );
 +    if (data->xi2_state != xi_enabled) return;
  
+-    if (xi2_state == xi_unavailable) return;
+-
 -    if (window != DefaultRootWindow( display ))
 -    {
 -        mask.mask     = NULL;
@@ -149,7 +150,7 @@ index 11111111111..11111111111 100644
      pXIFreeDeviceInfo( data->xi2_devices );
      data->x_valuator.number = -1;
      data->y_valuator.number = -1;
-@@ -402,7 +376,6 @@ void x11drv_xinput_disable( Display *display, Window window, long event_mask )
+@@ -377,7 +351,6 @@ void x11drv_xinput_disable( Display *display, Window window, long event_mask )
      data->xi2_devices = NULL;
      data->xi2_core_pointer = 0;
      data->xi2_current_slave = 0;
@@ -157,33 +158,33 @@ index 11111111111..11111111111 100644
  #endif
  }
  
-@@ -447,7 +420,7 @@ static BOOL grab_clipping_window( const RECT *clip )
+@@ -411,7 +384,7 @@ static BOOL grab_clipping_window( const RECT *clip )
      }
  
      /* enable XInput2 unless we are already clipping */
--    if (!data->clip_hwnd) x11drv_xinput_enable( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
-+    if (!data->clip_hwnd) enable_xinput2();
+-    if (!data->clipping_cursor) x11drv_xinput_enable( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
++    if (!data->clipping_cursor) enable_xinput2();
  
      if (data->xi2_state != xi_enabled)
      {
-@@ -477,7 +450,7 @@ static BOOL grab_clipping_window( const RECT *clip )
+@@ -461,7 +434,7 @@ static BOOL grab_clipping_window( const RECT *clip )
  
      if (!clipping_cursor)
      {
 -        x11drv_xinput_disable( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
 +        disable_xinput2();
-         NtUserDestroyWindow( msg_hwnd );
          return FALSE;
      }
-@@ -560,7 +533,7 @@ LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd )
-         TRACE( "clip hwnd reset from %p\n", hwnd );
-         data->clip_hwnd = 0;
-         data->clip_reset = NtGetTickCount();
--        x11drv_xinput_disable( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
-+        disable_xinput2();
-         NtUserDestroyWindow( hwnd );
-     }
-     else if (prev_clip_hwnd)
+     clip_rect = *clip;
+@@ -490,7 +463,7 @@ void ungrab_clipping_window(void)
+     if (clipping_cursor) XUngrabPointer( data->display, CurrentTime );
+     clipping_cursor = FALSE;
+     data->clipping_cursor = FALSE;
+-    x11drv_xinput_disable( data->display, DefaultRootWindow( data->display ), PointerMotionMask );
++    disable_xinput2();
+ }
+ 
+ /***********************************************************************
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/window.c
@@ -196,7 +197,7 @@ index 11111111111..11111111111 100644
      }
  }
  
-@@ -1670,7 +1669,6 @@ static void create_whole_window( struct x11drv_win_data *data )
+@@ -1703,7 +1702,6 @@ static void create_whole_window( struct x11drv_win_data *data )
                                          data->vis.visual, mask, &attr );
      if (!data->whole_window) goto done;
  
@@ -204,7 +205,7 @@ index 11111111111..11111111111 100644
      set_initial_wm_hints( data->display, data->whole_window );
      set_wm_hints( data );
  
-@@ -1987,7 +1985,6 @@ BOOL X11DRV_CreateWindow( HWND hwnd )
+@@ -2043,7 +2041,6 @@ BOOL X11DRV_CreateWindow( HWND hwnd )
          data->clip_window = XCreateWindow( data->display, root_window, 0, 0, 1, 1, 0, 0,
                                             InputOnly, default_visual.visual,
                                             CWOverrideRedirect | CWEventMask, &attr );
@@ -216,7 +217,7 @@ diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -260,8 +260,6 @@ extern void X11DRV_ThreadDetach(void) DECLSPEC_HIDDEN;
+@@ -264,8 +264,6 @@ extern void X11DRV_ThreadDetach(void) DECLSPEC_HIDDEN;
  extern void X11DRV_Xcursor_Init(void) DECLSPEC_HIDDEN;
  extern void x11drv_xinput_load(void) DECLSPEC_HIDDEN;
  extern void x11drv_xinput_init(void) DECLSPEC_HIDDEN;
@@ -225,7 +226,7 @@ index 11111111111..11111111111 100644
  
  extern DWORD copy_image_bits( BITMAPINFO *info, BOOL is_r8g8b8, XImage *image,
                                const struct gdi_image_bits *src_bits, struct gdi_image_bits *dst_bits,
-@@ -377,14 +375,6 @@ struct x11drv_escape_flush_gl_drawable
+@@ -381,14 +379,6 @@ struct x11drv_escape_flush_gl_drawable
   * X11 USER driver
   */
  
@@ -240,9 +241,9 @@ index 11111111111..11111111111 100644
  struct x11drv_thread_data
  {
      Display *display;
-@@ -401,7 +391,7 @@ struct x11drv_thread_data
-     HWND     clip_hwnd;            /* message window stored in desktop while clipping is active */
-     DWORD    clip_reset;           /* time when clipping was last reset */
+@@ -404,7 +394,7 @@ struct x11drv_thread_data
+     Window   clip_window;          /* window used for cursor clipping */
+     BOOL     clipping_cursor;      /* whether thread is currently clipping the cursor */
  #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
 -    enum xi2_state xi2_state;      /* XInput2 state */
 +    enum { xi_unavailable = -1, xi_unknown, xi_disabled, xi_enabled } xi2_state; /* XInput2 state */
@@ -250,5 +251,5 @@ index 11111111111..11111111111 100644
      int      xi2_device_count;
      XIValuatorClassInfo x_valuator;
 -- 
-2.40.0
+0.0.0
 

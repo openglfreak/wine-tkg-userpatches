@@ -20,7 +20,7 @@ diff --git a/dlls/ntdll/tests/om.c b/dlls/ntdll/tests/om.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/tests/om.c
 +++ b/dlls/ntdll/tests/om.c
-@@ -2601,9 +2601,9 @@ static void test_query_directory(void)
+@@ -2611,9 +2611,9 @@ static void test_query_directory(void)
      context = 0xdeadbeef;
      size = 0xdeadbeef;
      status = NtQueryDirectoryObject( dir, info, 0, FALSE, TRUE, &context, &size );
@@ -32,7 +32,7 @@ index 11111111111..11111111111 100644
  
      context = 0xdeadbeef;
      size = 0xdeadbeef;
-@@ -2619,9 +2619,9 @@ static void test_query_directory(void)
+@@ -2629,9 +2629,9 @@ static void test_query_directory(void)
      size = 0xdeadbeef;
      memset( buffer, 0xcc, sizeof(buffer) );
      status = NtQueryDirectoryObject( dir, info, sizeof(buffer), FALSE, TRUE, &context, &size );
@@ -44,7 +44,7 @@ index 11111111111..11111111111 100644
      if (size == sizeof(*info))
          ok( !memcmp( &info[0], &empty_info, sizeof(*info) ), "entry was not cleared\n" );
  
-@@ -2717,37 +2717,31 @@ static void test_query_directory(void)
+@@ -2727,37 +2727,31 @@ static void test_query_directory(void)
  
      memset( buffer, 0xcc, sizeof(buffer) );
      status = NtQueryDirectoryObject( dir, info, sizeof(buffer), FALSE, TRUE, &context, &size );
@@ -96,7 +96,7 @@ index 11111111111..11111111111 100644
              || broken(status == STATUS_BUFFER_TOO_SMALL) /* wow64 */, "got %#lx\n", status );
      if (status == STATUS_MORE_ENTRIES)
      {
-@@ -2759,7 +2753,7 @@ static void test_query_directory(void)
+@@ -2769,7 +2763,7 @@ static void test_query_directory(void)
      size = 0xdeadbeef;
      context = 0xdeadbeef;
      status = NtQueryDirectoryObject( dir, info, 0, FALSE, TRUE, &context, &size );
@@ -105,7 +105,7 @@ index 11111111111..11111111111 100644
              || broken(status == STATUS_BUFFER_TOO_SMALL) /* wow64 */, "got %#lx\n", status );
      if (status == STATUS_MORE_ENTRIES)
      {
-@@ -2770,14 +2764,11 @@ static void test_query_directory(void)
+@@ -2780,14 +2774,11 @@ static void test_query_directory(void)
      context = 1;
      memset( buffer, 0xcc, sizeof(buffer) );
      status = NtQueryDirectoryObject( dir, info, sizeof(buffer), FALSE, FALSE, &context, &size );
@@ -129,7 +129,7 @@ diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/sync.c
 +++ b/dlls/ntdll/unix/sync.c
-@@ -2360,57 +2360,94 @@ NTSTATUS WINAPI NtOpenDirectoryObject( HANDLE *handle, ACCESS_MASK access, const
+@@ -2378,57 +2378,94 @@ NTSTATUS WINAPI NtOpenDirectoryObject( HANDLE *handle, ACCESS_MASK access, const
  /**************************************************************************
   *           NtQueryDirectoryObject   (NTDLL.@)
   */
@@ -143,14 +143,38 @@ index 11111111111..11111111111 100644
 -    unsigned int ret;
 +    struct directory_entry *buffer;
 +    char *p;
-+
-+    if (!(buffer = malloc( size ))) return STATUS_NO_MEMORY;
  
 -    if (single_entry)
++    if (!(buffer = malloc( size ))) return STATUS_NO_MEMORY;
++
 +    SERVER_START_REQ( get_directory_entries )
      {
 -        SERVER_START_REQ( get_directory_entry )
--        {
++        req->handle = wine_server_obj_handle( handle );
++        req->index = index;
++        req->max_count = single_entry ? 1 : UINT_MAX;
++        wine_server_set_reply( req, buffer, size );
++        status = wine_server_call( req );
++        count = reply->count;
++        total_len = reply->total_len;
++    }
++    SERVER_END_REQ;
++
++    if (status && status != STATUS_MORE_ENTRIES)
++    {
++        free( buffer );
++        return status;
++    }
++
++    used_count = 0;
++    used_size = sizeof(*info); /* null terminator */
++    for (i = pos = 0; i < count; ++i)
++    {
++        const struct directory_entry *entry = (const struct directory_entry *)((char *)buffer + pos);
++        unsigned int entry_size = sizeof(*info) + entry->name_len + entry->type_len + 2 * sizeof(WCHAR);
++
++        if (used_size + entry_size > size)
+         {
 -            req->handle = wine_server_obj_handle( handle );
 -            req->index = index;
 -            if (size >= 2 * sizeof(*buffer) + 2 * sizeof(WCHAR))
@@ -179,33 +203,9 @@ index 11111111111..11111111111 100644
 -                    memset( buffer, 0, sizeof(*buffer) );
 -                if (ret_size) *ret_size = sizeof(*buffer);
 -            }
-+        req->handle = wine_server_obj_handle( handle );
-+        req->index = index;
-+        req->max_count = single_entry ? 1 : UINT_MAX;
-+        wine_server_set_reply( req, buffer, size );
-+        status = wine_server_call( req );
-+        count = reply->count;
-+        total_len = reply->total_len;
-+    }
-+    SERVER_END_REQ;
- 
+-
 -            if (ret_size && (!ret || ret == STATUS_BUFFER_TOO_SMALL))
 -                *ret_size = 2 * sizeof(*buffer) + reply->total_len + 2 * sizeof(WCHAR);
-+    if (status && status != STATUS_MORE_ENTRIES)
-+    {
-+        free( buffer );
-+        return status;
-+    }
-+
-+    used_count = 0;
-+    used_size = sizeof(*info); /* null terminator */
-+    for (i = pos = 0; i < count; ++i)
-+    {
-+        const struct directory_entry *entry = (const struct directory_entry *)((char *)buffer + pos);
-+        unsigned int entry_size = sizeof(*info) + entry->name_len + entry->type_len + 2 * sizeof(WCHAR);
-+
-+        if (used_size + entry_size > size)
-+        {
 +            status = STATUS_MORE_ENTRIES;
 +            break;
          }
@@ -297,7 +297,8 @@ index 11111111111..11111111111 100644
 -            const struct unicode_str *type_name = &obj->ops->type->name;
 -            const WCHAR *name = get_object_name( obj, &name_len );
 +            size_t entry_size;
-+
+ 
+-            reply->total_len = name_len + type_name->len;
 +            if (!(obj = find_object_index( dir->entries, req->index + i )))
 +                break;
 +            type_name = &obj->ops->type->name;
@@ -305,24 +306,30 @@ index 11111111111..11111111111 100644
 +            entry_size = (sizeof(*entry) + name_len + type_name->len + 3) & ~3;
 +            reply->total_len += name_len + type_name->len;
 +            release_object( obj );
-+
+ 
+-            if (reply->total_len <= get_reply_max_size())
 +            if (size + entry_size > get_reply_max_size())
-+            {
+             {
+-                void *ptr = set_reply_data_size( reply->total_len );
+-                if (ptr)
+-                {
+-                    reply->name_len = name_len;
+-                    memcpy( ptr, name, name_len );
+-                    memcpy( (char *)ptr + name_len, type_name->str, type_name->len );
+-                }
 +                set_error( STATUS_MORE_ENTRIES );
 +                break;
 +            }
 +            size += entry_size;
 +        }
 +        reply->count = i;
- 
--            reply->total_len = name_len + type_name->len;
++
 +        if (!(buffer = set_reply_data_size( size )))
 +        {
 +            release_object( dir );
 +            return;
 +        }
- 
--            if (reply->total_len <= get_reply_max_size())
++
 +        size = 0;
 +        for (i = 0; i < reply->count; ++i)
 +        {
@@ -345,14 +352,7 @@ index 11111111111..11111111111 100644
 +            memcpy( buffer + size, type_name->str, type_name->len );
 +            size += type_name->len;
 +            if (size & 3)
-             {
--                void *ptr = set_reply_data_size( reply->total_len );
--                if (ptr)
--                {
--                    reply->name_len = name_len;
--                    memcpy( ptr, name, name_len );
--                    memcpy( (char *)ptr + name_len, type_name->str, type_name->len );
--                }
++            {
 +                memset( buffer + size, 0, 4 - (size & 3) );
 +                size += 4 - (size & 3);
              }
@@ -376,7 +376,7 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -936,6 +936,14 @@ struct input_shared_memory
+@@ -962,6 +962,14 @@ struct input_shared_memory
  #define SEQUENCE_MASK_BITS  4
  #define SEQUENCE_MASK ((1UL << SEQUENCE_MASK_BITS) - 1)
  
@@ -391,7 +391,7 @@ index 11111111111..11111111111 100644
  /****************************************************************/
  /* Request declarations */
  
-@@ -3429,15 +3437,15 @@ enum caret_state
+@@ -3539,15 +3547,15 @@ enum caret_state
  @END
  
  
@@ -417,7 +417,7 @@ diff --git a/server/trace.c b/server/trace.c
 index 11111111111..11111111111 100644
 --- a/server/trace.c
 +++ b/server/trace.c
-@@ -1362,6 +1362,40 @@ static void dump_varargs_cpu_topology_override( const char *prefix, data_size_t
+@@ -1389,6 +1389,40 @@ static void dump_varargs_cpu_topology_override( const char *prefix, data_size_t
      remove_data( size );
  }
  
@@ -460,5 +460,5 @@ index 11111111111..11111111111 100644
  /* Everything below this line is generated automatically by tools/make_requests */
 
 -- 
-2.40.0
+0.0.0
 

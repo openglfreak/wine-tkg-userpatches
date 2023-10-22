@@ -1,0 +1,75 @@
+From b3d16ce501856b4ab62a805fb7ec8a6977574481 Mon Sep 17 00:00:00 2001
+From: David Gow <david@ingeniumdigital.com>
+Date: Tue, 11 Apr 2023 16:08:11 +0800
+Subject: [PATCH] winex11.drv: Don't reconfigure window on redundant position
+ updates
+
+sync_window_position() calls XReconfigureWMWindow() to update the window
+with a new position or size. However, it unconditionally assumes that
+the size has changed, and sets the mask and calls XReconfigureWMWindow()
+anyway. In addition, it will toggle the fullscreen state on KWin, to
+work around the fact that _NET_WM_FULLSCREEN windows can't be moved
+there.
+
+Instead, only set the mask based on which properties have actually
+changed, and don't do anything (except updating shaped windows, if
+required) if the resulting mask is 0.
+
+This fixes an issue with the Elder Scrolls Online installer, which can
+cause Xorg (and even Xwayland) to hang due to ending up in a Reconfigure
+loop.
+
+Signed-off-by: David Gow <david@ingeniumdigital.com>
+---
+ dlls/winex11.drv/window.c | 21 ++++++++++++++-------
+ 1 file changed, 14 insertions(+), 7 deletions(-)
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1494,18 +1494,22 @@ static HWND sync_window_position( struct x11drv_win_data *data,
+         if (changes.width <= 0 || changes.height <= 0) changes.width = changes.height = 1;
+         if (changes.width > 65535) changes.width = 65535;
+         if (changes.height > 65535) changes.height = 65535;
+-        mask |= CWWidth | CWHeight;
+     }
+ 
+     /* only the size is allowed to change for the desktop window */
+     if (data->whole_window != root_window)
+     {
+         POINT pt = virtual_screen_to_root( data->whole_rect.left, data->whole_rect.top );
++        POINT old_pt = virtual_screen_to_root( old_whole_rect->left, old_whole_rect->top );
+         changes.x = pt.x;
+         changes.y = pt.y;
+-        mask |= CWX | CWY;
++        if (changes.x != old_pt.x) mask |= CWX;
++        if (changes.y != old_pt.y) mask |= CWY;
+     }
+ 
++    if (changes.width  != old_whole_rect->right - old_whole_rect->left) mask |= CWWidth;
++    if (changes.height != old_whole_rect->bottom - old_whole_rect->top) mask |= CWHeight;
++
+     if (!(swp_flags & SWP_NOZORDER) || (swp_flags & SWP_SHOWWINDOW))
+     {
+         /* find window that this one must be after */
+@@ -1522,11 +1526,14 @@ static HWND sync_window_position( struct x11drv_win_data *data,
+         /* and Above with a sibling doesn't work so well either, so we ignore it */
+     }
+ 
+-    update_net_wm_states( data );
+-    set_size_hints( data, style );
+-    set_mwm_hints( data, style, ex_style );
+-    data->configure_serial = NextRequest( data->display );
+-    XReconfigureWMWindow( data->display, data->whole_window, data->vis.screen, mask, &changes );
++    if (mask)
++    {
++        update_net_wm_states( data );
++        set_size_hints( data, style );
++        set_mwm_hints( data, style, ex_style );
++        data->configure_serial = NextRequest( data->display );
++        XReconfigureWMWindow( data->display, data->whole_window, data->vis.screen, mask, &changes );
++    }
+ #ifdef HAVE_LIBXSHAPE
+     if (IsRectEmpty( old_window_rect ) != IsRectEmpty( &data->window_rect ))
+         sync_window_region( data, (HRGN)1 );

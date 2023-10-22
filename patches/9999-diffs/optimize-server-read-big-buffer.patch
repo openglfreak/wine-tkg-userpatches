@@ -1,27 +1,21 @@
-TODO:
- - make virtual_check_buffer_write_access return false if any page has WRITECOPY or WRITEWATCH flags.
- - remove the first hunk, dangerous and not needed.
-
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -6957,7 +6957,7 @@ NTSTATUS WINAPI NtReadFile( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, vo
+     status = server_get_unix_fd( handle, FILE_READ_DATA, &unix_handle, &needs_close, &type, &options );
+     if (status && status != STATUS_BAD_DEVICE_TYPE) return status;
+ 
+-    if (!virtual_check_buffer_for_write( buffer, length )) return STATUS_ACCESS_VIOLATION;
++    if (!check_buffer_write_access( buffer, length )) return STATUS_ACCESS_VIOLATION;
+ 
+     if (status == STATUS_BAD_DEVICE_TYPE)
+         return server_read_file( handle, event, apc, apc_user, io, buffer, length, offset, key );
 diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/server.c
 +++ b/dlls/ntdll/unix/server.c
-@@ -410,6 +410,14 @@ unsigned int server_call_unlocked( void *req_ptr )
- }
- 
- 
-+static inline BOOL check_buffer_write_access( void *ptr, SIZE_T size )
-+{
-+    if (size > 16384 && virtual_check_buffer_write_access( ptr, size ))
-+        return TRUE;
-+    return virtual_check_buffer_for_write( ptr, size );
-+}
-+
-+
- /***********************************************************************
-  *           wine_server_call
-  *
-@@ -423,7 +431,7 @@ unsigned int CDECL wine_server_call( void *req_ptr )
+@@ -538,7 +538,7 @@ unsigned int CDECL wine_server_call( void *req_ptr )
  
      /* trigger write watches, otherwise read() might return EFAULT */
      if (req->u.req.request_header.reply_size &&
@@ -30,11 +24,24 @@ index 11111111111..11111111111 100644
      {
          return STATUS_ACCESS_VIOLATION;
      }
+diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/socket.c
++++ b/dlls/ntdll/unix/socket.c
+@@ -875,7 +875,7 @@ static NTSTATUS sock_recv( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
+ 
+     for (i = 0; i < async->count; ++i)
+     {
+-        if (!virtual_check_buffer_for_write( async->iov[i].iov_base, async->iov[i].iov_len ))
++        if (!check_buffer_write_access( async->iov[i].iov_base, async->iov[i].iov_len ))
+         {
+             release_fileio( &async->io );
+             return STATUS_ACCESS_VIOLATION;
 diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/unix_private.h
 +++ b/dlls/ntdll/unix/unix_private.h
-@@ -276,6 +276,7 @@ extern ssize_t virtual_locked_recvmsg( int fd, struct msghdr *hdr, int flags ) D
+@@ -284,6 +284,7 @@ extern ssize_t virtual_locked_recvmsg( int fd, struct msghdr *hdr, int flags ) D
  extern BOOL virtual_is_valid_code_address( const void *addr, SIZE_T size ) DECLSPEC_HIDDEN;
  extern void *virtual_setup_exception( void *stack_ptr, size_t size, EXCEPTION_RECORD *rec ) DECLSPEC_HIDDEN;
  extern BOOL virtual_check_buffer_for_read( const void *ptr, SIZE_T size ) DECLSPEC_HIDDEN;
@@ -42,11 +49,25 @@ index 11111111111..11111111111 100644
  extern BOOL virtual_check_buffer_for_write( void *ptr, SIZE_T size ) DECLSPEC_HIDDEN;
  extern SIZE_T virtual_uninterrupted_read_memory( const void *addr, void *buffer, SIZE_T size ) DECLSPEC_HIDDEN;
  extern NTSTATUS virtual_uninterrupted_write_memory( void *addr, const void *buffer, SIZE_T size ) DECLSPEC_HIDDEN;
+@@ -519,6 +520,13 @@ static inline ULONG_PTR get_zero_bits_limit( ULONG_PTR zero_bits )
+     return (~(UINT64)0) >> shift;
+ }
+ 
++static inline BOOL check_buffer_write_access( void *ptr, SIZE_T size )
++{
++    if (size > 16384 && virtual_check_buffer_write_access( ptr, size ))
++        return TRUE;
++    return virtual_check_buffer_for_write( ptr, size );
++}
++
+ 
+ enum loadorder
+ {
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -3870,6 +3870,27 @@ BOOL virtual_check_buffer_for_read( const void *ptr, SIZE_T size )
+@@ -4409,6 +4409,27 @@ BOOL virtual_check_buffer_for_read( const void *ptr, SIZE_T size )
  }
  
  
@@ -74,3 +95,21 @@ index 11111111111..11111111111 100644
  /***********************************************************************
   *           virtual_check_buffer_for_write
   *
+@@ -6221,7 +6242,7 @@ NTSTATUS WINAPI NtReadVirtualMemory( HANDLE process, const void *addr, void *buf
+     }
+ done:
+ #else
+-    if (virtual_check_buffer_for_write( buffer, size ))
++    if (check_buffer_write_access( buffer, size ))
+     {
+         if (process == GetCurrentProcess())
+         {
+@@ -6660,7 +6681,7 @@ NTSTATUS WINAPI NtWow64ReadVirtualMemory64( HANDLE process, ULONG64 addr, void *
+ 
+     if (size > MAXLONG) size = MAXLONG;
+ 
+-    if (virtual_check_buffer_for_write( buffer, size ))
++    if (check_buffer_write_access( buffer, size ))
+     {
+         SERVER_START_REQ( read_process_memory )
+         {

@@ -1,0 +1,47 @@
+From ac72d9ded65f300bf5d03601ca4575561a4b5d67 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Mon, 7 Aug 2023 11:04:35 +0200
+Subject: [PATCH 12/15] wintrust: Support CAT_MEMBERINFO2 attribute in
+ CryptCATEnumerateMember.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/wintrust/crypt.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/dlls/wintrust/crypt.c b/dlls/wintrust/crypt.c
+index 11111111111..11111111111 100644
+--- a/dlls/wintrust/crypt.c
++++ b/dlls/wintrust/crypt.c
+@@ -739,6 +739,28 @@ CRYPTCATMEMBER * WINAPI CryptCATEnumerateMember(HANDLE hCatalog, CRYPTCATMEMBER
+             free(mi);
+             if (!ret) goto error;
+         }
++        else if (!strcmp(attr->pszObjId, CAT_MEMBERINFO2_OBJID))
++        {
++            CAT_MEMBERINFO2 *mi;
++            BOOL ret;
++
++            member->sEncodedMemberInfo.cbData = attr->rgValue->cbData;
++            member->sEncodedMemberInfo.pbData = attr->rgValue->pbData;
++
++            ret = CryptDecodeObject(cc->encoding, CAT_MEMBERINFO2_OBJID, attr->rgValue->pbData, attr->rgValue->cbData, 0, NULL, &size);
++            if (!ret) goto error;
++
++            if (!(mi = HeapAlloc(GetProcessHeap(), 0, size)))
++            {
++                SetLastError(ERROR_OUTOFMEMORY);
++                goto error;
++            }
++            ret = CryptDecodeObject(cc->encoding, CAT_MEMBERINFO2_OBJID, attr->rgValue->pbData, attr->rgValue->cbData, 0, mi, &size);
++            if (ret)
++                member->gSubjectType = mi->SubjectGuid;
++            HeapFree(GetProcessHeap(), 0, mi);
++            if (!ret) goto error;
++        }
+         else if (!strcmp(attr->pszObjId, SPC_INDIRECT_DATA_OBJID))
+         {
+             BOOL ret;
+-- 
+0.0.0
+

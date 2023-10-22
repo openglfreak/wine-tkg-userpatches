@@ -1,0 +1,66 @@
+From 8391d044fa0aba4297c1015583a66fd5d12eb8f7 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Thu, 10 Aug 2023 11:16:35 +0200
+Subject: [PATCH 2007/7] include, winex11.drv: Don't use NtYieldExecution in shared
+ memory read.
+
+---
+ dlls/winex11.drv/x11drv.h | 5 ++---
+ include/ntuser.h          | 5 ++---
+ 2 files changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -949,11 +949,10 @@ static inline UINT asciiz_to_unicode( WCHAR *dst, const char *src )
+     return (p - dst) * sizeof(WCHAR);
+ }
+ 
++#define __SHARED_READ_SEQ( x ) __atomic_load_n( x, __ATOMIC_RELAXED )
+ #if defined(__i386__) || defined(__x86_64__)
+-#define __SHARED_READ_SEQ( x ) (*(x))
+ #define __SHARED_READ_FENCE do {} while(0)
+ #else
+-#define __SHARED_READ_SEQ( x ) __atomic_load_n( x, __ATOMIC_RELAXED )
+ #define __SHARED_READ_FENCE __atomic_thread_fence( __ATOMIC_ACQUIRE )
+ #endif
+ 
+@@ -961,7 +960,7 @@ static inline UINT asciiz_to_unicode( WCHAR *dst, const char *src )
+     do {                                                                \
+         unsigned int __seq;                                             \
+         do {                                                            \
+-            while ((__seq = __SHARED_READ_SEQ( x )) & SEQUENCE_MASK) NtYieldExecution(); \
++            while ((__seq = __SHARED_READ_SEQ( x )) & SEQUENCE_MASK);   \
+             __SHARED_READ_FENCE;
+ 
+ #define SHARED_READ_END( x )                       \
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 11111111111..11111111111 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -1383,11 +1383,10 @@ static inline BOOL NtUserShowOwnedPopups( HWND hwnd, BOOL show )
+ /* Wine extensions */
+ BOOL WINAPI __wine_send_input( HWND hwnd, const INPUT *input, const RAWINPUT *rawinput );
+ 
++#define __SHARED_READ_SEQ( x ) __atomic_load_n( x, __ATOMIC_RELAXED )
+ #if defined(__i386__) || defined(__x86_64__)
+-#define __SHARED_READ_SEQ( x ) (*(x))
+ #define __SHARED_READ_FENCE do {} while(0)
+ #else
+-#define __SHARED_READ_SEQ( x ) __atomic_load_n( x, __ATOMIC_RELAXED )
+ #define __SHARED_READ_FENCE __atomic_thread_fence( __ATOMIC_ACQUIRE )
+ #endif
+ 
+@@ -1395,7 +1394,7 @@ BOOL WINAPI __wine_send_input( HWND hwnd, const INPUT *input, const RAWINPUT *ra
+     do {                                                                \
+         unsigned int __seq;                                             \
+         do {                                                            \
+-            while ((__seq = __SHARED_READ_SEQ( x )) & SEQUENCE_MASK) NtYieldExecution(); \
++            while ((__seq = __SHARED_READ_SEQ( x )) & SEQUENCE_MASK);   \
+             __SHARED_READ_FENCE;
+ 
+ #define SHARED_READ_END( x )                       \
+-- 
+0.0.0
+

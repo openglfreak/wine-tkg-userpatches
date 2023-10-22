@@ -1,7 +1,7 @@
-From f5ae6d0a9a4217880d8f312b1687b5ec5fe89803 Mon Sep 17 00:00:00 2001
+From e639abfacd20ddb713a747837a37546aa095711e Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Thu, 14 Jan 2021 15:22:05 +0100
-Subject: [PATCH 24/44] server: Create a thread input shared mapping.
+Subject: [PATCH 24/40] server: Create a thread input shared mapping.
 
 ---
  server/protocol.def |  8 ++++++++
@@ -14,7 +14,7 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -895,6 +895,14 @@ struct queue_shared_memory
+@@ -921,6 +921,14 @@ struct queue_shared_memory
      unsigned int         changed_bits;
      unsigned int         wake_mask;
      unsigned int         changed_mask;
@@ -33,7 +33,7 @@ diff --git a/server/queue.c b/server/queue.c
 index 11111111111..11111111111 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -116,6 +116,8 @@ struct thread_input
+@@ -117,6 +117,8 @@ struct thread_input
      unsigned char          keystate[256]; /* state of each key */
      unsigned char          desktop_keystate[256]; /* desktop keystate when keystate was synced */
      int                    keystate_lock; /* keystate is locked */
@@ -42,7 +42,7 @@ index 11111111111..11111111111 100644
  };
  
  struct msg_queue
-@@ -315,6 +317,8 @@ static struct thread_input *create_thread_input( struct thread *thread )
+@@ -317,6 +319,8 @@ static struct thread_input *create_thread_input( struct thread *thread )
  
      if ((input = alloc_object( &thread_input_ops )))
      {
@@ -51,7 +51,7 @@ index 11111111111..11111111111 100644
          input->focus        = 0;
          input->capture      = 0;
          input->active       = 0;
-@@ -334,6 +338,10 @@ static struct thread_input *create_thread_input( struct thread *thread )
+@@ -336,6 +340,10 @@ static struct thread_input *create_thread_input( struct thread *thread )
          }
          memcpy( input->desktop_keystate, (void *)input->desktop->shared->keystate,
                  sizeof(input->desktop_keystate) );
@@ -62,7 +62,7 @@ index 11111111111..11111111111 100644
      }
      return input;
  }
-@@ -394,7 +402,13 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+@@ -397,7 +405,13 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
          SHARED_WRITE_END( &queue->shared->seq );
          thread->queue = queue;
      }
@@ -77,7 +77,7 @@ index 11111111111..11111111111 100644
      return queue;
  }
  
-@@ -451,6 +465,10 @@ static int assign_thread_input( struct thread *thread, struct thread_input *new_
+@@ -445,6 +459,10 @@ static int assign_thread_input( struct thread *thread, struct thread_input *new_
      queue->input = (struct thread_input *)grab_object( new_input );
      if (queue->keystate_lock) lock_input_keystate( queue->input );
      new_input->cursor_count += queue->cursor_count;
@@ -88,9 +88,9 @@ index 11111111111..11111111111 100644
      return 1;
  }
  
-@@ -1265,6 +1283,7 @@ static void thread_input_destroy( struct object *obj )
-         if (input->desktop->foreground_input == input) set_foreground_input( input->desktop, NULL );
-         release_object( input->desktop );
+@@ -1376,6 +1394,7 @@ static void thread_input_destroy( struct object *obj )
+         if (desktop->foreground_input == input) desktop->foreground_input = NULL;
+         release_object( desktop );
      }
 +    release_object( input->shared_mapping );
  }
@@ -100,21 +100,21 @@ diff --git a/server/thread.c b/server/thread.c
 index 11111111111..11111111111 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -348,6 +348,8 @@ static inline void init_thread_structure( struct thread *thread )
-     thread->fast_alert_event = NULL;
+@@ -345,6 +345,8 @@ static inline void init_thread_structure( struct thread *thread )
+     thread->exit_poll       = NULL;
      thread->queue_shared_mapping = NULL;
      thread->queue_shared         = NULL;
 +    thread->input_shared_mapping = NULL;
 +    thread->input_shared         = NULL;
+     thread->fast_sync       = NULL;
+     thread->fast_alert_event = NULL;
  
-     thread->creation_time = current_time;
-     thread->exit_time     = 0;
-@@ -413,13 +415,43 @@ static volatile void *init_queue_mapping( struct thread *thread )
+@@ -411,13 +413,43 @@ static volatile void *init_queue_mapping( struct thread *thread )
      thread->queue_shared_mapping = create_shared_mapping( dir, &name, sizeof(struct queue_shared_memory),
                                                            NULL, (void **)&thread->queue_shared );
      release_object( dir );
--    if (thread->queue_shared) memset( (void *)thread->queue_shared, 0, sizeof(*thread->queue_shared) );
-+    if (thread->queue_shared)
+-    if (thread->queue_shared_mapping) memset( (void *)thread->queue_shared, 0, sizeof(*thread->queue_shared) );
++    if (thread->queue_shared_mapping)
 +    {
 +        memset( (void *)thread->queue_shared, 0, sizeof(*thread->queue_shared) );
 +        thread->queue_shared->input_tid = thread->id;
@@ -140,7 +140,7 @@ index 11111111111..11111111111 100644
 +    thread->input_shared_mapping = create_shared_mapping( dir, &name, sizeof(struct input_shared_memory),
 +                                                          NULL, (void **)&thread->input_shared );
 +    release_object( dir );
-+    if (thread->input_shared)
++    if (thread->input_shared_mapping)
 +    {
 +        memset( (void *)thread->input_shared, 0, sizeof(*thread->input_shared) );
 +        thread->input_shared->tid = thread->id;
@@ -154,7 +154,7 @@ index 11111111111..11111111111 100644
  /* create a new thread */
  struct thread *create_thread( int fd, struct process *process, const struct security_descriptor *sd )
  {
-@@ -513,6 +545,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+@@ -489,6 +521,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
          release_object( thread );
          return NULL;
      }
@@ -164,9 +164,9 @@ index 11111111111..11111111111 100644
 +        return NULL;
 +    }
  
-     set_fd_events( thread->request_fd, POLLIN );  /* start listening to events */
-     add_process_thread( thread->process, thread );
-@@ -583,6 +620,8 @@ static void cleanup_thread( struct thread *thread )
+     if (process->desktop)
+     {
+@@ -581,6 +618,8 @@ static void cleanup_thread( struct thread *thread )
      free( thread->desc );
      if (thread->queue_shared_mapping) release_object( thread->queue_shared_mapping );
      thread->queue_shared_mapping = NULL;
@@ -179,13 +179,15 @@ diff --git a/server/thread.h b/server/thread.h
 index 11111111111..11111111111 100644
 --- a/server/thread.h
 +++ b/server/thread.h
-@@ -100,6 +100,8 @@ struct thread
-     struct event          *fast_alert_event; /* fast synchronization alert event */
+@@ -98,6 +98,8 @@ struct thread
+     struct timeout_user   *exit_poll;     /* poll if the thread/process has exited already */
      struct object         *queue_shared_mapping; /* thread queue shared memory mapping */
      volatile struct queue_shared_memory *queue_shared;  /* thread queue shared memory ptr */
 +    struct object         *input_shared_mapping; /* thread input shared memory mapping */
 +    volatile struct input_shared_memory *input_shared;  /* thread input shared memory ptr */
+     struct fast_sync      *fast_sync;     /* fast synchronization object */
+     struct event          *fast_alert_event; /* fast synchronization alert event */
  };
- 
- extern struct thread *current;
+-- 
+0.0.0
 

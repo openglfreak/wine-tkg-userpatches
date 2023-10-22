@@ -1,0 +1,45 @@
+From c3ec84dd82f38df2364e2aa4efd3d6ce85a46616 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Tue, 29 Mar 2022 02:13:14 +0200
+Subject: [PATCH 2002/7] HACK: win32u: Skip setting the cursor position if the new
+ position matches the cached one.
+
+---
+ dlls/win32u/input.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -709,6 +709,7 @@ UINT WINAPI NtUserSendInput( UINT count, INPUT *inputs, int size )
+  */
+ BOOL WINAPI NtUserSetCursorPos( INT x, INT y )
+ {
++    volatile struct desktop_shared_memory *shared = get_desktop_shared_memory();
+     POINT pt = { x, y };
+     BOOL ret;
+     INT prev_x, prev_y, new_x, new_y;
+@@ -720,6 +721,19 @@ BOOL WINAPI NtUserSetCursorPos( INT x, INT y )
+         pt = map_dpi_point( pt, dpi, get_monitor_dpi( monitor ));
+     }
+ 
++    /* HACK: Doesn't generate any window messages but skips the server call. */
++    if (shared)
++    {
++        SHARED_READ_BEGIN( &shared->seq )
++        {
++            ret = shared->cursor.last_change != 0 &&
++                  x == shared->cursor.x &&
++                  y == shared->cursor.y;
++        }
++        SHARED_READ_END( &shared->seq );
++        if (ret) return TRUE;
++    }
++
+     SERVER_START_REQ( set_cursor )
+     {
+         req->flags = SET_CURSOR_POS;
+-- 
+0.0.0
+

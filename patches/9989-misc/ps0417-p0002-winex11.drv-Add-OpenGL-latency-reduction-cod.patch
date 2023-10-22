@@ -4,23 +4,14 @@ Date: Sun, 3 Jul 2022 15:54:01 +0200
 Subject: [PATCH 2/2] winex11.drv: Add OpenGL latency reduction code.
 
 ---
- dlls/winex11.drv/opengl.c | 255 +++++++++++++++++++++++++++++++++++++-
- 1 file changed, 252 insertions(+), 3 deletions(-)
+ dlls/winex11.drv/opengl.c | 258 +++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 255 insertions(+), 3 deletions(-)
 
 diff --git a/dlls/winex11.drv/opengl.c b/dlls/winex11.drv/opengl.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/opengl.c
 +++ b/dlls/winex11.drv/opengl.c
-@@ -42,6 +42,8 @@
- #include "xcomposite.h"
- #include "winternl.h"
- #include "wine/debug.h"
-+#include "wine/server.h"
-+#include "../win32u/ntuser_private.h"
- 
- #ifdef SONAME_LIBGL
- 
-@@ -176,6 +178,8 @@ typedef XID GLXPbuffer;
+@@ -176,6 +176,8 @@ typedef XID GLXPbuffer;
  #define GLX_RENDERER_ID_MESA              0x818E
  /** GLX_NV_float_buffer */
  #define GLX_FLOAT_COMPONENTS_NV           0x20B0
@@ -29,7 +20,7 @@ index 11111111111..11111111111 100644
  
  
  static char *glExtensions;
-@@ -225,6 +229,8 @@ enum dc_gl_layered_type
+@@ -225,6 +227,8 @@ enum dc_gl_layered_type
      DC_GL_LAYERED_ATTRIBUTES,
  };
  
@@ -38,7 +29,7 @@ index 11111111111..11111111111 100644
  struct gl_drawable
  {
      LONG                           ref;          /* reference count */
-@@ -239,6 +245,11 @@ struct gl_drawable
+@@ -239,6 +243,11 @@ struct gl_drawable
      int                            swap_interval;
      BOOL                           refresh_swap_interval;
      BOOL                           mutable_pf;
@@ -50,7 +41,7 @@ index 11111111111..11111111111 100644
  };
  
  struct wgl_pbuffer
-@@ -3443,6 +3454,130 @@ static void X11DRV_WineGL_LoadExtensions(void)
+@@ -3464,6 +3473,130 @@ static void X11DRV_WineGL_LoadExtensions(void)
      }
  }
  
@@ -110,7 +101,7 @@ index 11111111111..11111111111 100644
 +    if (!NtUserEnumDisplaySettings( &device_name, ENUM_CURRENT_SETTINGS, &devmode, 0 )
 +        || devmode.dmDisplayFrequency <= 1)
 +        return 0;
-+    MESSAGE("detected display frequency: %u\n", devmode.dmDisplayFrequency);
++    MESSAGE("detected display frequency: %lu\n", (unsigned long)devmode.dmDisplayFrequency);
 +    return TICKSPERSEC / devmode.dmDisplayFrequency;
 +}
 +
@@ -118,7 +109,7 @@ index 11111111111..11111111111 100644
 +
 +static inline rtime_t frame_time_with_margin( rtime_t frame_time )
 +{
-+    return frame_time + (frame_time >> FRAMETIME_MARGIN_SHIFT) + 3500;
++    return frame_time * 2 + (frame_time >> FRAMETIME_MARGIN_SHIFT) + 3500;
 +}
 +
 +static void get_swap_interval(GLXDrawable drawable, int *interval)
@@ -181,7 +172,7 @@ index 11111111111..11111111111 100644
  
  /**
   * glxdrv_SwapBuffers
-@@ -3457,6 +3592,11 @@ static BOOL glxdrv_wglSwapBuffers( HDC hdc )
+@@ -3478,6 +3611,11 @@ static BOOL glxdrv_wglSwapBuffers( HDC hdc )
      INT64 ust, msc, sbc, target_sbc = 0;
      HWND hwnd;
  
@@ -193,7 +184,7 @@ index 11111111111..11111111111 100644
      TRACE("(%p)\n", hdc);
  
      escape.code = X11DRV_PRESENT_DRAWABLE;
-@@ -3469,18 +3609,78 @@ static BOOL glxdrv_wglSwapBuffers( HDC hdc )
+@@ -3490,18 +3628,80 @@ static BOOL glxdrv_wglSwapBuffers( HDC hdc )
          return FALSE;
      }
  
@@ -218,10 +209,12 @@ index 11111111111..11111111111 100644
 +        if (!gl->vblank_interval)
 +        {
 +            HWND hwnd = 0;
-+            assert(!XFindContext( gdi_display, gl->window, winContext, (char **)&hwnd ));
++            int ret = XFindContext( gdi_display, gl->window, winContext, (char **)&hwnd );
++            assert(!ret);
 +            assert(hwnd);
 +            gl->vblank_interval = get_vblank_interval( hwnd );
 +            assert(gl->vblank_interval);
++            MESSAGE("calculated vblank interval (100 ns units): %llu\n", (unsigned long long)gl->vblank_interval);
 +        }
 +
 +        if (gl->last_vblank_time)
@@ -274,7 +267,7 @@ index 11111111111..11111111111 100644
          if (!gl->layered_type) escape.drawable = gl->pixmap;
          if (pglXCopySubBufferMESA) {
              /* (glX)SwapBuffers has an implicit glFlush effect, however
-@@ -3501,7 +3701,7 @@ static BOOL glxdrv_wglSwapBuffers( HDC hdc )
+@@ -3522,7 +3722,7 @@ static BOOL glxdrv_wglSwapBuffers( HDC hdc )
          break;
      case DC_GL_WINDOW:
      case DC_GL_CHILD_WIN:
@@ -283,7 +276,7 @@ index 11111111111..11111111111 100644
          if (gl->type == DC_GL_CHILD_WIN) escape.drawable = gl->window;
          /* fall through */
      default:
-@@ -3519,6 +3719,55 @@ static BOOL glxdrv_wglSwapBuffers( HDC hdc )
+@@ -3540,6 +3740,58 @@ static BOOL glxdrv_wglSwapBuffers( HDC hdc )
          pglXWaitForSbcOML( gdi_display, gl->drawable, target_sbc, &ust, &msc, &sbc );
  
      update_window_surface( gl, hwnd );
@@ -297,15 +290,18 @@ index 11111111111..11111111111 100644
 +            LARGE_INTEGER timeout;
 +
 +            next_vblank_time = gl->last_vblank_time + gl->vblank_interval;
-+            while (next_vblank_time < current_time + frame_time_with_margin( gl->frame_time ))
++            while (next_vblank_time < current_time + gl->frame_time)
 +                next_vblank_time += gl->vblank_interval;
 +
 +            timeout.QuadPart = -(next_vblank_time - frame_time_with_margin( gl->frame_time ) - current_time);
-+            if (timeout.QuadPart < 0 && -timeout.QuadPart < TICKSPERSEC)
++            if (timeout.QuadPart < -100 && timeout.QuadPart > -TICKSPERSEC)
 +                msg_wait( &timeout );
 +
 +            current_time = current_rtime( FALSE );
 +        }
++
++        if (synchronize_to_vblank)
++            pglFinish();
 +
 +        pthread_mutex_lock( &context_mutex );
 +
@@ -320,11 +316,11 @@ index 11111111111..11111111111 100644
 +            LARGE_INTEGER timeout;
 +
 +            next_vblank_time = gl->last_vblank_time + gl->vblank_interval;
-+            while (next_vblank_time < current_time + frame_time_with_margin( gl->frame_time ))
++            while (next_vblank_time < current_time + gl->frame_time)
 +                next_vblank_time += gl->vblank_interval;
 +
 +            timeout.QuadPart = -(next_vblank_time - frame_time_with_margin( gl->frame_time ) - current_time);
-+            if (timeout.QuadPart < 0 && -timeout.QuadPart < TICKSPERSEC)
++            if (timeout.QuadPart < -100 && timeout.QuadPart > -TICKSPERSEC)
 +            {
 +                msg_wait( &timeout );
 +
@@ -340,5 +336,5 @@ index 11111111111..11111111111 100644
  
      if (ctx && escape.drawable)
 -- 
-2.40.0
+0.0.0
 

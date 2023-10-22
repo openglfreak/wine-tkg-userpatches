@@ -8,34 +8,37 @@ Signed-off-by: Yuxuan Shui <yshuiv7@gmail.com>
  dlls/winegstreamer/Makefile.in               |   1 +
  dlls/winegstreamer/gst_private.h             |   2 +
  dlls/winegstreamer/mfplat.c                  |   3 +
- dlls/winegstreamer/scheme_handler.c          | 408 +++++++++++++++++++
+ dlls/winegstreamer/scheme_handler.c          | 409 +++++++++++++++++++
  dlls/winegstreamer/winegstreamer.rgs         |  28 ++
  dlls/winegstreamer/winegstreamer_classes.idl |   7 +
- 6 files changed, 449 insertions(+)
+ 6 files changed, 450 insertions(+)
  create mode 100644 dlls/winegstreamer/scheme_handler.c
 
 diff --git a/dlls/winegstreamer/Makefile.in b/dlls/winegstreamer/Makefile.in
 index 11111111111..11111111111 100644
 --- a/dlls/winegstreamer/Makefile.in
 +++ b/dlls/winegstreamer/Makefile.in
-@@ -16,6 +16,7 @@ C_SRCS = \
+@@ -17,6 +17,7 @@ C_SRCS = \
  	quartz_parser.c \
  	quartz_transform.c \
  	resampler.c \
 +	scheme_handler.c \
+ 	unixlib.c \
  	video_decoder.c \
  	video_processor.c \
- 	wg_allocator.c \
 diff --git a/dlls/winegstreamer/gst_private.h b/dlls/winegstreamer/gst_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/winegstreamer/gst_private.h
 +++ b/dlls/winegstreamer/gst_private.h
-@@ -147,10 +147,12 @@ HRESULT wg_transform_read_quartz(struct wg_transform *transform, struct wg_sampl
- HRESULT wg_transform_read_dmo(struct wg_transform *transform, DMO_OUTPUT_DATA_BUFFER *buffer);
+@@ -156,6 +156,7 @@ HRESULT wg_transform_read_quartz(wg_transform_t transform, struct wg_sample *sam
+ HRESULT wg_transform_read_dmo(wg_transform_t transform, DMO_OUTPUT_DATA_BUFFER *buffer);
  
- HRESULT winegstreamer_stream_handler_create(REFIID riid, void **obj);
-+HRESULT winegstreamer_create_media_source_from_uri(const WCHAR *uri, IUnknown **out_media_source);
+ HRESULT gstreamer_byte_stream_handler_create(REFIID riid, void **obj);
++HRESULT winegstreamer_create_media_source_from_uri(const WCHAR *uri, IMFMediaSource **out);
  
+ unsigned int wg_format_get_stride(const struct wg_format *format);
+ 
+@@ -164,6 +165,7 @@ bool wg_video_format_is_rgb(enum wg_video_format format);
  HRESULT aac_decoder_create(REFIID riid, void **ret);
  HRESULT h264_decoder_create(REFIID riid, void **ret);
  HRESULT video_processor_create(REFIID riid, void **ret);
@@ -57,7 +60,7 @@ index 11111111111..11111111111 100644
  {
      const GUID *clsid;
 @@ -129,6 +131,7 @@ class_objects[] =
-     { &CLSID_GStreamerByteStreamHandler, &winegstreamer_stream_handler_create },
+     { &CLSID_GStreamerByteStreamHandler, &gstreamer_byte_stream_handler_create },
      { &CLSID_MSAACDecMFT, &aac_decoder_create },
      { &CLSID_MSH264DecoderMFT, &h264_decoder_create },
 +    { &CLSID_GStreamerSchemePlugin, &gstreamer_scheme_handler_construct },
@@ -69,7 +72,7 @@ new file mode 100644
 index 00000000000..11111111111
 --- /dev/null
 +++ b/dlls/winegstreamer/scheme_handler.c
-@@ -0,0 +1,408 @@
+@@ -0,0 +1,409 @@
 +#include <stdarg.h>
 +
 +#define COBJMACROS
@@ -406,7 +409,8 @@ index 00000000000..11111111111
 +    IMFAsyncResult *caller;
 +    struct gstreamer_scheme_handler *handler = impl_from_IMFAsyncCallback(iface);
 +    struct gstreamer_scheme_handler_result *handler_result;
-+    IUnknown *object = NULL, *context_object;
++    IMFMediaSource *object = NULL;
++    IUnknown *context_object;
 +    struct create_object_context *context;
 +    HRESULT hr;
 +
@@ -518,10 +522,10 @@ diff --git a/dlls/winegstreamer/winegstreamer_classes.idl b/dlls/winegstreamer/w
 index 11111111111..11111111111 100644
 --- a/dlls/winegstreamer/winegstreamer_classes.idl
 +++ b/dlls/winegstreamer/winegstreamer_classes.idl
-@@ -111,3 +111,10 @@ coclass CResamplerMediaObject {}
-     uuid(98230571-0087-4204-b020-3282538e57d3)
+@@ -124,3 +124,10 @@ coclass MFMP3SinkClassFactory {}
+     uuid(a22c4fc7-6e91-4e1d-89e9-53b2667b72ba)
  ]
- coclass CColorConvertDMO {}
+ coclass MFMPEG4SinkClassFactory {}
 +
 +[
 +    helpstring("GStreamer scheme handler"),

@@ -1,10 +1,10 @@
-From 12a71eeb39b177ab1f230bfaeb2df10ef27ea07e Mon Sep 17 00:00:00 2001
+From a02bd4f09367737fc5a0128078eb9e03aafab368 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Fri, 22 Apr 2022 22:56:39 +0200
-Subject: [PATCH 15/22] winex11.drv: Implement SetForegroundWindow
+Subject: [PATCH 15/19] winex11.drv: Implement SetForegroundWindow
  specialization.
 
-SetForegroundWindow, when called from user cod, should not always
+SetForegroundWindow, when called from user code, should not always
 succeed. It will fail if the X11 foreground window isn't a Wine window,
 and if its _NET_USER_TIME is more recent than ours.
 
@@ -26,7 +26,7 @@ diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -532,6 +532,37 @@ static inline BOOL can_activate_window( HWND hwnd )
+@@ -530,6 +530,37 @@ static inline BOOL can_activate_window( HWND hwnd )
  }
  
  
@@ -88,7 +88,7 @@ index 11111111111..11111111111 100644
  
      /* Some applications expect that a being deactivated topmost window
       * receives the WM_WINDOWPOSCHANGING/WM_WINDOWPOSCHANGED messages,
-@@ -844,7 +883,7 @@ static void focus_out( Display *display , HWND hwnd )
+@@ -833,7 +872,7 @@ static void focus_out( Display *display , HWND hwnd )
          if (hwnd == NtUserGetForegroundWindow())
          {
              TRACE( "lost focus, setting fg to desktop\n" );
@@ -97,7 +97,7 @@ index 11111111111..11111111111 100644
          }
      }
   }
-@@ -1330,7 +1369,7 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event, BOOL updat
+@@ -1307,7 +1346,7 @@ static void handle_wm_state_notify( HWND hwnd, XPropertyEvent *event, BOOL updat
                  TRACE( "restoring win %p/%lx\n", data->hwnd, data->whole_window );
                  release_win_data( data );
                  if ((style & (WS_MINIMIZE | WS_VISIBLE)) == (WS_MINIMIZE | WS_VISIBLE))
@@ -106,7 +106,7 @@ index 11111111111..11111111111 100644
                  send_message( hwnd, WM_SYSCOMMAND, SC_RESTORE, 0 );
                  return;
              }
-@@ -1507,6 +1546,39 @@ void X11DRV_SetFocus( HWND hwnd )
+@@ -1484,6 +1523,39 @@ void X11DRV_SetFocus( HWND hwnd )
  }
  
  
@@ -150,9 +150,9 @@ diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/init.c
 +++ b/dlls/winex11.drv/init.c
-@@ -440,6 +440,7 @@ static const struct user_driver_funcs x11drv_funcs =
-     .pSetActiveWindow = X11DRV_SetActiveWindow,
+@@ -442,6 +442,7 @@ static const struct user_driver_funcs x11drv_funcs =
      .pSetCapture = X11DRV_SetCapture,
+     .pSetDesktopWindow = X11DRV_SetDesktopWindow,
      .pSetFocus = X11DRV_SetFocus,
 +    .pSetForegroundWindow = X11DRV_SetForegroundWindow,
      .pSetLayeredWindowAttributes = X11DRV_SetLayeredWindowAttributes,
@@ -174,8 +174,8 @@ index 11111111111..11111111111 100644
  /***********************************************************************
   *     set_window_user_time
   */
-@@ -1133,6 +1138,37 @@ void read_net_wm_states( Display* display, struct x11drv_win_data *data )
-     data->net_wm_state = new_state;
+@@ -967,6 +972,37 @@ void set_window_user_time( Display *display, Window window, Time time )
+                           PropModeReplace, (unsigned char *)&time, 1 );
  }
  
 +/***********************************************************************
@@ -209,14 +209,14 @@ index 11111111111..11111111111 100644
 +    return count;
 +}
 +
- 
- /***********************************************************************
-  *     set_xembed_flags
+ /* Update _NET_WM_FULLSCREEN_MONITORS when _NET_WM_STATE_FULLSCREEN is set to support fullscreen
+  * windows spanning multiple monitors */
+ static void update_net_wm_fullscreen_monitors( struct x11drv_win_data *data )
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -374,6 +374,7 @@ struct x11drv_thread_data
+@@ -378,6 +378,7 @@ struct x11drv_thread_data
      HWND     last_focus;           /* last window that had focus */
      HWND     keymapnotify_hwnd;    /* window that should receive modifier release events */
      DWORD    activating_time;      /* time of the last SetActiveWindow call */
@@ -224,7 +224,7 @@ index 11111111111..11111111111 100644
      XIM      xim;                  /* input method */
      HWND     last_xic_hwnd;        /* last xic window */
      XFontSet font_set;             /* international text drawing font set */
-@@ -671,6 +672,7 @@ extern void vulkan_thread_detach(void) DECLSPEC_HIDDEN;
+@@ -669,6 +670,7 @@ extern void vulkan_thread_detach(void) DECLSPEC_HIDDEN;
  extern void wait_for_withdrawn_state( HWND hwnd, BOOL set ) DECLSPEC_HIDDEN;
  extern Window init_clip_window(void) DECLSPEC_HIDDEN;
  extern void set_window_user_time( Display *display, Window window, Time time ) DECLSPEC_HIDDEN;
@@ -232,14 +232,14 @@ index 11111111111..11111111111 100644
  extern void read_net_wm_states( Display *display, struct x11drv_win_data *data ) DECLSPEC_HIDDEN;
  extern void update_net_wm_states( struct x11drv_win_data *data ) DECLSPEC_HIDDEN;
  extern void make_window_embedded( struct x11drv_win_data *data ) DECLSPEC_HIDDEN;
-@@ -699,6 +701,7 @@ extern XContext winContext DECLSPEC_HIDDEN;
- extern XContext cursor_context DECLSPEC_HIDDEN;
+@@ -698,6 +700,7 @@ extern XContext cursor_context DECLSPEC_HIDDEN;
  
+ extern BOOL is_current_process_focused(void) DECLSPEC_HIDDEN;
  extern void X11DRV_SetFocus( HWND hwnd ) DECLSPEC_HIDDEN;
 +extern BOOL X11DRV_SetForegroundWindow( HWND hwnd ) DECLSPEC_HIDDEN;
  extern void set_window_cursor( Window window, HCURSOR handle ) DECLSPEC_HIDDEN;
- extern void sync_window_cursor( Window window ) DECLSPEC_HIDDEN;
- extern LRESULT clip_cursor_notify( HWND hwnd, HWND prev_clip_hwnd, HWND new_clip_hwnd ) DECLSPEC_HIDDEN;
+ extern void retry_grab_clipping_window(void) DECLSPEC_HIDDEN;
+ extern void ungrab_clipping_window(void) DECLSPEC_HIDDEN;
 -- 
-2.40.0
+0.0.0
 

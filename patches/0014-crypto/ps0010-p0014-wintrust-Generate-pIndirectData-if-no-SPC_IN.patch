@@ -1,0 +1,70 @@
+From dd71054ddaa3592ead2ccb5958d56e72ff37015e Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Mon, 7 Aug 2023 11:04:36 +0200
+Subject: [PATCH 14/15] wintrust: Generate pIndirectData if no
+ SPC_INDIRECT_DATA attribute could be found and decoded.
+
+Native does this when the SubjectIdentifier has the correct size for an SHA1 hash.
+
+Note that pIndirectData->Data.Value is supposed to point to an encoded blob, but in this case it points to the raw
+unencoded SPC_LINK structure. This seems to be a bug in native wintrust.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/wintrust/crypt.c       | 27 ++++++++++++++++++++++++++-
+ dlls/wintrust/tests/crypt.c |  1 -
+ 2 files changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/wintrust/crypt.c b/dlls/wintrust/crypt.c
+index 11111111111..11111111111 100644
+--- a/dlls/wintrust/crypt.c
++++ b/dlls/wintrust/crypt.c
+@@ -785,7 +785,32 @@ CRYPTCATMEMBER * WINAPI CryptCATEnumerateMember(HANDLE hCatalog, CRYPTCATMEMBER
+             FIXME("unhandled object id \"%s\"\n", attr->pszObjId);
+     }
+ 
+-    if (!member->sEncodedMemberInfo.cbData || !member->sEncodedIndirectData.cbData)
++    if (!member->pIndirectData && entry->SubjectIdentifier.cbData == 20)
++    {
++        SPC_LINK *link;
++
++        member->sEncodedIndirectData.cbData = 0;
++        member->sEncodedIndirectData.pbData = NULL;
++
++        size = sizeof(SIP_INDIRECT_DATA) + sizeof(SPC_LINK);
++        if (!(member->pIndirectData = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size)))
++        {
++            SetLastError(ERROR_OUTOFMEMORY);
++            goto error;
++        }
++
++        link = (void*)(member->pIndirectData + 1);
++        link->dwLinkChoice = SPC_FILE_LINK_CHOICE;
++        link->pwszFile = (LPWSTR)L"";
++
++        member->pIndirectData->Data.pszObjId = (LPSTR)SPC_CAB_DATA_OBJID;
++        member->pIndirectData->Data.Value.cbData = sizeof(SPC_LINK);
++        member->pIndirectData->Data.Value.pbData = (BYTE*)link;
++        member->pIndirectData->DigestAlgorithm.pszObjId = (LPSTR)szOID_OIWSEC_sha1;
++        member->pIndirectData->Digest = entry->SubjectIdentifier;
++    }
++
++    if (!member->sEncodedMemberInfo.cbData || !member->pIndirectData)
+     {
+         ERR("Corrupted catalog entry?\n");
+         SetLastError(CRYPT_E_ATTRIBUTES_MISSING);
+diff --git a/dlls/wintrust/tests/crypt.c b/dlls/wintrust/tests/crypt.c
+index 11111111111..11111111111 100644
+--- a/dlls/wintrust/tests/crypt.c
++++ b/dlls/wintrust/tests/crypt.c
+@@ -1421,7 +1421,6 @@ static void test_catalog_generated_indirect_data(void)
+ 
+         membercount++;
+     }
+-    todo_wine
+     ok(membercount == 1, "Expected 1 member, got %d\n", membercount);
+ 
+     attr = NULL;
+-- 
+0.0.0
+

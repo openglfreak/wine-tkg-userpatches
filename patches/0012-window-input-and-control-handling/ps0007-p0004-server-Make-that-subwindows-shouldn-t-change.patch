@@ -11,16 +11,16 @@ Subject: [PATCH v6 4/4] server: Make that subwindows shouldn't change existing
 
 Signed-off-by: Jiajin Cui <cuijiajin@uniontech.com>
 ---
- dlls/user32/tests/msg.c |  2 +-
- dlls/user32/tests/win.c | 16 +++----
- server/window.c         | 99 +++++++++++++++++++++++++++--------------
- 3 files changed, 74 insertions(+), 43 deletions(-)
+ dlls/user32/tests/msg.c |   2 +-
+ dlls/user32/tests/win.c |  16 +++---
+ server/window.c         | 109 ++++++++++++++++++++++++++--------------
+ 3 files changed, 79 insertions(+), 48 deletions(-)
 
 diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
 index 11111111111..11111111111 100644
 --- a/dlls/user32/tests/msg.c
 +++ b/dlls/user32/tests/msg.c
-@@ -6239,7 +6239,7 @@ static void test_setwindowpos(void)
+@@ -6234,7 +6234,7 @@ static void test_setwindowpos(void)
                               hwnd, 0, GetModuleHandleA(NULL), NULL);
      ok_sequence(WmCreateChildtopmostSeq, "CreateChildWindow", FALSE);
      ok(hwnd_A != NULL, "Failed to create child witch WS_EX_TOPMOST\n");
@@ -33,7 +33,7 @@ diff --git a/dlls/user32/tests/win.c b/dlls/user32/tests/win.c
 index 11111111111..11111111111 100644
 --- a/dlls/user32/tests/win.c
 +++ b/dlls/user32/tests/win.c
-@@ -3939,42 +3939,42 @@ static void test_child_topmost_zorder()
+@@ -3938,42 +3938,42 @@ static void test_child_topmost_zorder()
                               main_window, 0, GetModuleHandleA(NULL), NULL);
      check_z_order(hwnd_C, hwnd_B, 0, 0, FALSE);
      check_z_order(hwnd_B, hwnd_A, hwnd_C, 0, FALSE);
@@ -99,17 +99,10 @@ index 11111111111..11111111111 100644
 -        win->ex_style &= ~WS_EX_TOPMOST;
 -        previous = WINPTR_TOP;  /* fallback to the HWND_TOP case */
 -    }
-+        if (previous == WINPTR_NOTOPMOST)
-+        {
-+            if (!(win->ex_style & WS_EX_TOPMOST) && win->is_linked) return 0;  /* nothing to do */
-+            previous = WINPTR_TOP;  /* fallback to the HWND_TOP case */
-+        }
- 
+-
 -    old_prev = win->is_linked ? win->entry.prev : NULL;
 -    list_remove( &win->entry );  /* unlink it from the previous location */
-+        old_prev = win->is_linked ? win->entry.prev : NULL;
-+        list_remove( &win->entry );  /* unlink it from the previous location */
- 
+-
 -    if (previous == WINPTR_BOTTOM)
 -    {
 -        list_add_tail( &win->parent->children, &win->entry );
@@ -119,6 +112,31 @@ index 11111111111..11111111111 100644
 -    {
 -        list_add_head( &win->parent->children, &win->entry );
 -        win->ex_style |= WS_EX_TOPMOST;
+-    }
+-    else if (previous == WINPTR_TOP)
+-    {
+-        struct list *entry = win->parent->children.next;
+-        if (!(win->ex_style & WS_EX_TOPMOST))  /* put it above the first non-topmost window */
++        if (previous == WINPTR_NOTOPMOST)
+         {
+-            while (entry != &win->parent->children)
+-            {
+-                struct window *next = LIST_ENTRY( entry, struct window, entry );
+-                if (!(next->ex_style & WS_EX_TOPMOST)) break;
+-                if (next->handle == win->owner)  /* keep it above owner */
+-                {
+-                    win->ex_style |= WS_EX_TOPMOST;
+-                    break;
+-                }
+-                entry = entry->next;
+-            }
++            if (!(win->ex_style & WS_EX_TOPMOST) && win->is_linked) return 0;  /* nothing to do */
++            previous = WINPTR_TOP;  /* fallback to the HWND_TOP case */
++        }
++
++        old_prev = win->is_linked ? win->entry.prev : NULL;
++        list_remove( &win->entry );  /* unlink it from the previous location */
++
 +        if (previous == WINPTR_BOTTOM)
 +        {
 +            list_add_tail( &win->parent->children, &win->entry );
@@ -135,13 +153,13 @@ index 11111111111..11111111111 100644
 +        else
 +        {
 +            list_add_after( &previous->entry, &win->entry );
-+        }
+         }
+-        list_add_before( entry, &win->entry );
      }
--    else if (previous == WINPTR_TOP)
-+    else
+     else
      {
--        struct list *entry = win->parent->children.next;
--        if (!(win->ex_style & WS_EX_TOPMOST))  /* put it above the first non-topmost window */
+-        list_add_after( &previous->entry, &win->entry );
+-        if (!(previous->ex_style & WS_EX_TOPMOST)) win->ex_style &= ~WS_EX_TOPMOST;
 +        if (previous == WINPTR_NOTOPMOST)
 +        {
 +            if (!(win->ex_style & WS_EX_TOPMOST) && win->is_linked) return;  /* nothing to do */
@@ -157,8 +175,7 @@ index 11111111111..11111111111 100644
 +            win->ex_style &= ~WS_EX_TOPMOST;
 +        }
 +        else if (previous == WINPTR_TOPMOST)
-         {
--            while (entry != &win->parent->children)
++        {
 +            list_add_head( &win->parent->children, &win->entry );
 +            win->ex_style |= WS_EX_TOPMOST;
 +        }
@@ -166,14 +183,9 @@ index 11111111111..11111111111 100644
 +        {
 +            struct list *entry = win->parent->children.next;
 +            if (!(win->ex_style & WS_EX_TOPMOST))  /* put it above the first non-topmost window */
-             {
--                struct window *next = LIST_ENTRY( entry, struct window, entry );
--                if (!(next->ex_style & WS_EX_TOPMOST)) break;
--                if (next->handle == win->owner)  /* keep it above owner */
++            {
 +                while (entry != &win->parent->children)
-                 {
--                    win->ex_style |= WS_EX_TOPMOST;
--                    break;
++                {
 +                    struct window *next = LIST_ENTRY( entry, struct window, entry );
 +                    if (!(next->ex_style & WS_EX_TOPMOST)) break;
 +                    if (next->handle == win->owner)  /* keep it above owner */
@@ -182,17 +194,10 @@ index 11111111111..11111111111 100644
 +                        break;
 +                    }
 +                    entry = entry->next;
-                 }
--                entry = entry->next;
-             }
++                }
++            }
 +            list_add_before( entry, &win->entry );
-         }
--        list_add_before( entry, &win->entry );
--    }
--    else
--    {
--        list_add_after( &previous->entry, &win->entry );
--        if (!(previous->ex_style & WS_EX_TOPMOST)) win->ex_style &= ~WS_EX_TOPMOST;
++        }
          else
          {
 -            struct window *next = get_next_window( win );

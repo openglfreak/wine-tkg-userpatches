@@ -22,7 +22,7 @@ diff --git a/dlls/ntdll/ntdll_misc.h b/dlls/ntdll/ntdll_misc.h
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/ntdll_misc.h
 +++ b/dlls/ntdll/ntdll_misc.h
-@@ -88,6 +88,14 @@ extern const WCHAR system_dir[] DECLSPEC_HIDDEN;
+@@ -90,6 +90,14 @@ extern const WCHAR system_dir[] DECLSPEC_HIDDEN;
  
  extern void (FASTCALL *pBaseThreadInitThunk)(DWORD,LPTHREAD_START_ROUTINE,void *) DECLSPEC_HIDDEN;
  
@@ -41,7 +41,7 @@ diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/thread.c
 +++ b/dlls/ntdll/thread.c
-@@ -37,6 +37,7 @@ WINE_DECLARE_DEBUG_CHANNEL(relay);
+@@ -36,6 +36,7 @@ WINE_DECLARE_DEBUG_CHANNEL(relay);
  WINE_DECLARE_DEBUG_CHANNEL(pid);
  WINE_DECLARE_DEBUG_CHANNEL(timestamp);
  
@@ -53,7 +53,7 @@ diff --git a/dlls/ntdll/time.c b/dlls/ntdll/time.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/time.c
 +++ b/dlls/ntdll/time.c
-@@ -379,6 +379,14 @@ LONGLONG WINAPI RtlGetSystemTimePrecise( void )
+@@ -378,6 +378,14 @@ LONGLONG WINAPI RtlGetSystemTimePrecise( void )
      return ret;
  }
  
@@ -68,21 +68,21 @@ index 11111111111..11111111111 100644
  /******************************************************************************
   *  RtlQueryPerformanceCounter   [NTDLL.@]
   */
-@@ -400,6 +408,9 @@ BOOL WINAPI DECLSPEC_HOTPATCH RtlQueryPerformanceCounter( LARGE_INTEGER *counter
+@@ -399,6 +407,9 @@ BOOL WINAPI DECLSPEC_HOTPATCH RtlQueryPerformanceCounter( LARGE_INTEGER *counter
              tsc = __rdtsc();
          }
  
-+        if (user_shared_data->u3.QpcBypassEnabled & SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_HV_PAGE)
++        if (user_shared_data->QpcBypassEnabled & SHARED_GLOBAL_FLAGS_QPC_BYPASS_USE_HV_PAGE)
 +            tsc = multiply_tsc(tsc, hypervisor_shared_data->QpcMultiplier) + hypervisor_shared_data->QpcBias;
 +
-         counter->QuadPart = (tsc + user_shared_data->QpcBias) >> user_shared_data->u3.QpcShift;
+         counter->QuadPart = (tsc + user_shared_data->QpcBias) >> user_shared_data->QpcShift;
          return TRUE;
      }
 diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/loader.c
 +++ b/dlls/ntdll/unix/loader.c
-@@ -2129,6 +2129,7 @@ static void start_main_thread(void)
+@@ -2077,6 +2077,7 @@ static void start_main_thread(void)
      fsync_init();
      esync_init();
      virtual_map_user_shared_data();
@@ -94,7 +94,7 @@ diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/system.c
 +++ b/dlls/ntdll/unix/system.c
-@@ -3363,6 +3363,18 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+@@ -3413,6 +3413,18 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
          break;
      }
  
@@ -125,9 +125,9 @@ index 11111111111..11111111111 100644
  extern struct _KUSER_SHARED_DATA *user_shared_data DECLSPEC_HIDDEN;
  extern SYSTEM_CPU_INFORMATION cpu_info DECLSPEC_HIDDEN;
  #ifdef __i386__
-@@ -242,6 +243,7 @@ extern NTSTATUS virtual_clear_tls_index( ULONG index ) DECLSPEC_HIDDEN;
- extern NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR zero_bits, SIZE_T reserve_size,
-                                             SIZE_T commit_size, SIZE_T extra_size ) DECLSPEC_HIDDEN;
+@@ -248,6 +249,7 @@ extern NTSTATUS virtual_clear_tls_index( ULONG index ) DECLSPEC_HIDDEN;
+ extern NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_low, ULONG_PTR limit_high,
+                                             SIZE_T reserve_size, SIZE_T commit_size, BOOL guard_page ) DECLSPEC_HIDDEN;
  extern void virtual_map_user_shared_data(void) DECLSPEC_HIDDEN;
 +extern void virtual_map_hypervisor_shared_data(void) DECLSPEC_HIDDEN;
  extern NTSTATUS virtual_handle_fault( void *addr, DWORD err, void *stack ) DECLSPEC_HIDDEN;
@@ -137,15 +137,15 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -182,6 +182,7 @@ static void *user_space_limit    = (void *)0x7fff0000;
- static void *working_set_limit   = (void *)0x7fff0000;
- #endif
+@@ -185,6 +185,7 @@ static void *working_set_limit   = (void *)0x7fff0000;
+ static struct file_view *arm64ec_view;
  
+ ULONG_PTR user_space_wow_limit = 0;
 +void *hypervisor_shared_data = (void *)0x7ffd0000;
  struct _KUSER_SHARED_DATA *user_shared_data = (void *)0x7ffe0000;
  
  /* TEB allocation blocks */
-@@ -3164,6 +3165,14 @@ TEB *virtual_alloc_first_teb(void)
+@@ -3695,6 +3696,14 @@ TEB *virtual_alloc_first_teb(void)
          exit(1);
      }
  
@@ -157,10 +157,10 @@ index 11111111111..11111111111 100644
 +        exit(1);
 +    }
 +
-     NtAllocateVirtualMemory( NtCurrentProcess(), &teb_block, is_win64 ? 0x7fffffff : 0, &total,
+     NtAllocateVirtualMemory( NtCurrentProcess(), &teb_block, is_win64 ? limit_2g - 1 : 0, &total,
                               MEM_RESERVE | MEM_TOP_DOWN, PAGE_READWRITE );
      teb_block_pos = 30;
-@@ -3462,6 +3471,35 @@ BOOL CDECL __wine_needs_override_large_address_aware(void)
+@@ -3960,6 +3969,35 @@ static BOOL is_inside_thread_stack( void *ptr, struct thread_stack_info *stack )
  }
  
  
@@ -200,7 +200,7 @@ diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
 index 11111111111..11111111111 100644
 --- a/programs/wineboot/wineboot.c
 +++ b/programs/wineboot/wineboot.c
-@@ -421,6 +421,81 @@ static void initialize_qpc_features( struct _KUSER_SHARED_DATA *data, UINT64 *ts
+@@ -420,6 +420,81 @@ static void initialize_qpc_features( struct _KUSER_SHARED_DATA *data, UINT64 *ts
  
  #endif
  
@@ -282,7 +282,7 @@ index 11111111111..11111111111 100644
  static void create_user_shared_data( UINT64 *tsc_frequency )
  {
      struct _KUSER_SHARED_DATA *data;
-@@ -2079,6 +2154,7 @@ int __cdecl main( int argc, char *argv[] )
+@@ -2081,6 +2156,7 @@ int __cdecl main( int argc, char *argv[] )
      ResetEvent( event );  /* in case this is a restart */
  
      create_user_shared_data( &tsc_frequency );
@@ -317,7 +317,7 @@ diff --git a/server/fd.c b/server/fd.c
 index 11111111111..11111111111 100644
 --- a/server/fd.c
 +++ b/server/fd.c
-@@ -396,9 +396,18 @@ static struct list rel_timeout_list = LIST_INIT(rel_timeout_list); /* sorted rel
+@@ -359,9 +359,18 @@ static struct list rel_timeout_list = LIST_INIT(rel_timeout_list); /* sorted rel
  timeout_t current_time;
  timeout_t monotonic_time;
  
@@ -336,7 +336,7 @@ index 11111111111..11111111111 100644
  static void atomic_store_ulong(volatile ULONG *ptr, ULONG value)
  {
      /* on x86 there should be total store order guarantees, so volatile is
-@@ -447,7 +456,13 @@ static void set_user_shared_data_time(void)
+@@ -410,7 +419,13 @@ static void set_user_shared_data_time(void)
      }
  #endif
  
@@ -351,7 +351,7 @@ index 11111111111..11111111111 100644
  
      if (monotonic_time - last_timezone_update > TICKS_PER_SEC)
      {
-@@ -477,7 +492,10 @@ static void set_user_shared_data_time(void)
+@@ -440,7 +455,10 @@ static void set_user_shared_data_time(void)
      atomic_store_ulong(&user_shared_data->TickCount.LowPart, tick_count);
      atomic_store_long(&user_shared_data->TickCount.High1Time, tick_count >> 32);
      atomic_store_ulong(&user_shared_data->TickCountLowDeprecated, tick_count);
@@ -368,7 +368,7 @@ diff --git a/server/file.h b/server/file.h
 index 11111111111..11111111111 100644
 --- a/server/file.h
 +++ b/server/file.h
-@@ -136,6 +136,14 @@ static inline struct fd *get_obj_fd( struct object *obj ) { return obj->ops->get
+@@ -138,6 +138,14 @@ static inline struct fd *get_obj_fd( struct object *obj ) { return obj->ops->get
  struct timeout_user;
  extern timeout_t current_time;
  extern timeout_t monotonic_time;
@@ -383,7 +383,7 @@ index 11111111111..11111111111 100644
  extern struct _KUSER_SHARED_DATA *user_shared_data;
  
  #define TICKS_PER_SEC 10000000
-@@ -190,6 +198,8 @@ extern struct mapping *create_fd_mapping( struct object *root, const struct unic
+@@ -194,6 +202,8 @@ extern struct mapping *create_fd_mapping( struct object *root, const struct unic
                                            unsigned int attr, const struct security_descriptor *sd );
  extern struct object *create_user_data_mapping( struct object *root, const struct unicode_str *name,
                                                  unsigned int attr, const struct security_descriptor *sd );
@@ -396,7 +396,7 @@ diff --git a/server/mapping.c b/server/mapping.c
 index 11111111111..11111111111 100644
 --- a/server/mapping.c
 +++ b/server/mapping.c
-@@ -1117,6 +1117,20 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
+@@ -1242,6 +1242,20 @@ struct object *create_user_data_mapping( struct object *root, const struct unico
      return &mapping->obj;
  }
  

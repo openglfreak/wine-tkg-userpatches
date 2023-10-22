@@ -1,0 +1,43 @@
+From bcdfc071521e4f2af35c24a11a3cffb09550e720 Mon Sep 17 00:00:00 2001
+From: Brendan Shanks <bshanks@codeweavers.com>
+Date: Mon, 28 Aug 2023 15:39:24 -0700
+Subject: [PATCH] server: Set the default thread exit code to 1.
+
+The default exit code is only used when a process is killed by the
+system or through a signal.
+These are exceptional cases where exit code 1 (killed by Task Manager)
+is more appropriate than the normal termination code of 0.
+---
+ server/process.c | 2 +-
+ server/thread.c  | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/server/process.c b/server/process.c
+index 11111111111..11111111111 100644
+--- a/server/process.c
++++ b/server/process.c
+@@ -988,7 +988,7 @@ static void terminate_process( struct process *process, struct thread *skip, int
+ restart:
+     LIST_FOR_EACH_ENTRY( thread, &process->thread_list, struct thread, proc_entry )
+     {
+-        if (exit_code) thread->exit_code = exit_code;
++        if (exit_code || thread->exit_code == 1) thread->exit_code = exit_code;
+         if (thread == skip) continue;
+         if (thread->state == TERMINATED) continue;
+         kill_thread( thread, force );
+diff --git a/server/thread.c b/server/thread.c
+index 11111111111..11111111111 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -386,7 +386,7 @@ static inline void init_thread_structure( struct thread *thread )
+     thread->request_shm_thread_running = 0;
+ #endif
+     thread->state           = RUNNING;
+-    thread->exit_code       = 0;
++    thread->exit_code       = 1;  /* default to "killed by Task Manager" unless set otherwise */
+     thread->priority        = 0;
+     thread->priority_applied = 0;
+     thread->suspend         = 0;
+-- 
+0.0.0
+

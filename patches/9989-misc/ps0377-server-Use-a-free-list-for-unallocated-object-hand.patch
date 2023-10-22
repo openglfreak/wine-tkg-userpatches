@@ -16,8 +16,8 @@ possible.
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52461
 Signed-off-by: Zebediah Figura <zfigura@codeweavers.com>
 ---
- server/handle.c | 133 +++++++++++++++++++++++++-----------------------
- 1 file changed, 69 insertions(+), 64 deletions(-)
+ server/handle.c | 135 +++++++++++++++++++++++++-----------------------
+ 1 file changed, 70 insertions(+), 65 deletions(-)
 
 diff --git a/server/handle.c b/server/handle.c
 index 11111111111..11111111111 100644
@@ -103,21 +103,21 @@ index 11111111111..11111111111 100644
 -    for (i = table->free; i <= table->last; i++, entry++) if (!entry->ptr) goto found;
 -    if (i >= table->count)
 +    if (table->freelist)
-+    {
-+        entry = table->freelist;
-+        table->freelist = entry->u.next;
-+    }
-+    else
      {
 -        if (!grow_handle_table( table )) return 0;
 -        entry = table->entries + i;  /* the entries may have moved */
-+        if (table->last + 1 >= table->count && !grow_handle_table( table )) return 0;
-+        entry = &table->entries[++table->last];
++        entry = table->freelist;
++        table->freelist = entry->u.next;
      }
 -    table->last = i;
 - found:
 -    table->free = i + 1;
 -    entry->ptr    = grab_object_for_handle( obj );
++    else
++    {
++        if (table->last + 1 >= table->count && !grow_handle_table( table )) return 0;
++        entry = &table->entries[++table->last];
++    }
 +
 +    entry->used   = 1;
 +    entry->u.ptr  = grab_object_for_handle( obj );
@@ -252,7 +252,16 @@ index 11111111111..11111111111 100644
          if (ptr->access & RESERVED_INHERIT) return index_to_handle(i);
      }
      return 0;
-@@ -831,7 +836,7 @@ static int count_handles( struct process *process, void *user )
+@@ -545,7 +550,7 @@ unsigned int get_obj_handle_count( struct process *process, const struct object
+     if (!table) return 0;
+ 
+     for (i = 0, ptr = table->entries; i <= table->last; i++, ptr++)
+-        if (ptr->ptr == obj) ++count;
++        if (ptr->used && ptr->u.ptr == obj) ++count;
+     return count;
+ }
+ 
+@@ -846,7 +851,7 @@ static int count_handles( struct process *process, void *user )
          return 0;
  
      for (i = 0, entry = table->entries; i <= table->last; i++, entry++)
@@ -261,7 +270,7 @@ index 11111111111..11111111111 100644
              (*count)++;
  
      return 0;
-@@ -903,7 +908,7 @@ static void enum_handle_ex_64( struct process *process, unsigned int i, struct s
+@@ -918,7 +923,7 @@ static void enum_handle_ex_64( struct process *process, unsigned int i, struct s
      handle->handle_value                = index_to_handle(i);
      handle->granted_access              = entry->access & ~RESERVED_ALL;
      handle->creator_back_trace_index    = 0;
@@ -270,7 +279,7 @@ index 11111111111..11111111111 100644
      handle->handle_attributes           = 0;
      handle->reserved                    = 0;
      if (entry->access & RESERVED_INHERIT) handle->handle_attributes |= OBJ_INHERIT;
-@@ -918,7 +923,7 @@ static void enum_handle_ex_32( struct process *process, unsigned int i, struct s
+@@ -933,7 +938,7 @@ static void enum_handle_ex_32( struct process *process, unsigned int i, struct s
      handle->handle_value                = index_to_handle(i);
      handle->granted_access              = entry->access & ~RESERVED_ALL;
      handle->creator_back_trace_index    = 0;
@@ -279,7 +288,7 @@ index 11111111111..11111111111 100644
      handle->handle_attributes           = 0;
      handle->reserved                    = 0;
      if (entry->access & RESERVED_INHERIT) handle->handle_attributes |= OBJ_INHERIT;
-@@ -929,7 +934,7 @@ static void enum_handle_64( struct process *process, unsigned int i, struct syst
+@@ -944,7 +949,7 @@ static void enum_handle_64( struct process *process, unsigned int i, struct syst
                              struct handle_entry *entry )
  {
      handle->owner_pid       = process->id;
@@ -288,7 +297,7 @@ index 11111111111..11111111111 100644
      handle->handle_flags    = 0;
      handle->handle_value    = index_to_handle(i);
      handle->object_pointer  = 0; /* FIXME: Fill out object_pointer */
-@@ -942,7 +947,7 @@ static void enum_handle_32( struct process *process, unsigned int i, struct syst
+@@ -957,7 +962,7 @@ static void enum_handle_32( struct process *process, unsigned int i, struct syst
                              struct handle_entry *entry )
  {
      handle->owner_pid       = process->id;
@@ -297,7 +306,7 @@ index 11111111111..11111111111 100644
      handle->handle_flags    = 0;
      handle->handle_value    = index_to_handle(i);
      handle->object_pointer  = 0; /* FIXME: Fill out object_pointer */
-@@ -963,7 +968,7 @@ static int enum_handles( struct process *process, void *user )
+@@ -978,7 +983,7 @@ static int enum_handles( struct process *process, void *user )
  
      for (i = 0, entry = table->entries; i <= table->last; i++, entry++)
      {
@@ -307,5 +316,5 @@ index 11111111111..11111111111 100644
          if (info->ex)
          {
 -- 
-2.40.0
+0.0.0
 

@@ -1,0 +1,111 @@
+From 73756f4a8ac030dd32d5591ef9265b87d7c1847c Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Fri, 21 Jul 2023 23:26:23 +0200
+Subject: [PATCH 18/18] Revert "user32/focus: Prevent a recursive loop with the
+ activation messages"
+
+This reverts staging patch patches/user32-recursive-activation/0001-user32-focus-Prevent-a-recursive-loop-with-the-activ.patch
+---
+ dlls/win32u/input.c          | 42 +++++++++++-------------------------
+ dlls/win32u/ntuser_private.h |  1 -
+ 2 files changed, 13 insertions(+), 30 deletions(-)
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -1824,7 +1824,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+ {
+     HWND previous = get_active_window();
+     BOOL ret;
+-    DWORD winflags, old_thread, new_thread;
++    DWORD old_thread, new_thread;
+     CBTACTIVATESTRUCT cbt;
+ 
+     if (previous == hwnd)
+@@ -1833,24 +1833,16 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+         goto done;
+     }
+ 
+-    /* Prevent a recursive activation loop with the activation messages */
+-    winflags = win_set_flags(hwnd, WIN_IS_IN_ACTIVATION, 0);
+-    if (!(winflags & WIN_IS_IN_ACTIVATION))
++    /* call CBT hook chain */
++    cbt.fMouse     = mouse;
++    cbt.hWndActive = previous;
++    if (call_hooks( WH_CBT, HCBT_ACTIVATE, (WPARAM)hwnd, (LPARAM)&cbt, sizeof(cbt) )) return FALSE;
++
++    if (is_window( previous ))
+     {
+-        ret = FALSE;
+-
+-        /* call CBT hook chain */
+-        cbt.fMouse     = mouse;
+-        cbt.hWndActive = previous;
+-        if (call_hooks( WH_CBT, HCBT_ACTIVATE, (WPARAM)hwnd, (LPARAM)&cbt, sizeof(cbt) ))
+-            goto clear_flags;
+-
+-        if (is_window(previous))
+-        {
+-            send_message( previous, WM_NCACTIVATE, FALSE, (LPARAM)hwnd );
+-            send_message( previous, WM_ACTIVATE,
+-                          MAKEWPARAM( WA_INACTIVE, is_iconic(previous) ), (LPARAM)hwnd );
+-        }
++        send_message( previous, WM_NCACTIVATE, FALSE, (LPARAM)hwnd );
++        send_message( previous, WM_ACTIVATE,
++                      MAKEWPARAM( WA_INACTIVE, is_iconic(previous) ), (LPARAM)hwnd );
+     }
+ 
+     SERVER_START_REQ( set_active_window )
+@@ -1870,11 +1862,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+         if (send_message( hwnd, WM_QUERYNEWPALETTE, 0, 0 ))
+             send_message_timeout( HWND_BROADCAST, WM_PALETTEISCHANGING, (WPARAM)hwnd, 0,
+                                   SMTO_ABORTIFHUNG, 2000, FALSE );
+-        if (!is_window(hwnd))
+-        {
+-            ret = FALSE;
+-            goto clear_flags;
+-        }
++        if (!is_window(hwnd)) return FALSE;
+     }
+ 
+     old_thread = previous ? get_window_thread( previous, NULL ) : 0;
+@@ -1906,7 +1894,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+         }
+     }
+ 
+-    if (!(winflags & WIN_IS_IN_ACTIVATION) && is_window(hwnd))
++    if (is_window(hwnd))
+     {
+         send_message( hwnd, WM_NCACTIVATE, hwnd == NtUserGetForegroundWindow(), (LPARAM)previous );
+         send_message( hwnd, WM_ACTIVATE,
+@@ -1938,13 +1926,9 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+         }
+     }
+ 
+-clear_flags:
+-    win_set_flags(hwnd, 0, WIN_IS_IN_ACTIVATION);
+-
+ done:
+     if (hwnd) clip_fullscreen_window( hwnd, FALSE );
+-
+-    return ret;
++    return TRUE;
+ }
+ 
+ /**********************************************************************
+diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/ntuser_private.h
++++ b/dlls/win32u/ntuser_private.h
+@@ -100,7 +100,6 @@ typedef struct tagWND
+ #define WIN_NEEDS_SHOW_OWNEDPOPUP 0x0020 /* WM_SHOWWINDOW:SC_SHOW must be sent in the next ShowOwnedPopup call */
+ #define WIN_CHILDREN_MOVED        0x0040 /* children may have moved, ignore stored positions */
+ #define WIN_HAS_IME_WIN           0x0080 /* the window has been registered with imm32 */
+-#define WIN_IS_IN_ACTIVATION      0x0100 /* the window is in an activation process */
+ 
+ #define WND_OTHER_PROCESS ((WND *)1)  /* returned by get_win_ptr on unknown window handles */
+ #define WND_DESKTOP       ((WND *)2)  /* returned by get_win_ptr on the desktop window */
+-- 
+0.0.0
+

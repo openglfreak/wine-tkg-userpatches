@@ -1,23 +1,24 @@
-From aecd00da82aca3d40af5b9006cd58ff9471251d8 Mon Sep 17 00:00:00 2001
+From 6e584cf18c6e439529f6091b995beea753b44e44 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
-Date: Sun, 5 Feb 2023 11:03:27 +0100
+Date: Tue, 11 Apr 2023 17:41:21 +0200
 Subject: [PATCH 4/4] ntdll: Remove now unnecessary arch-specific exit frame.
 
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=52213
 Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=54346
 ---
- dlls/ntdll/signal_i386.c        |  2 --
- dlls/ntdll/unix/signal_arm.c    | 25 ++++++---------
- dlls/ntdll/unix/signal_arm64.c  | 26 ++++++---------
- dlls/ntdll/unix/signal_i386.c   | 41 +++++++++---------------
- dlls/ntdll/unix/signal_x86_64.c | 56 +++++++++++----------------------
- 5 files changed, 52 insertions(+), 98 deletions(-)
+ dlls/ntdll/signal_i386.c        |  2 -
+ dlls/ntdll/unix/signal_arm.c    | 39 +++++------------
+ dlls/ntdll/unix/signal_arm64.c  | 38 +++++------------
+ dlls/ntdll/unix/signal_i386.c   | 66 ++++++-----------------------
+ dlls/ntdll/unix/signal_x86_64.c | 75 ++++++++-------------------------
+ dlls/ntdll/unix/unix_private.h  |  1 -
+ 6 files changed, 52 insertions(+), 169 deletions(-)
 
 diff --git a/dlls/ntdll/signal_i386.c b/dlls/ntdll/signal_i386.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/signal_i386.c
 +++ b/dlls/ntdll/signal_i386.c
-@@ -47,12 +47,10 @@ struct x86_thread_data
+@@ -48,12 +48,10 @@ struct x86_thread_data
      DWORD              dr3;           /* 1e8 */
      DWORD              dr6;           /* 1ec */
      DWORD              dr7;           /* 1f0 */
@@ -34,7 +35,7 @@ diff --git a/dlls/ntdll/unix/signal_arm.c b/dlls/ntdll/unix/signal_arm.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/signal_arm.c
 +++ b/dlls/ntdll/unix/signal_arm.c
-@@ -205,13 +205,11 @@ C_ASSERT( sizeof( struct syscall_frame ) == 0x160);
+@@ -203,13 +203,11 @@ C_ASSERT( sizeof( struct syscall_frame ) == 0x160);
  
  struct arm_thread_data
  {
@@ -50,7 +51,7 @@ index 11111111111..11111111111 100644
  
  static inline struct arm_thread_data *arm_thread_data(void)
  {
-@@ -1169,9 +1167,9 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
+@@ -1168,9 +1166,9 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                     "str r6, [r5, #0x80]\n\t"
  #endif
                     "sub sp, sp, #0x160\n\t"   /* sizeof(struct syscall_frame) + registers */
@@ -61,10 +62,10 @@ index 11111111111..11111111111 100644
 +                   "str sp, [r4, #0x1d4]\n\t" /* arm_thread_data()->syscall_frame */
                     "ldr r6, [r5, #0x50]\n\t"  /* prev_frame->syscall_table */
                     "str r6, [sp, #0x50]\n\t"  /* frame->syscall_table */
-                    "mov ip, r0\n\t"
-@@ -1186,9 +1184,9 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
- extern void CDECL DECLSPEC_NORETURN user_mode_callback_return( void *ret_ptr, ULONG ret_len,
-                                                                NTSTATUS status, TEB *teb ) DECLSPEC_HIDDEN;
+                    "mov sp, r1\n\t"
+@@ -1183,9 +1181,9 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
+ extern void DECLSPEC_NORETURN user_mode_callback_return( void *ret_ptr, ULONG ret_len,
+                                                          NTSTATUS status, TEB *teb ) DECLSPEC_HIDDEN;
  __ASM_GLOBAL_FUNC( user_mode_callback_return,
 -                   "ldr r4, [r3, #0x1d8]\n\t" /* arm_thread_data()->syscall_frame */
 +                   "ldr r4, [r3, #0x1d4]\n\t" /* arm_thread_data()->syscall_frame */
@@ -74,7 +75,7 @@ index 11111111111..11111111111 100644
                     "add r5, r4, #0x160\n\t"
  #ifndef __SOFTFP__
                     "vldm r5, {d8-d15}\n\t"
-@@ -1636,14 +1634,11 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
+@@ -1626,39 +1624,22 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
   */
  __ASM_GLOBAL_FUNC( signal_start_thread,
                     __ASM_EHABI(".cantunwind\n\t")
@@ -91,7 +92,24 @@ index 11111111111..11111111111 100644
                     "1:\tmov sp, r6\n\t"
                     "bl " __ASM_NAME("call_init_thunk") )
  
-@@ -1654,7 +1649,7 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
+ 
+-/***********************************************************************
+- *           signal_exit_thread
+- */
+-__ASM_GLOBAL_FUNC( signal_exit_thread,
+-                   __ASM_EHABI(".cantunwind\n\t")
+-                   "ldr r3, [r2, #0x1d4]\n\t"  /* arm_thread_data()->exit_frame */
+-                   "mov ip, #0\n\t"
+-                   "str ip, [r2, #0x1d4]\n\t"
+-                   "cmp r3, ip\n\t"
+-                   "it ne\n\t"
+-                   "movne sp, r3\n\t"
+-                   "blx r1" )
+-
+-
+ /***********************************************************************
+  *           __wine_syscall_dispatcher
+  */
  __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                     __ASM_EHABI(".cantunwind\n\t")
                     "mrc p15, 0, r1, c13, c0, 2\n\t" /* NtCurrentTeb() */
@@ -100,7 +118,7 @@ index 11111111111..11111111111 100644
                     "add r0, r1, #0x10\n\t"
                     "stm r0, {r4-r12,lr}\n\t"
                     "add r2, sp, #0x10\n\t"
-@@ -1732,7 +1727,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+@@ -1736,7 +1717,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
  __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                     __ASM_EHABI(".cantunwind\n\t")
                     "mrc p15, 0, r1, c13, c0, 2\n\t" /* NtCurrentTeb() */
@@ -113,7 +131,7 @@ diff --git a/dlls/ntdll/unix/signal_arm64.c b/dlls/ntdll/unix/signal_arm64.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/signal_arm64.c
 +++ b/dlls/ntdll/unix/signal_arm64.c
-@@ -150,13 +150,11 @@ C_ASSERT( sizeof( struct syscall_frame ) == 0x330 );
+@@ -148,13 +148,11 @@ C_ASSERT( sizeof( struct syscall_frame ) == 0x330 );
  
  struct arm64_thread_data
  {
@@ -129,21 +147,21 @@ index 11111111111..11111111111 100644
  
  static inline struct arm64_thread_data *arm64_thread_data(void)
  {
-@@ -1118,9 +1116,9 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
-                    "ldr x6, [x18]\n\t"            /* teb->Tib.ExceptionList */
-                    "stp x5, x6, [x29, #0xb0]\n\t"
+@@ -1129,9 +1127,9 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
+                    "ldr x4, [x18]\n\t"            /* teb->Tib.ExceptionList */
+                    "stp x3, x4, [x29, #0xb0]\n\t"
  
 -                   "ldr x7, [x18, #0x2f8]\n\t"    /* arm64_thread_data()->syscall_frame */
 +                   "ldr x7, [x18, #0x2f0]\n\t"    /* arm64_thread_data()->syscall_frame */
-                    "sub x5, sp, #0x330\n\t"       /* sizeof(struct syscall_frame) */
--                   "str x5, [x18, #0x2f8]\n\t"    /* arm64_thread_data()->syscall_frame */
+                    "sub x3, sp, #0x330\n\t"       /* sizeof(struct syscall_frame) */
+-                   "str x3, [x18, #0x2f8]\n\t"    /* arm64_thread_data()->syscall_frame */
 +                   "str x5, [x18, #0x2f0]\n\t"    /* arm64_thread_data()->syscall_frame */
                     "ldr x8, [x7, #0x118]\n\t"     /* prev_frame->syscall_table */
-                    "ldp x0, x1, [x17]\n\t"        /* id, args */
-                    "ldr x2, [x17, #0x10]\n\t"     /* len */
-@@ -1135,9 +1133,9 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
- extern void CDECL DECLSPEC_NORETURN user_mode_callback_return( void *ret_ptr, ULONG ret_len,
-                                                                NTSTATUS status, TEB *teb ) DECLSPEC_HIDDEN;
+                    "mov sp, x1\n\t"               /* stack */
+                    "stp x7, x8, [x3, #0x110]\n\t" /* frame->prev_frame, frame->syscall_table */
+@@ -1144,9 +1142,9 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
+ extern void DECLSPEC_NORETURN user_mode_callback_return( void *ret_ptr, ULONG ret_len,
+                                                          NTSTATUS status, TEB *teb ) DECLSPEC_HIDDEN;
  __ASM_GLOBAL_FUNC( user_mode_callback_return,
 -                   "ldr x4, [x3, #0x2f8]\n\t"     /* arm64_thread_data()->syscall_frame */
 +                   "ldr x4, [x3, #0x2f0]\n\t"     /* arm64_thread_data()->syscall_frame */
@@ -153,7 +171,7 @@ index 11111111111..11111111111 100644
                     "add x29, x4, #0x330\n\t"      /* sizeof(struct syscall_frame) */
                     "ldp x5, x6, [x29, #0xb0]\n\t"
                     "str x6, [x3]\n\t"             /* teb->Tib.ExceptionList */
-@@ -1677,15 +1675,11 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
+@@ -1689,36 +1687,20 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
   *           signal_start_thread
   */
  __ASM_GLOBAL_FUNC( signal_start_thread,
@@ -171,19 +189,32 @@ index 11111111111..11111111111 100644
                     "1:\tmov sp, x8\n\t"
                     "bl " __ASM_NAME("call_init_thunk") )
  
-@@ -1710,7 +1704,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
-                    "ldr x30,    [sp, #80]\n\t"
-                    "ldp x0, x1, [sp], #96\n\t"
+-/***********************************************************************
+- *           signal_exit_thread
+- */
+-__ASM_GLOBAL_FUNC( signal_exit_thread,
+-                   "stp x29, x30, [sp,#-16]!\n\t"
+-                   "ldr x3, [x2, #0x2f0]\n\t"  /* arm64_thread_data()->exit_frame */
+-                   "str xzr, [x2, #0x2f0]\n\t"
+-                   "cbz x3, 1f\n\t"
+-                   "mov sp, x3\n"
+-                   "1:\tldp x29, x30, [sp], #16\n\t"
+-                   "br x1" )
+-
  
+ /***********************************************************************
+  *           __wine_syscall_dispatcher
+  */
+ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
 -                   "ldr x10, [x18, #0x2f8]\n\t" /* arm64_thread_data()->syscall_frame */
 +                   "ldr x10, [x18, #0x2f0]\n\t" /* arm64_thread_data()->syscall_frame */
                     "stp x18, x19, [x10, #0x90]\n\t"
                     "stp x20, x21, [x10, #0xa0]\n\t"
                     "stp x22, x23, [x10, #0xb0]\n\t"
-@@ -1830,7 +1824,7 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
-                    "ldp x2, x30,[sp, #16]\n\t"
-                    "ldp x0, x1, [sp], #32\n\t"
- 
+@@ -1836,7 +1818,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+  *           __wine_unix_call_dispatcher
+  */
+ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
 -                   "ldr x10, [x18, #0x2f8]\n\t" /* arm64_thread_data()->syscall_frame */
 +                   "ldr x10, [x18, #0x2f0]\n\t" /* arm64_thread_data()->syscall_frame */
                     "stp x18, x19, [x10, #0x90]\n\t"
@@ -223,11 +254,11 @@ index 11111111111..11111111111 100644
                     "movl %ecx,0x3c(%esp)\n\t"  /* frame->prev_frame */
 -                   "movl %esp,0x1f8(%edx)\n\t" /* x86_thread_data()->syscall_frame */
 +                   "movl %esp,0x1f4(%edx)\n\t" /* x86_thread_data()->syscall_frame */
-                    "movl 8(%ebp),%ecx\n\t"     /* func */
-                    "movl 12(%ebp),%esp\n\t"    /* stack */
-                    "xorl %ebp,%ebp\n\t"
-@@ -1633,9 +1631,9 @@ extern void CDECL DECLSPEC_NORETURN user_mode_callback_return( void *ret_ptr, UL
-                                                                NTSTATUS status, TEB *teb ) DECLSPEC_HIDDEN;
+                    "movl 0x1c(%ebp),%ecx\n\t"  /* func */
+                    "movl 0x0c(%ebp),%edx\n\t"  /* args */
+                    "leal -4(%edx),%esp\n\t"
+@@ -1638,9 +1636,9 @@ extern void DECLSPEC_NORETURN user_mode_callback_return( void *ret_ptr, ULONG re
+                                                          NTSTATUS status, TEB *teb ) DECLSPEC_HIDDEN;
  __ASM_GLOBAL_FUNC( user_mode_callback_return,
                     "movl 16(%esp),%edx\n"      /* teb */
 -                   "movl 0x1f8(%edx),%eax\n\t" /* x86_thread_data()->syscall_frame */
@@ -238,7 +269,7 @@ index 11111111111..11111111111 100644
                     "movl 0x380(%eax),%ebp\n\t" /* call_user_mode_callback ebp */
                     __ASM_CFI(".cfi_adjust_cfa_offset 4\n\t")
                     __ASM_CFI(".cfi_rel_offset %ebp,0\n\t")
-@@ -2585,32 +2583,21 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
+@@ -2585,65 +2583,29 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
   *           signal_start_thread
   */
  __ASM_GLOBAL_FUNC( signal_start_thread,
@@ -277,7 +308,32 @@ index 11111111111..11111111111 100644
                     "call " __ASM_NAME("call_init_thunk") )
  
  
-@@ -2618,7 +2605,7 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
+-/***********************************************************************
+- *           signal_exit_thread
+- */
+-__ASM_GLOBAL_FUNC( signal_exit_thread,
+-                   "movl 8(%esp),%ecx\n\t"
+-                   "movl 12(%esp),%esi\n\t"
+-                   "xorl %edx,%edx\n\t"
+-                   /* fetch exit frame */
+-                   "xchgl %edx,0x1f4(%esi)\n\t"    /* x86_thread_data()->exit_frame */
+-                   "testl %edx,%edx\n\t"
+-                   "jnz 1f\n\t"
+-                   "jmp *%ecx\n\t"
+-                   /* switch to exit frame stack */
+-                   "1:\tmovl 4(%esp),%eax\n\t"
+-                   "movl %edx,%ebp\n\t"
+-                   __ASM_CFI(".cfi_def_cfa %ebp,4\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %ebp,0\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %ebx,-4\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %esi,-8\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %edi,-12\n\t")
+-                   "leal -20(%ebp),%esp\n\t"
+-                   "pushl %eax\n\t"
+-                   "call *%ecx" )
+-
+-
+ /***********************************************************************
   *           __wine_syscall_dispatcher
   */
  __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
@@ -286,7 +342,7 @@ index 11111111111..11111111111 100644
                     "movw $0,0x02(%ecx)\n\t"        /* frame->restore_flags */
                     __ASM_CFI_REG_IS_AT1(eip, ecx, 0x08)
                     "pushfl\n\t"
-@@ -2814,7 +2801,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+@@ -2839,7 +2801,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
   *           __wine_unix_call_dispatcher
   */
  __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
@@ -299,7 +355,7 @@ diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
-@@ -435,16 +435,14 @@ struct amd64_thread_data
+@@ -429,16 +429,14 @@ struct amd64_thread_data
      DWORD_PTR             dr3;           /* 0308 */
      DWORD_PTR             dr6;           /* 0310 */
      DWORD_PTR             dr7;           /* 0318 */
@@ -321,7 +377,7 @@ index 11111111111..11111111111 100644
  
  static inline struct amd64_thread_data *amd64_thread_data(void)
  {
-@@ -1647,7 +1645,7 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
+@@ -1604,7 +1602,7 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                     "subq $0x410,%rsp\n\t"      /* sizeof(struct syscall_frame) + ebp + exception */
                     "andq $~63,%rsp\n\t"
                     "movq %rbp,0x400(%rsp)\n\t"
@@ -330,7 +386,7 @@ index 11111111111..11111111111 100644
                     "movq (%r11),%rax\n\t"      /* NtCurrentTeb()->Tib.ExceptionList */
                     "movq %rax,0x408(%rsp)\n\t"
                     "movq 0xa8(%r10),%rax\n\t"  /* prev_frame->syscall_table */
-@@ -1655,11 +1653,11 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
+@@ -1612,11 +1610,11 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
                     "movl 0xb0(%r10),%r14d\n\t" /* prev_frame->syscall_flags */
                     "movl %r14d,0xb0(%rsp)\n\t" /* frame->syscall_flags */
                     "movq %r10,0xa0(%rsp)\n\t"  /* frame->prev_frame */
@@ -343,26 +399,24 @@ index 11111111111..11111111111 100644
 +                   "movw 0x330(%r11),%fs\n"    /* amd64_thread_data()->fs */
                     "1:\n\t"
  #endif
-                    "movq %rcx,%r9\n\t"         /* func */
-@@ -1677,9 +1675,9 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
- extern void CDECL DECLSPEC_NORETURN user_mode_callback_return( void *ret_ptr, ULONG ret_len,
-                                                                NTSTATUS status, TEB *teb ) DECLSPEC_HIDDEN;
+                    "movq %rdi,%rcx\n\t"        /* id */
+@@ -1633,9 +1631,9 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
+ extern void DECLSPEC_NORETURN user_mode_callback_return( void *ret_ptr, ULONG ret_len,
+                                                          NTSTATUS status, TEB *teb ) DECLSPEC_HIDDEN;
  __ASM_GLOBAL_FUNC( user_mode_callback_return,
--                   "movq 0x328(%r9),%r10\n\t"  /* amd64_thread_data()->syscall_frame */
-+                   "movq 0x320(%r9),%r10\n\t"  /* amd64_thread_data()->syscall_frame */
+-                   "movq 0x328(%rcx),%r10\n\t" /* amd64_thread_data()->syscall_frame */
++                   "movq 0x320(%rcx),%r10\n\t" /* amd64_thread_data()->syscall_frame */
                     "movq 0xa0(%r10),%r11\n\t"  /* frame->prev_frame */
--                   "movq %r11,0x328(%r9)\n\t"  /* amd64_thread_data()->syscall_frame = prev_frame */
-+                   "movq %r11,0x320(%r9)\n\t"  /* amd64_thread_data()->syscall_frame = prev_frame */
+-                   "movq %r11,0x328(%rcx)\n\t" /* amd64_thread_data()->syscall_frame = prev_frame */
++                   "movq %r11,0x320(%rcx)\n\t" /* amd64_thread_data()->syscall_frame = prev_frame */
                     "movq 0x400(%r10),%rbp\n\t" /* call_user_mode_callback rbp */
                     __ASM_CFI(".cfi_def_cfa_register %rbp\n\t")
                     __ASM_CFI(".cfi_rel_offset %rbx,-0x08\n\t")
-@@ -2862,31 +2860,13 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
+@@ -2806,63 +2804,26 @@ void DECLSPEC_HIDDEN call_init_thunk( LPTHREAD_START_ROUTINE entry, void *arg, B
   *           signal_start_thread
   */
  __ASM_GLOBAL_FUNC( signal_start_thread,
 -                   "subq $56,%rsp\n\t"
--                   __ASM_SEH(".seh_stackalloc 56\n\t")
--                   __ASM_SEH(".seh_endprologue\n\t")
 -                   __ASM_CFI(".cfi_adjust_cfa_offset 56\n\t")
 -                   "movq %rbp,48(%rsp)\n\t"
 -                   __ASM_CFI(".cfi_rel_offset %rbp,48\n\t")
@@ -390,7 +444,31 @@ index 11111111111..11111111111 100644
                     "1:\tmovq %rax,%rsp\n\t"
                     "call " __ASM_NAME("call_init_thunk"))
  
-@@ -2897,9 +2877,9 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
+ 
+-/***********************************************************************
+- *           signal_exit_thread
+- */
+-__ASM_GLOBAL_FUNC( signal_exit_thread,
+-                   /* fetch exit frame */
+-                   "xorl %ecx,%ecx\n\t"
+-                   "xchgq %rcx,0x320(%rdx)\n\t"      /* amd64_thread_data()->exit_frame */
+-                   "testq %rcx,%rcx\n\t"
+-                   "jnz 1f\n\t"
+-                   "jmp *%rsi\n"
+-                   /* switch to exit frame stack */
+-                   "1:\tmovq %rcx,%rsp\n\t"
+-                   __ASM_CFI(".cfi_adjust_cfa_offset 56\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %rbp,48\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %rbx,40\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %r12,32\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %r13,24\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %r14,16\n\t")
+-                   __ASM_CFI(".cfi_rel_offset %r15,8\n\t")
+-                   "call *%rsi" )
+-
+ /***********************************************************************
+  *           __wine_syscall_dispatcher
+  */
  __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
  #ifdef __APPLE__
                     "movq %gs:0x30,%rcx\n\t"
@@ -402,7 +480,7 @@ index 11111111111..11111111111 100644
  #endif
                     __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
                     __ASM_CFI_REG_IS_AT2(rip, rcx, 0xf0,0x00)
-@@ -2980,7 +2960,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+@@ -2939,7 +2900,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
  #ifdef __linux__
                     "testl $12,%r14d\n\t"           /* SYSCALL_HAVE_PTHREAD_TEB | SYSCALL_HAVE_WRFSGSBASE */
                     "jz 2f\n\t"
@@ -411,7 +489,7 @@ index 11111111111..11111111111 100644
                     "testl $8,%r14d\n\t"            /* SYSCALL_HAVE_WRFSGSBASE */
                     "jz 1f\n\t"
                     "wrfsbase %rsi\n\t"
-@@ -3122,9 +3102,9 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
+@@ -3100,9 +3061,9 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                     "movq %rcx,%r10\n\t"
  #ifdef __APPLE__
                     "movq %gs:0x30,%rcx\n\t"
@@ -423,15 +501,27 @@ index 11111111111..11111111111 100644
  #endif
                     "popq 0x70(%rcx)\n\t"           /* frame->rip */
                     __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
-@@ -3166,7 +3146,7 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
+@@ -3143,7 +3104,7 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
+ #ifdef __linux__
                     "testl $12,%r14d\n\t"           /* SYSCALL_HAVE_PTHREAD_TEB | SYSCALL_HAVE_WRFSGSBASE */
                     "jz 2f\n\t"
-                    "movw %fs,0x7e(%rcx)\n\t"
 -                   "movq %gs:0x330,%rsi\n\t"       /* amd64_thread_data()->pthread_teb */
 +                   "movq %gs:0x328,%rsi\n\t"       /* amd64_thread_data()->pthread_teb */
                     "testl $8,%r14d\n\t"            /* SYSCALL_HAVE_WRFSGSBASE */
                     "jz 1f\n\t"
                     "wrfsbase %rsi\n\t"
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -287,7 +287,6 @@ extern void signal_init_process(void) DECLSPEC_HIDDEN;
+ extern void signal_init_early(void) DECLSPEC_HIDDEN;
+ extern void DECLSPEC_NORETURN signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg,
+                                                    BOOL suspend, TEB *teb ) DECLSPEC_HIDDEN;
+-extern void DECLSPEC_NORETURN signal_exit_thread( int status, void (*func)(int), TEB *teb ) DECLSPEC_HIDDEN;
+ extern SYSTEM_SERVICE_TABLE KeServiceDescriptorTable[4] DECLSPEC_HIDDEN;
+ extern void __wine_syscall_dispatcher(void) DECLSPEC_HIDDEN;
+ extern void DECLSPEC_NORETURN __wine_syscall_dispatcher_return( void *frame, ULONG_PTR retval ) DECLSPEC_HIDDEN;
 -- 
-2.40.0
+0.0.0
 

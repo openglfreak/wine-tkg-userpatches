@@ -1,0 +1,94 @@
+From d48b09e8c30d70bdd95dad7fc23e8823088ee933 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Fri, 21 Jul 2023 09:50:40 +0200
+Subject: [PATCH 2005/7] win32u, winex11.drv: Use input shared memory for
+ NtUserGetCursor.
+
+---
+ dlls/win32u/cursoricon.c | 10 ++++++++++
+ dlls/win32u/sysparams.c  |  3 +++
+ dlls/winex11.drv/mouse.c | 11 +++++++++++
+ include/ntuser.h         |  1 +
+ 4 files changed, 25 insertions(+)
+
+diff --git a/dlls/win32u/cursoricon.c b/dlls/win32u/cursoricon.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/cursoricon.c
++++ b/dlls/win32u/cursoricon.c
+@@ -133,8 +133,18 @@ HCURSOR WINAPI NtUserSetCursor( HCURSOR cursor )
+  */
+ HCURSOR WINAPI NtUserGetCursor(void)
+ {
++    volatile struct input_shared_memory *shared = get_input_shared_memory();
+     HCURSOR ret;
+ 
++    if (shared)
++    {
++        SHARED_READ_BEGIN( &shared->seq )
++        {
++            ret = shared->cursor;
++        }
++        SHARED_READ_END( &shared->seq );
++    }
++    else
+     SERVER_START_REQ( set_cursor )
+     {
+         req->flags = 0;
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -6282,6 +6282,9 @@ ULONG_PTR WINAPI NtUserCallNoParam( ULONG code )
+     case NtUserGetDesktopSharedMemory:
+         return (ULONG_PTR)get_desktop_shared_memory();
+ 
++    case NtUserGetInputSharedMemory:
++        return (ULONG_PTR)get_input_shared_memory();
++
+     default:
+         FIXME( "invalid code %u\n", (int)code );
+         return 0;
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -467,6 +467,7 @@ void x11drv_xinput_disable( Display *display, Window window, long event_mask )
+ static BOOL grab_clipping_window( const RECT *clip )
+ {
+ #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
++    volatile struct input_shared_memory *shared = (void *)NtUserCallNoParam( NtUserGetInputSharedMemory );
+     struct x11drv_thread_data *data = x11drv_thread_data();
+     Window clip_window;
+     HCURSOR cursor;
+@@ -514,6 +515,16 @@ static BOOL grab_clipping_window( const RECT *clip )
+                        GrabModeAsync, GrabModeAsync, clip_window, None, CurrentTime ))
+         clipping_cursor = TRUE;
+ 
++    if (shared)
++    {
++        SHARED_READ_BEGIN( &shared->seq )
++        {
++            if (shared->cursor_count < 0) cursor = 0;
++            else cursor = shared->cursor;
++        }
++        SHARED_READ_END( &shared->seq );
++    }
++    else
+     SERVER_START_REQ( set_cursor )
+     {
+         req->flags = 0;
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 11111111111..11111111111 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -799,6 +799,7 @@ enum
+     NtUserExitingThread,
+     NtUserThreadDetach,
+     NtUserGetDesktopSharedMemory,
++    NtUserGetInputSharedMemory,
+ };
+ 
+ static inline BOOL NtUserDestroyCaret(void)
+-- 
+0.0.0
+

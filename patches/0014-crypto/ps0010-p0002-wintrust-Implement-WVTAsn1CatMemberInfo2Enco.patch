@@ -1,0 +1,205 @@
+From cb3c980446eb7721090e2b478b3ea4974e98c29c Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Mon, 7 Aug 2023 11:04:34 +0200
+Subject: [PATCH 02/15] wintrust: Implement WVTAsn1CatMemberInfo2Encode.
+
+The GUID is written in little-endian format here.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/wintrust/asn.c         | 86 +++++++++++++++++++++++++++++++++++++
+ dlls/wintrust/register.c    |  7 ++-
+ dlls/wintrust/tests/asn.c   |  3 --
+ dlls/wintrust/wintrust.spec |  2 +-
+ include/wintrust.h          |  1 +
+ 5 files changed, 93 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/wintrust/asn.c b/dlls/wintrust/asn.c
+index 11111111111..11111111111 100644
+--- a/dlls/wintrust/asn.c
++++ b/dlls/wintrust/asn.c
+@@ -1008,6 +1008,92 @@ BOOL WINAPI WVTAsn1CatMemberInfoEncode(DWORD dwCertEncodingType,
+     return ret;
+ }
+ 
++static const GUID SpecialGUIDs[5] = {
++ { 0xC689AAB8, 0x8E78, 0x11D0, { 0x8C,0x47,0x00,0xC0,0x4F,0xC2,0x95,0xEE }},
++ { 0xC689AABA, 0x8E78, 0x11D0, { 0x8C,0x47,0x00,0xC0,0x4F,0xC2,0x95,0xEE }},
++ { 0xDE351A42, 0x8E59, 0x11D0, { 0x8C,0x47,0x00,0xC0,0x4F,0xC2,0x95,0xEE }},
++ { 0xDE351A43, 0x8E59, 0x11D0, { 0x8C,0x47,0x00,0xC0,0x4F,0xC2,0x95,0xEE }},
++ { 0x9BA61D3F, 0xE73A, 0x11D0, { 0x8C,0xD2,0x00,0xC0,0x4F,0xC2,0x95,0xEE }},
++};
++
++BOOL WINAPI WVTAsn1CatMemberInfo2Encode(DWORD dwCertEncodingType,
++ LPCSTR lpszStructType, const void *pvStructInfo, BYTE *pbEncoded,
++ DWORD *pcbEncoded)
++{
++    BOOL ret = FALSE;
++
++    TRACE("(0x%08lx, %s, %p, %p, %p)\n", dwCertEncodingType,
++     debugstr_a(lpszStructType), pvStructInfo, pbEncoded, pcbEncoded);
++
++    __TRY
++    {
++        const CAT_MEMBERINFO2 *info = pvStructInfo;
++        DWORD bytesNeeded, verLenBytes;
++        int i, specialGUIDIdx = -1;
++
++        if (info->dwCertVersion == 0x200)
++        {
++            for (i = 0; i < ARRAY_SIZE(SpecialGUIDs); i++)
++            {
++                if (!memcmp(&SpecialGUIDs[i], &info->SubjectGuid, sizeof(GUID)))
++                {
++                    specialGUIDIdx = i;
++                    break;
++                }
++            }
++        }
++
++        if (specialGUIDIdx != -1)
++            bytesNeeded = 2;
++        else
++        {
++            CRYPT_AsnEncodeInt(X509_ASN_ENCODING, NULL, &info->dwCertVersion,
++             NULL, &verLenBytes);
++            bytesNeeded = 18 + verLenBytes;
++        }
++
++        if (!pbEncoded)
++        {
++            *pcbEncoded = bytesNeeded;
++            ret = TRUE;
++        }
++        else if (*pcbEncoded < bytesNeeded)
++        {
++            *pcbEncoded = bytesNeeded;
++            SetLastError(ERROR_MORE_DATA);
++        }
++        else if (specialGUIDIdx != -1)
++        {
++            *pbEncoded++ = ASN_CONTEXT | specialGUIDIdx;
++            *pbEncoded++ = 0x00;
++            ret = TRUE;
++        }
++        else
++        {
++            *pbEncoded++ = ASN_CONTEXT | 5;
++            *pbEncoded++ = 0x10;
++            *pbEncoded++ = info->SubjectGuid.Data1 & 0xFF;
++            *pbEncoded++ = (info->SubjectGuid.Data1 >> 8) & 0xFF;
++            *pbEncoded++ = (info->SubjectGuid.Data1 >> 16) & 0xFF;
++            *pbEncoded++ = (info->SubjectGuid.Data1 >> 24) & 0xFF;
++            *pbEncoded++ = info->SubjectGuid.Data2 & 0xFF;
++            *pbEncoded++ = (info->SubjectGuid.Data2 >> 8) & 0xFF;
++            *pbEncoded++ = info->SubjectGuid.Data3 & 0xFF;
++            *pbEncoded++ = (info->SubjectGuid.Data3 >> 8) & 0xFF;
++            memcpy(pbEncoded, info->SubjectGuid.Data4, 8);
++            pbEncoded += 8;
++            ret = CRYPT_AsnEncodeInt(X509_ASN_ENCODING, NULL,
++             &info->dwCertVersion, pbEncoded, &verLenBytes);
++        }
++    }
++    __EXCEPT_PAGE_FAULT
++    {
++        SetLastError(STATUS_ACCESS_VIOLATION);
++    }
++    __ENDTRY
++    return ret;
++}
++
+ BOOL WINAPI WVTAsn1CatNameValueEncode(DWORD dwCertEncodingType,
+  LPCSTR lpszStructType, const void *pvStructInfo, BYTE *pbEncoded,
+  DWORD *pcbEncoded)
+diff --git a/dlls/wintrust/register.c b/dlls/wintrust/register.c
+index 11111111111..11111111111 100644
+--- a/dlls/wintrust/register.c
++++ b/dlls/wintrust/register.c
+@@ -1003,6 +1003,7 @@ HRESULT WINAPI DllRegisterServer(void)
+     static const CHAR CatNameValueDecode[]             = "WVTAsn1CatNameValueDecode";
+     static const CHAR CatMemberInfoEncode[]            = "WVTAsn1CatMemberInfoEncode";
+     static const CHAR CatMemberInfoDecode[]            = "WVTAsn1CatMemberInfoDecode";
++    static const CHAR CatMemberInfo2Encode[]           = "WVTAsn1CatMemberInfo2Encode";
+     static const CHAR SpcSpOpusInfoEncode[]            = "WVTAsn1SpcSpOpusInfoEncode";
+     static const CHAR SpcSpOpusInfoDecode[]            = "WVTAsn1SpcSpOpusInfoDecode";
+     static GUID Unknown1 = { 0xDE351A42, 0x8E59, 0x11D0, { 0x8C,0x47,0x00,0xC0,0x4F,0xC2,0x95,0xEE }};
+@@ -1031,12 +1032,12 @@ HRESULT WINAPI DllRegisterServer(void)
+      */
+ #define WINTRUST_REGISTEROID( oid, encode_funcname, decode_funcname ) \
+     do { \
+-        if (!CryptRegisterOIDFunction(X509_ASN_ENCODING, CRYPT_OID_ENCODE_OBJECT_FUNC, oid, SP_POLICY_PROVIDER_DLL_NAME, encode_funcname)) \
++        if (encode_funcname != NULL && !CryptRegisterOIDFunction(X509_ASN_ENCODING, CRYPT_OID_ENCODE_OBJECT_FUNC, oid, SP_POLICY_PROVIDER_DLL_NAME, encode_funcname)) \
+         {                                                               \
+             CryptRegisterRes = HRESULT_FROM_WIN32(GetLastError());      \
+             goto add_trust_providers;                                   \
+         }                                                               \
+-        if (!CryptRegisterOIDFunction(X509_ASN_ENCODING, CRYPT_OID_DECODE_OBJECT_FUNC, oid, SP_POLICY_PROVIDER_DLL_NAME, decode_funcname)) \
++        if (decode_funcname != NULL && !CryptRegisterOIDFunction(X509_ASN_ENCODING, CRYPT_OID_DECODE_OBJECT_FUNC, oid, SP_POLICY_PROVIDER_DLL_NAME, decode_funcname)) \
+         {                                                               \
+             CryptRegisterRes = HRESULT_FROM_WIN32(GetLastError());      \
+             goto add_trust_providers;                                   \
+@@ -1067,6 +1068,8 @@ HRESULT WINAPI DllRegisterServer(void)
+     WINTRUST_REGISTEROID(CAT_NAMEVALUE_STRUCT, CatNameValueEncode, CatNameValueDecode);
+     WINTRUST_REGISTEROID(CAT_MEMBERINFO_OBJID, CatMemberInfoEncode, CatMemberInfoDecode);
+     WINTRUST_REGISTEROID(CAT_MEMBERINFO_STRUCT, CatMemberInfoEncode, CatMemberInfoDecode);
++    WINTRUST_REGISTEROID(CAT_MEMBERINFO2_OBJID, CatMemberInfo2Encode, NULL);
++    WINTRUST_REGISTEROID(CAT_MEMBERINFO2_STRUCT, CatMemberInfo2Encode, NULL);
+     WINTRUST_REGISTEROID(SPC_SP_OPUS_INFO_OBJID, SpcSpOpusInfoEncode, SpcSpOpusInfoDecode);
+     WINTRUST_REGISTEROID(SPC_SP_OPUS_INFO_STRUCT, SpcSpOpusInfoEncode,  SpcSpOpusInfoDecode);
+ 
+diff --git a/dlls/wintrust/tests/asn.c b/dlls/wintrust/tests/asn.c
+index 11111111111..11111111111 100644
+--- a/dlls/wintrust/tests/asn.c
++++ b/dlls/wintrust/tests/asn.c
+@@ -915,7 +915,6 @@ static void test_encodeCatMemberInfo2(void)
+ 
+     ret = pCryptEncodeObjectEx(X509_ASN_ENCODING, CAT_MEMBERINFO2_STRUCT,
+      &info, CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
+-    todo_wine
+     ok(ret, "CryptEncodeObjectEx failed: %08lx\n", GetLastError());
+     if (ret)
+     {
+@@ -927,7 +926,6 @@ static void test_encodeCatMemberInfo2(void)
+     info.SubjectGuid = guid;
+     ret = pCryptEncodeObjectEx(X509_ASN_ENCODING, CAT_MEMBERINFO2_STRUCT,
+      &info, CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
+-    todo_wine
+     ok(ret, "CryptEncodeObjectEx failed: %08lx\n", GetLastError());
+     if (ret)
+     {
+@@ -941,7 +939,6 @@ static void test_encodeCatMemberInfo2(void)
+     info.dwCertVersion = 0x200;
+     ret = pCryptEncodeObjectEx(X509_ASN_ENCODING, CAT_MEMBERINFO2_STRUCT,
+      &info, CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
+-    todo_wine
+     ok(ret, "CryptEncodeObjectEx failed: %08lx\n", GetLastError());
+     if (ret)
+     {
+diff --git a/dlls/wintrust/wintrust.spec b/dlls/wintrust/wintrust.spec
+index 11111111111..11111111111 100644
+--- a/dlls/wintrust/wintrust.spec
++++ b/dlls/wintrust/wintrust.spec
+@@ -110,7 +110,7 @@
+ #@ stub WTLogConfigCiSignerEvent
+ #@ stub WTValidateBioSignaturePolicy
+ #@ stub WVTAsn1CatMemberInfo2Decode
+-#@ stub WVTAsn1CatMemberInfo2Encode
++@ stdcall WVTAsn1CatMemberInfo2Encode(long str ptr ptr ptr)
+ @ stdcall WVTAsn1CatMemberInfoDecode(long str ptr long long ptr ptr)
+ @ stdcall WVTAsn1CatMemberInfoEncode(long str ptr ptr ptr)
+ @ stdcall WVTAsn1CatNameValueDecode(long str ptr long long ptr ptr)
+diff --git a/include/wintrust.h b/include/wintrust.h
+index 11111111111..11111111111 100644
+--- a/include/wintrust.h
++++ b/include/wintrust.h
+@@ -496,6 +496,7 @@ CRYPT_PROVIDER_PRIVDATA * WINAPI WTHelperGetProvPrivateDataFromChain(CRYPT_PROVI
+ #define SPC_SIGINFO_OBJID            "1.3.6.1.4.1.311.2.1.30"
+ #define CAT_NAMEVALUE_OBJID          "1.3.6.1.4.1.311.12.2.1"
+ #define CAT_MEMBERINFO_OBJID         "1.3.6.1.4.1.311.12.2.2"
++#define CAT_MEMBERINFO2_OBJID        "1.3.6.1.4.1.311.12.2.3"
+ 
+ #define SPC_SP_AGENCY_INFO_STRUCT        ((LPCSTR) 2000)
+ #define SPC_MINIMAL_CRITERIA_STRUCT      ((LPCSTR) 2001)
+-- 
+0.0.0
+

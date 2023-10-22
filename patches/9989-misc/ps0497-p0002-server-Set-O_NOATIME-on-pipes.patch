@@ -1,0 +1,75 @@
+From faddcac9525e66610f50def3bfd3361764a7a750 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Thu, 14 Sep 2023 23:32:18 +0200
+Subject: [PATCH 2/2] server: Set O_NOATIME on pipes.
+
+Signed-off-by: Torge Matthies <tmatthies@codeweavers.com>
+---
+ server/signal.c | 9 +++++++++
+ server/thread.c | 9 +++++++++
+ 2 files changed, 18 insertions(+)
+
+diff --git a/server/signal.c b/server/signal.c
+index 11111111111..11111111111 100644
+--- a/server/signal.c
++++ b/server/signal.c
+@@ -20,6 +20,7 @@
+ 
+ #include "config.h"
+ 
++#include <fcntl.h>
+ #include <signal.h>
+ #include <stdio.h>
+ #include <sys/time.h>
+@@ -40,6 +41,10 @@
+ # define SIG_PTHREAD_CANCEL (__SIGRTMIN+1)
+ #endif
+ 
++#ifndef O_NOATIME
++#define O_NOATIME 0x40000
++#endif
++
+ typedef void (*signal_callback)(void);
+ 
+ struct handler
+@@ -115,6 +120,10 @@ static struct handler *create_handler( signal_callback callback )
+         close( fd[1] );
+         return NULL;
+     }
++#ifdef __linux__
++    fcntl( fd[0], F_SETFL, O_NOATIME );
++    fcntl( fd[1], F_SETFL, O_NOATIME );
++#endif
+     handler->pipe_write = fd[1];
+     handler->pending    = 0;
+     handler->callback   = callback;
+diff --git a/server/thread.c b/server/thread.c
+index 11111111111..11111111111 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -138,6 +138,11 @@ static int rtkit_set_niceness( dbus_uint64_t process, dbus_uint64_t thread, dbus
+ }
+ #endif
+ 
++#ifndef O_NOATIME
++#define O_NOATIME 0x40000
++#endif
++
++
+ /* thread queues */
+ 
+ struct thread_wait
+@@ -617,6 +622,10 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+             file_set_error();
+             return NULL;
+         }
++#ifdef __linux__
++        fcntl( request_pipe[0], F_SETFL, O_NOATIME );
++        fcntl( request_pipe[1], F_SETFL, O_NOATIME );
++#endif
+         if (send_client_fd( process, request_pipe[1], SERVER_PROTOCOL_VERSION ) == -1)
+         {
+             close( request_pipe[0] );
+-- 
+0.0.0
+

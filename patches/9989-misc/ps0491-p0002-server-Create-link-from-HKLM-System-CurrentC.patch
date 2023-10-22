@@ -1,0 +1,83 @@
+From dd72a400791487876fce16c97947d379499c353f Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Wed, 16 Aug 2023 12:45:44 +0200
+Subject: [PATCH 2/3] server: Create link from HKLM\System\CurrentControlSet to
+ ControlSet001.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/advapi32/tests/registry.c |  3 ---
+ server/registry.c              | 30 ++++++++++++++++++++++++++++++
+ 2 files changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/advapi32/tests/registry.c b/dlls/advapi32/tests/registry.c
+index 11111111111..11111111111 100644
+--- a/dlls/advapi32/tests/registry.c
++++ b/dlls/advapi32/tests/registry.c
+@@ -4984,11 +4984,8 @@ static void test_control_set_symlink(void)
+     ok( err == ERROR_SUCCESS, "RegOpenKeyEx failed error %lu\n", err );
+     len = sizeof(buffer);
+     err = RegQueryValueExA( key, "SymbolicLinkValue", NULL, &type, buffer, &len );
+-    todo_wine
+     ok( err == ERROR_SUCCESS, "RegQueryValueEx failed error %lu\n", err );
+-    todo_wine
+     ok( len == target_len - sizeof(WCHAR), "wrong len %lu\n", len );
+-    todo_wine
+     ok( !_wcsnicmp( (WCHAR*)buffer, target_pfxW, ARRAY_SIZE(target_pfxW) - 1 ) &&
+         check_cs_number( (WCHAR*)buffer + ARRAY_SIZE(target_pfxW) - 1 ),
+         "wrong link target\n" );
+diff --git a/server/registry.c b/server/registry.c
+index 11111111111..11111111111 100644
+--- a/server/registry.c
++++ b/server/registry.c
+@@ -1898,10 +1898,20 @@ void init_registry(void)
+                                     'C','u','r','r','e','n','t','V','e','r','s','i','o','n','\\',
+                                     'P','e','r','f','l','i','b','\\',
+                                     '0','0','9'};
++    static const WCHAR system[] = {'S','y','s','t','e','m'};
++    static const WCHAR ccs[] = {'C','u','r','r','e','n','t','C','o','n','t','r','o','l','S','e','t'};
++    static const WCHAR cs001[] = {'C','o','n','t','r','o','l','S','e','t','0','0','1'};
++    static const WCHAR cs001_path[] = {'\\','R','E','G','I','S','T','R','Y','\\',
++                                       'M','a','c','h','i','n','e','\\',
++                                       'S','y','s','t','e','m','\\',
++                                       'C','o','n','t','r','o','l','S','e','t','0','0','1'};
+     static const struct unicode_str root_name = { REGISTRY, sizeof(REGISTRY) };
+     static const struct unicode_str HKLM_name = { HKLM, sizeof(HKLM) };
+     static const struct unicode_str HKU_name = { HKU_default, sizeof(HKU_default) };
+     static const struct unicode_str perflib_name = { perflib, sizeof(perflib) };
++    static const struct unicode_str system_name = { system, sizeof(system) };
++    static const struct unicode_str ccs_name = { ccs, sizeof(ccs) };
++    static const struct unicode_str cs001_name = { cs001, sizeof(cs001) };
+ 
+     WCHAR *current_user_path;
+     struct unicode_str current_user_str;
+@@ -1979,6 +1989,26 @@ void init_registry(void)
+         release_object( key );
+     }
+ 
++    if ((key = create_key_recursive( hklm, &system_name, current_time )))
++    {
++        struct key *subkey;
++        subkey = create_key_object( &key->obj, &ccs_name, OBJ_OPENIF | OBJ_OPENLINK, REG_OPTION_CREATE_LINK,
++                                    current_time, NULL );
++        if (subkey && !(subkey->flags & KEY_SYMLINK))
++        {
++            rename_key( subkey, &cs001_name );
++            release_object( subkey );
++            subkey = create_key_object( &key->obj, &ccs_name, OBJ_OPENLINK, REG_OPTION_CREATE_LINK, current_time,
++                                        NULL );
++        }
++        if (subkey)
++        {
++            set_value( subkey, &symlink_str, REG_LINK, cs001_path, sizeof(cs001_path) );
++            release_object( subkey );
++        }
++        release_object( key );
++    }
++
+     release_object( hklm );
+     release_object( hkcu );
+ 
+-- 
+0.0.0
+

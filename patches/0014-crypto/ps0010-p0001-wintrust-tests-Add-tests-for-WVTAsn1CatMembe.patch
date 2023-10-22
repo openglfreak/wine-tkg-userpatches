@@ -1,0 +1,125 @@
+From 3a02431c2d805ba7b562a0329b8c5515e811f2c0 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Mon, 7 Aug 2023 11:04:34 +0200
+Subject: [PATCH 01/15] wintrust/tests: Add tests for
+ WVTAsn1CatMemberInfo2Encode.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/wintrust/tests/asn.c | 67 +++++++++++++++++++++++++++++++++++++++
+ include/wintrust.h        |  7 ++++
+ 2 files changed, 74 insertions(+)
+
+diff --git a/dlls/wintrust/tests/asn.c b/dlls/wintrust/tests/asn.c
+index 11111111111..11111111111 100644
+--- a/dlls/wintrust/tests/asn.c
++++ b/dlls/wintrust/tests/asn.c
+@@ -887,6 +887,72 @@ static void test_decodeCatMemberInfo(void)
+     }
+ }
+ 
++static GUID guid = { 0x8bc96b00, 0x8da1, 0x11cf, { 0x87,0x36,0x00,0xaa,0x00,0xa4,0x85,0xeb } };
++static GUID specialGuid = { 0xc689aab8, 0x8e78, 0x11d0, { 0x8c,0x47,0x00,0xc0,0x4f,0xc2,0x95,0xee } };
++
++static const BYTE emptyCatMemberInfo2[] = {
++0x85,0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
++0x00,0x00,0x02,0x01,0x00 };
++static const BYTE catMemberInfo2WithGuid[] = {
++0x85,0x10,0x00,0x6b,0xc9,0x8b,0xa1,0x8d,0xcf,0x11,0x87,0x36,0x00,0xaa,0x00,0xa4,
++0x85,0xeb,0x02,0x01,0x00 };
++static const BYTE catMemberInfo2WithSpecialGuid[] = { 0x80,0x00 };
++
++static void test_encodeCatMemberInfo2(void)
++{
++    CAT_MEMBERINFO2 info;
++    BOOL ret;
++    DWORD size = 0;
++    LPBYTE buf;
++
++    memset(&info, 0, sizeof(info));
++
++    if (!pCryptEncodeObjectEx)
++    {
++        win_skip("CryptEncodeObjectEx() is not available. Skipping the encodeCatMemberInfo2 tests\n");
++        return;
++    }
++
++    ret = pCryptEncodeObjectEx(X509_ASN_ENCODING, CAT_MEMBERINFO2_STRUCT,
++     &info, CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
++    todo_wine
++    ok(ret, "CryptEncodeObjectEx failed: %08lx\n", GetLastError());
++    if (ret)
++    {
++        ok(size == sizeof(emptyCatMemberInfo2), "Unexpected size %ld\n", size);
++        ok(!memcmp(buf, emptyCatMemberInfo2, sizeof(emptyCatMemberInfo2)),
++         "Unexpected value\n");
++        LocalFree(buf);
++    }
++    info.SubjectGuid = guid;
++    ret = pCryptEncodeObjectEx(X509_ASN_ENCODING, CAT_MEMBERINFO2_STRUCT,
++     &info, CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
++    todo_wine
++    ok(ret, "CryptEncodeObjectEx failed: %08lx\n", GetLastError());
++    if (ret)
++    {
++        ok(size == sizeof(catMemberInfo2WithGuid), "Unexpected size %ld\n",
++         size);
++        ok(!memcmp(buf, catMemberInfo2WithGuid, sizeof(catMemberInfo2WithGuid)),
++         "Unexpected value\n");
++        LocalFree(buf);
++    }
++    info.SubjectGuid = specialGuid;
++    info.dwCertVersion = 0x200;
++    ret = pCryptEncodeObjectEx(X509_ASN_ENCODING, CAT_MEMBERINFO2_STRUCT,
++     &info, CRYPT_ENCODE_ALLOC_FLAG, NULL, &buf, &size);
++    todo_wine
++    ok(ret, "CryptEncodeObjectEx failed: %08lx\n", GetLastError());
++    if (ret)
++    {
++        ok(size == sizeof(catMemberInfo2WithSpecialGuid), "Unexpected size %ld\n",
++         size);
++        ok(!memcmp(buf, catMemberInfo2WithSpecialGuid, sizeof(catMemberInfo2WithSpecialGuid)),
++         "Unexpected value\n");
++        LocalFree(buf);
++    }
++}
++
+ static const BYTE emptyCatNameValue[] = {
+ 0x30,0x07,0x1e,0x00,0x02,0x01,0x00,0x04,0x00 };
+ static const BYTE catNameValueWithTag[] = {
+@@ -1191,6 +1257,7 @@ START_TEST(asn)
+     test_decodeSPCIndirectDataContent();
+     test_encodeCatMemberInfo();
+     test_decodeCatMemberInfo();
++    test_encodeCatMemberInfo2();
+     test_encodeCatNameValue();
+     test_decodeCatNameValue();
+     test_encodeSpOpusInfo();
+diff --git a/include/wintrust.h b/include/wintrust.h
+index 11111111111..11111111111 100644
+--- a/include/wintrust.h
++++ b/include/wintrust.h
+@@ -510,6 +510,7 @@ CRYPT_PROVIDER_PRIVDATA * WINAPI WTHelperGetProvPrivateDataFromChain(CRYPT_PROVI
+ #define SPC_SIGINFO_STRUCT               ((LPCSTR) 2130)
+ #define CAT_NAMEVALUE_STRUCT             ((LPCSTR) 2221)
+ #define CAT_MEMBERINFO_STRUCT            ((LPCSTR) 2222)
++#define CAT_MEMBERINFO2_STRUCT           ((LPCSTR) 2223)
+ 
+ #define SPC_UUID_LENGTH 16
+ typedef BYTE SPC_UUID[SPC_UUID_LENGTH];
+@@ -608,6 +609,12 @@ typedef struct _CAT_MEMBERINFO
+     DWORD  dwCertVersion;
+ } CAT_MEMBERINFO, *PCAT_MEMBERINFO;
+ 
++typedef struct _CAT_MEMBERINFO2
++{
++    GUID  SubjectGuid;
++    DWORD dwCertVersion;
++} CAT_MEMBERINFO2, *PCAT_MEMBERINFO2;
++
+ /* PSDK protects the remaining defines with WT_DEFINE_ALL_APIS, but it's
+  * defined by default.  No need to protect against bad headers from old PSDKs.
+  */
+-- 
+0.0.0
+

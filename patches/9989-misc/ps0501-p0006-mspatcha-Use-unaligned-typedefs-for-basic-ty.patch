@@ -1,0 +1,714 @@
+From 0ebfdb110b199824aa0c3cfde9b5a80f11a146ca Mon Sep 17 00:00:00 2001
+From: ajkhoury <aidankhoury@gmail.com>
+Date: Tue, 19 Sep 2023 18:01:11 -0300
+Subject: [PATCH 6/6] mspatcha: Use unaligned typedefs for basic types
+
+---
+ dlls/mspatcha/pa19.c | 217 ++++++++++++++++++++++---------------------
+ 1 file changed, 113 insertions(+), 104 deletions(-)
+
+diff --git a/dlls/mspatcha/pa19.c b/dlls/mspatcha/pa19.c
+index 11111111111..11111111111 100644
+--- a/dlls/mspatcha/pa19.c
++++ b/dlls/mspatcha/pa19.c
+@@ -50,6 +50,15 @@ WINE_DEFAULT_DEBUG_CHANNEL(mspatcha);
+ #define PATCH_EXTRA_HAS_LZX_WINDOW_SIZE 0x00010000
+ #define PATCH_EXTRA_HAS_PATCH_TRANSFORMS 0x20000000
+ 
++/* Unaligned typedefs */
++typedef UINT16 DECLSPEC_ALIGN(1) UINT16_UNALIGNED;
++typedef UINT64 DECLSPEC_ALIGN(1) UINT64_UNALIGNED;
++
++typedef SHORT DECLSPEC_ALIGN(1) SHORT_UNALIGNED;
++typedef USHORT DECLSPEC_ALIGN(1) USHORT_UNALIGNED;
++typedef LONG DECLSPEC_ALIGN(1) LONG_UNALIGNED;
++typedef ULONG DECLSPEC_ALIGN(1) ULONG_UNALIGNED;
++
+ /***********************************************************************************
+  *  PatchAPI PA19 file header
+  *
+@@ -321,7 +330,7 @@ static int read_patch_header(struct patch_file_header *ph, const BYTE *buf, size
+     /* read the new coff image base and time used for normalization */
+     if ((ph->flags & PATCH_OPTION_NO_REBASE) == 0)
+     {
+-        ph->new_image_base = ((ULONG)*(UINT16 UNALIGNED *)ph->src) << 16;
++        ph->new_image_base = ((ULONG)*(UINT16_UNALIGNED *)ph->src) << 16;
+         ph->src += sizeof(UINT16);
+ 
+         TRACE("new file requires rebasing to 0x%lX\n", ph->new_image_base);
+@@ -713,10 +722,10 @@ static void DECLSPEC_NORETURN throw_pe_fmt_exception(void)
+     for (;;) { /* silence compiler warning */ }
+ }
+ 
+-static IMAGE_NT_HEADERS32 UNALIGNED *image_get_nt_headers(const void *image_base, size_t image_size)
++static IMAGE_NT_HEADERS32 *image_get_nt_headers(const void *image_base, size_t image_size)
+ {
+-    IMAGE_DOS_HEADER UNALIGNED *dos_hdr;
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers;
++    IMAGE_DOS_HEADER *dos_hdr;
++    IMAGE_NT_HEADERS32 *nt_headers;
+     const UCHAR *const image_end = (PUCHAR)image_base + image_size;
+ 
+     if (image_size >= 0x200) {
+@@ -736,9 +745,9 @@ static IMAGE_NT_HEADERS32 UNALIGNED *image_get_nt_headers(const void *image_base
+ }
+ 
+ static ULONG image_rva_to_file_offset(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, ULONG rva, PUCHAR image_base, ULONG image_size)
++    IMAGE_NT_HEADERS32 *nt_headers, ULONG rva, PUCHAR image_base, ULONG image_size)
+ {
+-    IMAGE_SECTION_HEADER UNALIGNED *section_table;
++    IMAGE_SECTION_HEADER *section_table;
+     ULONG section_count;
+     ULONG i;
+ 
+@@ -764,10 +773,10 @@ static ULONG image_rva_to_file_offset(
+ }
+ 
+ static ULONG image_directory_rva_and_size(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, USHORT directory_entry, ULONG *directory_size,
++    IMAGE_NT_HEADERS32 *nt_headers, USHORT directory_entry, ULONG *directory_size,
+     PUCHAR image_base, ULONG image_size)
+ {
+-    IMAGE_DATA_DIRECTORY UNALIGNED *data_directory;
++    IMAGE_DATA_DIRECTORY *data_directory;
+ 
+     if (directory_entry >= nt_headers->OptionalHeader.NumberOfRvaAndSizes) {
+         return 0;
+@@ -786,7 +795,7 @@ static ULONG image_directory_rva_and_size(
+ }
+ 
+ static ULONG image_directory_offset_and_size(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, USHORT directory_entry, ULONG *directory_size,
++    IMAGE_NT_HEADERS32 *nt_headers, USHORT directory_entry, ULONG *directory_size,
+     PUCHAR image_base, ULONG image_size)
+ {
+     ULONG rva, offset = 0;
+@@ -798,7 +807,7 @@ static ULONG image_directory_offset_and_size(
+ }
+ 
+ static PVOID image_rva_to_mapped_address(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, ULONG rva, PVOID image_base, ULONG image_size)
++    IMAGE_NT_HEADERS32 *nt_headers, ULONG rva, PVOID image_base, ULONG image_size)
+ {
+     const ULONG offset = image_rva_to_file_offset(nt_headers, rva, image_base, image_size);
+     if (offset && offset < image_size) {
+@@ -808,7 +817,7 @@ static PVOID image_rva_to_mapped_address(
+ }
+ 
+ static PVOID image_directory_mapped_address(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, USHORT directory_entry, ULONG *directory_size,
++    IMAGE_NT_HEADERS32 *nt_headers, USHORT directory_entry, ULONG *directory_size,
+     PUCHAR image_base, ULONG image_size)
+ {
+     ULONG dir_rva;
+@@ -842,17 +851,17 @@ static PVOID image_directory_mapped_address(
+ 
+ /* Fixup a given mapped image's relocation table for a new image base. */
+ static BOOL rebase_image(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers,
++    IMAGE_NT_HEADERS32 *nt_headers,
+     PUCHAR mapped_image_base, ULONG mapped_image_size, ULONG new_image_base)
+ {
+     BOOL result;
+-    IMAGE_BASE_RELOCATION UNALIGNED *reloc_block;
+-    IMAGE_BASE_RELOCATION UNALIGNED *reloc_block_base;
++    IMAGE_BASE_RELOCATION *reloc_block;
++    IMAGE_BASE_RELOCATION *reloc_block_base;
+     PUCHAR reloc_fixup;
+     LONG delta;
+     LONG reloc_dir_remaining;
+     ULONG reloc_dir_size;
+-    USHORT UNALIGNED *reloc;
++    USHORT_UNALIGNED *reloc;
+     ULONG reloc_count;
+     PUCHAR mapped_image_end;
+ 
+@@ -877,11 +886,11 @@ static BOOL rebase_image(
+         && reloc_block->SizeOfBlock <= (ULONG)reloc_dir_remaining
+         && reloc_block->SizeOfBlock > sizeof(IMAGE_BASE_RELOCATION))
+     {
+-        reloc_block_base = (IMAGE_BASE_RELOCATION UNALIGNED *)(mapped_image_base +
++        reloc_block_base = (IMAGE_BASE_RELOCATION *)(mapped_image_base +
+             image_rva_to_file_offset(nt_headers, reloc_block->VirtualAddress, mapped_image_base, mapped_image_size));
+         if (reloc_block_base)
+         {
+-            reloc = (USHORT UNALIGNED *)((PUCHAR)reloc_block + sizeof(IMAGE_BASE_RELOCATION));
++            reloc = (USHORT_UNALIGNED *)((PUCHAR)reloc_block + sizeof(IMAGE_BASE_RELOCATION));
+             reloc_count = (reloc_block->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(USHORT);
+             while (reloc_count--) {
+                 if ((PUCHAR)reloc > mapped_image_end) {
+@@ -894,21 +903,21 @@ static BOOL rebase_image(
+                     switch (*reloc >> 12)
+                     {
+                     case IMAGE_REL_BASED_HIGH:
+-                        *(USHORT UNALIGNED *)reloc_fixup = (USHORT)(((*(USHORT UNALIGNED *)reloc_fixup << 16) + delta) >> 16);
++                        *(USHORT_UNALIGNED *)reloc_fixup = (USHORT)(((*(USHORT_UNALIGNED *)reloc_fixup << 16) + delta) >> 16);
+                         break;
+                     case IMAGE_REL_BASED_LOW:
+-                        *(USHORT UNALIGNED *)reloc_fixup = (USHORT)(*(SHORT UNALIGNED *)reloc_fixup + delta);
++                        *(USHORT_UNALIGNED *)reloc_fixup = (USHORT)(*(SHORT_UNALIGNED *)reloc_fixup + delta);
+                         break;
+                     case IMAGE_REL_BASED_HIGHLOW:
+                         if (reloc_fixup + sizeof(USHORT) <= mapped_image_end) {
+-                            *(LONG UNALIGNED *)reloc_fixup += delta;
++                            *(LONG_UNALIGNED *)reloc_fixup += delta;
+                         }
+                         break;
+                     case IMAGE_REL_BASED_HIGHADJ:
+                         ++reloc;
+                         --reloc_count;
+                         if ((PUCHAR)reloc <= (mapped_image_end - sizeof(USHORT)))
+-                            *(USHORT UNALIGNED *)reloc_fixup = (USHORT)(((*(USHORT UNALIGNED *)reloc_fixup << 16) + (SHORT)*reloc + delta + 0x8000) >> 16);
++                            *(USHORT_UNALIGNED *)reloc_fixup = (USHORT)(((*(USHORT_UNALIGNED *)reloc_fixup << 16) + (SHORT)*reloc + delta + 0x8000) >> 16);
+                         break;
+                     default:
+ 
+@@ -920,7 +929,7 @@ static BOOL rebase_image(
+         }
+ 
+         reloc_dir_remaining -= reloc_block->SizeOfBlock;
+-        reloc_block = (IMAGE_BASE_RELOCATION UNALIGNED *)((PUCHAR)reloc_block + reloc_block->SizeOfBlock);
++        reloc_block = (IMAGE_BASE_RELOCATION *)((PUCHAR)reloc_block + reloc_block->SizeOfBlock);
+ 
+         if ((PUCHAR)reloc_block > (mapped_image_end - sizeof(IMAGE_BASE_RELOCATION))) {
+             throw_pe_fmt_exception();
+@@ -932,17 +941,17 @@ static BOOL rebase_image(
+ 
+ /* Remove all bound imports for a given mapped image. */
+ static BOOL unbind_image(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, PUCHAR mapped_image, ULONG image_size)
++    IMAGE_NT_HEADERS32 *nt_headers, PUCHAR mapped_image, ULONG image_size)
+ {
+     BOOL result;
+     PUCHAR mapped_image_end;
+-    IMAGE_IMPORT_DESCRIPTOR UNALIGNED *import_desc;
+-    IMAGE_BOUND_IMPORT_DESCRIPTOR UNALIGNED *bound_imports;
++    IMAGE_IMPORT_DESCRIPTOR *import_desc;
++    IMAGE_BOUND_IMPORT_DESCRIPTOR *bound_imports;
+     ULONG bound_imports_size;
+-    IMAGE_DATA_DIRECTORY UNALIGNED *bound_import_data_dir;
+-    IMAGE_THUNK_DATA32 UNALIGNED *original_thunk;
+-    IMAGE_THUNK_DATA32 UNALIGNED *bound_thunk;
+-    IMAGE_SECTION_HEADER UNALIGNED *section_table;
++    IMAGE_DATA_DIRECTORY *bound_import_data_dir;
++    IMAGE_THUNK_DATA32 *original_thunk;
++    IMAGE_THUNK_DATA32 *bound_thunk;
++    IMAGE_SECTION_HEADER *section_table;
+     ULONG section_count;
+ 
+     result = FALSE;
+@@ -1027,12 +1036,12 @@ static BOOL unbind_image(
+ 
+ /* Force all lock prefixes to the x86 LOCK (F0h) opcode in a given mapped image. */
+ static BOOL normalize_lock_prefixes_in_image(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, PUCHAR mapped_image, ULONG image_size)
++    IMAGE_NT_HEADERS32 *nt_headers, PUCHAR mapped_image, ULONG image_size)
+ {
+     BOOL result = FALSE;
+     PUCHAR mapped_image_end;
+-    IMAGE_LOAD_CONFIG_DIRECTORY32 UNALIGNED *loadcfg;
+-    ULONG UNALIGNED *lock_prefix_table;
++    IMAGE_LOAD_CONFIG_DIRECTORY32 *loadcfg;
++    ULONG_UNALIGNED *lock_prefix_table;
+ 
+     mapped_image_end = &mapped_image[image_size];
+ 
+@@ -1093,7 +1102,7 @@ static WORD calc_chksum(
+         sum += *p;
+     }
+ 
+-    return (WORD)(HIWORD(sum) + LOWORD(sum));
++    return (USHORT)(HIWORD(sum) + LOWORD(sum));
+ }
+ 
+ /* Normalizes a given 32-bit PE image to render a stream that is common. */
+@@ -1106,7 +1115,7 @@ int normalize_old_file_image(
+ {
+     BOOL modified = FALSE;
+     ULONG i;
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers;
++    IMAGE_NT_HEADERS32 *nt_headers;
+ 
+     TRACE("normalizing image at 0x%p with options 0x%lX, new base 0x%lX, new time %lu\n",
+         old_file_buffer, option_flags, new_image_base, new_image_time);
+@@ -1177,10 +1186,10 @@ int normalize_old_file_image(
+ }
+ 
+ static void patch_transform_PE_mark_non_executable(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, PUCHAR mapped_image, ULONG image_size,
++    IMAGE_NT_HEADERS32 *nt_headers, PUCHAR mapped_image, ULONG image_size,
+     BYTE *hintmap, BOOL force)
+ {
+-    IMAGE_SECTION_HEADER UNALIGNED *section_table;
++    IMAGE_SECTION_HEADER *section_table;
+     ULONG section_size_raw;
+     ULONG directory_offset;
+     ULONG directory_rva;
+@@ -1263,7 +1272,7 @@ static int __cdecl reloc_entry_compare(const void *a, const void *b)
+ }
+ 
+ static void patch_transform_PE_relocations(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, PUCHAR mapped_image, ULONG image_size,
++    IMAGE_NT_HEADERS32 *nt_headers, PUCHAR mapped_image, ULONG image_size,
+     struct patch_transform_table *xfrm_tbl, BYTE *hintmap)
+ {
+     PUCHAR mapped_image_end;
+@@ -1278,17 +1287,17 @@ static void patch_transform_PE_relocations(
+     USHORT reloc_offset;
+     ULONG reloc_fixup_rva;
+     PUCHAR reloc_fixup;
+-    IMAGE_BASE_RELOCATION UNALIGNED *reloc_block;
+-    IMAGE_BASE_RELOCATION UNALIGNED *reloc_block_base;
++    IMAGE_BASE_RELOCATION *reloc_block;
++    IMAGE_BASE_RELOCATION *reloc_block_base;
+     ULONG reloc_block_base_va;
+     ULONG reloc_count;
+-    USHORT UNALIGNED *reloc;
+-    USHORT UNALIGNED *reloc_start;
++    USHORT_UNALIGNED *reloc;
++    USHORT_UNALIGNED *reloc_start;
+     ULONG new_rva;
+     struct reloc_entry *reloc_entries;
+     ULONG reloc_entry_count;
+     ULONG reloc_entry_index;
+-    IMAGE_SECTION_HEADER UNALIGNED *section_table;
++    IMAGE_SECTION_HEADER *section_table;
+     ULONG section_count;
+     ULONG i;
+     PUCHAR p;
+@@ -1304,20 +1313,20 @@ static void patch_transform_PE_relocations(
+     {
+         if (nt_headers->FileHeader.Machine == IMAGE_FILE_MACHINE_I386)
+         {
+-            IMAGE_SECTION_HEADER UNALIGNED *const first_section = IMAGE_FIRST_SECTION(nt_headers);
++            IMAGE_SECTION_HEADER *const first_section = IMAGE_FIRST_SECTION(nt_headers);
+             ULONG const first_section_va = image_base_va + first_section->VirtualAddress;
+             ULONG const image_end_va = image_base_va + nt_headers->OptionalHeader.SizeOfImage;
+             for (p = &mapped_image[first_section->PointerToRawData]; p < (mapped_image_end - 4); p++) {
+-                reloc_target_va = *(ULONG UNALIGNED *)p;
++                reloc_target_va = *(ULONG_UNALIGNED *)p;
+ 
+                 /* is this a possible rva? */
+                 if (reloc_target_va >= first_section_va && reloc_target_va < image_end_va) {
+-                    *(ULONG UNALIGNED *)(hintmap + (p - mapped_image)) |= 0x01010101;
++                    *(ULONG_UNALIGNED *)(hintmap + (p - mapped_image)) |= 0x01010101;
+ 
+                     reloc_target_rva = reloc_target_va - image_base_va;
+                     new_rva = get_new_rva_from_xfrm_table(xfrm_tbl, reloc_target_rva);
+                     if (new_rva != reloc_target_rva) {
+-                        *(ULONG UNALIGNED *)p = image_base_va + new_rva;
++                        *(ULONG_UNALIGNED *)p = image_base_va + new_rva;
+                     }
+ 
+                     /* advance by 3 so next loop we advance to the next dword */
+@@ -1341,7 +1350,7 @@ static void patch_transform_PE_relocations(
+ 
+     /* loop through the relocation table, updating the new rvas. */
+     reloc_entry_count = 0;
+-    reloc_block = (IMAGE_BASE_RELOCATION UNALIGNED *)&mapped_image[reloc_dir_offset];
++    reloc_block = (IMAGE_BASE_RELOCATION *)&mapped_image[reloc_dir_offset];
+     reloc_dir_remaining = (LONG)reloc_dir_size;
+     while (reloc_dir_remaining > 0
+         && reloc_block->SizeOfBlock <= (ULONG)reloc_dir_remaining
+@@ -1351,7 +1360,7 @@ static void patch_transform_PE_relocations(
+             throw_pe_fmt_exception();
+         }
+ 
+-        reloc_block_base = (IMAGE_BASE_RELOCATION UNALIGNED *)(mapped_image +
++        reloc_block_base = (IMAGE_BASE_RELOCATION *)(mapped_image +
+             image_rva_to_file_offset(nt_headers, reloc_block->VirtualAddress, mapped_image, image_size));
+         if (reloc_block_base) {
+ 
+@@ -1379,27 +1388,27 @@ static void patch_transform_PE_relocations(
+                     case IMAGE_REL_BASED_HIGH:
+                     case IMAGE_REL_BASED_LOW:
+                         if (reloc_fixup < mapped_image_end) {
+-                            *(USHORT UNALIGNED *)(hintmap + (reloc_fixup - mapped_image)) |= 0x0101;
++                            *(USHORT_UNALIGNED *)(hintmap + (reloc_fixup - mapped_image)) |= 0x0101;
+                         }
+                         break;
+ 
+                     case IMAGE_REL_BASED_HIGHLOW:
+                         if (reloc_fixup < (mapped_image_end - sizeof(LONG))) {
+-                            *(ULONG UNALIGNED *)(hintmap + (reloc_fixup - mapped_image)) |= 0x01010101;
++                            *(ULONG_UNALIGNED *)(hintmap + (reloc_fixup - mapped_image)) |= 0x01010101;
+ 
+-                            reloc_target_va = *(ULONG UNALIGNED *)reloc_fixup;
++                            reloc_target_va = *(ULONG_UNALIGNED *)reloc_fixup;
+                             reloc_target_rva = reloc_target_va - image_base_va;
+ 
+                             new_rva = get_new_rva_from_xfrm_table(xfrm_tbl, reloc_target_rva);
+                             if (new_rva != reloc_target_rva) {
+-                                *(ULONG UNALIGNED *)reloc_fixup = image_base_va + new_rva;
++                                *(ULONG_UNALIGNED *)reloc_fixup = image_base_va + new_rva;
+                             }
+                         }
+                         break;
+ 
+                     case IMAGE_REL_BASED_HIGHADJ:
+                         if (reloc_fixup < mapped_image_end) {
+-                            *(USHORT UNALIGNED *)(hintmap + (reloc_fixup - mapped_image)) |= 0x0101;
++                            *(USHORT_UNALIGNED *)(hintmap + (reloc_fixup - mapped_image)) |= 0x0101;
+                         }
+ 
+                         ++reloc;
+@@ -1417,7 +1426,7 @@ static void patch_transform_PE_relocations(
+         }
+ 
+         reloc_dir_remaining -= reloc_block->SizeOfBlock;
+-        reloc_block = (IMAGE_BASE_RELOCATION UNALIGNED *)((ULONG_PTR)reloc_block + reloc_block->SizeOfBlock);
++        reloc_block = (IMAGE_BASE_RELOCATION *)((ULONG_PTR)reloc_block + reloc_block->SizeOfBlock);
+     }
+ 
+     /* sort reloc entries by rva. */
+@@ -1449,7 +1458,7 @@ static void patch_transform_PE_relocations(
+     }
+ 
+     reloc_dir_remaining &= ~1; /* make even value */
+-    reloc_block = (IMAGE_BASE_RELOCATION UNALIGNED *)(mapped_image + reloc_dir_offset);
++    reloc_block = (IMAGE_BASE_RELOCATION *)(mapped_image + reloc_dir_offset);
+     reloc_entry_index = 0;
+     while (reloc_dir_remaining > sizeof(IMAGE_BASE_RELOCATION)
+         && reloc_entry_index < reloc_entry_count)
+@@ -1484,14 +1493,14 @@ static void patch_transform_PE_relocations(
+         }
+ 
+         reloc_block->SizeOfBlock = (ULONG)(((ULONG_PTR)reloc - (ULONG_PTR)reloc_start) + sizeof(IMAGE_BASE_RELOCATION));
+-        reloc_block = (IMAGE_BASE_RELOCATION UNALIGNED *)((ULONG_PTR)reloc_block + reloc_block->SizeOfBlock);
++        reloc_block = (IMAGE_BASE_RELOCATION *)((ULONG_PTR)reloc_block + reloc_block->SizeOfBlock);
+     }
+ 
+     VirtualFree(reloc_entries, 0, MEM_RELEASE);
+ }
+ 
+ static void patch_transform_PE_infer_relocs_x86(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, PUCHAR mapped_image_base, ULONG mapped_image_size,
++    IMAGE_NT_HEADERS32 *nt_headers, PUCHAR mapped_image_base, ULONG mapped_image_size,
+     struct patch_transform_table *xfrm_tbl, BYTE *hintmap)
+ {
+     const ULONG image_base_va = nt_headers->OptionalHeader.ImageBase;
+@@ -1501,20 +1510,20 @@ static void patch_transform_PE_infer_relocs_x86(
+     for (; p < (mapped_image_end - 4); p++) {
+ 
+         /* Is this a possible valid rva? */
+-        const ULONG reloc_target_va = *(ULONG UNALIGNED *)p;
++        const ULONG reloc_target_va = *(ULONG_UNALIGNED *)p;
+         if (reloc_target_va >= image_base_va && reloc_target_va < image_end_va) {
+ 
+             /* Check the hintmap. */
+-            const ULONG infer_mask =  *(ULONG UNALIGNED *)(hintmap + (p - mapped_image_base));
++            const ULONG infer_mask =  *(ULONG_UNALIGNED *)(hintmap + (p - mapped_image_base));
+             if ((infer_mask & 0x02020202) == 0) {
+                 
+                 const ULONG reloc_target_rva = reloc_target_va - image_base_va;
+                 const ULONG new_rva = get_new_rva_from_xfrm_table(xfrm_tbl, reloc_target_rva);
+                 if (new_rva != reloc_target_rva) {
+-                    *(ULONG UNALIGNED *)p = image_base_va + new_rva;
++                    *(ULONG_UNALIGNED *)p = image_base_va + new_rva;
+                 }
+ 
+-                *(ULONG UNALIGNED *)(hintmap + (p - mapped_image_base)) = infer_mask | 0x01010101;
++                *(ULONG_UNALIGNED *)(hintmap + (p - mapped_image_base)) = infer_mask | 0x01010101;
+ 
+                 /* advance by 3 so next loop we advance to the next dword */
+                 p += 4-1;
+@@ -1524,7 +1533,7 @@ static void patch_transform_PE_infer_relocs_x86(
+ }
+ 
+ static void patch_transform_PE_infer_relocs(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, PUCHAR mapped_image_base, ULONG mapped_image_size,
++    IMAGE_NT_HEADERS32 *nt_headers, PUCHAR mapped_image_base, ULONG mapped_image_size,
+     struct patch_transform_table *xfrm_tbl, BYTE *hintmap)
+ {
+     ULONG reloc_dir_offset;
+@@ -1547,16 +1556,16 @@ static void patch_transform_PE_infer_relocs(
+ }
+ 
+ static void patch_transform_PE_imports(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, PUCHAR mapped_image_base, ULONG mapped_image_size,
++    IMAGE_NT_HEADERS32 *nt_headers, PUCHAR mapped_image_base, ULONG mapped_image_size,
+     struct patch_transform_table *xfrm_tbl, BYTE* hintmap)
+ {
+     ULONG import_dir_offset;
+     ULONG import_dir_size;
+-    IMAGE_IMPORT_DESCRIPTOR UNALIGNED *import_desc;
++    IMAGE_IMPORT_DESCRIPTOR *import_desc;
+     ULONG thunk_offset;
+-    IMAGE_THUNK_DATA32 UNALIGNED *thunk_data_start;
+-    IMAGE_THUNK_DATA32 UNALIGNED *thunk_data;
+-    IMAGE_IMPORT_BY_NAME UNALIGNED *import_by_name;
++    IMAGE_THUNK_DATA32 *thunk_data_start;
++    IMAGE_THUNK_DATA32 *thunk_data;
++    IMAGE_IMPORT_BY_NAME *import_by_name;
+     ULONG import_by_name_offset;
+ 
+     import_dir_offset = image_directory_offset_and_size(nt_headers, IMAGE_DIRECTORY_ENTRY_IMPORT,
+@@ -1571,19 +1580,19 @@ static void patch_transform_PE_imports(
+     memset(&hintmap[import_dir_offset], 0x03, import_dir_size);
+ 
+     /* Loop through the import table, updating the new rvas. */
+-    import_desc = (IMAGE_IMPORT_DESCRIPTOR UNALIGNED *)(mapped_image_base + import_dir_offset);
++    import_desc = (IMAGE_IMPORT_DESCRIPTOR *)(mapped_image_base + import_dir_offset);
+     while (import_desc->OriginalFirstThunk) {
+         if (import_desc->TimeDateStamp == 0) { /* 0 if not bound */
+ 
+             thunk_offset = image_rva_to_file_offset(nt_headers, import_desc->OriginalFirstThunk,
+                                                     mapped_image_base, mapped_image_size);
+-            thunk_data_start = (IMAGE_THUNK_DATA32 UNALIGNED *)(mapped_image_base + thunk_offset);
++            thunk_data_start = (IMAGE_THUNK_DATA32 *)(mapped_image_base + thunk_offset);
+             thunk_data = thunk_data_start;
+             while (thunk_data->u1.Ordinal != 0) {
+                 if (!IMAGE_SNAP_BY_ORDINAL32(thunk_data->u1.Ordinal)) {
+                     import_by_name_offset = image_rva_to_file_offset(nt_headers, thunk_data->u1.AddressOfData,
+                                                                     mapped_image_base, mapped_image_size);
+-                    import_by_name = (IMAGE_IMPORT_BY_NAME UNALIGNED *)(mapped_image_base + import_by_name_offset);
++                    import_by_name = (IMAGE_IMPORT_BY_NAME *)(mapped_image_base + import_by_name_offset);
+                     memset(&hintmap[import_by_name_offset], 0x03,
+                         sizeof(IMAGE_IMPORT_BY_NAME) + strlen((char*)import_by_name->Name));
+                     thunk_data->u1.AddressOfData = get_new_rva_from_xfrm_table(xfrm_tbl, thunk_data->u1.AddressOfData);
+@@ -1594,13 +1603,13 @@ static void patch_transform_PE_imports(
+ 
+             thunk_offset = image_rva_to_file_offset(nt_headers, import_desc->FirstThunk,
+                                                     mapped_image_base, mapped_image_size);
+-            thunk_data_start = (IMAGE_THUNK_DATA32 UNALIGNED *)(mapped_image_base + thunk_offset);
++            thunk_data_start = (IMAGE_THUNK_DATA32 *)(mapped_image_base + thunk_offset);
+             thunk_data = thunk_data_start;
+             while (thunk_data->u1.Ordinal != 0) {
+                 if (!IMAGE_SNAP_BY_ORDINAL32(thunk_data->u1.Ordinal)) {
+                     import_by_name_offset = image_rva_to_file_offset(nt_headers, thunk_data->u1.AddressOfData,
+                                                                     mapped_image_base, mapped_image_size);
+-                    import_by_name = (IMAGE_IMPORT_BY_NAME UNALIGNED *)(mapped_image_base + import_by_name_offset);
++                    import_by_name = (IMAGE_IMPORT_BY_NAME *)(mapped_image_base + import_by_name_offset);
+                     memset(&hintmap[import_by_name_offset], 0x03,
+                         sizeof(IMAGE_IMPORT_BY_NAME) + strlen((char*)import_by_name->Name));
+                     thunk_data->u1.AddressOfData = get_new_rva_from_xfrm_table(xfrm_tbl, thunk_data->u1.AddressOfData);
+@@ -1619,11 +1628,11 @@ static void patch_transform_PE_imports(
+ }
+ 
+ static void patch_transform_PE_exports(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, PUCHAR mapped_image_base, ULONG mapped_image_size,
++    IMAGE_NT_HEADERS32 *nt_headers, PUCHAR mapped_image_base, ULONG mapped_image_size,
+     struct patch_transform_table *xfrm_tbl, BYTE *hintmap)
+ {
+-    IMAGE_EXPORT_DIRECTORY UNALIGNED *export_directory;
+-    ULONG UNALIGNED *export;
++    IMAGE_EXPORT_DIRECTORY *export_directory;
++    ULONG_UNALIGNED *export;
+     ULONG export_count;
+     PUCHAR mapped_image_end;
+     ULONG offset;
+@@ -1643,7 +1652,7 @@ static void patch_transform_PE_exports(
+     /* Update the hint map of the export directory. */
+     memset(hintmap + export_dir_offset, 0x03, export_dir_size);
+ 
+-    export_directory = (IMAGE_EXPORT_DIRECTORY UNALIGNED *)(mapped_image_base + export_dir_offset);
++    export_directory = (IMAGE_EXPORT_DIRECTORY *)(mapped_image_base + export_dir_offset);
+ 
+     /* Update the hint map and rvas for the AddressOfFunctions table. */
+     export_count = export_directory->NumberOfFunctions;
+@@ -1693,11 +1702,11 @@ static void patch_transform_PE_exports(
+ }
+ 
+ static void patch_transform_PE_relative_jmps(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, PUCHAR mapped_image_base, ULONG mapped_image_size,
++    IMAGE_NT_HEADERS32 *nt_headers, PUCHAR mapped_image_base, ULONG mapped_image_size,
+     struct patch_transform_table *xfrm_tbl, BYTE *hintmap)
+ {
+     ULONG image_size;
+-    IMAGE_SECTION_HEADER UNALIGNED *section_table;
++    IMAGE_SECTION_HEADER *section_table;
+     ULONG section_count;
+     PBYTE section_start, section_end;
+     ULONG section_size;
+@@ -1757,7 +1766,7 @@ static void patch_transform_PE_relative_jmps(
+                         }
+ 
+                         if (needs_patch) {
+-                            disp = *(LONG UNALIGNED *)(p + 1);
++                            disp = *(LONG_UNALIGNED *)(p + 1);
+                             if (disp > 127 || disp < -128)
+                             {
+                                 ins_rva = section_rva + (ULONG)((p + 5) - section_start);
+@@ -1772,7 +1781,7 @@ static void patch_transform_PE_relative_jmps(
+                                         new_disp = new_target_rva - new_ins_rva;
+                                         if (new_disp > 127 || new_disp < -128) {
+                                             if (new_disp != disp) {
+-                                                *(LONG UNALIGNED *)(p + 1) = new_disp;
++                                                *(LONG_UNALIGNED *)(p + 1) = new_disp;
+                                             }
+                                         }
+                                         else {
+@@ -1798,10 +1807,10 @@ static void patch_transform_PE_relative_jmps(
+ }
+ 
+ static void patch_transform_PE_relative_calls(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, PUCHAR mapped_image_base, ULONG mapped_image_size,
++    IMAGE_NT_HEADERS32 *nt_headers, PUCHAR mapped_image_base, ULONG mapped_image_size,
+     struct patch_transform_table *xfrm_tbl, PUCHAR hintmap)
+ {
+-    IMAGE_SECTION_HEADER UNALIGNED *section_table;
++    IMAGE_SECTION_HEADER *section_table;
+     ULONG sizeof_image;
+     PUCHAR section_start, section_end;
+     ULONG section_size;
+@@ -1854,7 +1863,7 @@ static void patch_transform_PE_relative_calls(
+                         }
+ 
+                         if (needs_patch) {
+-                            disp = *(LONG UNALIGNED *)(p + 1);
++                            disp = *(LONG_UNALIGNED *)(p + 1);
+                             ins_rva = section_rva + (ULONG)((ULONG_PTR)p - (ULONG_PTR)section_start) + 5;
+                             target_rva = ins_rva + disp;
+                             if (target_rva < sizeof_image) {
+@@ -1865,7 +1874,7 @@ static void patch_transform_PE_relative_calls(
+                                     new_ins_rva = get_new_rva_from_xfrm_table(xfrm_tbl, ins_rva);
+                                     new_disp = new_target_rva - new_ins_rva;
+                                     if (new_disp != disp) {
+-                                        *(LONG UNALIGNED *)(p + 1) = new_disp;
++                                        *(LONG_UNALIGNED *)(p + 1) = new_disp;
+                                     }
+                                     p += 4;
+                                 }
+@@ -1894,12 +1903,12 @@ struct transform_resource_context {         /* i386 | x64  */
+ 
+ static void transform_resources_recursive_old_compat(
+     struct transform_resource_context *ctx,
+-    IMAGE_RESOURCE_DIRECTORY UNALIGNED *res_dir)
++    IMAGE_RESOURCE_DIRECTORY *res_dir)
+ {
+     ULONG entry_count, i;
+-    IMAGE_RESOURCE_DIRECTORY_ENTRY UNALIGNED *entry;
+-    IMAGE_RESOURCE_DATA_ENTRY UNALIGNED *res_data;
+-    IMAGE_RESOURCE_DIRECTORY UNALIGNED *recursive_res_dir;
++    IMAGE_RESOURCE_DIRECTORY_ENTRY *entry;
++    IMAGE_RESOURCE_DATA_ENTRY *res_data;
++    IMAGE_RESOURCE_DIRECTORY *recursive_res_dir;
+     ULONG offset_to_data;
+     ULONG name_offset;
+     ULONG new_offset;
+@@ -1916,7 +1925,7 @@ static void transform_resources_recursive_old_compat(
+             }
+ 
+             entry_count = res_dir->NumberOfNamedEntries + res_dir->NumberOfIdEntries;
+-            entry = (IMAGE_RESOURCE_DIRECTORY_ENTRY UNALIGNED *)((PUCHAR)res_dir + sizeof(IMAGE_RESOURCE_DIRECTORY));
++            entry = (IMAGE_RESOURCE_DIRECTORY_ENTRY *)((PUCHAR)res_dir + sizeof(IMAGE_RESOURCE_DIRECTORY));
+ 
+             for (i = 0; i < entry_count; i++, entry++) {
+                 if ((PUCHAR)entry >= (ctx->res_dir_end - sizeof(IMAGE_RESOURCE_DIRECTORY_ENTRY))) {
+@@ -1926,14 +1935,14 @@ static void transform_resources_recursive_old_compat(
+                 offset_to_data = entry->OffsetToData & ~IMAGE_RESOURCE_DATA_IS_DIRECTORY;
+                 if (entry->OffsetToData & IMAGE_RESOURCE_DATA_IS_DIRECTORY) {
+                     /* Recurse into next resource directory. */
+-                    recursive_res_dir = (IMAGE_RESOURCE_DIRECTORY UNALIGNED *)&ctx->res_dir_base[offset_to_data];
++                    recursive_res_dir = (IMAGE_RESOURCE_DIRECTORY *)&ctx->res_dir_base[offset_to_data];
+                     if ((PUCHAR)recursive_res_dir >= ctx->image_base) {
+                         transform_resources_recursive_old_compat(ctx, recursive_res_dir);
+                     }
+ 
+                 } else {
+                     /* Update rva of valid resource data entry. */
+-                    res_data = (IMAGE_RESOURCE_DATA_ENTRY UNALIGNED *)&ctx->res_dir_base[offset_to_data];
++                    res_data = (IMAGE_RESOURCE_DATA_ENTRY *)&ctx->res_dir_base[offset_to_data];
+                     if ((PUCHAR)res_data > ctx->res_dir_base
+                         && (PUCHAR)res_data < (ctx->res_dir_end - sizeof(IMAGE_RESOURCE_DATA_ENTRY)))
+                     {
+@@ -1972,7 +1981,7 @@ static void transform_resources_recursive_old_compat(
+ }
+ 
+ static void patch_transform_PE_resources_old_compat(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, PUCHAR mapped_image, ULONG image_size,
++    IMAGE_NT_HEADERS32 *nt_headers, PUCHAR mapped_image, ULONG image_size,
+     ULONG new_res_time, struct patch_transform_table *xfrm_tbl)
+ {
+     struct transform_resource_context ctx;
+@@ -2001,18 +2010,18 @@ static void patch_transform_PE_resources_old_compat(
+ 
+         if (ctx.res_dir_base >= mapped_image) {
+             transform_resources_recursive_old_compat(&ctx,
+-                (IMAGE_RESOURCE_DIRECTORY UNALIGNED *)ctx.res_dir_base);
++                (IMAGE_RESOURCE_DIRECTORY *)ctx.res_dir_base);
+         }
+     }
+ }
+ 
+ static void transform_resources_recursive(
+     struct transform_resource_context *ctx,
+-    IMAGE_RESOURCE_DIRECTORY UNALIGNED *res_dir)
++    IMAGE_RESOURCE_DIRECTORY *res_dir)
+ {
+-    IMAGE_RESOURCE_DIRECTORY_ENTRY UNALIGNED *entry;
+-    IMAGE_RESOURCE_DATA_ENTRY UNALIGNED *res_data;
+-    IMAGE_RESOURCE_DIRECTORY UNALIGNED *recursive_res_dir;
++    IMAGE_RESOURCE_DIRECTORY_ENTRY *entry;
++    IMAGE_RESOURCE_DATA_ENTRY *res_data;
++    IMAGE_RESOURCE_DIRECTORY *recursive_res_dir;
+     ULONG i;
+     ULONG entry_count;
+     ULONG offset_to_data;
+@@ -2036,7 +2045,7 @@ static void transform_resources_recursive(
+         res_dir->TimeDateStamp = ctx->new_res_time;
+     }
+ 
+-    entry = (IMAGE_RESOURCE_DIRECTORY_ENTRY UNALIGNED *)((PUCHAR)res_dir + sizeof(IMAGE_RESOURCE_DIRECTORY));
++    entry = (IMAGE_RESOURCE_DIRECTORY_ENTRY *)((PUCHAR)res_dir + sizeof(IMAGE_RESOURCE_DIRECTORY));
+     entry_count = res_dir->NumberOfNamedEntries + res_dir->NumberOfIdEntries;
+ 
+     for (i = 0; i < entry_count; i++, entry++) {
+@@ -2057,7 +2066,7 @@ static void transform_resources_recursive(
+                 && (offset_to_data + sizeof(IMAGE_RESOURCE_DIRECTORY)) <= ctx->res_dir_size) {
+ 
+                 /* Recurse into next resource directory. */
+-                recursive_res_dir = (IMAGE_RESOURCE_DIRECTORY UNALIGNED *)&ctx->res_dir_base[offset_to_data];
++                recursive_res_dir = (IMAGE_RESOURCE_DIRECTORY *)&ctx->res_dir_base[offset_to_data];
+                 if ((PUCHAR)recursive_res_dir >= ctx->res_dir_base) {
+                     transform_resources_recursive(ctx, recursive_res_dir);
+                 } else {
+@@ -2074,7 +2083,7 @@ static void transform_resources_recursive(
+ 
+         } else {
+             /* Update rva of valid resource data entry. */
+-            res_data = (IMAGE_RESOURCE_DATA_ENTRY UNALIGNED *)&ctx->res_dir_base[offset_to_data];
++            res_data = (IMAGE_RESOURCE_DATA_ENTRY *)&ctx->res_dir_base[offset_to_data];
+             if ((PUCHAR)res_data < ctx->res_dir_base
+                 && ((PUCHAR)res_data + sizeof(IMAGE_RESOURCE_DATA_ENTRY)) > ctx->res_dir_end) {
+                 ctx->out_of_bounds = TRUE;
+@@ -2103,7 +2112,7 @@ static void transform_resources_recursive(
+ }
+ 
+ static BOOL patch_transform_PE_resources(
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers, PUCHAR mapped_image, SIZE_T image_size,
++    IMAGE_NT_HEADERS32 *nt_headers, PUCHAR mapped_image, SIZE_T image_size,
+     ULONG new_res_time, struct patch_transform_table *xfrm_tbl)
+ {
+     BOOL result;
+@@ -2122,7 +2131,7 @@ static BOOL patch_transform_PE_resources(
+         ctx.new_res_time = new_res_time;
+         ctx.xfrm_tbl = xfrm_tbl;
+         ctx.out_of_bounds = FALSE;
+-        transform_resources_recursive(&ctx, (IMAGE_RESOURCE_DIRECTORY UNALIGNED *)ctx.res_dir_base);
++        transform_resources_recursive(&ctx, (IMAGE_RESOURCE_DIRECTORY *)ctx.res_dir_base);
+         result = !ctx.out_of_bounds;
+     } else {
+         result = TRUE;
+@@ -2132,7 +2141,7 @@ static BOOL patch_transform_PE_resources(
+ }
+ 
+ static BOOL patch_coff_image(
+-    PULONG transform_option_flags, IMAGE_NT_HEADERS32 UNALIGNED *nt_headers,
++    PULONG transform_option_flags, IMAGE_NT_HEADERS32 *nt_headers,
+     PUCHAR old_file_buffer, ULONG old_file_size, ULONG new_res_time,
+     struct patch_transform_table* xfrm_tbl, unsigned char *hintmap)
+ {
+@@ -2224,7 +2233,7 @@ static DWORD perform_patches_on_old_file_image(
+     ULONG new_file_res_time, struct patch_transform_table* xfrm_tbl)
+ {
+     DWORD err = ERROR_SUCCESS;
+-    IMAGE_NT_HEADERS32 UNALIGNED *nt_headers;
++    IMAGE_NT_HEADERS32 *nt_headers;
+ 
+     nt_headers = image_get_nt_headers(old_file_buffer, old_file_size);
+     if (nt_headers) {
+-- 
+0.0.0
+

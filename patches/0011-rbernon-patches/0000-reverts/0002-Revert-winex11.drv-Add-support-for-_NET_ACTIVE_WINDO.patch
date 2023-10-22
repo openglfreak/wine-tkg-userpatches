@@ -20,7 +20,7 @@ diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/driver.c
 +++ b/dlls/win32u/driver.c
-@@ -824,10 +824,6 @@ static BOOL nulldrv_ScrollDC( HDC hdc, INT dx, INT dy, HRGN update )
+@@ -837,10 +837,6 @@ static BOOL nulldrv_ScrollDC( HDC hdc, INT dx, INT dy, HRGN update )
                          hdc, rect.left - dx, rect.top - dy, SRCCOPY, 0, 0 );
  }
  
@@ -31,28 +31,28 @@ index 11111111111..11111111111 100644
  static void nulldrv_SetCapture( HWND hwnd, UINT flags )
  {
  }
-@@ -1209,7 +1205,6 @@ static const struct user_driver_funcs lazy_load_driver =
+@@ -1249,7 +1245,6 @@ static const struct user_driver_funcs lazy_load_driver =
      nulldrv_ProcessEvents,
      nulldrv_ReleaseDC,
      nulldrv_ScrollDC,
 -    nulldrv_SetActiveWindow,
      nulldrv_SetCapture,
+     loaderdrv_SetDesktopWindow,
      nulldrv_SetFocus,
-     loaderdrv_SetLayeredWindowAttributes,
-@@ -1286,7 +1281,6 @@ void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version
+@@ -1330,7 +1325,6 @@ void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version
      SET_USER_FUNC(ProcessEvents);
      SET_USER_FUNC(ReleaseDC);
      SET_USER_FUNC(ScrollDC);
 -    SET_USER_FUNC(SetActiveWindow);
      SET_USER_FUNC(SetCapture);
+     SET_USER_FUNC(SetDesktopWindow);
      SET_USER_FUNC(SetFocus);
-     SET_USER_FUNC(SetLayeredWindowAttributes);
 diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/input.c
 +++ b/dlls/win32u/input.c
-@@ -1915,8 +1915,6 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
-             NtUserPostMessage( get_desktop_window(), WM_PARENTNOTIFY, WM_NCACTIVATE, (LPARAM)hwnd );
+@@ -1924,8 +1924,6 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+ 
      }
  
 -    user_driver->pSetActiveWindow( hwnd );
@@ -64,7 +64,7 @@ diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
-@@ -593,9 +593,6 @@ static void set_focus( Display *display, HWND hwnd, Time time )
+@@ -591,9 +591,6 @@ static void set_focus( Display *display, HWND hwnd, Time time )
  
      old_active = NtUserGetForegroundWindow();
  
@@ -74,9 +74,9 @@ index 11111111111..11111111111 100644
      TRACE( "setting foreground window to %p\n", hwnd );
      NtUserSetForegroundWindow( hwnd );
  
-@@ -865,8 +862,6 @@ static void focus_out( Display *display , HWND hwnd )
+@@ -847,8 +844,6 @@ static void focus_out( Display *display , HWND hwnd )
  
-     if (!focus_win)
+     if (!is_current_process_focused())
      {
 -        x11drv_thread_data()->active_window = 0;
 -
@@ -87,19 +87,19 @@ diff --git a/dlls/winex11.drv/init.c b/dlls/winex11.drv/init.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/init.c
 +++ b/dlls/winex11.drv/init.c
-@@ -419,7 +419,6 @@ static const struct user_driver_funcs x11drv_funcs =
+@@ -420,7 +420,6 @@ static const struct user_driver_funcs x11drv_funcs =
      .pProcessEvents = X11DRV_ProcessEvents,
      .pReleaseDC = X11DRV_ReleaseDC,
      .pScrollDC = X11DRV_ScrollDC,
 -    .pSetActiveWindow = X11DRV_SetActiveWindow,
      .pSetCapture = X11DRV_SetCapture,
+     .pSetDesktopWindow = X11DRV_SetDesktopWindow,
      .pSetFocus = X11DRV_SetFocus,
-     .pSetLayeredWindowAttributes = X11DRV_SetLayeredWindowAttributes,
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -2464,54 +2464,6 @@ BOOL X11DRV_ScrollDC( HDC hdc, INT dx, INT dy, HRGN update )
+@@ -2497,54 +2497,6 @@ BOOL X11DRV_ScrollDC( HDC hdc, INT dx, INT dy, HRGN update )
  }
  
  
@@ -121,7 +121,7 @@ index 11111111111..11111111111 100644
 -
 -    if (!(data = get_win_data( hwnd ))) return;
 -
--    if (data->mapped && data->managed)
+-    if (data->mapped && data->managed && !data->iconic)
 -    {
 -        XEvent xev;
 -        struct x11drv_win_data *active = get_win_data( thread_data->active_window );
@@ -151,22 +151,22 @@ index 11111111111..11111111111 100644
 -    release_win_data( data );
 -}
 -
- /***********************************************************************
-  *		SetCapture  (X11DRV.@)
-  */
+ static void restack_windows( struct x11drv_win_data *data, HWND prev )
+ {
+     struct x11drv_win_data *prev_data;
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -228,7 +228,6 @@ extern void X11DRV_GetDC( HDC hdc, HWND hwnd, HWND top, const RECT *win_rect,
+@@ -231,7 +231,6 @@ extern void X11DRV_GetDC( HDC hdc, HWND hwnd, HWND top, const RECT *win_rect,
                            const RECT *top_rect, DWORD flags ) DECLSPEC_HIDDEN;
  extern void X11DRV_ReleaseDC( HWND hwnd, HDC hdc ) DECLSPEC_HIDDEN;
  extern BOOL X11DRV_ScrollDC( HDC hdc, INT dx, INT dy, HRGN update ) DECLSPEC_HIDDEN;
 -extern void X11DRV_SetActiveWindow( HWND hwnd ) DECLSPEC_HIDDEN;
  extern void X11DRV_SetCapture( HWND hwnd, UINT flags ) DECLSPEC_HIDDEN;
+ extern void X11DRV_SetDesktopWindow( HWND hwnd ) DECLSPEC_HIDDEN;
  extern void X11DRV_SetLayeredWindowAttributes( HWND hwnd, COLORREF key, BYTE alpha,
-                                                DWORD flags ) DECLSPEC_HIDDEN;
-@@ -391,7 +390,6 @@ struct x11drv_thread_data
+@@ -395,7 +394,6 @@ struct x11drv_thread_data
      Display *display;
      XEvent  *current_event;        /* event currently being processed */
      HWND     grab_hwnd;            /* window that currently grabs the mouse */
@@ -174,7 +174,7 @@ index 11111111111..11111111111 100644
      HWND     last_focus;           /* last window that had focus */
      HWND     keymapnotify_hwnd;    /* window that should receive modifier release events */
      XIM      xim;                  /* input method */
-@@ -500,7 +498,6 @@ enum x11drv_atoms
+@@ -501,7 +499,6 @@ enum x11drv_atoms
      XATOM__ICC_PROFILE,
      XATOM__KDE_NET_WM_STATE_SKIP_SWITCHER,
      XATOM__MOTIF_WM_HINTS,
@@ -186,7 +186,7 @@ diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv_main.c
 +++ b/dlls/winex11.drv/x11drv_main.c
-@@ -156,7 +156,6 @@ static const char * const atom_names[NB_XATOMS - FIRST_XATOM] =
+@@ -155,7 +155,6 @@ static const char * const atom_names[NB_XATOMS - FIRST_XATOM] =
      "_ICC_PROFILE",
      "_KDE_NET_WM_STATE_SKIP_SWITCHER",
      "_MOTIF_WM_HINTS",
@@ -198,14 +198,14 @@ diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
 index 11111111111..11111111111 100644
 --- a/include/wine/gdi_driver.h
 +++ b/include/wine/gdi_driver.h
-@@ -311,7 +311,6 @@ struct user_driver_funcs
+@@ -320,7 +320,6 @@ struct user_driver_funcs
      BOOL    (*pProcessEvents)(DWORD);
      void    (*pReleaseDC)(HWND,HDC);
      BOOL    (*pScrollDC)(HDC,INT,INT,HRGN);
 -    void    (*pSetActiveWindow)(HWND);
      void    (*pSetCapture)(HWND,UINT);
+     void    (*pSetDesktopWindow)(HWND);
      void    (*pSetFocus)(HWND);
-     void    (*pSetLayeredWindowAttributes)(HWND,COLORREF,BYTE,DWORD);
 -- 
-2.40.0
+0.0.0
 

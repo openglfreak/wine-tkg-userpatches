@@ -1,0 +1,74 @@
+From 6a862c997584816064be6f0e0ec9308dece6d376 Mon Sep 17 00:00:00 2001
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Date: Thu, 21 Apr 2022 00:09:40 +0900
+Subject: [PATCH 1/6] user32/tests: Make test_unicode_wm_char robust against
+ superfluous messages.
+
+Commit e445303ab45 (user32/tests: Make a few more messages optional.,
+2014-03-20) modified test_unicode_wm_char so that it skips non-essential
+messages (e.g. WM_DWMNCRENDERINGCHANGED) from GetMessageW.
+
+Extend this for messages from GetMessageA as well.
+
+Also, handle the case where no messages other than WM_QUIT are received
+at all.
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ dlls/user32/tests/msg.c | 20 +++++++++++++-------
+ 1 file changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/tests/msg.c
++++ b/dlls/user32/tests/msg.c
+@@ -16795,6 +16795,16 @@ static void test_dbcs_wm_char(void)
+     DestroyWindow(hwnd2);
+ }
+ 
++static BOOL get_next_msg( BOOL (*WINAPI getmessage)(MSG *, HWND, UINT, UINT),
++                          MSG *msg, HWND hwnd )
++{
++    while ((*getmessage)( msg, hwnd, 0, 0 ))
++    {
++        if (!ignore_message( msg->message )) return TRUE;
++    }
++    return FALSE;
++}
++
+ static void test_unicode_wm_char(void)
+ {
+     HWND hwnd;
+@@ -16825,11 +16835,7 @@ static void test_unicode_wm_char(void)
+ 
+     PostMessageW( hwnd, WM_CHAR, 0x3b1, 0 );
+ 
+-    while (GetMessageW( &msg, hwnd, 0, 0 ))
+-    {
+-        if (!ignore_message( msg.message )) break;
+-    }
+-
++    ok( get_next_msg( GetMessageW, &msg, hwnd ), "expected a recongized message\n" );
+     ok( msg.hwnd == hwnd, "unexpected hwnd %p\n", msg.hwnd );
+     ok( msg.message == WM_CHAR, "unexpected message %x\n", msg.message );
+     ok( msg.wParam == 0x3b1, "bad wparam %Ix\n", msg.wParam );
+@@ -16849,7 +16855,7 @@ static void test_unicode_wm_char(void)
+     /* greek alpha -> 'a' in cp1252 */
+     PostMessageW( hwnd, WM_CHAR, 0x3b1, 0 );
+ 
+-    ok( GetMessageA( &msg, hwnd, 0, 0 ), "no message\n" );
++    ok( get_next_msg( GetMessageA, &msg, hwnd ), "expected a recognized message\n" );
+     ok( msg.hwnd == hwnd, "unexpected hwnd %p\n", msg.hwnd );
+     ok( msg.message == WM_CHAR, "unexpected message %x\n", msg.message );
+     ok( msg.wParam == 0x61, "bad wparam %Ix\n", msg.wParam );
+@@ -16870,7 +16876,7 @@ static void test_unicode_wm_char(void)
+     /* greek alpha -> 0xe1 in cp1253 */
+     PostMessageW( hwnd, WM_CHAR, 0x3b1, 0 );
+ 
+-    ok( GetMessageA( &msg, hwnd, 0, 0 ), "no message\n" );
++    ok( get_next_msg( GetMessageA, &msg, hwnd ), "expected a recognized message\n" );
+     ok( msg.hwnd == hwnd, "unexpected hwnd %p\n", msg.hwnd );
+     ok( msg.message == WM_CHAR, "unexpected message %x\n", msg.message );
+     ok( msg.wParam == 0xe1, "bad wparam %Ix\n", msg.wParam );
+
+

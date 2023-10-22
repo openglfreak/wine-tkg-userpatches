@@ -14,8 +14,8 @@ list to be updated already. If the controller is missing they won't try
 calling XInput functions again until another WM_DEVICECHANGE message is
 received.
 ---
- dlls/xinput1_3/main.c | 53 +++++++++++++++++++++----------------------
- 1 file changed, 26 insertions(+), 27 deletions(-)
+ dlls/xinput1_3/main.c | 56 +++++++++++++++++++++----------------------
+ 1 file changed, 28 insertions(+), 28 deletions(-)
 
 diff --git a/dlls/xinput1_3/main.c b/dlls/xinput1_3/main.c
 index 11111111111..11111111111 100644
@@ -29,12 +29,12 @@ index 11111111111..11111111111 100644
 +static HDEVNOTIFY update_devnotify;
 +static HWND update_hwnd;
  static HANDLE start_event;
- static HANDLE stop_event;
- static HANDLE done_event;
-@@ -690,36 +691,16 @@ static DWORD WINAPI hid_update_thread_proc(void *param)
-     struct xinput_controller *devices[XUSER_MAX_COUNT + 2];
-     HANDLE events[XUSER_MAX_COUNT + 2];
-     DWORD i, count = 2, ret = WAIT_TIMEOUT;
+ static HANDLE update_event;
+ 
+@@ -673,36 +674,16 @@ static DWORD WINAPI hid_update_thread_proc(void *param)
+     struct xinput_controller *devices[XUSER_MAX_COUNT + 1];
+     HANDLE events[XUSER_MAX_COUNT + 1];
+     DWORD i, count = 1, ret = WAIT_TIMEOUT;
 -    DEV_BROADCAST_DEVICEINTERFACE_W filter =
 -    {
 -        .dbcc_size = sizeof(DEV_BROADCAST_DEVICEINTERFACE_W),
@@ -67,20 +67,22 @@ index 11111111111..11111111111 100644
 -        if (ret == count) while (PeekMessageW(&msg, hwnd, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
 +        if (ret == count) while (PeekMessageW(&msg, update_hwnd, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
          if (ret == WAIT_TIMEOUT) update_controller_list();
-         if (ret < count - 2) read_controller_state(devices[ret]);
+         if (ret < count - 1) read_controller_state(devices[ret]);
  
-@@ -742,10 +723,6 @@ static DWORD WINAPI hid_update_thread_proc(void *param)
-     while ((ret = MsgWaitForMultipleObjectsEx(count, events, 2000, QS_ALLINPUT, MWMO_ALERTABLE)) < count - 1 ||
-             ret == count || ret == WAIT_TIMEOUT);
+@@ -726,11 +707,7 @@ static DWORD WINAPI hid_update_thread_proc(void *param)
+ 
+     ERR("wait failed in the update thread, ret %lu, error %lu\n", ret, GetLastError());
  
 -    UnregisterDeviceNotification(notif);
 -    DestroyWindow(hwnd);
 -    UnregisterClassW(cls.lpszClassName, xinput_instance);
 -
-     if (ret != count - 1) ERR("update thread exited unexpectedly, ret %lu\n", ret);
-     SetEvent(done_event);
-     return ret;
-@@ -803,17 +780,39 @@ static void controller_unlock(struct xinput_controller *controller)
+-    FreeLibraryAndExitThread(xinput_instance, ret);
++    return ret;
+ }
+ 
+ static BOOL WINAPI start_update_thread_once( INIT_ONCE *once, void *param, void **context )
+@@ -783,13 +760,36 @@ static void controller_unlock(struct xinput_controller *controller)
  
  BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
  {
@@ -110,11 +112,8 @@ index 11111111111..11111111111 100644
 +        update_hwnd = CreateWindowExW(0, class.lpszClassName, NULL, 0, 0, 0, 0, 0,
 +                                      HWND_MESSAGE, NULL, NULL, NULL);
 +        update_devnotify = RegisterDeviceNotificationW(update_hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
-         break;
-     case DLL_PROCESS_DETACH:
-         if (reserved) break;
-         stop_update_thread();
-+
++        break;
++    case DLL_PROCESS_DETACH:
 +        UnregisterDeviceNotification(update_devnotify);
 +        DestroyWindow(update_hwnd);
 +        UnregisterClassW(class.lpszClassName, class.hInstance);
@@ -122,5 +121,5 @@ index 11111111111..11111111111 100644
      }
      return TRUE;
 -- 
-2.40.0
+0.0.0
 

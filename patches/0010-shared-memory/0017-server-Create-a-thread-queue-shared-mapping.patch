@@ -1,7 +1,7 @@
-From c206b344205a912b2e40f7e077bafadb86c63e9e Mon Sep 17 00:00:00 2001
+From 072e06d46bb9f6329888a6944bbf4e58ee96db3b Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Sat, 21 Nov 2020 00:20:27 +0100
-Subject: [PATCH 17/44] server: Create a thread queue shared mapping.
+Subject: [PATCH 17/40] server: Create a thread queue shared mapping.
 
 ---
  server/directory.c  | 15 ++++++++
@@ -42,7 +42,7 @@ diff --git a/server/file.h b/server/file.h
 index 11111111111..11111111111 100644
 --- a/server/file.h
 +++ b/server/file.h
-@@ -170,6 +170,7 @@ extern const char *get_timeout_str( timeout_t timeout );
+@@ -172,6 +172,7 @@ extern const char *get_timeout_str( timeout_t timeout );
  /* directory functions */
  
  extern struct object *create_desktop_map_directory( struct winstation *winstation );
@@ -54,7 +54,7 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -887,6 +887,12 @@ struct desktop_shared_memory
+@@ -913,6 +913,12 @@ struct desktop_shared_memory
      unsigned char        keystate[256];    /* asynchronous key state */
  };
  
@@ -72,14 +72,14 @@ index 11111111111..11111111111 100644
 --- a/server/queue.c
 +++ b/server/queue.c
 @@ -150,6 +150,7 @@ struct msg_queue
+     int                    in_fast_wait;    /* are we in a client-side wait? */
+     int                    esync_fd;        /* esync file descriptor (signalled on message) */
      int                    esync_in_msgwait; /* our thread is currently waiting on us */
++    volatile struct queue_shared_memory *shared;  /* thread queue shared memory ptr */
      unsigned int           fsync_idx;
      int                    fsync_in_msgwait; /* our thread is currently waiting on us */
-+    volatile struct queue_shared_memory *shared;  /* thread queue shared memory ptr */
  };
- 
- struct hotkey
-@@ -249,6 +250,46 @@ static unsigned int last_input_time;
+@@ -251,6 +252,46 @@ static unsigned int last_input_time;
  static cursor_pos_t cursor_history[64];
  static unsigned int cursor_history_latest;
  
@@ -126,15 +126,15 @@ index 11111111111..11111111111 100644
  static void queue_hardware_message( struct desktop *desktop, struct message *msg, int always_queue );
  static void free_message( struct message *msg );
  
-@@ -335,6 +376,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+@@ -336,6 +377,7 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+         queue->in_fast_wait    = 0;
+         queue->esync_fd        = -1;
          queue->esync_in_msgwait = 0;
++        queue->shared          = thread->queue_shared;
          queue->fsync_idx       = 0;
          queue->fsync_in_msgwait = 0;
-+        queue->shared          = thread->queue_shared;
          list_init( &queue->send_result );
-         list_init( &queue->callback_result );
-         list_init( &queue->pending_timers );
-@@ -347,6 +389,9 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
+@@ -350,6 +392,9 @@ static struct msg_queue *create_msg_queue( struct thread *thread, struct thread_
          if (do_esync())
              queue->esync_fd = esync_create_fd( 0, 0 );
  
@@ -144,8 +144,8 @@ index 11111111111..11111111111 100644
          thread->queue = queue;
      }
      if (new_input) release_object( new_input );
-@@ -435,46 +480,6 @@ static struct message *alloc_hardware_message( lparam_t info, struct hw_msg_sour
-     return msg;
+@@ -477,46 +522,6 @@ static int update_desktop_cursor_window( struct desktop *desktop, user_handle_t
+     return updated;
  }
  
 -#if defined(__i386__) || defined(__x86_64__)
@@ -188,31 +188,31 @@ index 11111111111..11111111111 100644
 -
 -#endif
 -
- static int update_desktop_cursor_pos( struct desktop *desktop, int x, int y )
+ static int update_desktop_cursor_pos( struct desktop *desktop, user_handle_t win, int x, int y )
  {
-     int updated;
+     struct thread_input *input;
 diff --git a/server/thread.c b/server/thread.c
 index 11111111111..11111111111 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -56,6 +56,7 @@
- #include "request.h"
- #include "user.h"
+@@ -58,6 +58,7 @@
  #include "security.h"
-+#include "unicode.h"
  #include "esync.h"
  #include "fsync.h"
++#include "unicode.h"
  
-@@ -345,6 +346,8 @@ static inline void init_thread_structure( struct thread *thread )
+ #ifdef HAVE_DBUS_DBUS_H
+ #include <dbus/dbus.h>
+@@ -342,6 +343,8 @@ static inline void init_thread_structure( struct thread *thread )
+     thread->desc            = NULL;
+     thread->desc_len        = 0;
      thread->exit_poll       = NULL;
-     thread->fast_sync       = NULL;
-     thread->fast_alert_event = NULL;
 +    thread->queue_shared_mapping = NULL;
 +    thread->queue_shared         = NULL;
+     thread->fast_sync       = NULL;
+     thread->fast_alert_event = NULL;
  
-     thread->creation_time = current_time;
-     thread->exit_time     = 0;
-@@ -395,6 +398,28 @@ static struct context *create_thread_context( struct thread *thread )
+@@ -393,6 +396,28 @@ static struct context *create_thread_context( struct thread *thread )
  }
  
  
@@ -231,7 +231,7 @@ index 11111111111..11111111111 100644
 +    thread->queue_shared_mapping = create_shared_mapping( dir, &name, sizeof(struct queue_shared_memory),
 +                                                          NULL, (void **)&thread->queue_shared );
 +    release_object( dir );
-+    if (thread->queue_shared) memset( (void *)thread->queue_shared, 0, sizeof(*thread->queue_shared) );
++    if (thread->queue_shared_mapping) memset( (void *)thread->queue_shared, 0, sizeof(*thread->queue_shared) );
 +
 +    free( nameW );
 +    return thread->queue_shared;
@@ -241,9 +241,9 @@ index 11111111111..11111111111 100644
  /* create a new thread */
  struct thread *create_thread( int fd, struct process *process, const struct security_descriptor *sd )
  {
-@@ -483,6 +508,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
-         thread->esync_fd = esync_create_fd( 0, 0 );
-         thread->esync_apc_fd = esync_create_fd( 0, 0 );
+@@ -459,6 +484,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+         release_object( thread );
+         return NULL;
      }
 +    if (!init_queue_mapping( thread ))
 +    {
@@ -251,9 +251,9 @@ index 11111111111..11111111111 100644
 +        return NULL;
 +    }
  
-     set_fd_events( thread->request_fd, POLLIN );  /* start listening to events */
-     add_process_thread( thread->process, thread );
-@@ -551,6 +581,8 @@ static void cleanup_thread( struct thread *thread )
+     if (process->desktop)
+     {
+@@ -549,6 +579,8 @@ static void cleanup_thread( struct thread *thread )
          }
      }
      free( thread->desc );
@@ -266,13 +266,15 @@ diff --git a/server/thread.h b/server/thread.h
 index 11111111111..11111111111 100644
 --- a/server/thread.h
 +++ b/server/thread.h
-@@ -98,6 +98,8 @@ struct thread
+@@ -96,6 +96,8 @@ struct thread
+     data_size_t            desc_len;      /* thread description length in bytes */
+     WCHAR                 *desc;          /* thread description string */
      struct timeout_user   *exit_poll;     /* poll if the thread/process has exited already */
-     struct fast_sync      *fast_sync;     /* fast synchronization object */
-     struct event          *fast_alert_event; /* fast synchronization alert event */
 +    struct object         *queue_shared_mapping; /* thread queue shared memory mapping */
 +    volatile struct queue_shared_memory *queue_shared;  /* thread queue shared memory ptr */
+     struct fast_sync      *fast_sync;     /* fast synchronization object */
+     struct event          *fast_alert_event; /* fast synchronization alert event */
  };
- 
- extern struct thread *current;
+-- 
+0.0.0
 

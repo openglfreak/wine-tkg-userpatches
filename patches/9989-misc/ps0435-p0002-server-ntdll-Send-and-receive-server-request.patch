@@ -1,7 +1,7 @@
 From bdb5a922391cb54fc7db0b7ef5aad9f25c3f714b Mon Sep 17 00:00:00 2001
 From: Torge Matthies <openglfreak@googlemail.com>
 Date: Sun, 7 Aug 2022 21:19:26 +0200
-Subject: [PATCH 2/7] server,ntdll: Send and receive server requests through
+Subject: [PATCH 2/8] server,ntdll: Send and receive server requests through
  shared memory.
 
 ---
@@ -136,8 +136,8 @@ diff --git a/server/Makefile.in b/server/Makefile.in
 index 11111111111..11111111111 100644
 --- a/server/Makefile.in
 +++ b/server/Makefile.in
-@@ -54,7 +54,7 @@ MANPAGES = \
- 	wineserver.man.in
+@@ -52,7 +52,7 @@ SOURCES = \
+ 	winstation.c
  
  UNIX_CFLAGS = $(DBUS_CFLAGS)
 -UNIX_LIBS = $(LDEXECFLAGS) $(RT_LIBS) $(INOTIFY_LIBS) $(PROCSTAT_LIBS) $(DBUS_LIBS) -flto=auto -flto-partition=one -fdevirtualize-at-ltrans
@@ -157,7 +157,7 @@ index 11111111111..11111111111 100644
  #include <signal.h>
  #include <stdarg.h>
  #include <stdio.h>
-@@ -197,6 +198,7 @@ struct fd
+@@ -160,6 +161,7 @@ struct fd
      unsigned int         signaled :1; /* is the fd signaled? */
      unsigned int         fs_locks :1; /* can we use filesystem locks for this fd? */
      int                  poll_index;  /* index of fd in poll array */
@@ -165,7 +165,7 @@ index 11111111111..11111111111 100644
      struct async_queue   read_q;      /* async readers of this fd */
      struct async_queue   write_q;     /* async writers of this fd */
      struct async_queue   wait_q;      /* other async waiters of this fd */
-@@ -512,6 +514,10 @@ static void set_user_shared_data_time(void)
+@@ -475,6 +477,10 @@ static void set_user_shared_data_time(void)
          user_shared_data->QpcBias = qpc_bias;
  }
  
@@ -176,15 +176,15 @@ index 11111111111..11111111111 100644
  void set_current_time(void)
  {
      static const timeout_t ticks_1601_to_1970 = (timeout_t)86400 * (369 * 365 + 89) * TICKS_PER_SEC;
-@@ -607,6 +613,7 @@ static int nb_users;                        /* count of array entries actually i
+@@ -570,6 +576,7 @@ static int nb_users;                        /* count of array entries actually i
  static int active_users;                    /* current number of active users */
  static int allocated_users;                 /* count of allocated entries in the array */
  static struct fd **freelist;                /* list of free entries in the array */
-+unsigned long poll_generation;       /* current poll array generation */
++unsigned long poll_generation;              /* current poll array generation */
  
  static int get_next_timeout(void);
  
-@@ -685,20 +692,27 @@ static inline void main_loop_epoll(void)
+@@ -648,20 +655,27 @@ static inline void main_loop_epoll(void)
  
      if (epoll_fd == -1) return;
  
@@ -212,7 +212,7 @@ index 11111111111..11111111111 100644
              pollfd[user].revents = events[i].events;
          }
  
-@@ -706,9 +720,11 @@ static inline void main_loop_epoll(void)
+@@ -669,9 +683,11 @@ static inline void main_loop_epoll(void)
          for (i = 0; i < ret; i++)
          {
              int user = events[i].data.u32;
@@ -224,7 +224,7 @@ index 11111111111..11111111111 100644
  }
  
  #elif defined(HAVE_KQUEUE)
-@@ -779,13 +795,18 @@ static inline void main_loop_epoll(void)
+@@ -742,13 +758,18 @@ static inline void main_loop_epoll(void)
  
      if (kqueue_fd == -1) return;
  
@@ -243,7 +243,7 @@ index 11111111111..11111111111 100644
          if (timeout != -1)
          {
              struct timespec ts;
-@@ -795,6 +816,7 @@ static inline void main_loop_epoll(void)
+@@ -758,6 +779,7 @@ static inline void main_loop_epoll(void)
              ret = kevent( kqueue_fd, NULL, 0, events, ARRAY_SIZE( events ), &ts );
          }
          else ret = kevent( kqueue_fd, NULL, 0, events, ARRAY_SIZE( events ), NULL );
@@ -251,7 +251,7 @@ index 11111111111..11111111111 100644
  
          set_current_time();
  
-@@ -802,11 +824,13 @@ static inline void main_loop_epoll(void)
+@@ -765,11 +787,13 @@ static inline void main_loop_epoll(void)
          for (i = 0; i < ret; i++)
          {
              long user = (long)events[i].udata;
@@ -265,7 +265,7 @@ index 11111111111..11111111111 100644
              if (events[i].filter == EVFILT_READ) pollfd[user].revents |= POLLIN;
              else if (events[i].filter == EVFILT_WRITE) pollfd[user].revents |= POLLOUT;
              if (events[i].flags & EV_EOF) pollfd[user].revents |= POLLHUP;
-@@ -817,10 +841,12 @@ static inline void main_loop_epoll(void)
+@@ -780,10 +804,12 @@ static inline void main_loop_epoll(void)
          for (i = 0; i < ret; i++)
          {
              long user = (long)events[i].udata;
@@ -278,7 +278,7 @@ index 11111111111..11111111111 100644
  }
  
  #elif defined(USE_EVENT_PORTS)
-@@ -881,14 +907,19 @@ static inline void main_loop_epoll(void)
+@@ -844,14 +870,19 @@ static inline void main_loop_epoll(void)
  
      if (port_fd == -1) return;
  
@@ -298,7 +298,7 @@ index 11111111111..11111111111 100644
          if (timeout != -1)
          {
              struct timespec ts;
-@@ -898,6 +929,7 @@ static inline void main_loop_epoll(void)
+@@ -861,6 +892,7 @@ static inline void main_loop_epoll(void)
              ret = port_getn( port_fd, events, ARRAY_SIZE( events ), &nget, &ts );
          }
          else ret = port_getn( port_fd, events, ARRAY_SIZE( events ), &nget, NULL );
@@ -306,7 +306,7 @@ index 11111111111..11111111111 100644
  
  	if (ret == -1) break;  /* an error occurred with event completion */
  
-@@ -907,6 +939,7 @@ static inline void main_loop_epoll(void)
+@@ -870,6 +902,7 @@ static inline void main_loop_epoll(void)
          for (i = 0; i < nget; i++)
          {
              long user = (long)events[i].portev_user;
@@ -314,7 +314,7 @@ index 11111111111..11111111111 100644
              pollfd[user].revents = events[i].portev_events;
          }
  
-@@ -914,6 +947,7 @@ static inline void main_loop_epoll(void)
+@@ -877,6 +910,7 @@ static inline void main_loop_epoll(void)
          for (i = 0; i < nget; i++)
          {
              long user = (long)events[i].portev_user;
@@ -322,7 +322,7 @@ index 11111111111..11111111111 100644
              if (pollfd[user].revents) fd_poll_event( poll_users[user], pollfd[user].revents );
              /* if we are still interested, reassociate the fd */
              if (pollfd[user].fd != -1) {
-@@ -921,6 +955,7 @@ static inline void main_loop_epoll(void)
+@@ -884,6 +918,7 @@ static inline void main_loop_epoll(void)
              }
          }
      }
@@ -330,7 +330,7 @@ index 11111111111..11111111111 100644
  }
  
  #else /* HAVE_KQUEUE */
-@@ -969,6 +1004,7 @@ static int add_poll_user( struct fd *fd )
+@@ -932,6 +967,7 @@ static int add_poll_user( struct fd *fd )
      pollfd[ret].events = 0;
      pollfd[ret].revents = 0;
      poll_users[ret] = fd;
@@ -338,7 +338,7 @@ index 11111111111..11111111111 100644
      active_users++;
      return ret;
  }
-@@ -1054,30 +1090,65 @@ static int get_next_timeout(void)
+@@ -1017,30 +1053,65 @@ static int get_next_timeout(void)
      return ret;
  }
  
@@ -404,7 +404,7 @@ index 11111111111..11111111111 100644
                  if (pollfd[i].revents)
                  {
                      fd_poll_event( poll_users[i], pollfd[i].revents );
-@@ -1086,6 +1157,14 @@ void main_loop(void)
+@@ -1049,6 +1120,14 @@ void main_loop(void)
              }
          }
      }
@@ -419,7 +419,7 @@ index 11111111111..11111111111 100644
  }
  
  
-@@ -1792,6 +1871,8 @@ void set_fd_events( struct fd *fd, int events )
+@@ -1778,6 +1857,8 @@ void set_fd_events( struct fd *fd, int events )
      int user = fd->poll_index;
      assert( poll_users[user] == fd );
  
@@ -450,7 +450,7 @@ index 11111111111..11111111111 100644
  extern struct fd *alloc_pseudo_fd( const struct fd_ops *fd_user_ops, struct object *user,
                                     unsigned int options );
  extern struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_name,
-@@ -131,6 +135,7 @@ extern void no_fd_queue_async( struct fd *fd, struct async *async, int type, int
+@@ -133,6 +137,7 @@ extern void no_fd_queue_async( struct fd *fd, struct async *async, int type, int
  extern void default_fd_queue_async( struct fd *fd, struct async *async, int type, int count );
  extern void default_fd_reselect_async( struct fd *fd, struct async_queue *queue );
  extern void main_loop(void);
@@ -601,7 +601,7 @@ index 11111111111..11111111111 100644
  
  #include "ntstatus.h"
  #define WIN32_NO_STATUS
-@@ -379,6 +383,7 @@ static inline void init_thread_structure( struct thread *thread )
+@@ -378,6 +382,7 @@ static inline void init_thread_structure( struct thread *thread )
  #ifdef __linux__
      thread->request_shm_fd  = -1;
      thread->request_shm     = NULL;
@@ -609,7 +609,7 @@ index 11111111111..11111111111 100644
  #endif
      thread->state           = RUNNING;
      thread->exit_code       = 0;
-@@ -448,6 +453,86 @@ static struct context *create_thread_context( struct thread *thread )
+@@ -446,6 +451,86 @@ static struct context *create_thread_context( struct thread *thread )
  }
  
  
@@ -696,7 +696,7 @@ index 11111111111..11111111111 100644
  static volatile void *init_queue_mapping( struct thread *thread )
  {
      struct unicode_str name;
-@@ -506,6 +591,9 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+@@ -504,6 +589,9 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
      struct desktop *desktop;
      struct thread *thread;
      int request_pipe[2];
@@ -706,7 +706,7 @@ index 11111111111..11111111111 100644
  
      if (memory_barrier_obj)
          grab_object( &memory_barrier_obj->obj );
-@@ -588,6 +676,16 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+@@ -596,6 +684,16 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
          release_object( thread );
          return NULL;
      }
@@ -723,7 +723,7 @@ index 11111111111..11111111111 100644
  #endif
  
      if (do_fsync())
-@@ -668,8 +766,16 @@ static void cleanup_thread( struct thread *thread )
+@@ -666,8 +764,16 @@ static void cleanup_thread( struct thread *thread )
      if (thread->reply_fd) release_object( thread->reply_fd );
      if (thread->wait_fd) release_object( thread->wait_fd );
  #ifdef __linux__
@@ -742,7 +742,7 @@ index 11111111111..11111111111 100644
  #endif
      cleanup_clipboard_thread(thread);
      destroy_thread_windows( thread );
-@@ -697,6 +803,7 @@ static void cleanup_thread( struct thread *thread )
+@@ -695,6 +801,7 @@ static void cleanup_thread( struct thread *thread )
  #ifdef __linux__
      thread->request_shm_fd = -1;
      thread->request_shm = NULL;
@@ -763,5 +763,5 @@ index 11111111111..11111111111 100644
      enum run_state         state;         /* running state */
      int                    exit_code;     /* thread exit code */
 -- 
-2.40.0
+0.0.0
 

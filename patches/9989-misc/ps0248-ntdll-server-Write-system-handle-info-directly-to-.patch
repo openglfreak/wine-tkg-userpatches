@@ -5,17 +5,19 @@ Subject: [PATCH] ntdll, server: Write system handle info directly to user
  supplied buffer.
 
 ---
- dlls/ntdll/unix/system.c |  46 +++--------
- server/handle.c          | 173 ++++++++++++++++++++++++++++++++++-----
+ dlls/ntdll/unix/system.c |  46 +++-------
+ server/handle.c          | 175 ++++++++++++++++++++++++++++++++++-----
  server/protocol.def      |  12 +--
+ server/request.h         |   1 -
  server/trace.c           |  14 +---
- 4 files changed, 164 insertions(+), 81 deletions(-)
+ tools/make_requests      |   1 -
+ 6 files changed, 165 insertions(+), 84 deletions(-)
 
 diff --git a/dlls/ntdll/unix/system.c b/dlls/ntdll/unix/system.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/system.c
 +++ b/dlls/ntdll/unix/system.c
-@@ -2970,8 +2970,7 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+@@ -3020,8 +3020,7 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
  
      case SystemHandleInformation:  /* 16 */
      {
@@ -25,7 +27,7 @@ index 11111111111..11111111111 100644
  
          if (size < sizeof(SYSTEM_HANDLE_INFORMATION))
          {
-@@ -2986,26 +2985,16 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+@@ -3036,26 +3035,16 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
          }
  
          num_handles = (size - FIELD_OFFSET( SYSTEM_HANDLE_INFORMATION, Handle )) / sizeof(SYSTEM_HANDLE_ENTRY);
@@ -56,7 +58,7 @@ index 11111111111..11111111111 100644
              }
              else if (ret == STATUS_BUFFER_TOO_SMALL)
              {
-@@ -3014,8 +3003,6 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+@@ -3064,8 +3053,6 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
              }
          }
          SERVER_END_REQ;
@@ -65,7 +67,7 @@ index 11111111111..11111111111 100644
          break;
      }
  
-@@ -3190,8 +3177,7 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+@@ -3240,8 +3227,7 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
  
      case SystemExtendedHandleInformation:  /* 64 */
      {
@@ -75,7 +77,7 @@ index 11111111111..11111111111 100644
  
          if (size < sizeof(SYSTEM_HANDLE_INFORMATION_EX))
          {
-@@ -3207,26 +3193,16 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+@@ -3257,26 +3243,16 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
  
          num_handles = (size - FIELD_OFFSET( SYSTEM_HANDLE_INFORMATION_EX, Handles ))
                        / sizeof(SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX);
@@ -106,7 +108,7 @@ index 11111111111..11111111111 100644
              }
              else if (ret == STATUS_BUFFER_TOO_SMALL)
              {
-@@ -3235,8 +3211,6 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
+@@ -3285,8 +3261,6 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
              }
          }
          SERVER_END_REQ;
@@ -119,7 +121,7 @@ diff --git a/server/handle.c b/server/handle.c
 index 11111111111..11111111111 100644
 --- a/server/handle.c
 +++ b/server/handle.c
-@@ -820,18 +820,142 @@ done:
+@@ -835,18 +835,142 @@ done:
      free( label_acl );
  }
  
@@ -264,16 +266,26 @@ index 11111111111..11111111111 100644
      unsigned int i;
  
      if (!table)
-@@ -840,20 +964,21 @@ static int enum_handles( struct process *process, void *user )
+@@ -855,20 +979,21 @@ static int enum_handles( struct process *process, void *user )
      for (i = 0, entry = table->entries; i <= table->last; i++, entry++)
      {
          if (!entry->ptr) continue;
 -        if (!info->handle)
-+        assert( info->count );
-+        if (info->ex)
-         {
+-        {
 -            info->count++;
 -            continue;
+-        }
+         assert( info->count );
+-        handle = info->handle++;
+-        handle->owner      = process->id;
+-        handle->handle     = index_to_handle(i);
+-        handle->access     = entry->access & ~RESERVED_ALL;
+-        handle->type       = entry->ptr->ops->type->index;
+-        handle->attributes = 0;
+-        if (entry->access & RESERVED_INHERIT) handle->attributes |= OBJ_INHERIT;
+-        if (entry->access & RESERVED_CLOSE_PROTECT) handle->attributes |= OBJ_PROTECT_CLOSE;
++        if (info->ex)
++        {
 +            if (info->is_64bit)
 +                enum_handle_ex_64( process, i, info->u.handle_ex_64++, entry );
 +            else
@@ -285,20 +297,11 @@ index 11111111111..11111111111 100644
 +                enum_handle_64( process, i, info->u.handle_64++, entry );
 +            else
 +                enum_handle_32( process, i, info->u.handle_32++, entry );
-         }
--        assert( info->count );
--        handle = info->handle++;
--        handle->owner      = process->id;
--        handle->handle     = index_to_handle(i);
--        handle->access     = entry->access & ~RESERVED_ALL;
--        handle->type       = entry->ptr->ops->type->index;
--        handle->attributes = 0;
--        if (entry->access & RESERVED_INHERIT) handle->attributes |= OBJ_INHERIT;
--        if (entry->access & RESERVED_CLOSE_PROTECT) handle->attributes |= OBJ_PROTECT_CLOSE;
++        }
          info->count--;
      }
  
-@@ -863,21 +988,25 @@ static int enum_handles( struct process *process, void *user )
+@@ -878,21 +1003,25 @@ static int enum_handles( struct process *process, void *user )
  DECL_HANDLER(get_system_handles)
  {
      struct enum_handle_info info;
@@ -306,14 +309,14 @@ index 11111111111..11111111111 100644
 -    data_size_t max_handles = get_reply_max_size() / sizeof(*handle);
 +    size_t handle_size;
 +    data_size_t max_handles;
-+
+ 
+-    info.handle = NULL;
 +    info.is_64bit = is_machine_64bit( current->process->machine );
 +    if (req->ex)
 +        handle_size = info.is_64bit ? sizeof(*info.u.handle_ex_64) : sizeof(*info.u.handle_ex_32);
 +    else
 +        handle_size = info.is_64bit ? sizeof(*info.u.handle_64) : sizeof(*info.u.handle_32);
- 
--    info.handle = NULL;
++
 +    info.ex = req->ex;
      info.count  = 0;
 -    enum_processes( enum_handles, &info );
@@ -336,7 +339,7 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -3361,20 +3361,12 @@ enum caret_state
+@@ -3471,20 +3471,12 @@ enum caret_state
  @END
  
  
@@ -359,11 +362,23 @@ index 11111111111..11111111111 100644
  @END
  
  
+diff --git a/server/request.h b/server/request.h
+index 11111111111..11111111111 100644
+--- a/server/request.h
++++ b/server/request.h
+@@ -741,7 +741,6 @@ C_ASSERT( sizeof(select_op_t) == 264 );
+ C_ASSERT( sizeof(short int) == 2 );
+ C_ASSERT( sizeof(startup_info_t) == 96 );
+ C_ASSERT( sizeof(struct filesystem_event) == 12 );
+-C_ASSERT( sizeof(struct handle_info) == 20 );
+ C_ASSERT( sizeof(struct luid) == 8 );
+ C_ASSERT( sizeof(struct luid_attr) == 12 );
+ C_ASSERT( sizeof(struct object_attributes) == 16 );
 diff --git a/server/trace.c b/server/trace.c
 index 11111111111..11111111111 100644
 --- a/server/trace.c
 +++ b/server/trace.c
-@@ -1341,19 +1341,7 @@ static void dump_varargs_rawinput_devices(const char *prefix, data_size_t size )
+@@ -1368,19 +1368,7 @@ static void dump_varargs_rawinput_devices(const char *prefix, data_size_t size )
  
  static void dump_varargs_handle_infos( const char *prefix, data_size_t size )
  {
@@ -384,6 +399,18 @@ index 11111111111..11111111111 100644
  }
  
  static void dump_varargs_cpu_topology_override( const char *prefix, data_size_t size )
+diff --git a/tools/make_requests b/tools/make_requests
+index 11111111111..11111111111 100755
+--- a/tools/make_requests
++++ b/tools/make_requests
+@@ -64,7 +64,6 @@ my %formats =
+     "startup_info_t"           => [  96,  4 ],
+     "user_apc_t"               => [  40,  8 ],
+     "struct filesystem_event"  => [ 12, 4 ],
+-    "struct handle_info"       => [ 20, 4 ],
+     "struct luid_attr"         => [ 12, 4 ],
+     "struct object_attributes" => [ 16, 4 ],
+     "struct object_type_info"  => [ 44, 4 ],
 -- 
-2.40.0
+0.0.0
 

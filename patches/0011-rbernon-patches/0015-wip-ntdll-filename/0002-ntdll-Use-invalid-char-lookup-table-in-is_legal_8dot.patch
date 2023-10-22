@@ -1,0 +1,61 @@
+From 89cb7b9a99299b7b6d90718a0d7806c749801473 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 9 Dec 2022 09:55:26 +0100
+Subject: [PATCH 2/8] ntdll: Use invalid char lookup table in
+ is_legal_8dot3_name.
+
+Instead of costly wcschr.
+---
+ dlls/ntdll/unix/file.c | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -180,7 +180,6 @@ typedef struct
+ #define IS_SEPARATOR(ch)   ((ch) == '\\' || (ch) == '/')
+ 
+ #define INVALID_NT_CHARS   '*','?','<','>','|','"'
+-#define INVALID_DOS_CHARS  INVALID_NT_CHARS,'+','=',',',';','[',']',' ','\345'
+ 
+ #define MAX_DIR_ENTRY_LEN 255  /* max length of a directory entry in chars */
+ 
+@@ -436,6 +435,16 @@ static inline BOOL is_invalid_dos_char( WCHAR ch )
+     return ch <= 0x7f ? is_invalid[ch] : TRUE;
+ }
+ 
++static inline BOOL is_invalid_8dot3_char( WCHAR ch )
++{
++    static const char is_invalid[0x7f] =
++    {
++        ['*'] = 1, ['?'] = 1, ['<'] = 1, ['>'] = 1, ['|'] = 1, ['"'] = 1, ['+'] = 1, ['='] = 1,
++        [','] = 1, [';'] = 1, ['['] = 1, [']'] = 1, [' '] = 1, [':'] = 1, ['/'] = 1, ['\\'] = 1,
++    };
++    return ch <= 0x7f ? is_invalid[ch] : TRUE;
++}
++
+ /* check if the device can be a mounted volume */
+ static inline BOOL is_valid_mounted_device( const struct stat *st )
+ {
+@@ -1644,7 +1653,6 @@ static BOOLEAN match_filename( const WCHAR *name, int length, const UNICODE_STRI
+  */
+ static BOOLEAN is_legal_8dot3_name( const WCHAR *name, int len )
+ {
+-    static const WCHAR invalid_chars[] = { INVALID_DOS_CHARS,':','/','\\',0 };
+     int i, dot = -1;
+ 
+     if (len > 12) return FALSE;
+@@ -1654,8 +1662,7 @@ static BOOLEAN is_legal_8dot3_name( const WCHAR *name, int len )
+ 
+     for (i = 0; i < len; i++)
+     {
+-        if (name[i] > 0x7f) return FALSE;
+-        if (wcschr( invalid_chars, name[i] )) return FALSE;
++        if (is_invalid_8dot3_char( name[i] )) return FALSE;
+         if (name[i] == '.')
+         {
+             if (dot != -1) return FALSE;
+-- 
+0.0.0
+

@@ -1,0 +1,173 @@
+From 5ba99e842f71b3b8d2632c55ae202ccde1751f42 Mon Sep 17 00:00:00 2001
+From: Jinoh Kang <jinoh.kang.kr@gmail.com>
+Date: Mon, 18 Apr 2022 19:27:38 +0900
+Subject: [PATCH 4/6] user32: Implement UOI_TIMERPROC_EXCEPTION_SUPPRESSION.
+
+Signed-off-by: Jinoh Kang <jinoh.kang.kr@gmail.com>
+---
+ dlls/user32/message.c      | 11 ++++++++++-
+ dlls/user32/tests/msg.c    |  6 ------
+ dlls/user32/user32.spec    |  2 +-
+ dlls/user32/user_main.c    |  1 +
+ dlls/user32/user_private.h |  1 +
+ dlls/user32/winstation.c   | 23 ++++++++++++++++++++++-
+ 6 files changed, 35 insertions(+), 9 deletions(-)
+
+diff --git a/dlls/user32/message.c b/dlls/user32/message.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/message.c
++++ b/dlls/user32/message.c
+@@ -869,6 +869,15 @@ static LRESULT dispatch_message( const MSG *msg, BOOL ansi )
+ }
+ 
+ 
++static LONG WINAPI timerproc_exception_filter(EXCEPTION_POINTERS *eptr)
++{
++    if (suppress_timerproc_exception)
++        return EXCEPTION_EXECUTE_HANDLER;
++
++    return EXCEPTION_CONTINUE_SEARCH;
++}
++
++
+ /***********************************************************************
+  *		DispatchMessageA (USER32.@)
+  *
+@@ -886,7 +895,7 @@ LRESULT WINAPI DECLSPEC_HOTPATCH __USES_SEH DispatchMessageA( const MSG* msg )
+             retval = CallWindowProcA( (WNDPROC)msg->lParam, msg->hwnd,
+                                       msg->message, msg->wParam, GetTickCount() );
+         }
+-        __EXCEPT_ALL_SEH
++        __EXCEPT_SEH(timerproc_exception_filter)
+         {
+             retval = 0;
+         }
+diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/tests/msg.c
++++ b/dlls/user32/tests/msg.c
+@@ -11676,7 +11676,6 @@ static void CALLBACK callback_exception(HWND hwnd, UINT uMsg, UINT_PTR idEvent,
+         value = FALSE;
+         ret = SetUserObjectInformationW(GetCurrentProcess(), UOI_TIMERPROC_EXCEPTION_SUPPRESSION,
+                                         &value, sizeof(value));
+-        todo_wine
+         ok(ret, "SetUserObjectInformationW error %lu\n", GetLastError());
+         tproc_exc_no_suppress = FALSE;
+     }
+@@ -11910,14 +11909,12 @@ static void test_timers_exception(DWORD code)
+     }
+     else
+     {
+-        todo_wine
+         ok(ret, "SetUserObjectInformationW error %lu\n", GetLastError());
+ 
+         count = 0;
+         timer_exc_phase = TIMER_EXCEPTION_INITIAL;
+         dispatch_message_ansi_handle_exception(&msg, timer_exception_handler);
+         ok(count == 1, "expected count to be 1, got %d\n", count);
+-        todo_wine
+         ok(timer_exc_phase == TIMER_EXCEPTION_CONTINUE_OK ||
+            broken(timer_exc_phase == TIMER_EXCEPTION_RAISED) /* < win10 1507 */,
+            "expected phase %d, got %d\n", TIMER_EXCEPTION_CONTINUE_OK, timer_exc_phase);
+@@ -11925,7 +11922,6 @@ static void test_timers_exception(DWORD code)
+         value = TRUE;
+         ret = SetUserObjectInformationW(GetCurrentProcess(), UOI_TIMERPROC_EXCEPTION_SUPPRESSION,
+                                         &value, sizeof(value));
+-        todo_wine
+         ok(ret, "SetUserObjectInformationW error %lu\n", GetLastError());
+ 
+         tproc_exc_no_suppress = TRUE;
+@@ -11933,7 +11929,6 @@ static void test_timers_exception(DWORD code)
+         timer_exc_phase = TIMER_EXCEPTION_INITIAL;
+         dispatch_message_ansi_handle_exception(&msg, timer_exception_handler);
+         ok(count == 1, "expected count to be 1, got %d\n", count);
+-        todo_wine
+         ok(timer_exc_phase == TIMER_EXCEPTION_CONTINUE_OK ||
+            broken(timer_exc_phase == TIMER_EXCEPTION_RAISED) /* < win10 1507 */,
+            "expected phase %d, got %d\n", TIMER_EXCEPTION_CONTINUE_OK, timer_exc_phase);
+@@ -11941,7 +11936,6 @@ static void test_timers_exception(DWORD code)
+         value = TRUE;
+         ret = SetUserObjectInformationW(GetCurrentProcess(), UOI_TIMERPROC_EXCEPTION_SUPPRESSION,
+                                         &value, sizeof(value));
+-        todo_wine
+         ok(ret, "SetUserObjectInformationW error %lu\n", GetLastError());
+     }
+ 
+diff --git a/dlls/user32/user32.spec b/dlls/user32/user32.spec
+index 11111111111..11111111111 100644
+--- a/dlls/user32/user32.spec
++++ b/dlls/user32/user32.spec
+@@ -722,7 +722,7 @@
+ @ stdcall SetThreadDpiAwarenessContext(ptr)
+ @ stdcall SetTimer(long long long ptr)
+ @ stdcall SetUserObjectInformationA(long long ptr long)
+-@ stdcall SetUserObjectInformationW(long long ptr long) NtUserSetObjectInformation
++@ stdcall SetUserObjectInformationW(long long ptr long)
+ @ stdcall SetUserObjectSecurity(long ptr ptr)
+ @ stdcall SetWinEventHook(long long long ptr long long long)
+ @ stdcall SetWindowCompositionAttribute(ptr ptr)
+diff --git a/dlls/user32/user_main.c b/dlls/user32/user_main.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/user_main.c
++++ b/dlls/user32/user_main.c
+@@ -31,6 +31,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(graphics);
+ WINE_DECLARE_DEBUG_CHANNEL(message);
+ 
+ HMODULE user32_module = 0;
++BOOL suppress_timerproc_exception = TRUE;
+ 
+ extern void WDML_NotifyThreadDetach(void);
+ 
+diff --git a/dlls/user32/user_private.h b/dlls/user32/user_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/user32/user_private.h
++++ b/dlls/user32/user_private.h
+@@ -44,6 +44,7 @@ struct wm_char_mapping_data
+ };
+ 
+ extern HMODULE user32_module;
++extern BOOL suppress_timerproc_exception;
+ 
+ extern BOOL post_dde_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, DWORD dest_tid,
+                               DWORD type );
+diff --git a/dlls/user32/winstation.c b/dlls/user32/winstation.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/winstation.c
++++ b/dlls/user32/winstation.c
+@@ -389,12 +389,33 @@ BOOL WINAPI GetUserObjectInformationA( HANDLE handle, INT index, LPVOID info, DW
+ }
+ 
+ 
++/******************************************************************************
++ *              SetUserObjectInformationW   (USER32.@)
++ */
++BOOL WINAPI SetUserObjectInformationW( HANDLE handle, INT index, LPVOID info, DWORD len )
++{
++    if (index == UOI_TIMERPROC_EXCEPTION_SUPPRESSION)
++    {
++        if (handle != GetCurrentProcess() || len != sizeof(BOOL))
++        {
++            SetLastError(ERROR_INVALID_PARAMETER);
++            return FALSE;
++        }
++
++        suppress_timerproc_exception = *(const BOOL *)info;
++        return TRUE;
++    }
++
++    return NtUserSetObjectInformation( handle, index, info, len );
++}
++
++
+ /******************************************************************************
+  *              SetUserObjectInformationA   (USER32.@)
+  */
+ BOOL WINAPI SetUserObjectInformationA( HANDLE handle, INT index, LPVOID info, DWORD len )
+ {
+-    return NtUserSetObjectInformation( handle, index, info, len );
++    return SetUserObjectInformationW( handle, index, info, len );
+ }
+ 
+ 
+
+

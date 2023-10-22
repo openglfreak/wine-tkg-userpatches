@@ -1,0 +1,66 @@
+From efe595e94f23b0ef4df55d41432568706c82b2e4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Sun, 12 Dec 2021 13:19:34 +0100
+Subject: [PATCH 38/40] user32: Use input shared memory in GetKeyboardState.
+
+user32: Mask off the unspecified bits in GetKeyboardState()
+
+When using shared memory for the keyboard state (as added in d2cbafab08)
+we no-longer mask off the unused bits, which causes the map to scroll
+uncontrollably in some situations in the Age of Empires series.
+
+This is a regression of bug:
+https://bugs.winehq.org/show_bug.cgi?id=30814
+
+An analysis of the bug can be found:
+https://davidgow.net/hacks/aoescroll.html
+
+Fixes: d2cbafab08 ("user32: Use input shared memory in GetKeyboardState.")
+Signed-off-by: David Gow <david@ingeniumdigital.com>
+---
+ dlls/win32u/input.c | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -941,11 +941,26 @@ SHORT WINAPI NtUserGetKeyState( INT vkey )
+  */
+ BOOL WINAPI NtUserGetKeyboardState( BYTE *state )
+ {
+-    BOOL ret;
++    volatile struct input_shared_memory *shared = get_input_shared_memory();
++    BOOL ret, skip = TRUE;
+     UINT i;
+ 
+     TRACE("(%p)\n", state);
+ 
++    if (!shared) skip = FALSE;
++    else SHARED_READ_BEGIN( &shared->seq )
++    {
++        if (!shared->created) skip = FALSE; /* server needs to create the queue */
++        else memcpy( state, (const void *)shared->keystate, 256 );
++    }
++    SHARED_READ_END( &shared->seq );
++
++    if (skip)
++    {
++        for (i = 0; i < 256; i++) state[i] &= 0x81;
++        return TRUE;
++    }
++
+     memset( state, 0, 256 );
+     SERVER_START_REQ( get_key_state )
+     {
+@@ -955,6 +970,7 @@ BOOL WINAPI NtUserGetKeyboardState( BYTE *state )
+         for (i = 0; i < 256; i++) state[i] &= 0x81;
+     }
+     SERVER_END_REQ;
++
+     return ret;
+ }
+ 
+-- 
+0.0.0
+

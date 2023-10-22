@@ -1,0 +1,164 @@
+From 3ca7e067c5c470d52c660f21a0c0e924990ac72a Mon Sep 17 00:00:00 2001
+From: Sergei Chernyadyev <1892-Cherser-s@users.noreply.gitlab.winehq.org>
+Date: Sun, 21 May 2023 23:38:26 +0300
+Subject: [PATCH 1/2] shell32: refactor notify_icon for multiple icons
+
+---
+ dlls/shell32/systray.c      | 41 +++++++++++++++++++++----------------
+ programs/explorer/systray.c | 31 ++++++++++++++++++----------
+ 2 files changed, 43 insertions(+), 29 deletions(-)
+
+diff --git a/dlls/shell32/systray.c b/dlls/shell32/systray.c
+index 11111111111..11111111111 100644
+--- a/dlls/shell32/systray.c
++++ b/dlls/shell32/systray.c
+@@ -34,6 +34,16 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(systray);
+ 
++struct notify_data_icon
++{
++    /* data for the icon bitmap */
++    UINT width;
++    UINT height;
++    UINT planes;
++    UINT bpp;
++    char buffer[];
++};
++
+ struct notify_data  /* platform-independent format for NOTIFYICONDATA */
+ {
+     LONG  hWnd;
+@@ -51,13 +61,10 @@ struct notify_data  /* platform-independent format for NOTIFYICONDATA */
+     WCHAR szInfoTitle[64];
+     DWORD dwInfoFlags;
+     GUID  guidItem;
+-    /* data for the icon bitmap */
+-    UINT width;
+-    UINT height;
+-    UINT planes;
+-    UINT bpp;
++    struct notify_data_icon icons[];
+ };
+ 
++
+ /*************************************************************************
+  * Shell_NotifyIcon			[SHELL32.296]
+  * Shell_NotifyIconA			[SHELL32.297]
+@@ -180,7 +187,7 @@ BOOL WINAPI Shell_NotifyIconW(DWORD dwMessage, PNOTIFYICONDATAW nid)
+         cbMaskBits = (bmMask.bmPlanes * bmMask.bmWidth * bmMask.bmHeight * bmMask.bmBitsPixel + 15) / 16 * 2;
+         if (iconinfo.hbmColor)
+             cbColourBits = (bmColour.bmPlanes * bmColour.bmWidth * bmColour.bmHeight * bmColour.bmBitsPixel + 15) / 16 * 2;
+-        cds.cbData = sizeof(*data) + cbMaskBits + cbColourBits;
++        cds.cbData = sizeof(*data) + sizeof(struct notify_data_icon) + cbMaskBits + cbColourBits;
+         buffer = malloc(cds.cbData);
+         if (!buffer)
+         {
+@@ -192,23 +199,21 @@ BOOL WINAPI Shell_NotifyIconW(DWORD dwMessage, PNOTIFYICONDATAW nid)
+ 
+         data = (struct notify_data *)buffer;
+         memset( data, 0, sizeof(*data) );
+-        buffer += sizeof(*data);
+-        GetBitmapBits(iconinfo.hbmMask, cbMaskBits, buffer);
++        GetBitmapBits(iconinfo.hbmMask, cbMaskBits, &data->icons[0].buffer);
+         if (!iconinfo.hbmColor)
+         {
+-            data->width  = bmMask.bmWidth;
+-            data->height = bmMask.bmHeight / 2;
+-            data->planes = 1;
+-            data->bpp    = 1;
++            data->icons[0].width  = bmMask.bmWidth;
++            data->icons[0].height = bmMask.bmHeight / 2;
++            data->icons[0].planes = 1;
++            data->icons[0].bpp    = 1;
+         }
+         else
+         {
+-            data->width  = bmColour.bmWidth;
+-            data->height = bmColour.bmHeight;
+-            data->planes = bmColour.bmPlanes;
+-            data->bpp    = bmColour.bmBitsPixel;
+-            buffer += cbMaskBits;
+-            GetBitmapBits(iconinfo.hbmColor, cbColourBits, buffer);
++            data->icons[0].width  = bmColour.bmWidth;
++            data->icons[0].height = bmColour.bmHeight;
++            data->icons[0].planes = bmColour.bmPlanes;
++            data->icons[0].bpp    = bmColour.bmBitsPixel;
++            GetBitmapBits(iconinfo.hbmColor, cbColourBits, &data->icons[0].buffer[cbMaskBits]);
+             DeleteObject(iconinfo.hbmColor);
+         }
+         DeleteObject(iconinfo.hbmMask);
+diff --git a/programs/explorer/systray.c b/programs/explorer/systray.c
+index 11111111111..11111111111 100644
+--- a/programs/explorer/systray.c
++++ b/programs/explorer/systray.c
+@@ -32,6 +32,16 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(systray);
+ 
++struct notify_data_icon
++{
++    /* data for the icon bitmap */
++    UINT width;
++    UINT height;
++    UINT planes;
++    UINT bpp;
++    char buffer[];
++};
++
+ struct notify_data  /* platform-independent format for NOTIFYICONDATA */
+ {
+     LONG  hWnd;
+@@ -50,10 +60,7 @@ struct notify_data  /* platform-independent format for NOTIFYICONDATA */
+     DWORD dwInfoFlags;
+     GUID  guidItem;
+     /* data for the icon bitmap */
+-    UINT width;
+-    UINT height;
+-    UINT planes;
+-    UINT bpp;
++    struct notify_data_icon icons[];
+ };
+ 
+ static int (CDECL *wine_notify_icon)(DWORD,NOTIFYICONDATAW *);
+@@ -519,6 +526,7 @@ static BOOL handle_incoming(HWND hwndSource, COPYDATASTRUCT *cds)
+ {
+     struct icon *icon = NULL;
+     const struct notify_data *data;
++    const struct notify_data_icon *data_icon;
+     NOTIFYICONDATAW nid;
+     int ret = FALSE;
+ 
+@@ -543,22 +551,23 @@ static BOOL handle_incoming(HWND hwndSource, COPYDATASTRUCT *cds)
+ 
+     /* FIXME: if statement only needed because we don't support interprocess
+      * icon handles */
+-    if ((nid.uFlags & NIF_ICON) && cds->cbData > sizeof(*data))
++    if ((nid.uFlags & NIF_ICON) && cds->cbData > (sizeof(*data) + sizeof(struct notify_data_icon)))
+     {
+         LONG cbMaskBits;
+         LONG cbColourBits;
+-        const char *buffer = (const char *)(data + 1);
++        data_icon = &data->icons[0];
+ 
+-        cbMaskBits = (data->width * data->height + 15) / 16 * 2;
+-        cbColourBits = (data->planes * data->width * data->height * data->bpp + 15) / 16 * 2;
++        cbMaskBits = (data_icon->width * data_icon->height + 15) / 16 * 2;
++        cbColourBits = (data_icon->planes * data_icon->width * data_icon->height * data_icon->bpp + 15) / 16 * 2;
+ 
+-        if (cds->cbData < sizeof(*data) + cbMaskBits + cbColourBits)
++        if (cds->cbData < sizeof(*data) + sizeof(*data_icon) + cbMaskBits + cbColourBits)
+         {
+             ERR( "buffer underflow\n" );
+             return FALSE;
+         }
+-        nid.hIcon = CreateIcon(NULL, data->width, data->height, data->planes, data->bpp,
+-                               buffer, buffer + cbMaskBits);
++        nid.hIcon = CreateIcon(NULL, data_icon->width, data_icon->height, data_icon->planes, data_icon->bpp,
++                               &data_icon->buffer[0], &data_icon->buffer[cbMaskBits]);
++        data_icon = (const struct notify_data_icon*)&data_icon->buffer[cbMaskBits + cbColourBits];
+     }
+ 
+     /* try forwarding to the display driver first */
+
+

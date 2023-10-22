@@ -1,0 +1,47 @@
+From 94ffc4a6e4ba2e38c3d8dc7cb0ca1ca8e2a731fa Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Mon, 7 Aug 2023 11:04:35 +0200
+Subject: [PATCH 11/15] wintrust: Check return value of both CryptDecodeObject
+ calls while decode catalog member attributes.
+
+Otherwise size will be used uninitialized if CryptDecodeObject fails.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/wintrust/crypt.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/wintrust/crypt.c b/dlls/wintrust/crypt.c
+index 11111111111..11111111111 100644
+--- a/dlls/wintrust/crypt.c
++++ b/dlls/wintrust/crypt.c
+@@ -715,7 +715,8 @@ CRYPTCATMEMBER * WINAPI CryptCATEnumerateMember(HANDLE hCatalog, CRYPTCATMEMBER
+             member->sEncodedMemberInfo.cbData = attr->rgValue->cbData;
+             member->sEncodedMemberInfo.pbData = attr->rgValue->pbData;
+ 
+-            CryptDecodeObject(cc->encoding, CAT_MEMBERINFO_OBJID, attr->rgValue->pbData, attr->rgValue->cbData, 0, NULL, &size);
++            ret = CryptDecodeObject(cc->encoding, CAT_MEMBERINFO_OBJID, attr->rgValue->pbData, attr->rgValue->cbData, 0, NULL, &size);
++            if (!ret) goto error;
+ 
+             if (!(mi = malloc(size)))
+             {
+@@ -740,12 +741,15 @@ CRYPTCATMEMBER * WINAPI CryptCATEnumerateMember(HANDLE hCatalog, CRYPTCATMEMBER
+         }
+         else if (!strcmp(attr->pszObjId, SPC_INDIRECT_DATA_OBJID))
+         {
++            BOOL ret;
++
+             /* SPC_INDIRECT_DATA_CONTENT is equal to SIP_INDIRECT_DATA */
+ 
+             member->sEncodedIndirectData.cbData = attr->rgValue->cbData;
+             member->sEncodedIndirectData.pbData = attr->rgValue->pbData;
+ 
+-            CryptDecodeObject(cc->encoding, SPC_INDIRECT_DATA_OBJID, attr->rgValue->pbData, attr->rgValue->cbData, 0, NULL, &size);
++            ret = CryptDecodeObject(cc->encoding, SPC_INDIRECT_DATA_OBJID, attr->rgValue->pbData, attr->rgValue->cbData, 0, NULL, &size);
++            if (!ret) goto error;
+ 
+             if (!(member->pIndirectData = malloc(size)))
+             {
+-- 
+0.0.0
+

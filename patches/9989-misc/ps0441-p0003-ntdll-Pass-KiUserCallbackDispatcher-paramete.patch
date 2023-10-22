@@ -7,21 +7,21 @@ Overwatch 2 hooks KiUserCallbackDispatcher and expects to be able to use all the
 
 Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
 ---
- dlls/ntdll/signal_x86_64.c      | 3 +++
- dlls/ntdll/unix/signal_x86_64.c | 6 +-----
- 2 files changed, 4 insertions(+), 5 deletions(-)
+ dlls/ntdll/signal_x86_64.c      |  3 +++
+ dlls/ntdll/unix/signal_x86_64.c | 10 +++++-----
+ 2 files changed, 8 insertions(+), 5 deletions(-)
 
 diff --git a/dlls/ntdll/signal_x86_64.c b/dlls/ntdll/signal_x86_64.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/signal_x86_64.c
 +++ b/dlls/ntdll/signal_x86_64.c
-@@ -702,6 +702,9 @@ void WINAPI user_callback_dispatcher( ULONG id, void *args, ULONG len )
+@@ -721,6 +721,9 @@ BOOLEAN WINAPI RtlIsEcCode( const void *ptr )
   */
  __ASM_GLOBAL_FUNC( KiUserCallbackDispatcher,
                    ".byte 0x0f, 0x1f, 0x44, 0x00, 0x00\n\t" /* Overwatch 2 replaces the first 5 bytes with a jump */
-+                  "movq 0x8(%rsp),%rcx\n\t"   /* id */
-+                  "movq 0x10(%rsp),%rdx\n\t"  /* args */
-+                  "movq 0x18(%rsp),%r8\n\t"   /* len */
++                  "movq 0x20(%rsp),%rdx\n\t"  /* args */
++                  "movl 0x28(%rsp),%r8d\n\t"   /* len */
++                  "movl 0x2c(%rsp),%ecx\n\t"  /* id */
                    "andq $0xFFFFFFFFFFFFFFF0, %rsp\n\t"
                    __ASM_SEH(".seh_endprologue\n\t")
                    "call " __ASM_NAME("user_callback_dispatcher") "\n\t"
@@ -29,19 +29,31 @@ diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/signal_x86_64.c
 +++ b/dlls/ntdll/unix/signal_x86_64.c
-@@ -1659,11 +1659,7 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
+@@ -1615,11 +1615,11 @@ __ASM_GLOBAL_FUNC( call_user_mode_callback,
+                    "movw 0x330(%r11),%fs\n"    /* amd64_thread_data()->fs */
                     "1:\n\t"
  #endif
-                    "movq %rcx,%r9\n\t"         /* func */
--                   "movq %rdx,%rax\n\t"        /* stack */
--                   "movq 0x8(%rax),%rcx\n\t"   /* id */
--                   "movq 0x10(%rax),%rdx\n\t"  /* args */
--                   "movq 0x18(%rax),%r8\n\t"   /* len */
--                   "movq %rax,%rsp\n\t"
-+                   "movq %rdx,%rsp\n\t"        /* stack */
+-                   "movq %rdi,%rcx\n\t"        /* id */
+-                   "movq %rdx,%r8\n\t"         /* len */
+-                   "movq %rsi,%rdx\n\t"        /* args */
+-                   "leaq -0x20(%rsi),%rsp\n\t"
++                   "leaq -0x50(%rsi),%rsp\n\t"
+                    "push $0\n\t"
++                   "movl %edi,0x2c(%rsp)\n\t" /* id */
++                   "movl %edx,0x28(%rsp)\n\t" /* len */
++                   "movq %rsi,0x20(%rsp)\n\t" /* args */
                     "jmpq *%r9" )
  
  
+@@ -1671,7 +1671,7 @@ __ASM_GLOBAL_FUNC( user_mode_callback_return,
+ NTSTATUS KeUserModeCallback( ULONG id, const void *args, ULONG len, void **ret_ptr, ULONG *ret_len )
+ {
+     struct syscall_frame *frame = amd64_thread_data()->syscall_frame;
+-    void *args_data = (void *)((frame->rsp - len) & ~15);
++    void *args_data = (void *)(((frame->rsp - len - 8) & ~15) + 8);
+ 
+     if ((char *)ntdll_get_thread_data()->kernel_stack + min_kernel_stack > (char *)&frame)
+         return STATUS_STACK_OVERFLOW;
 -- 
-2.40.0
+0.0.0
 

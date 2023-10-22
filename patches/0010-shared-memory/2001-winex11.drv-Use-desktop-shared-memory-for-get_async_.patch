@@ -1,0 +1,93 @@
+From b4b45f190c154600a7a51f5972f01eaccfef10f6 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Mon, 28 Mar 2022 06:32:47 +0200
+Subject: [PATCH 2001/7] winex11.drv: Use desktop shared memory for
+ get_async_key_state.
+
+---
+ dlls/win32u/sysparams.c     |  3 +++
+ dlls/winex11.drv/keyboard.c | 11 ++++++++++-
+ dlls/winex11.drv/x11drv.h   | 20 ++++++++++++++++++++
+ include/ntuser.h            |  1 +
+ 4 files changed, 34 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -6279,6 +6279,9 @@ ULONG_PTR WINAPI NtUserCallNoParam( ULONG code )
+         thread_detach();
+         return 0;
+ 
++    case NtUserGetDesktopSharedMemory:
++        return (ULONG_PTR)get_desktop_shared_memory();
++
+     default:
+         FIXME( "invalid code %u\n", (int)code );
+         return 0;
+diff --git a/dlls/winex11.drv/keyboard.c b/dlls/winex11.drv/keyboard.c
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/keyboard.c
++++ b/dlls/winex11.drv/keyboard.c
+@@ -1222,7 +1222,16 @@ static void X11DRV_send_keyboard_input( HWND hwnd, WORD vkey, WORD scan, UINT fl
+  */
+ static BOOL get_async_key_state( BYTE state[256] )
+ {
+-    BOOL ret;
++    volatile struct desktop_shared_memory *shared = (void *)NtUserCallNoParam( NtUserGetDesktopSharedMemory );
++    BOOL skip = TRUE, ret;
++
++    if (!shared) skip = FALSE;
++    else SHARED_READ_BEGIN( &shared->seq )
++    {
++        memcpy( state, (void*)shared->keystate, 256 );
++    }
++    SHARED_READ_END( &shared->seq );
++    if (skip) return TRUE;
+ 
+     SERVER_START_REQ( get_key_state )
+     {
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index 11111111111..11111111111 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -949,4 +949,24 @@ static inline UINT asciiz_to_unicode( WCHAR *dst, const char *src )
+     return (p - dst) * sizeof(WCHAR);
+ }
+ 
++#if defined(__i386__) || defined(__x86_64__)
++#define __SHARED_READ_SEQ( x ) (*(x))
++#define __SHARED_READ_FENCE do {} while(0)
++#else
++#define __SHARED_READ_SEQ( x ) __atomic_load_n( x, __ATOMIC_RELAXED )
++#define __SHARED_READ_FENCE __atomic_thread_fence( __ATOMIC_ACQUIRE )
++#endif
++
++#define SHARED_READ_BEGIN( x )                                          \
++    do {                                                                \
++        unsigned int __seq;                                             \
++        do {                                                            \
++            while ((__seq = __SHARED_READ_SEQ( x )) & SEQUENCE_MASK) NtYieldExecution(); \
++            __SHARED_READ_FENCE;
++
++#define SHARED_READ_END( x )                       \
++            __SHARED_READ_FENCE;                   \
++        } while (__SHARED_READ_SEQ( x ) != __seq); \
++    } while(0)
++
+ #endif  /* __WINE_X11DRV_H */
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 11111111111..11111111111 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -798,6 +798,7 @@ enum
+     /* temporary exports */
+     NtUserExitingThread,
+     NtUserThreadDetach,
++    NtUserGetDesktopSharedMemory,
+ };
+ 
+ static inline BOOL NtUserDestroyCaret(void)
+-- 
+0.0.0
+

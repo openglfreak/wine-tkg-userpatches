@@ -1,0 +1,454 @@
+From e8515de4c49c6631efc36206272c16a445cfee59 Mon Sep 17 00:00:00 2001
+From: ajkhoury <aidankhoury@gmail.com>
+Date: Sun, 17 Sep 2023 11:34:42 -0300
+Subject: [PATCH 4/6] mspatcha: Add implementations for GetFilePatchSignature*
+ routines
+
+This commit adds implementations for the GetFilePatchSignature* routines, using NormalizeFileForPatchSignature for the bulk of the work.
+---
+ dlls/mspatcha/Makefile.in       |   1 +
+ dlls/mspatcha/md5.c             |  31 +++++
+ dlls/mspatcha/md5.h             |  21 +++
+ dlls/mspatcha/mspatcha_main.c   | 234 +++++++++++++++++++++++++++-----
+ dlls/mspatcha/tests/signature.c |  11 --
+ include/patchapi.h              |   1 +
+ 6 files changed, 257 insertions(+), 42 deletions(-)
+ create mode 100644 dlls/mspatcha/md5.c
+ create mode 100644 dlls/mspatcha/md5.h
+
+diff --git a/dlls/mspatcha/Makefile.in b/dlls/mspatcha/Makefile.in
+index 11111111111..11111111111 100644
+--- a/dlls/mspatcha/Makefile.in
++++ b/dlls/mspatcha/Makefile.in
+@@ -5,6 +5,7 @@ EXTRADLLFLAGS = -Wb,--prefer-native
+ 
+ C_SRCS = \
+ 	lzxd_dec.c \
++	md5.c \
+ 	mspatcha_main.c \
+ 	pa19.c
+ 
+diff --git a/dlls/mspatcha/md5.c b/dlls/mspatcha/md5.c
+new file mode 100644
+index 00000000000..11111111111
+--- /dev/null
++++ b/dlls/mspatcha/md5.c
+@@ -0,0 +1,31 @@
++
++/* MD5 algorithm
++ *
++ * This code is derived from ntdll/crypt.c
++ */
++
++#include <string.h>
++#include <basetsd.h> /* for WORDS_BIGENDIAN */
++#include <windef.h>
++
++#include "md5.h"
++
++struct md5_ctx {
++    unsigned int i[2];
++    unsigned int buf[4];
++    unsigned char in[64];
++    unsigned char digest[MD5DIGESTLEN];
++};
++
++extern void WINAPI MD5Init( struct md5_ctx * );
++extern void WINAPI MD5Update( struct md5_ctx *, const unsigned char *, unsigned int );
++extern void WINAPI MD5Final( struct md5_ctx * );
++
++void ComputeMD5Hash(const void *data, unsigned int len, unsigned char digest[MD5DIGESTLEN])
++{
++    struct md5_ctx ctx;
++    MD5Init(&ctx);
++    MD5Update(&ctx, data, len);
++    MD5Final(&ctx);
++    memcpy(digest, ctx.digest, MD5DIGESTLEN);
++}
+diff --git a/dlls/mspatcha/md5.h b/dlls/mspatcha/md5.h
+new file mode 100644
+index 00000000000..11111111111
+--- /dev/null
++++ b/dlls/mspatcha/md5.h
+@@ -0,0 +1,21 @@
++/*
++ * MD5 algorithm
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with this library; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#define MD5DIGESTLEN 16
++
++void ComputeMD5Hash(const void *data, unsigned int len, unsigned char digest[MD5DIGESTLEN]);
+diff --git a/dlls/mspatcha/mspatcha_main.c b/dlls/mspatcha/mspatcha_main.c
+index 11111111111..11111111111 100644
+--- a/dlls/mspatcha/mspatcha_main.c
++++ b/dlls/mspatcha/mspatcha_main.c
+@@ -25,8 +25,6 @@
+  *    used or the old file exceeds the lzxd window size.
+  *  - APPLY_OPTION_FAIL_IF_CLOSE is ignored. Normalization of 32-bit PE files
+  *    is required for checking this.
+- *  - GetFilePatchSignature* and NormalizeFileForPatchSignature require a
+- *    solution to the above 32-bit exe problem.
+  */
+ 
+ #include <stdarg.h>
+@@ -34,9 +32,11 @@
+ #include "windef.h"
+ #include "winbase.h"
+ #include "winnls.h"
++#include "winternl.h"
+ #include "patchapi.h"
+ #include "wine/debug.h"
+ 
++#include "md5.h"
+ #include "pa19.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(mspatcha);
+@@ -54,6 +54,30 @@ static WCHAR *strdupAW(const char *src)
+     return dst;
+ }
+ 
++static inline char nibble2char(unsigned char n)
++{
++    return (char)((n) < 0xA) ? ('0' + (n)) : ('a' + ((n) - 0xA));
++}
++
++static inline void bin2hex(const unsigned char *bin, char *hexstr, size_t maxcount)
++{
++    size_t i, n = 0;
++    for (i = 0; i < maxcount; i++) {
++        hexstr[n++] = nibble2char((bin[i] >> 4) & 0xf);
++        hexstr[n++] = nibble2char((bin[i] & 0xf));
++    }
++    hexstr[n] = '\0';
++}
++
++static inline void dword2hex(unsigned int value, char *hexstr)
++{
++    size_t i;
++    for (i = 8; i > 0; --i, value >>= 4) {
++        hexstr[i-1] = nibble2char((value & 0xf));
++    }
++    hexstr[8] = '\0';
++}
++
+ /*****************************************************
+  *    TestApplyPatchToFileA (MSPATCHA.@)
+  */
+@@ -208,54 +232,202 @@ BOOL WINAPI ApplyPatchToFileByBuffers(PBYTE patch_file_view, ULONG  patch_file_s
+ /*****************************************************
+  *    GetFilePatchSignatureA (MSPATCHA.@)
+  */
+-BOOL WINAPI GetFilePatchSignatureA(LPCSTR filename, ULONG flags, PVOID data, ULONG ignore_range_count,
+-    PPATCH_IGNORE_RANGE ignore_range, ULONG retain_range_count,
+-    PPATCH_RETAIN_RANGE retain_range, ULONG bufsize, LPSTR buffer)
++BOOL WINAPI GetFilePatchSignatureA(
++    LPCSTR filename, ULONG option_flags, PVOID option_data,
++    ULONG ignore_range_count, PPATCH_IGNORE_RANGE ignore_range_array,
++    ULONG retain_range_count, PPATCH_RETAIN_RANGE retain_range_array,
++    ULONG signature_bufsize, LPSTR signature_buf)
+ {
+-    FIXME("stub - %s, %lx, %p, %lu, %p, %lu, %p, %lu, %p\n", debugstr_a(filename), flags, data,
+-        ignore_range_count, ignore_range, retain_range_count, retain_range, bufsize, buffer);
+-    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+-    return FALSE;
++    BOOL success = FALSE;
++    HANDLE file_hndl;
++
++    file_hndl = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
++                            NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
++    if (file_hndl != INVALID_HANDLE_VALUE)
++    {
++        success = GetFilePatchSignatureByHandle(
++                    file_hndl, option_flags,option_data,
++                    ignore_range_count, ignore_range_array,
++                    retain_range_count, retain_range_array,
++                    signature_bufsize, signature_buf);
++
++        CloseHandle(file_hndl);
++    }
++
++    return success;
+ }
+ 
+ /*****************************************************
+  *    GetFilePatchSignatureW (MSPATCHA.@)
+  */
+-BOOL WINAPI GetFilePatchSignatureW(LPCWSTR filename, ULONG flags, PVOID data, ULONG ignore_range_count,
+-    PPATCH_IGNORE_RANGE ignore_range, ULONG retain_range_count,
+-    PPATCH_RETAIN_RANGE retain_range, ULONG bufsize, LPWSTR buffer)
++BOOL WINAPI GetFilePatchSignatureW(
++    LPCWSTR filename, ULONG option_flags, PVOID option_data,
++    ULONG ignore_range_count, PPATCH_IGNORE_RANGE ignore_range_array,
++    ULONG retain_range_count, PPATCH_RETAIN_RANGE retain_range_array,
++    ULONG signature_bufsize, LPWSTR signature_buf)
+ {
+-    FIXME("stub - %s, %lx, %p, %lu, %p, %lu, %p, %lu, %p\n", debugstr_w(filename), flags, data,
+-        ignore_range_count, ignore_range, retain_range_count, retain_range, bufsize, buffer);
+-    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+-    return FALSE;
++    BOOL success = FALSE;
++    HANDLE file_hndl;
++    char ascii_buffer[40];
++
++    file_hndl = CreateFileW(filename, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
++                            NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
++    if (file_hndl != INVALID_HANDLE_VALUE) 
++    {
++        success = GetFilePatchSignatureByHandle(
++                    file_hndl, option_flags,option_data,
++                    ignore_range_count, ignore_range_array,
++                    retain_range_count, retain_range_array,
++                    sizeof(ascii_buffer), ascii_buffer);
++
++        if (success) {
++            if ((signature_bufsize / sizeof(WCHAR)) >= (strlen(ascii_buffer) + 1)) {
++                success = MultiByteToWideChar(CP_ACP, MB_PRECOMPOSED,
++                    ascii_buffer, -1, signature_buf, signature_bufsize / sizeof(WCHAR)) != 0;
++
++            } else {
++                SetLastError(ERROR_INSUFFICIENT_BUFFER);
++                success = FALSE;
++            }
++        }
++
++        CloseHandle(file_hndl);
++    }
++
++    return success;
+ }
+ 
+ /*****************************************************
+  *    GetFilePatchSignatureByHandle (MSPATCHA.@)
+  */
+-BOOL WINAPI GetFilePatchSignatureByHandle(HANDLE handle, ULONG flags, PVOID options, ULONG ignore_range_count,
+-    PPATCH_IGNORE_RANGE ignore_range, ULONG retain_range_count,
+-    PPATCH_RETAIN_RANGE retain_range, ULONG bufsize, LPSTR buffer)
++BOOL WINAPI GetFilePatchSignatureByHandle(
++    HANDLE file_handle, ULONG option_flags, PVOID option_data,
++    ULONG ignore_range_count, PPATCH_IGNORE_RANGE ignore_range_array,
++    ULONG retain_range_count, PPATCH_RETAIN_RANGE retain_range_array,
++    ULONG signature_bufsize, LPSTR signature_buf)
+ {
+-    FIXME("stub - %p, %lx, %p, %lu, %p, %lu, %p, %lu, %p\n", handle, flags, options,
+-        ignore_range_count, ignore_range, retain_range_count, retain_range, bufsize, buffer);
+-    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+-    return FALSE;
++    BOOL success = FALSE;
++    HANDLE file_writable_mapping = NULL;
++    PVOID file_writable_buf = NULL;
++    DWORD file_size = 0;
++    DWORD file_size_hi = 0;
++
++    file_size = GetFileSize(file_handle, &file_size_hi);
++
++    /* Cannot support files over 4GiB in size. */
++    if (file_size == 0xFFFFFFFF) {
++        if (GetLastError() == ERROR_SUCCESS) {
++            SetLastError(ERROR_FILE_TOO_LARGE);
++        }
++        return FALSE;
++
++    } else if (file_size_hi != 0) {
++        SetLastError(ERROR_FILE_TOO_LARGE);
++        return FALSE;
++    }
++
++    /* No file size? Nothing to do; return success.*/
++    if (file_size == 0) {
++        return TRUE;
++    }
++
++    /* Create a writable file mapping for the given file handle. */
++    file_writable_mapping = CreateFileMappingA(file_handle, NULL, PAGE_WRITECOPY, 0, 0, NULL);
++    if (file_writable_mapping) {
++        file_writable_buf = MapViewOfFile(file_writable_mapping, FILE_MAP_COPY, 0, 0, 0);
++        CloseHandle(file_writable_mapping);
++        if (file_writable_buf) {
++            success = TRUE;
++        }
++    }
++
++    if (success)
++    {
++        /* Get the file patch signature for the mapped file. */
++        success = GetFilePatchSignatureByBuffer(
++                    file_writable_buf, file_size,
++                    option_flags, option_data,
++                    ignore_range_count, ignore_range_array,
++                    retain_range_count, retain_range_array,
++                    signature_bufsize, signature_buf);
++
++        /* Unmapped the writable file buffer. */
++        UnmapViewOfFile(file_writable_buf);
++    }
++
++    /* Handle errors appropriately. */
++    if (!success) {
++        if (GetLastError() == ERROR_SUCCESS) {
++            SetLastError(ERROR_EXTENDED_ERROR);
++        }
++    }
++
++    return success;
+ }
+ 
+ /*****************************************************
+  *    GetFilePatchSignatureByBuffer (MSPATCHA.@)
+  */
+-BOOL WINAPI GetFilePatchSignatureByBuffer(PBYTE file_buf, ULONG file_size, ULONG flags, PVOID options,
+-    ULONG ignore_range_count, PPATCH_IGNORE_RANGE ignore_range,
+-    ULONG retain_range_count, PPATCH_RETAIN_RANGE retain_range,
+-    ULONG bufsize, LPSTR buffer)
++BOOL WINAPI GetFilePatchSignatureByBuffer(
++    PBYTE file_buffer, ULONG file_size,
++    ULONG option_flags, PVOID option_data,
++    ULONG ignore_range_count, PPATCH_IGNORE_RANGE ignore_range_array,
++    ULONG retain_range_count, PPATCH_RETAIN_RANGE retain_range_array,
++    ULONG signature_bufsize, LPSTR signature_buf)
+ {
+-    FIXME("stub - %p, %lu, %lx, %p, %lu, %p, %lu, %p, %lu, %p\n", file_buf, file_size, flags, options,
+-        ignore_range_count, ignore_range, retain_range_count, retain_range, bufsize, buffer);
+-    SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
+-    return FALSE;
++    BOOL success;
++    INT result;
++    UINT32 filecrc;
++    unsigned char filehash[MD5DIGESTLEN];
++
++    TRACE("getting file patch signature for buffer 0x%p of size 0x%lX", file_buffer, file_size);
++
++    /* Normalize the given mapped file image. */
++    result = NormalizeFileForPatchSignature(
++        file_buffer, file_size,
++        option_flags, option_data,
++        0x10000000, 0x10000000,
++        ignore_range_count, ignore_range_array,
++        retain_range_count, retain_range_array);
++
++    if (result == NORMALIZE_RESULT_FAILURE) {
++        success = FALSE;
++    } else {
++        success = TRUE;
++    }
++
++    if (success) {
++        if (option_flags & PATCH_OPTION_SIGNATURE_MD5) {
++            if (signature_bufsize >= (MD5DIGESTLEN*2+1)) {
++                /* calculate MD5 hash of file buffer. */
++                ComputeMD5Hash(file_buffer, (unsigned int)file_size, filehash);
++                bin2hex(filehash, signature_buf, MD5DIGESTLEN);
++
++            } else {
++                SetLastError(ERROR_INSUFFICIENT_BUFFER);
++                success = FALSE;
++            }
++
++        } else {
++            if (signature_bufsize >= (sizeof(UINT32)*2+1)) {
++                /* calculate CRC32 checksum of file buffer. */
++                filecrc = RtlComputeCrc32(0, file_buffer, file_size);
++                dword2hex(filecrc, signature_buf);
++
++            } else {
++                SetLastError(ERROR_INSUFFICIENT_BUFFER);
++                success = FALSE;
++            }
++        }
++    }
++
++    if (!success) {
++        if (GetLastError() == ERROR_SUCCESS) {
++            SetLastError(ERROR_EXTENDED_ERROR);
++        }
++    }
++
++    return success;
+ }
+ 
+ /*****************************************************
+diff --git a/dlls/mspatcha/tests/signature.c b/dlls/mspatcha/tests/signature.c
+index 11111111111..11111111111 100644
+--- a/dlls/mspatcha/tests/signature.c
++++ b/dlls/mspatcha/tests/signature.c
+@@ -346,9 +346,7 @@ static void test_signature_by_buffer(void)
+     memset(array, 0xcc, 8);
+     buf[0] = '\0';
+     result = pGetFilePatchSignatureByBuffer(array, 8, 0, NULL, 0, NULL, 0, NULL, 9, buf);
+-    todo_wine
+     ok(result == TRUE, "Expected %d, got %d\n", TRUE, result);
+-    todo_wine
+     ok(!strcmp(buf, "58ea8bb8"), "Expected %s, got %s\n", "58ea8bb8", buf);
+ 
+     /* Test CRC32 signature w/ insufficient buffer */
+@@ -358,7 +356,6 @@ static void test_signature_by_buffer(void)
+     result = pGetFilePatchSignatureByBuffer(array, 8, 0, NULL, 0, NULL, 0, NULL, 8, buf);
+     err = GetLastError();
+     ok(result == FALSE, "Expected %d, got %d\n", FALSE, result);
+-    todo_wine
+     ok(err == ERROR_INSUFFICIENT_BUFFER, "Expected ERROR_INSUFFICIENT_BUFFER, got %#lx\n", err);
+     ok(!buf[0], "Got unexpected %s\n", buf);
+ 
+@@ -367,9 +364,7 @@ static void test_signature_by_buffer(void)
+     buf[0] = '\0';
+     result = pGetFilePatchSignatureByBuffer(array, 8, PATCH_OPTION_SIGNATURE_MD5, NULL,
+         0, NULL, 0, NULL, 33, buf);
+-    todo_wine
+     ok(result == TRUE, "Expected %d, got %d\n", TRUE, result);
+-    todo_wine
+     ok(!strcmp(buf, "7bffa66e1c861fcbf38426d134508908"), "Expected %s, got %s\n",
+         "7bffa66e1c861fcbf38426d134508908", buf);
+ 
+@@ -381,7 +376,6 @@ static void test_signature_by_buffer(void)
+         0, NULL, 0, NULL, 32, buf);
+     err = GetLastError();
+     ok(result == FALSE, "Expected %d, got %d\n", FALSE, result);
+-    todo_wine
+     ok(err == ERROR_INSUFFICIENT_BUFFER, "Expected ERROR_INSUFFICIENT_BUFFER, got %#lx\n", err);
+     ok(!buf[0], "Got unexpected %s\n", buf);
+ 
+@@ -392,17 +386,12 @@ static void test_signature_by_buffer(void)
+     header->OptionalHeader.CheckSum = 0xdeadbeef;
+     header->OptionalHeader.ImageBase = 0x400000;
+     result = pGetFilePatchSignatureByBuffer(array, 1024, 0, NULL, 0, NULL, 0, NULL, 9, buf);
+-    todo_wine
+     ok(result == TRUE, "Expected %d, got %d\n", TRUE, result);
+-    todo_wine
+     ok(!strcmp(buf, "f953f764"), "Expected %s, got %s\n", "f953f764", buf);
+-    todo_wine
+     ok(header->FileHeader.TimeDateStamp == 0x10000000, "Expected %#x, got %#lx\n",
+         0x10000000, header->FileHeader.TimeDateStamp);
+-    todo_wine
+     ok(header->OptionalHeader.CheckSum == 0x9dd2, "Expected %#x, got %#lx\n",
+         0x9dd2, header->OptionalHeader.CheckSum);
+-    todo_wine
+     ok(header->OptionalHeader.ImageBase == 0x10000000, "Expected %#x, got %#lx\n",
+         0x10000000, header->OptionalHeader.ImageBase);
+ }
+diff --git a/include/patchapi.h b/include/patchapi.h
+index 11111111111..11111111111 100644
+--- a/include/patchapi.h
++++ b/include/patchapi.h
+@@ -36,6 +36,7 @@ extern "C" {
+ #define PATCH_OPTION_NO_CHECKSUM       0x00200000
+ #define PATCH_OPTION_NO_RESTIMEFIX     0x00400000
+ #define PATCH_OPTION_NO_TIMESTAMP      0x00800000
++#define PATCH_OPTION_SIGNATURE_MD5     0x01000000
+ #define PATCH_OPTION_INTERLEAVE_FILES  0x40000000
+ #define PATCH_OPTION_RESERVED1         0x80000000
+ 
+
+

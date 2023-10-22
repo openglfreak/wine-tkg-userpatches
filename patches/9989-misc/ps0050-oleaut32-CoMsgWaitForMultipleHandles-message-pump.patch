@@ -32,15 +32,15 @@ The bug is the same: windows does not call MessagePending for DDE/RPC
 messages, but wine (still) does. I'm not sure what the right structure
 is to fix this, but it's a separate (and preexisting) issue.
 ---
- dlls/combase/combase.c     | 169 +++++++++++++++++++------------------
+ dlls/combase/combase.c     | 173 +++++++++++++++++++------------------
  dlls/ole32/tests/compobj.c | 164 +++++++++++++++++++++++++++++++++++
- 2 files changed, 251 insertions(+), 82 deletions(-)
+ 2 files changed, 253 insertions(+), 84 deletions(-)
 
 diff --git a/dlls/combase/combase.c b/dlls/combase/combase.c
 index 11111111111..11111111111 100644
 --- a/dlls/combase/combase.c
 +++ b/dlls/combase/combase.c
-@@ -2050,11 +2050,12 @@ static BOOL com_peek_message(struct apartment *apt, MSG *msg)
+@@ -2048,11 +2048,12 @@ static BOOL com_peek_message(struct apartment *apt, MSG *msg)
  HRESULT WINAPI CoWaitForMultipleHandles(DWORD flags, DWORD timeout, ULONG handle_count, HANDLE *handles,
          DWORD *index)
  {
@@ -54,7 +54,7 @@ index 11111111111..11111111111 100644
      HRESULT hr;
  
      TRACE("%#lx, %#lx, %lu, %p, %p\n", flags, timeout, handle_count, handles, index);
-@@ -2083,113 +2084,117 @@ HRESULT WINAPI CoWaitForMultipleHandles(DWORD flags, DWORD timeout, ULONG handle
+@@ -2081,113 +2082,117 @@ HRESULT WINAPI CoWaitForMultipleHandles(DWORD flags, DWORD timeout, ULONG handle
  
      start_time = GetTickCount();
  
@@ -88,34 +88,63 @@ index 11111111111..11111111111 100644
              }
  
 -            if (res == WAIT_TIMEOUT)
--                res = MsgWaitForMultipleObjectsEx(handle_count, handles,
--                        timeout == INFINITE ? INFINITE : start_time + timeout - now,
--                        QS_SENDMESSAGE | QS_ALLPOSTMESSAGE | QS_PAINT, wait_flags);
--
--            if (res == WAIT_OBJECT_0 + handle_count)  /* messages available */
 +            if (!apt->win)
-             {
--                int msg_count = 0;
--                MSG msg;
--
--                /* call message filter */
++            {
 +                /* If window is NULL on apartment, peek at messages so that it will not trigger
 +                 * MsgWaitForMultipleObjects next time. */
 +                PeekMessageW(NULL, NULL, 0, 0, PM_QS_POSTMESSAGE | PM_NOREMOVE | PM_NOYIELD);
 +            }
- 
--                if (apt->filter)
++
 +            if (com_peek_message(apt, &msg))
 +            {
 +                if (msg.message == WM_QUIT)
++                {
++                    TRACE("Received WM_QUIT message\n");
++                    post_quit = TRUE;
++                    exit_code = msg.wParam;
++                }
++                else
++                {
++                    TRACE("Received message whilst waiting for RPC: 0x%04x\n", msg.message);
++                    TranslateMessage(&msg);
++                    DispatchMessageW(&msg);
++                }
++            }
++            else
++            {
++                DWORD now = GetTickCount();
++                if (now - start_time > timeout)
++                {
++                    /* res really is WAIT_TIMEOUT (not just from the dwMilliseconds=0 polling of handles) */
++                    break;
++                }
++
++                /* not done, no messages pending, sleep for the remaining time (or until something happens) */
+                 res = MsgWaitForMultipleObjectsEx(handle_count, handles,
+-                        timeout == INFINITE ? INFINITE : start_time + timeout - now,
+-                        QS_SENDMESSAGE | QS_ALLPOSTMESSAGE | QS_PAINT, wait_flags);
++                    timeout == INFINITE ? INFINITE : start_time + timeout - now,
++                    QS_SENDMESSAGE | QS_ALLPOSTMESSAGE | QS_PAINT, wait_flags);
+ 
+-            if (res == WAIT_OBJECT_0 + handle_count)  /* messages available */
+-            {
+-                int msg_count = 0;
+-                MSG msg;
+-
+-                /* call message filter */
+-
+-                if (apt->filter)
++                if (res == WAIT_OBJECT_0 + handle_count)  /* messages available */
                  {
 -                    PENDINGTYPE pendingtype = tlsdata->pending_call_count_server ? PENDINGTYPE_NESTED : PENDINGTYPE_TOPLEVEL;
 -                    DWORD be_handled = IMessageFilter_MessagePending(apt->filter, 0 /* FIXME */, now - start_time, pendingtype);
--
++                    /* call message filter */
+ 
 -                    TRACE("IMessageFilter_MessagePending returned %ld\n", be_handled);
 -
 -                    switch (be_handled)
--                    {
++                    if (apt->filter)
+                     {
 -                    case PENDINGMSG_CANCELCALL:
 -                        WARN("call canceled\n");
 -                        hr = RPC_E_CALL_CANCELED;
@@ -128,56 +157,6 @@ index 11111111111..11111111111 100644
 -                         * appears to be none, so it is possibly a left-over
 -                         * from the 16-bit world. */
 -                        break;
--                    }
-+                    TRACE("Received WM_QUIT message\n");
-+                    post_quit = TRUE;
-+                    exit_code = msg.wParam;
-                 }
--
--                if (!apt->win)
-+                else
-                 {
--                    /* If window is NULL on apartment, peek at messages so that it will not trigger
--                     * MsgWaitForMultipleObjects next time. */
--                    PeekMessageW(NULL, NULL, 0, 0, PM_QS_POSTMESSAGE | PM_NOREMOVE | PM_NOYIELD);
-+                    TRACE("Received message whilst waiting for RPC: 0x%04x\n", msg.message);
-+                    TranslateMessage(&msg);
-+                    DispatchMessageW(&msg);
-                 }
-+            }
-+            else
-+            {
-+                DWORD now = GetTickCount();
-+                if (now - start_time > timeout)
-+                {
-+                    /* res really is WAIT_TIMEOUT (not just from the dwMilliseconds=0 polling of handles) */
-+                    break;
-+                }
-+
-+                /* not done, no messages pending, sleep for the remaining time (or until something happens) */
-+                res = MsgWaitForMultipleObjectsEx(handle_count, handles,
-+                    timeout == INFINITE ? INFINITE : start_time + timeout - now,
-+                    QS_SENDMESSAGE | QS_ALLPOSTMESSAGE | QS_PAINT, wait_flags);
- 
--                /* Some apps (e.g. Visio 2010) don't handle WM_PAINT properly and loop forever,
--                 * so after processing 100 messages we go back to checking the wait handles */
--                while (msg_count++ < 100 && com_peek_message(apt, &msg))
-+                if (res == WAIT_OBJECT_0 + handle_count)  /* messages available */
-                 {
--                    if (msg.message == WM_QUIT)
--                    {
--                        TRACE("Received WM_QUIT message\n");
--                        post_quit = TRUE;
--                        exit_code = msg.wParam;
--                    }
--                    else
-+                    /* call message filter */
-+
-+                    if (apt->filter)
-                     {
--                        TRACE("Received message whilst waiting for RPC: 0x%04x\n", msg.message);
--                        TranslateMessage(&msg);
--                        DispatchMessageW(&msg);
 +                        PENDINGTYPE pendingtype = tlsdata->pending_call_count_server ? PENDINGTYPE_NESTED : PENDINGTYPE_TOPLEVEL;
 +                        DWORD be_handled = IMessageFilter_MessagePending(apt->filter, 0 /* FIXME */, now - start_time, pendingtype);
 +
@@ -201,11 +180,34 @@ index 11111111111..11111111111 100644
 +                        }
                      }
                  }
--                continue;
+-
+-                if (!apt->win)
 +                else
-+                {
+                 {
+-                    /* If window is NULL on apartment, peek at messages so that it will not trigger
+-                     * MsgWaitForMultipleObjects next time. */
+-                    PeekMessageW(NULL, NULL, 0, 0, PM_QS_POSTMESSAGE | PM_NOREMOVE | PM_NOYIELD);
 +                    break;
-+                }
+                 }
+-
+-                /* Some apps (e.g. Visio 2010) don't handle WM_PAINT properly and loop forever,
+-                 * so after processing 100 messages we go back to checking the wait handles */
+-                while (msg_count++ < 100 && com_peek_message(apt, &msg))
+-                {
+-                    if (msg.message == WM_QUIT)
+-                    {
+-                        TRACE("Received WM_QUIT message\n");
+-                        post_quit = TRUE;
+-                        exit_code = msg.wParam;
+-                    }
+-                    else
+-                    {
+-                        TRACE("Received message whilst waiting for RPC: 0x%04x\n", msg.message);
+-                        TranslateMessage(&msg);
+-                        DispatchMessageW(&msg);
+-                    }
+-                }
+-                continue;
              }
          }
 -        else

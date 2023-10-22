@@ -1,0 +1,91 @@
+From 126346f1d497844b994910b724b1879507c490a5 Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Fri, 29 Sep 2023 16:11:38 +0200
+Subject: [PATCH 4/4] wineboot: Take file hashes from chksums.bin.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ programs/wineboot/wineboot.c | 48 +++++++++++++++++++++++++++++++++++-
+ 1 file changed, 47 insertions(+), 1 deletion(-)
+
+diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
+index 11111111111..11111111111 100644
+--- a/programs/wineboot/wineboot.c
++++ b/programs/wineboot/wineboot.c
+@@ -2284,11 +2284,50 @@ static BOOL __cdecl enum_system_dlls( void *param, struct file_hash *hash, BOOL
+     return FALSE;
+ }
+ 
++/* retrieve the path to the chksums.bin file */
++static WCHAR *get_chksums_bin_path(void)
++{
++    WCHAR *dir, *name = NULL;
++
++    if (!(dir = _wgetenv( L"WINEBUILDDIR" )) && !(dir = _wgetenv( L"WINEDATADIR" )))
++        return NULL;
++
++    if (!(name = malloc( sizeof(L"\\chksums.bin") + wcslen(dir) * sizeof(WCHAR) )))
++        return NULL;
++
++    lstrcpyW( name, dir );
++    lstrcatW( name, L"\\chksums.bin" );
++    name[1] = '\\';  /* change \??\ to \\?\ */
++    return name;
++}
++
++static BOOL __cdecl read_chksums_bin( void *param, struct file_hash *hash, BOOL *error )
++{
++    int *fd = param, count;
++    BYTE hash_len = 0;
++
++    if (*error)
++        return FALSE;
++    if ((count = read( *fd, &hash_len, 1 )) != 1)
++    {
++        error = (count != 0);
++        return FALSE;
++    }
++    if (read( *fd, hash->hash, hash_len ) != hash_len)
++    {
++        *error = TRUE;
++        return FALSE;
++    }
++    hash->hash_len = hash_len;
++    return TRUE;
++}
++
+ static void update_catalog_file(void)
+ {
+     static char szOID_NIST_sha256_[] = szOID_NIST_sha256;
+     static WCHAR basename[] = L"system.cat";
+ 
++    WCHAR *chksums_bin_path = get_chksums_bin_path();
+     WCHAR temp_path[MAX_PATH], filename[MAX_PATH];
+     struct enum_system_dlls_data data = {0};
+     CMSG_SIGNER_ENCODE_INFO signer = {0};
+@@ -2298,6 +2337,7 @@ static void update_catalog_file(void)
+     HCRYPTPROV sign_prov;
+     HCATADMIN cat_admin;
+     HCATINFO cat_info;
++    int fd;
+ 
+     if (!find_or_generate_cert( &sign_prov, &cert_ctx ))
+         return;
+@@ -2316,7 +2356,13 @@ static void update_catalog_file(void)
+ 
+     GetTempPathW( ARRAY_SIZE(temp_path), temp_path );
+     GetTempFileNameW( temp_path, L"cat", 0, filename );
+-    write_cat( filename, &sei, enum_system_dlls, &data );
++    if ((fd = _wopen( chksums_bin_path, O_RDONLY )) != -1)
++    {
++        write_cat( filename, &sei, read_chksums_bin, &fd );
++        close( fd );
++    }
++    else
++        write_cat( filename, &sei, enum_system_dlls, &data );
+     if (CryptCATAdminAcquireContext( &cat_admin, NULL, 0 ))
+     {
+         if ((cat_info = CryptCATAdminAddCatalog( cat_admin, filename, basename, 0 )))
+-- 
+0.0.0
+

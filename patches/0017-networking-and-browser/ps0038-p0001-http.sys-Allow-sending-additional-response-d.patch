@@ -14,7 +14,7 @@ diff --git a/dlls/http.sys/http.c b/dlls/http.sys/http.c
 index 11111111111..11111111111 100644
 --- a/dlls/http.sys/http.c
 +++ b/dlls/http.sys/http.c
-@@ -55,6 +55,7 @@ struct connection
+@@ -54,6 +54,7 @@ struct connection
  
      char *buffer;
      unsigned int len, size;
@@ -22,12 +22,19 @@ index 11111111111..11111111111 100644
  
      /* If there is a request fully received and waiting to be read, the
       * "available" parameter will be TRUE. Either there is no queue matching
-@@ -986,25 +987,36 @@ static NTSTATUS http_send_response(struct request_queue *queue, IRP *irp)
+@@ -984,25 +985,36 @@ static NTSTATUS http_send_response(struct request_queue *queue, IRP *irp)
  
      if ((conn = get_connection(response->id)))
      {
--        if (send(conn->socket, response->buffer, response->len, 0) >= 0)
 +        if (!!response->is_body == conn->expect_body)
++        {
++            irp->IoStatus.Information = 0;
++            LeaveCriticalSection(&http_cs);
++            return STATUS_INVALID_DEVICE_STATE;
++        }
++        conn->expect_body = !!response->more_data;
++
+         if (send(conn->socket, response->buffer, response->len, 0) >= 0)
          {
 -            if (conn->content_len)
 -            {
@@ -35,17 +42,10 @@ index 11111111111..11111111111 100644
 -                memmove(conn->buffer, conn->buffer + conn->content_len, conn->len - conn->content_len);
 -                conn->len -= conn->content_len;
 -            }
-+            irp->IoStatus.Information = 0;
-+            LeaveCriticalSection(&http_cs);
-+            return STATUS_INVALID_DEVICE_STATE;
-+        }
-+        conn->expect_body = !!response->more_data;
- 
+-
 -            conn->queue = NULL;
 -            conn->req_id = HTTP_NULL_ID;
 -            WSAEventSelect(conn->socket, request_event, FD_READ | FD_CLOSE);
-+        if (send(conn->socket, response->buffer, response->len, 0) >= 0)
-+        {
              irp->IoStatus.Information = response->len;
 -            /* We might have another request already in the buffer. */
 -            if (parse_request(conn) < 0)
@@ -101,5 +101,5 @@ index 11111111111..11111111111 100644
      char buffer[1];
  };
 -- 
-2.40.0
+0.0.0
 

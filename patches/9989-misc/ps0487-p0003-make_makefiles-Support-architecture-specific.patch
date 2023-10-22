@@ -1,0 +1,92 @@
+From 923fc9ff0dbf8a2e88bfeefbdb2a8e015d95ab2c Mon Sep 17 00:00:00 2001
+From: Torge Matthies <tmatthies@codeweavers.com>
+Date: Fri, 2 Jun 2023 11:53:20 +0200
+Subject: [PATCH 3/7] make_makefiles: Support architecture-specific source
+ variables.
+
+Signed-off-by: Torge Matthies <tmatthies@codeweavers.com>
+---
+ tools/make_makefiles | 40 ++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 36 insertions(+), 4 deletions(-)
+
+diff --git a/tools/make_makefiles b/tools/make_makefiles
+index 11111111111..11111111111 100755
+--- a/tools/make_makefiles
++++ b/tools/make_makefiles
+@@ -68,6 +68,26 @@ my @source_vars = (
+     "XTEMPLATE_SRCS"
+ );
+ 
++my @archs = (
++    "i386",
++    "x86_64",
++    "arm",
++    "aarch64"
++);
++
++my @source_vars_all_archs = (@source_vars);
++my $arch;
++my $var;
++foreach $arch (@archs)
++{
++   foreach $var (@source_vars)
++   {
++      push @source_vars_all_archs, $arch . "_" . $var;
++   }
++}
++undef $arch;
++undef $var;
++
+ my (@makefiles, %makefiles);
+ my @nls_files;
+ 
+@@ -132,7 +152,7 @@ sub replace_makefile_variables($)
+ {
+     my $file = shift;
+     my $make = $makefiles{$file};
+-    my $source_vars_regexp = join "|", @source_vars;
++    my $source_vars_regexp = join "|", @source_vars_all_archs;
+     my %replaced;
+     my %files;
+     my $old;
+@@ -196,7 +216,7 @@ sub replace_makefile_variables($)
+     # if we are using SOURCES, ignore the other variables
+     unless ($replaced{"SOURCES"})
+     {
+-        foreach my $var (@source_vars)
++        foreach my $var (@source_vars_all_archs)
+         {
+             next if defined $replaced{$var};
+             next if $var eq "SOURCES";
+@@ -237,7 +257,7 @@ sub parse_makefile($)
+             $make{$var} = $2;
+             next;
+         }
+-        my $source_vars_regexp = join "|", @source_vars;
++        my $source_vars_regexp = join "|", @source_vars_all_archs;
+         if (/^\s*($source_vars_regexp|PROGRAMS|EXTRA_TARGETS|EXTRA_OBJS|INSTALL_LIB|INSTALL_DEV)\s*=\s*(.*)/)
+         {
+             my $var = $1;
+@@ -351,7 +371,19 @@ sub assign_sources_to_makefiles(@)
+         }
+         elsif ($name =~ /\.c$/)
+         {
+-            push @{${$make}{"=C_SRCS"}}, $name;
++            my $found = 0;
++            foreach $arch (@archs)
++            {
++                if ($name =~ /\/$arch\// || $name =~ /^$arch\//)
++                {
++                    push @{${$make}{"=${arch}_C_SRCS"}}, $name;
++                    $found = 1;
++                }
++            }
++            if (not $found)
++            {
++                push @{${$make}{"=C_SRCS"}}, $name;
++            }
+         }
+         elsif ($name =~ /\.h$/ || $name =~ /\.rh$/ || $name =~ /\.inl$/ || $name =~ /\.x$/)
+         {
+
+

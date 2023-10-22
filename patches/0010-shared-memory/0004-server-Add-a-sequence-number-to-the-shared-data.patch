@@ -1,7 +1,7 @@
-From e94799cae183654611e931cea0f7555729840621 Mon Sep 17 00:00:00 2001
+From 19c2c07bfd89c8d6245a8ad3455cf2822032ba86 Mon Sep 17 00:00:00 2001
 From: Huw Davies <huw@codeweavers.com>
 Date: Mon, 29 Jun 2020 12:57:39 +0100
-Subject: [PATCH 04/44] server: Add a sequence number to the shared data.
+Subject: [PATCH 04/40] server: Add a sequence number to the shared data.
 
 The client should check that the lower SEQUENCE_MASK_BITS are zero before
 reading the data and confirm that the number is unchanged when it's finished.
@@ -16,7 +16,7 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -881,9 +881,14 @@ struct shared_cursor
+@@ -907,9 +907,14 @@ struct shared_cursor
  
  struct desktop_shared_memory
  {
@@ -35,8 +35,8 @@ diff --git a/server/queue.c b/server/queue.c
 index 11111111111..11111111111 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -434,16 +434,60 @@ static struct message *alloc_hardware_message( lparam_t info, struct hw_msg_sour
-     return msg;
+@@ -476,17 +476,61 @@ static int update_desktop_cursor_window( struct desktop *desktop, user_handle_t
+     return updated;
  }
  
 +#if defined(__i386__) || defined(__x86_64__)
@@ -79,8 +79,9 @@ index 11111111111..11111111111 100644
 +
 +#endif
 +
- static int update_desktop_cursor_pos( struct desktop *desktop, int x, int y )
+ static int update_desktop_cursor_pos( struct desktop *desktop, user_handle_t win, int x, int y )
  {
+     struct thread_input *input;
      int updated;
 +    unsigned int time = get_tick_count();
  
@@ -95,6 +96,8 @@ index 11111111111..11111111111 100644
 +    desktop->shared->cursor.last_change = time;
 +    SHARED_WRITE_END( &desktop->shared->seq );
  
-     return updated;
- }
+     if (!win && (input = desktop->foreground_input)) win = input->capture;
+     if (!win || !is_window_visible( win ) || is_window_transparent( win ))
+-- 
+0.0.0
 

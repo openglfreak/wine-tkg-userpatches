@@ -1,0 +1,45 @@
+From f6fafbdaf445fa2680d8ba320b57b536e7e58f90 Mon Sep 17 00:00:00 2001
+From: Alex Henrie <alexhenrie24@gmail.com>
+Date: Sun, 11 Jun 2023 22:28:35 -0600
+Subject: [PATCH] ntdll: Fix memory leak on file not found in
+ NtQuery(Full)AttributesFile (scan-build).
+
+nt_to_unix_file_name doesn't really consider STATUS_NO_SUCH_FILE to be
+an error, and it's not the only error that that function can return.
+---
+ dlls/ntdll/unix/file.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/unix/file.c b/dlls/ntdll/unix/file.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/unix/file.c
++++ b/dlls/ntdll/unix/file.c
+@@ -5445,7 +5445,11 @@ NTSTATUS WINAPI NtQueryFullAttributesFile( const OBJECT_ATTRIBUTES *attr,
+         }
+         free( unix_name );
+     }
+-    else WARN( "%s not found (%x)\n", debugstr_us(attr->ObjectName), status );
++    else if (status == STATUS_NO_SUCH_FILE)
++    {
++        WARN( "%s not found (%x)\n", debugstr_us(attr->ObjectName), status );
++        free( unix_name );
++    }
+     free( redir.Buffer );
+     return status;
+ }
+@@ -5475,7 +5479,11 @@ NTSTATUS WINAPI NtQueryAttributesFile( const OBJECT_ATTRIBUTES *attr, FILE_BASIC
+             status = fill_file_info( &st, attributes, info, FileBasicInformation );
+         free( unix_name );
+     }
+-    else WARN( "%s not found (%x)\n", debugstr_us(attr->ObjectName), status );
++    else if (status == STATUS_NO_SUCH_FILE)
++    {
++        WARN( "%s not found (%x)\n", debugstr_us(attr->ObjectName), status );
++        free( unix_name );
++    }
+     free( redir.Buffer );
+     return status;
+ }
+-- 
+0.0.0
+

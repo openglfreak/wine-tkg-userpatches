@@ -4,9 +4,9 @@ Date: Wed, 20 Jan 2021 11:28:46 -0600
 Subject: [PATCH] ntdll: Use clock_gettime64 if supported.
 
 ---
- dlls/ntdll/unix/sync.c | 61 ++++++++++++++++++++++++++++++++++--------
- server/request.c       | 54 +++++++++++++++++++++++++++++++++----
- 2 files changed, 99 insertions(+), 16 deletions(-)
+ dlls/ntdll/unix/sync.c | 82 ++++++++++++++++++++++++++++++++++--------
+ server/request.c       | 54 +++++++++++++++++++++++++---
+ 2 files changed, 116 insertions(+), 20 deletions(-)
 
 diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
 index 11111111111..11111111111 100644
@@ -22,7 +22,7 @@ index 11111111111..11111111111 100644
  #include <limits.h>
  #include <signal.h>
  #include <sys/types.h>
-@@ -135,6 +138,48 @@ static const char *debugstr_timeout( const LARGE_INTEGER *timeout )
+@@ -137,6 +140,61 @@ static const char *debugstr_timeout( const LARGE_INTEGER *timeout )
      return wine_dbgstr_longlong( timeout->QuadPart );
  }
  
@@ -32,38 +32,51 @@ index 11111111111..11111111111 100644
 +    __s64 tv_sec;
 +    __s64 tv_nsec;
 +};
++#else
++struct timespec64
++{
++    LONGLONG tv_sec;
++    LONGLONG tv_nsec;
++};
 +#endif
 +
-+static inline int do_clock_gettime( clockid_t clock_id, ULONGLONG *ticks )
++static inline int do_clock_gettime64( clockid_t clock_id, struct timespec64 *ts )
 +{
 +    static int clock_gettime64_supported = -1;
 +#ifdef __linux__
-+    struct timespec64 ts64;
-+    struct timespec ts;
++    struct timespec ts32;
 +#endif
 +    int ret;
 +
 +#if defined(__linux__) && defined(__NR_clock_gettime64)
 +    if (clock_gettime64_supported < 0)
 +    {
-+        if (!syscall( __NR_clock_gettime64, clock_id, &ts64 ))
++        if (!syscall( __NR_clock_gettime64, clock_id, ts ))
 +        {
 +            clock_gettime64_supported = 1;
-+            *ticks = ts64.tv_sec * (ULONGLONG)TICKSPERSEC + ts64.tv_nsec / 100;
 +            return 0;
 +        }
 +        clock_gettime64_supported = 0;
 +    }
 +
 +    if (clock_gettime64_supported)
-+    {
-+        if (!(ret = syscall( __NR_clock_gettime64, clock_id, &ts64 )))
-+            *ticks = ts64.tv_sec * (ULONGLONG)TICKSPERSEC + ts64.tv_nsec / 100;
-+        return ret;
-+    }
++        return syscall( __NR_clock_gettime64, clock_id, ts );
 +#endif
 +
-+    if (!(ret = clock_gettime( clock_id, &ts )))
++    if (!(ret = clock_gettime( clock_id, &ts32 )))
++    {
++        ts->tv_sec = ts32.tv_sec;
++        ts->tv_nsec = ts32.tv_nsec;
++    }
++    return ret;
++}
++
++static inline int do_clock_gettime( clockid_t clock_id, ULONGLONG *ticks )
++{
++    struct timespec64 ts;
++    int ret;
++
++    if (!(ret = do_clock_gettime64( clock_id, &ts )))
 +        *ticks = ts.tv_sec * (ULONGLONG)TICKSPERSEC + ts.tv_nsec / 100;
 +    return ret;
 +}
@@ -71,7 +84,7 @@ index 11111111111..11111111111 100644
  /* return a monotonic time counter, in Win32 ticks */
  static inline ULONGLONG monotonic_counter(void)
  {
-@@ -149,13 +194,13 @@ static inline ULONGLONG monotonic_counter(void)
+@@ -151,13 +209,13 @@ static inline ULONGLONG monotonic_counter(void)
  #endif
      return mach_absolute_time() * timebase.numer / timebase.denom / 100;
  #elif defined(HAVE_CLOCK_GETTIME)
@@ -90,7 +103,7 @@ index 11111111111..11111111111 100644
  #endif
      gettimeofday( &now, 0 );
      return ticks_from_time_t( now.tv_sec ) + now.tv_usec * 10 - server_start_time;
-@@ -342,12 +387,6 @@ static unsigned int validate_open_object_attributes( const OBJECT_ATTRIBUTES *at
+@@ -344,12 +402,6 @@ static unsigned int validate_open_object_attributes( const OBJECT_ATTRIBUTES *at
   * sigset_t to be larger. Manually define the kernel sigset size here. */
  #define KERNEL_SIGSET_SIZE (64 / 8) /* 64 signals / 8 bits per byte */
  
@@ -103,6 +116,34 @@ index 11111111111..11111111111 100644
  static int get_linux_sync_device(void)
  {
      static int fast_sync_fd = -2;
+@@ -3024,15 +3076,15 @@ static NTSTATUS get_time_shift_mult( struct perf_event_mmap_page *page, __u32 *t
+ #define hz_from_shift_mult(mul,sft) muldiv_tsc( 1000000000, (__u32)1 << (sft), (mul) )
+ #define timespec_to_ns(ts) ((ts)->tv_sec * 1000000000 + (ts)->tv_nsec)
+ 
+-static int monotonic_time_raw( struct timespec *ts )
++static int monotonic_time_raw( struct timespec64 *ts )
+ {
+ #ifdef HAVE_CLOCK_GETTIME
+     ULONGLONG ticks;
+ #ifdef CLOCK_MONOTONIC_RAW
+-    if (!clock_gettime( CLOCK_MONOTONIC_RAW, ts ))
++    if (!do_clock_gettime64( CLOCK_MONOTONIC_RAW, ts ))
+         return 0;
+ #endif
+-    return clock_gettime( CLOCK_MONOTONIC, ts );
++    return do_clock_gettime64( CLOCK_MONOTONIC, ts );
+ #endif
+     return -ENOTSUP;
+ }
+@@ -3042,7 +3094,7 @@ NTSTATUS unixcall_wine_get_tsc_calibration( void *args )
+     UINT64 tsc_freq, tsc1, tsc2, clock_ts, tsc_ts;
+     struct wine_get_tsc_calibration_params *ret = args;
+     struct perf_event_mmap_page *page;
+-    struct timespec ts;
++    struct timespec64 ts;
+     __u16 time_shift;
+     __u32 time_mult;
+     NTSTATUS s;
 diff --git a/server/request.c b/server/request.c
 index 11111111111..11111111111 100644
 --- a/server/request.c

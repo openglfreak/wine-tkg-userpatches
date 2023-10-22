@@ -1,0 +1,65 @@
+From 0dc1ebff246ca2af6d869cbe4e787027709bf9dd Mon Sep 17 00:00:00 2001
+From: Torge Matthies <openglfreak@googlemail.com>
+Date: Fri, 18 Aug 2023 14:31:08 +0200
+Subject: [PATCH 1/3] advapi32/tests: Add test for CurrentControlSet link.
+
+Signed-off-by: Torge Matthies <openglfreak@googlemail.com>
+---
+ dlls/advapi32/tests/registry.c | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/dlls/advapi32/tests/registry.c b/dlls/advapi32/tests/registry.c
+index 11111111111..11111111111 100644
+--- a/dlls/advapi32/tests/registry.c
++++ b/dlls/advapi32/tests/registry.c
+@@ -4962,6 +4962,39 @@ static void test_RegRenameKey(void)
+     RegCloseKey(key);
+ }
+ 
++static inline BOOL check_cs_number( const WCHAR *str )
++{
++    if (str[0] < '0' || str[0] > '9' || str[1] < '0' || str[1] > '9' || str[2] < '0' || str[2] > '9')
++        return FALSE;
++    if (str[0] == '0' && str[1] == '0' && str[2] == '0')
++        return FALSE;
++    return TRUE;
++}
++
++static void test_control_set_symlink(void)
++{
++    static const WCHAR target_pfxW[] = L"\\REGISTRY\\Machine\\System\\ControlSet";
++    DWORD target_len, type, len, err;
++    BYTE buffer[1024];
++    HKEY key;
++
++    target_len = sizeof(target_pfxW) + 3 * sizeof(WCHAR);
++
++    err = RegOpenKeyExA( HKEY_LOCAL_MACHINE, "System\\CurrentControlSet", REG_OPTION_OPEN_LINK, KEY_QUERY_VALUE, &key );
++    ok( err == ERROR_SUCCESS, "RegOpenKeyEx failed error %lu\n", err );
++    len = sizeof(buffer);
++    err = RegQueryValueExA( key, "SymbolicLinkValue", NULL, &type, buffer, &len );
++    todo_wine
++    ok( err == ERROR_SUCCESS, "RegQueryValueEx failed error %lu\n", err );
++    todo_wine
++    ok( len == target_len - sizeof(WCHAR), "wrong len %lu\n", len );
++    todo_wine
++    ok( !_wcsnicmp( (WCHAR*)buffer, target_pfxW, ARRAY_SIZE(target_pfxW) - 1 ) &&
++        check_cs_number( (WCHAR*)buffer + ARRAY_SIZE(target_pfxW) - 1 ),
++        "wrong link target\n" );
++    RegCloseKey( key );
++}
++
+ START_TEST(registry)
+ {
+     /* Load pointers for functions that are not available in all Windows versions */
+@@ -5003,6 +5036,7 @@ START_TEST(registry)
+     test_EnumDynamicTimeZoneInformation();
+     test_perflib_key();
+     test_RegRenameKey();
++    test_control_set_symlink();
+ 
+     /* cleanup */
+     delete_key( hkey_main );
+-- 
+0.0.0
+

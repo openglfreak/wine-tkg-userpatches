@@ -24,7 +24,7 @@ diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/server.c
 +++ b/dlls/ntdll/unix/server.c
-@@ -668,6 +668,12 @@ static void invoke_system_apc( const apc_call_t *call, apc_result_t *result, BOO
+@@ -734,6 +734,12 @@ static void invoke_system_apc( const apc_call_t *call, apc_result_t *result, BOO
          if (!self) NtClose( wine_server_ptr_handle(call->dup_handle.dst_process) );
          break;
      }
@@ -41,9 +41,9 @@ diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -5800,8 +5800,31 @@ NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T
+@@ -6350,8 +6350,31 @@ NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T
   */
- void WINAPI NtFlushProcessWriteBuffers(void)
+ NTSTATUS WINAPI NtFlushProcessWriteBuffers(void)
  {
 -    static int once = 0;
 -    if (!once++) FIXME( "stub\n" );
@@ -72,14 +72,14 @@ index 11111111111..11111111111 100644
 +    while (status);
 +
 +    pthread_mutex_unlock( &apc_memorybarrier_mutex );
+     return STATUS_SUCCESS;
  }
- 
  
 diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -462,7 +462,8 @@ enum select_op
+@@ -463,7 +463,8 @@ enum select_op
      SELECT_WAIT_ALL,
      SELECT_SIGNAL_AND_WAIT,
      SELECT_KEYED_EVENT_WAIT,
@@ -89,7 +89,7 @@ index 11111111111..11111111111 100644
  };
  
  typedef union
-@@ -485,6 +486,10 @@ typedef union
+@@ -487,6 +488,10 @@ typedef union
          obj_handle_t    handle;
          client_ptr_t    key;
      } keyed_event;
@@ -100,8 +100,8 @@ index 11111111111..11111111111 100644
  } select_op_t;
  
  enum apc_type
-@@ -503,7 +508,8 @@ enum apc_type
-     APC_MAP_VIEW,
+@@ -506,7 +511,8 @@ enum apc_type
+     APC_MAP_VIEW_EX,
      APC_UNMAP_VIEW,
      APC_CREATE_THREAD,
 -    APC_DUP_HANDLE
@@ -110,7 +110,7 @@ index 11111111111..11111111111 100644
  };
  
  typedef struct
-@@ -623,6 +629,10 @@ typedef union
+@@ -641,6 +647,10 @@ typedef union
          unsigned int     attributes;   /* object attributes */
          unsigned int     options;      /* duplicate options */
      } dup_handle;
@@ -121,7 +121,7 @@ index 11111111111..11111111111 100644
  } apc_call_t;
  
  typedef union
-@@ -1693,6 +1703,11 @@ enum server_fd_type
+@@ -1763,6 +1773,11 @@ enum server_fd_type
  @END
  
  
@@ -182,15 +182,15 @@ index 11111111111..11111111111 100644
  
  /* thread CPU context */
  
-@@ -354,6 +392,7 @@ static inline void init_thread_structure( struct thread *thread )
-     thread->queue_shared         = NULL;
-     thread->input_shared_mapping = NULL;
+@@ -353,6 +391,7 @@ static inline void init_thread_structure( struct thread *thread )
      thread->input_shared         = NULL;
+     thread->fast_sync       = NULL;
+     thread->fast_alert_event = NULL;
 +    thread->mb_apcs_pending = 0;
  
      thread->creation_time = current_time;
      thread->exit_time     = 0;
-@@ -463,6 +502,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
+@@ -461,6 +500,11 @@ struct thread *create_thread( int fd, struct process *process, const struct secu
      struct thread *thread;
      int request_pipe[2];
  
@@ -202,7 +202,7 @@ index 11111111111..11111111111 100644
      if (fd == -1)
      {
          if (pipe( request_pipe ) == -1)
-@@ -636,12 +680,14 @@ static void cleanup_thread( struct thread *thread )
+@@ -634,12 +678,14 @@ static void cleanup_thread( struct thread *thread )
      thread->desktop = 0;
      thread->desc = NULL;
      thread->desc_len = 0;
@@ -217,7 +217,7 @@ index 11111111111..11111111111 100644
      assert( obj->ops == &thread_ops );
  
      list_remove( &thread->entry );
-@@ -652,6 +698,9 @@ static void destroy_thread( struct object *obj )
+@@ -650,6 +696,9 @@ static void destroy_thread( struct object *obj )
      if (thread->token) release_object( thread->token );
      if (thread->fast_sync) release_object( thread->fast_sync );
      if (thread->fast_alert_event) release_object( thread->fast_alert_event );
@@ -227,7 +227,7 @@ index 11111111111..11111111111 100644
  
      if (do_esync())
          close( thread->esync_fd );
-@@ -742,6 +791,18 @@ static struct thread_apc *create_apc( struct object *owner, const apc_call_t *ca
+@@ -741,6 +790,18 @@ static struct thread_apc *create_apc( struct object *owner, const apc_call_t *ca
      return apc;
  }
  
@@ -246,7 +246,7 @@ index 11111111111..11111111111 100644
  /* get a thread pointer from a thread id (and increment the refcount) */
  struct thread *get_thread_from_id( thread_id_t id )
  {
-@@ -1444,6 +1505,13 @@ static int select_on( const select_op_t *select_op, data_size_t op_size, client_
+@@ -1443,6 +1504,13 @@ static int select_on( const select_op_t *select_op, data_size_t op_size, client_
          current->wait->key = select_op->keyed_event.key;
          break;
  
@@ -260,7 +260,7 @@ index 11111111111..11111111111 100644
      default:
          set_error( STATUS_INVALID_PARAMETER );
          return 1;
-@@ -1597,6 +1665,16 @@ int thread_queue_apc( struct process *process, struct thread *thread, struct obj
+@@ -1596,6 +1664,16 @@ int thread_queue_apc( struct process *process, struct thread *thread, struct obj
      return ret;
  }
  
@@ -277,7 +277,7 @@ index 11111111111..11111111111 100644
  /* cancel the async procedure call owned by a specific object */
  void thread_cancel_apc( struct thread *thread, struct object *owner, enum apc_type type )
  {
-@@ -1608,6 +1686,8 @@ void thread_cancel_apc( struct thread *thread, struct object *owner, enum apc_ty
+@@ -1607,6 +1685,8 @@ void thread_cancel_apc( struct thread *thread, struct object *owner, enum apc_ty
          if (apc->owner != owner) continue;
          list_remove( &apc->entry );
          apc->executed = 1;
@@ -286,7 +286,7 @@ index 11111111111..11111111111 100644
          wake_up( &apc->obj, 0 );
          release_object( apc );
          if (list_empty( &thread->user_apc ) && thread->fast_alert_event)
-@@ -1650,6 +1730,8 @@ static void clear_apc_queue( struct list *queue )
+@@ -1649,6 +1729,8 @@ static void clear_apc_queue( struct list *queue )
          struct thread_apc *apc = LIST_ENTRY( ptr, struct thread_apc, entry );
          list_remove( &apc->entry );
          apc->executed = 1;
@@ -295,7 +295,7 @@ index 11111111111..11111111111 100644
          wake_up( &apc->obj, 0 );
          release_object( apc );
      }
-@@ -2133,6 +2215,8 @@ DECL_HANDLER(select)
+@@ -2130,6 +2212,8 @@ DECL_HANDLER(select)
              apc->result.create_thread.handle = handle;
              clear_error();  /* ignore errors from the above calls */
          }
@@ -304,7 +304,7 @@ index 11111111111..11111111111 100644
          wake_up( &apc->obj, 0 );
          close_handle( current->process, req->prev_apc );
          release_object( apc );
-@@ -2154,6 +2238,8 @@ DECL_HANDLER(select)
+@@ -2153,6 +2237,8 @@ DECL_HANDLER(select)
          else
          {
              apc->executed = 1;
@@ -313,7 +313,7 @@ index 11111111111..11111111111 100644
              wake_up( &apc->obj, 0 );
          }
          release_object( apc );
-@@ -2503,3 +2589,36 @@ DECL_HANDLER(get_fast_alert_event)
+@@ -2513,3 +2599,36 @@ DECL_HANDLER(get_fast_alert_event)
      if (current->fast_alert_event)
          reply->handle = alloc_handle( current->process, current->fast_alert_event, SYNCHRONIZE, 0 );
  }
@@ -355,9 +355,9 @@ index 11111111111..11111111111 100644
 --- a/server/thread.h
 +++ b/server/thread.h
 @@ -105,6 +105,7 @@ struct thread
-     volatile struct queue_shared_memory *queue_shared;  /* thread queue shared memory ptr */
-     struct object         *input_shared_mapping; /* thread input shared memory mapping */
      volatile struct input_shared_memory *input_shared;  /* thread input shared memory ptr */
+     struct fast_sync      *fast_sync;     /* fast synchronization object */
+     struct event          *fast_alert_event; /* fast synchronization alert event */
 +    int                    mb_apcs_pending; /* number of APCs left for the current memory barrier */
  };
  

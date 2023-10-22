@@ -21,7 +21,7 @@ diff --git a/dlls/ntdll/unix/socket.c b/dlls/ntdll/unix/socket.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/socket.c
 +++ b/dlls/ntdll/unix/socket.c
-@@ -295,6 +295,21 @@ static socklen_t sockaddr_to_unix( const struct WS_sockaddr *wsaddr, int wsaddrl
+@@ -296,6 +296,21 @@ static socklen_t sockaddr_to_unix( const struct WS_sockaddr *wsaddr, int wsaddrl
      }
  }
  
@@ -43,7 +43,7 @@ index 11111111111..11111111111 100644
  static int sockaddr_from_unix( const union unix_sockaddr *uaddr, struct WS_sockaddr *wsaddr, socklen_t wsaddrlen )
  {
      memset( wsaddr, 0, wsaddrlen );
-@@ -1102,6 +1117,7 @@ static NTSTATUS sock_send( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
+@@ -1119,6 +1134,7 @@ static NTSTATUS sock_send( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
      BOOL nonblocking;
      unsigned int status;
      ULONG options;
@@ -51,7 +51,7 @@ index 11111111111..11111111111 100644
  
      SERVER_START_REQ( send_socket )
      {
-@@ -1111,6 +1127,7 @@ static NTSTATUS sock_send( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
+@@ -1128,6 +1144,7 @@ static NTSTATUS sock_send( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
          wait_handle = wine_server_ptr_handle( reply->wait );
          options     = reply->options;
          nonblocking = reply->nonblocking;
@@ -59,7 +59,7 @@ index 11111111111..11111111111 100644
      }
      SERVER_END_REQ;
  
-@@ -1124,7 +1141,24 @@ static NTSTATUS sock_send( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
+@@ -1141,7 +1158,24 @@ static NTSTATUS sock_send( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, voi
      {
          ULONG_PTR information;
  
@@ -89,7 +89,7 @@ diff --git a/dlls/ws2_32/tests/sock.c b/dlls/ws2_32/tests/sock.c
 index 11111111111..11111111111 100644
 --- a/dlls/ws2_32/tests/sock.c
 +++ b/dlls/ws2_32/tests/sock.c
-@@ -13699,8 +13699,8 @@ static void test_WSASendto_port0(void)
+@@ -14026,8 +14026,8 @@ static void test_WSASendto_port0(void)
      ok(s != INVALID_SOCKET, "failed to create socket, error %u\n", WSAGetLastError());
  
      ret = WSASendTo(s, &data_buf, 1, &bytes_sent, 0, (struct sockaddr *)&addr, sizeof(addr), NULL, NULL);
@@ -104,7 +104,7 @@ diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
 index 11111111111..11111111111 100644
 --- a/include/wine/server_protocol.h
 +++ b/include/wine/server_protocol.h
-@@ -1819,7 +1819,8 @@ struct send_socket_reply
+@@ -1827,7 +1827,8 @@ struct recv_socket_reply
      obj_handle_t wait;
      unsigned int options;
      int          nonblocking;
@@ -114,12 +114,12 @@ index 11111111111..11111111111 100644
  };
  
  
-@@ -6485,7 +6486,7 @@ union generic_reply
+@@ -6659,7 +6660,7 @@ union generic_reply
  
  /* ### protocol_version begin ### */
  
--#define SERVER_PROTOCOL_VERSION 763
-+#define SERVER_PROTOCOL_VERSION 764
+-#define SERVER_PROTOCOL_VERSION 785
++#define SERVER_PROTOCOL_VERSION 786
  
  /* ### protocol_version end ### */
  
@@ -127,7 +127,7 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -1573,6 +1573,7 @@ enum server_fd_type
+@@ -1600,6 +1600,7 @@ enum server_fd_type
      obj_handle_t wait;          /* handle to wait on for blocking send */
      unsigned int options;       /* device open options */
      int          nonblocking;   /* is socket non-blocking? */
@@ -139,19 +139,19 @@ diff --git a/server/request.h b/server/request.h
 index 11111111111..11111111111 100644
 --- a/server/request.h
 +++ b/server/request.h
-@@ -1075,6 +1075,7 @@ C_ASSERT( sizeof(struct send_socket_request) == 64 );
+@@ -1104,6 +1104,7 @@ C_ASSERT( sizeof(struct send_socket_request) == 64 );
  C_ASSERT( FIELD_OFFSET(struct send_socket_reply, wait) == 8 );
  C_ASSERT( FIELD_OFFSET(struct send_socket_reply, options) == 12 );
  C_ASSERT( FIELD_OFFSET(struct send_socket_reply, nonblocking) == 16 );
 +C_ASSERT( FIELD_OFFSET(struct send_socket_reply, protocol) == 20 );
  C_ASSERT( sizeof(struct send_socket_reply) == 24 );
- C_ASSERT( FIELD_OFFSET(struct socket_send_icmp_id_request, handle) == 12 );
- C_ASSERT( FIELD_OFFSET(struct socket_send_icmp_id_request, icmp_id) == 16 );
+ C_ASSERT( FIELD_OFFSET(struct socket_get_events_request, handle) == 12 );
+ C_ASSERT( FIELD_OFFSET(struct socket_get_events_request, event) == 16 );
 diff --git a/server/sock.c b/server/sock.c
 index 11111111111..11111111111 100644
 --- a/server/sock.c
 +++ b/server/sock.c
-@@ -3959,6 +3959,7 @@ DECL_HANDLER(send_socket)
+@@ -4016,6 +4016,7 @@ DECL_HANDLER(send_socket)
          reply->wait = async_handoff( async, NULL, 0 );
          reply->options = get_fd_options( fd );
          reply->nonblocking = sock->nonblocking;
@@ -163,14 +163,14 @@ diff --git a/server/trace.c b/server/trace.c
 index 11111111111..11111111111 100644
 --- a/server/trace.c
 +++ b/server/trace.c
-@@ -2102,6 +2102,7 @@ static void dump_send_socket_reply( const struct send_socket_reply *req )
+@@ -2130,6 +2130,7 @@ static void dump_send_socket_reply( const struct send_socket_reply *req )
      fprintf( stderr, " wait=%04x", req->wait );
      fprintf( stderr, ", options=%08x", req->options );
      fprintf( stderr, ", nonblocking=%d", req->nonblocking );
 +    fprintf( stderr, ", protocol=%04x", req->protocol );
  }
  
- static void dump_socket_send_icmp_id_request( const struct socket_send_icmp_id_request *req )
+ static void dump_socket_get_events_request( const struct socket_get_events_request *req )
 -- 
-2.40.0
+0.0.0
 

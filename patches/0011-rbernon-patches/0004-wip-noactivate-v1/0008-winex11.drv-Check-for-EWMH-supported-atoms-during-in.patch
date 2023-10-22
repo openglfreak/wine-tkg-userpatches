@@ -1,7 +1,7 @@
-From a3faaa34f7faf7f5dc788ecd89b7a930c7f657fd Mon Sep 17 00:00:00 2001
+From 7be9aff9f06c791b08231c39d9f4471e9f7d6c7a Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
 Date: Sat, 7 May 2022 01:17:21 +0200
-Subject: [PATCH 08/22] winex11.drv: Check for EWMH supported atoms during
+Subject: [PATCH 08/19] winex11.drv: Check for EWMH supported atoms during
  init.
 
 CW-Bug-Id: #19553
@@ -17,7 +17,7 @@ diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -3210,35 +3210,6 @@ LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
+@@ -3214,35 +3214,6 @@ LRESULT X11DRV_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
  }
  
  
@@ -53,7 +53,7 @@ index 11111111111..11111111111 100644
  /***********************************************************************
   *              start_screensaver
   */
-@@ -3317,7 +3288,7 @@ LRESULT X11DRV_SysCommand( HWND hwnd, WPARAM wparam, LPARAM lparam )
+@@ -3321,7 +3292,7 @@ LRESULT X11DRV_SysCommand( HWND hwnd, WPARAM wparam, LPARAM lparam )
  
      if (NtUserGetWindowLongW( hwnd, GWL_STYLE ) & WS_MAXIMIZE) goto failed;
  
@@ -66,7 +66,7 @@ diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -421,6 +421,11 @@ static inline size_t get_property_size( int format, unsigned long count )
+@@ -424,6 +424,11 @@ static inline size_t get_property_size( int format, unsigned long count )
      return count * (format / 8);
  }
  
@@ -78,7 +78,7 @@ index 11111111111..11111111111 100644
  extern XVisualInfo default_visual DECLSPEC_HIDDEN;
  extern XVisualInfo argb_visual DECLSPEC_HIDDEN;
  extern Colormap default_colormap DECLSPEC_HIDDEN;
-@@ -454,6 +459,7 @@ extern int xfixes_event_base DECLSPEC_HIDDEN;
+@@ -455,6 +460,7 @@ extern int xfixes_event_base DECLSPEC_HIDDEN;
  extern char *process_name DECLSPEC_HIDDEN;
  extern Display *clipboard_display DECLSPEC_HIDDEN;
  extern WNDPROC client_foreign_window_proc DECLSPEC_HIDDEN;
@@ -90,7 +90,7 @@ diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
 index 11111111111..11111111111 100644
 --- a/dlls/winex11.drv/x11drv_main.c
 +++ b/dlls/winex11.drv/x11drv_main.c
-@@ -95,6 +95,7 @@ int xrender_error_base = 0;
+@@ -94,6 +94,7 @@ int xrender_error_base = 0;
  int xfixes_event_base = 0;
  char *process_name = NULL;
  WNDPROC client_foreign_window_proc = NULL;
@@ -98,7 +98,7 @@ index 11111111111..11111111111 100644
  
  static x11drv_error_callback err_callback;   /* current callback for error */
  static Display *err_callback_display;        /* display callback is set for */
-@@ -627,6 +628,37 @@ static void setup_options(void)
+@@ -624,6 +625,38 @@ static void setup_options(void)
      NtClose( hkey );
  }
  
@@ -108,7 +108,8 @@ index 11111111111..11111111111 100644
 + */
 +static void x11drv_ewmh_init(void)
 +{
-+    Atom type, *supported;
++    Atom type;
++    long *supported;
 +    unsigned long count, remaining;
 +    char *atom_name;
 +    int format, i, supported_count = 0;
@@ -116,15 +117,15 @@ index 11111111111..11111111111 100644
 +    if (!XGetWindowProperty( gdi_display, DefaultRootWindow(gdi_display), x11drv_atom(_NET_SUPPORTED), 0,
 +                             ~0UL, False, XA_ATOM, &type, &format, &count, &remaining,
 +                             (unsigned char **)&supported ))
-+        supported_count = get_property_size( format, count ) / sizeof(Atom);
++        supported_count = count * (format / 8) / sizeof(Atom);
 +
 +    TRACE( "EWMH _NET_SUPPORTED:\n" );
 +    for (i = 0; i < supported_count; ++i)
 +    {
-+        if (supported[i] == x11drv_atom(_NET_WM_MOVERESIZE))
++        if ((Atom)(int)supported[i] == x11drv_atom(_NET_WM_MOVERESIZE))
 +            ewmh.has__net_wm_moveresize = 1;
 +
-+        atom_name = XGetAtomName( gdi_display, supported[i] );
++        atom_name = XGetAtomName( gdi_display, (Atom)(int)supported[i] );
 +        TRACE( "  %s\n", atom_name );
 +        XFree( atom_name );
 +    }
@@ -136,15 +137,14 @@ index 11111111111..11111111111 100644
  #ifdef SONAME_LIBXCOMPOSITE
  
  #define MAKE_FUNCPTR(f) typeof(f) * p##f;
-@@ -912,6 +944,8 @@ static NTSTATUS x11drv_init( void *arg )
+@@ -908,6 +941,7 @@ static NTSTATUS x11drv_init( void *arg )
+     X11DRV_XComposite_Init();
  #endif
      X11DRV_XInput2_Init();
- 
 +    x11drv_ewmh_init();
-+
+ 
      XkbUseExtension( gdi_display, NULL, NULL );
      X11DRV_InitKeyboard( gdi_display );
-     if (use_xim) use_xim = xim_init( input_style );
 -- 
-2.40.0
+0.0.0
 

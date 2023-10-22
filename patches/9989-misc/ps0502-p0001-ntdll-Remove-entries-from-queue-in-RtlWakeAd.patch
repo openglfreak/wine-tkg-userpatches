@@ -1,0 +1,39 @@
+From 7466b2fdb2961dc0f3533a8f94e47f107ff3e631 Mon Sep 17 00:00:00 2001
+From: Paul Gofman <pgofman@codeweavers.com>
+Date: Thu, 21 Sep 2023 16:23:33 -0600
+Subject: [PATCH 1/2] ntdll: Remove entries from queue in RtlWakeAddressAll().
+
+---
+ dlls/ntdll/sync.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/ntdll/sync.c b/dlls/ntdll/sync.c
+index 11111111111..11111111111 100644
+--- a/dlls/ntdll/sync.c
++++ b/dlls/ntdll/sync.c
+@@ -937,8 +937,8 @@ NTSTATUS WINAPI RtlWaitOnAddress( const void *addr, const void *cmp, SIZE_T size
+ void WINAPI RtlWakeAddressAll( const void *addr )
+ {
+     struct futex_queue *queue = get_futex_queue( addr );
++    struct futex_entry *entry, *next;
+     unsigned int count = 0, i;
+-    struct futex_entry *entry;
+     DWORD tids[256];
+ 
+     TRACE("%p\n", addr);
+@@ -950,10 +950,12 @@ void WINAPI RtlWakeAddressAll( const void *addr )
+     if (!queue->queue.next)
+         list_init(&queue->queue);
+ 
+-    LIST_FOR_EACH_ENTRY( entry, &queue->queue, struct futex_entry, entry )
++    LIST_FOR_EACH_ENTRY_SAFE( entry, next, &queue->queue, struct futex_entry, entry )
+     {
+         if (entry->addr == addr)
+         {
++            entry->addr = NULL;
++            list_remove( &entry->entry );
+             /* Try to buffer wakes, so that we don't make a system call while
+              * holding a spinlock. */
+             if (count < ARRAY_SIZE(tids))
+
+

@@ -23,7 +23,7 @@ diff --git a/dlls/win32u/defwnd.c b/dlls/win32u/defwnd.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/defwnd.c
 +++ b/dlls/win32u/defwnd.c
-@@ -2183,7 +2183,7 @@ static LRESULT handle_nc_lbutton_down( HWND hwnd, WPARAM wparam, LPARAM lparam )
+@@ -2194,7 +2194,7 @@ static LRESULT handle_nc_lbutton_down( HWND hwnd, WPARAM wparam, LPARAM lparam )
                  top = parent;
              }
  
@@ -36,7 +36,7 @@ diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/input.c
 +++ b/dlls/win32u/input.c
-@@ -2031,7 +2031,7 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
+@@ -2033,7 +2033,7 @@ HWND WINAPI NtUserSetFocus( HWND hwnd )
  /*******************************************************************
   *		set_foreground_window
   */
@@ -45,7 +45,7 @@ index 11111111111..11111111111 100644
  {
      BOOL ret, send_msg_old = FALSE, send_msg_new = FALSE;
      HWND previous = 0;
-@@ -2042,6 +2042,7 @@ BOOL set_foreground_window( HWND hwnd, BOOL mouse )
+@@ -2044,6 +2044,7 @@ BOOL set_foreground_window( HWND hwnd, BOOL mouse )
      SERVER_START_REQ( set_foreground_window )
      {
          req->handle = wine_server_user_handle( hwnd );
@@ -57,7 +57,7 @@ diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/message.c
 +++ b/dlls/win32u/message.c
-@@ -1756,7 +1756,7 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+@@ -2588,7 +2588,7 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
                      /* fall through */
                  case MA_ACTIVATE:
                  case 0:
@@ -70,20 +70,20 @@ diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/win32u_private.h
 +++ b/dlls/win32u/win32u_private.h
-@@ -277,7 +277,7 @@ extern BOOL WINAPI release_capture(void) DECLSPEC_HIDDEN;
+@@ -101,7 +101,7 @@ extern BOOL release_capture(void) DECLSPEC_HIDDEN;
  extern BOOL set_capture_window( HWND hwnd, UINT gui_flags, HWND *prev_ret ) DECLSPEC_HIDDEN;
  extern BOOL set_caret_blink_time( unsigned int time ) DECLSPEC_HIDDEN;
  extern BOOL set_caret_pos( int x, int y ) DECLSPEC_HIDDEN;
 -extern BOOL set_foreground_window( HWND hwnd, BOOL mouse ) DECLSPEC_HIDDEN;
 +extern BOOL set_foreground_window( HWND hwnd, BOOL mouse, DWORD time ) DECLSPEC_HIDDEN;
- extern HWND set_progman_window( HWND hwnd ) DECLSPEC_HIDDEN;
- extern HWND set_taskman_window( HWND hwnd ) DECLSPEC_HIDDEN;
  extern void toggle_caret( HWND hwnd ) DECLSPEC_HIDDEN;
+ extern void update_mouse_tracking_info( HWND hwnd ) DECLSPEC_HIDDEN;
+ extern BOOL get_clip_cursor( RECT *rect ) DECLSPEC_HIDDEN;
 diff --git a/dlls/win32u/window.c b/dlls/win32u/window.c
 index 11111111111..11111111111 100644
 --- a/dlls/win32u/window.c
 +++ b/dlls/win32u/window.c
-@@ -3461,7 +3461,7 @@ BOOL set_window_pos( WINDOWPOS *winpos, int parent_x, int parent_y )
+@@ -3469,7 +3469,7 @@ BOOL set_window_pos( WINDOWPOS *winpos, int parent_x, int parent_y )
          if ((get_window_long( winpos->hwnd, GWL_STYLE ) & (WS_CHILD | WS_POPUP)) == WS_CHILD)
              send_message( winpos->hwnd, WM_CHILDACTIVATE, 0, 0 );
          else
@@ -92,7 +92,7 @@ index 11111111111..11111111111 100644
      }
  
      if(!(orig_flags & SWP_DEFERERASE))
-@@ -3801,7 +3801,7 @@ static void activate_other_window( HWND hwnd )
+@@ -3809,7 +3809,7 @@ static void activate_other_window( HWND hwnd )
      TRACE( "win = %p fg = %p\n", hwnd_to, fg );
      if (!fg || hwnd == fg)
      {
@@ -101,7 +101,7 @@ index 11111111111..11111111111 100644
      }
      if (NtUserSetActiveWindow( hwnd_to )) NtUserSetActiveWindow( 0 );
  }
-@@ -5455,7 +5455,7 @@ ULONG_PTR WINAPI NtUserCallHwnd( HWND hwnd, DWORD code )
+@@ -5464,7 +5464,7 @@ ULONG_PTR WINAPI NtUserCallHwnd( HWND hwnd, DWORD code )
          return is_window_visible( hwnd );
  
      case NtUserCallHwnd_SetForegroundWindow:
@@ -114,7 +114,7 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -2894,6 +2894,7 @@ enum coords_relative
+@@ -2984,6 +2984,7 @@ enum coords_relative
  /* Set the system foreground window */
  @REQ(set_foreground_window)
      user_handle_t  handle;        /* handle to the foreground window */
@@ -126,7 +126,7 @@ diff --git a/server/queue.c b/server/queue.c
 index 11111111111..11111111111 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -3451,20 +3451,26 @@ DECL_HANDLER(set_foreground_window)
+@@ -3540,20 +3540,26 @@ DECL_HANDLER(set_foreground_window)
      struct thread *thread = NULL;
      struct desktop *desktop;
      struct msg_queue *queue = get_current_queue();
@@ -160,25 +160,25 @@ index 11111111111..11111111111 100644
 --- a/server/user.h
 +++ b/server/user.h
 @@ -64,6 +64,7 @@ struct desktop
-     struct list                            hotkeys;          /* list of registered hotkeys */
-     struct timeout_user                   *close_timeout;    /* timeout before closing the desktop */
-     struct thread_input                   *foreground_input; /* thread input of foreground thread */
-+    unsigned int                           foreground_time;  /* time of last foreground input change */
-     unsigned int                           users;            /* processes and threads using this desktop */
-     unsigned int                           cursor_clip_msg;  /* message to post for cursor clip changes */
-     unsigned int                           cursor_change_msg;/* message to post for cursor win / handle changes */
+     struct list          hotkeys;          /* list of registered hotkeys */
+     struct timeout_user *close_timeout;    /* timeout before closing the desktop */
+     struct thread_input *foreground_input; /* thread input of foreground thread */
++    unsigned int         foreground_time;  /* time of last foreground input change */
+     unsigned int         users;            /* processes and threads using this desktop */
+     user_handle_t                          cursor_win;       /* window that contains the cursor */
+     user_handle_t                          cursor_handle;    /* last set cursor handle */
 diff --git a/server/winstation.c b/server/winstation.c
 index 11111111111..11111111111 100644
 --- a/server/winstation.c
 +++ b/server/winstation.c
-@@ -260,6 +260,7 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned
+@@ -261,6 +261,7 @@ static struct desktop *create_desktop( const struct unicode_str *name, unsigned
              desktop->global_hooks = NULL;
              desktop->close_timeout = NULL;
              desktop->foreground_input = NULL;
 +            desktop->foreground_time = 0;
              desktop->users = 0;
-             desktop->cursor_clip_msg = 0;
              desktop->cursor_win = 0;
+             desktop->cursor_handle = 0;
 -- 
-2.40.0
+0.0.0
 

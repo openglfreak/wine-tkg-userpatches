@@ -24,15 +24,15 @@ diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/server.c
 +++ b/dlls/ntdll/unix/server.c
-@@ -1709,7 +1709,6 @@ size_t server_init_process(void)
- void server_init_process_done( void **entry, BOOL *suspend )
+@@ -1783,7 +1783,6 @@ size_t server_init_process(void)
+ void server_init_process_done(void)
  {
-     void *teb;
+     void *entry, *teb;
 -    struct cpu_topology_override *cpu_override = get_cpu_topology_override();
      unsigned int status;
+     int suspend;
      FILE_FS_DEVICE_INFORMATION info;
- 
-@@ -1734,8 +1733,6 @@ void server_init_process_done( void **entry, BOOL *suspend )
+@@ -1807,8 +1806,6 @@ void server_init_process_done(void)
      /* Signal the parent process to continue */
      SERVER_START_REQ( init_process_done )
      {
@@ -53,7 +53,7 @@ index 11111111111..11111111111 100644
  #include <sys/time.h>
  #include <time.h>
  #include <dirent.h>
-@@ -236,12 +235,6 @@ static SYSTEM_LOGICAL_PROCESSOR_INFORMATION *logical_proc_info;
+@@ -237,12 +236,6 @@ static SYSTEM_LOGICAL_PROCESSOR_INFORMATION *logical_proc_info;
  static unsigned int logical_proc_info_len, logical_proc_info_alloc_len;
  static SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *logical_proc_info_ex;
  static unsigned int logical_proc_info_ex_size, logical_proc_info_ex_alloc_size;
@@ -66,7 +66,7 @@ index 11111111111..11111111111 100644
  
  static pthread_mutex_t timezone_mutex = PTHREAD_MUTEX_INITIALIZER;
  
-@@ -599,88 +592,6 @@ static void get_cpuinfo( SYSTEM_CPU_INFORMATION *info )
+@@ -603,88 +596,6 @@ static void get_cpuinfo( SYSTEM_CPU_INFORMATION *info )
  
  #endif /* End architecture specific feature detection for CPUs */
  
@@ -155,7 +155,7 @@ index 11111111111..11111111111 100644
  #ifdef linux
  
  static BOOL grow_logical_proc_buf(void)
-@@ -974,8 +885,7 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1018,8 +929,7 @@ static NTSTATUS create_logical_proc_info(void)
      static const char core_info[] = "/sys/devices/system/cpu/cpu%u/topology/%s";
      static const char cache_info[] = "/sys/devices/system/cpu/cpu%u/cache/index%u/%s";
      static const char numa_info[] = "/sys/devices/system/node/node%u/cpumap";
@@ -165,7 +165,7 @@ index 11111111111..11111111111 100644
      FILE *fcpu_list, *fnuma_list, *f;
      unsigned int beg, end, i, j, r, num_cpus = 0, max_cpus = 0;
      char op, name[MAX_PATH];
-@@ -1004,12 +914,6 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1050,12 +960,6 @@ static NTSTATUS create_logical_proc_info(void)
          if (op == '-') fscanf(fcpu_list, "%u%c ", &end, &op);
          else end = beg;
  
@@ -178,7 +178,7 @@ index 11111111111..11111111111 100644
          for(i = beg; i <= end; i++)
          {
              unsigned int phys_core = 0;
-@@ -1021,9 +925,7 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1067,9 +971,7 @@ static NTSTATUS create_logical_proc_info(void)
                  continue;
              }
  
@@ -189,7 +189,7 @@ index 11111111111..11111111111 100644
              f = fopen(name, "r");
              if (f)
              {
-@@ -1050,34 +952,19 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1096,34 +998,19 @@ static NTSTATUS create_logical_proc_info(void)
  
              /* Mask of logical threads sharing same physical core in kernel core numbering. */
              sprintf(name, core_info, i, "thread_siblings");
@@ -208,14 +208,14 @@ index 11111111111..11111111111 100644
              all_cpus_mask |= thread_mask;
  
 -            if (cpu_override.mapping.cpu_count)
--            {
--                phys_core = cpu_override.smt ? i / 2 : i;
--            }
--            else
 +            sprintf(name, core_info, i, "thread_siblings_list");
 +            f = fopen(name, "r");
 +            if (f)
              {
+-                phys_core = cpu_override.smt ? i / 2 : i;
+-            }
+-            else
+-            {
 -               sprintf(name, core_info, i, "thread_siblings_list");
 -               f = fake_logical_cpus_as_cores ? NULL : fopen(name, "r");
 -               if (f)
@@ -231,7 +231,7 @@ index 11111111111..11111111111 100644
  
              if (!logical_proc_info_add_by_id( RelationProcessorCore, phys_core, thread_mask ))
              {
-@@ -1085,40 +972,36 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1131,40 +1018,36 @@ static NTSTATUS create_logical_proc_info(void)
                  return STATUS_NO_MEMORY;
              }
  
@@ -277,7 +277,7 @@ index 11111111111..11111111111 100644
                  f = fopen(name, "r");
                  if(!f) continue;
                  fscanf(f, "%u%c", &r, &op);
-@@ -1127,7 +1010,7 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1173,7 +1056,7 @@ static NTSTATUS create_logical_proc_info(void)
                      WARN("unknown cache size %u%c\n", r, op);
                  cache.Size = (op=='K' ? r*1024 : r);
  
@@ -286,7 +286,7 @@ index 11111111111..11111111111 100644
                  f = fopen(name, "r");
                  if(!f) continue;
                  fscanf(f, "%s", name);
-@@ -1139,19 +1022,6 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1185,19 +1068,6 @@ static NTSTATUS create_logical_proc_info(void)
                  else
                      cache.Type = CacheUnified;
  
@@ -306,7 +306,7 @@ index 11111111111..11111111111 100644
                  if (!logical_proc_info_add_cache( mask, &cache ))
                  {
                      fclose(fcpu_list);
-@@ -1159,9 +1029,6 @@ static NTSTATUS create_logical_proc_info(void)
+@@ -1205,9 +1075,6 @@ static NTSTATUS create_logical_proc_info(void)
                  }
              }
          }
@@ -316,7 +316,7 @@ index 11111111111..11111111111 100644
      }
      fclose(fcpu_list);
  
-@@ -1381,11 +1248,7 @@ void init_cpu_info(void)
+@@ -1431,11 +1298,7 @@ void init_cpu_info(void)
      num = 1;
      FIXME("Detecting the number of processors is not supported.\n");
  #endif
@@ -333,7 +333,7 @@ diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/thread.c
 +++ b/dlls/ntdll/unix/thread.c
-@@ -2520,20 +2520,7 @@ ULONG WINAPI NtGetCurrentProcessorNumber(void)
+@@ -2489,20 +2489,7 @@ ULONG WINAPI NtGetCurrentProcessorNumber(void)
  
  #if defined(__linux__) && defined(__NR_getcpu)
      int res = syscall(__NR_getcpu, &processor, NULL, NULL);
@@ -359,7 +359,7 @@ diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
 index 11111111111..11111111111 100644
 --- a/dlls/ntdll/unix/unix_private.h
 +++ b/dlls/ntdll/unix/unix_private.h
-@@ -323,7 +323,6 @@ extern NTSTATUS open_unix_file( HANDLE *handle, const char *unix_name, ACCESS_MA
+@@ -327,7 +327,6 @@ extern NTSTATUS open_unix_file( HANDLE *handle, const char *unix_name, ACCESS_MA
  extern NTSTATUS get_device_info( int fd, struct _FILE_FS_DEVICE_INFORMATION *info ) DECLSPEC_HIDDEN;
  extern void init_files(void) DECLSPEC_HIDDEN;
  extern void init_cpu_info(void) DECLSPEC_HIDDEN;
@@ -387,7 +387,7 @@ index 11111111111..11111111111 100644
      list_init( &process->kernel_object );
      list_init( &process->thread_list );
      list_init( &process->locks );
-@@ -1479,8 +1477,6 @@ DECL_HANDLER(get_startup_info)
+@@ -1484,8 +1482,6 @@ DECL_HANDLER(get_startup_info)
  DECL_HANDLER(init_process_done)
  {
      struct process *process = current->process;
@@ -396,7 +396,7 @@ index 11111111111..11111111111 100644
      struct memory_view *view;
      client_ptr_t base;
      const pe_image_info_t *image_info;
-@@ -1513,9 +1509,6 @@ DECL_HANDLER(init_process_done)
+@@ -1518,9 +1514,6 @@ DECL_HANDLER(init_process_done)
      if (process->debug_obj) set_process_debug_flag( process, 1 );
      reply->entry = current->entry_point;
      reply->suspend = (current->suspend || process->suspend);
@@ -422,7 +422,7 @@ diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -876,12 +876,6 @@ typedef struct
+@@ -902,12 +902,6 @@ typedef struct
      lparam_t info;
  } cursor_pos_t;
  
@@ -439,7 +439,7 @@ diff --git a/server/thread.c b/server/thread.c
 index 11111111111..11111111111 100644
 --- a/server/thread.c
 +++ b/server/thread.c
-@@ -856,19 +856,8 @@ int set_thread_affinity( struct thread *thread, affinity_t affinity )
+@@ -855,19 +855,8 @@ int set_thread_affinity( struct thread *thread, affinity_t affinity )
  
          CPU_ZERO( &set );
          for (i = 0, mask = 1; mask; i++, mask <<= 1)
@@ -465,7 +465,7 @@ diff --git a/server/trace.c b/server/trace.c
 index 11111111111..11111111111 100644
 --- a/server/trace.c
 +++ b/server/trace.c
-@@ -1344,24 +1344,6 @@ static void dump_varargs_handle_infos( const char *prefix, data_size_t size )
+@@ -1371,24 +1371,6 @@ static void dump_varargs_handle_infos( const char *prefix, data_size_t size )
      fprintf( stderr, "%s", prefix );
  }
  

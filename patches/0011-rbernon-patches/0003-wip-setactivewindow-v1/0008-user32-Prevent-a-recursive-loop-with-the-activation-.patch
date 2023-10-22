@@ -1,0 +1,107 @@
+From 90630f76c4735ccc663650a0f3ee3351c9d8ec59 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?R=C3=A9mi=20Bernon?= <rbernon@codeweavers.com>
+Date: Fri, 11 Mar 2022 22:00:25 +0100
+Subject: [PATCH 08/18] user32: Prevent a recursive loop with the activation
+ messages.
+
+When activating a window and sending activation messages to the window
+procedure, Windows avoids a recursive loop by not sending more of these
+messages or hooks while it's still activating the window.
+
+Wine-Bug: https://bugs.winehq.org/show_bug.cgi?id=46274
+---
+ dlls/user32/tests/msg.c      |  2 +-
+ dlls/win32u/input.c          | 16 +++++++++++-----
+ dlls/win32u/ntuser_private.h |  1 +
+ 3 files changed, 13 insertions(+), 6 deletions(-)
+
+diff --git a/dlls/user32/tests/msg.c b/dlls/user32/tests/msg.c
+index 11111111111..11111111111 100644
+--- a/dlls/user32/tests/msg.c
++++ b/dlls/user32/tests/msg.c
+@@ -16003,7 +16003,7 @@ static void test_set_active_window_recursive(HWND hwnd, HWND hwnd2)
+ 
+     flush_sequence();
+     SetActiveWindow(hwnd);
+-    ok_sequence(RecursiveActivationSeq, "recursive activation", TRUE);
++    ok_sequence(RecursiveActivationSeq, "recursive activation", FALSE);
+ 
+     DestroyWindow(hwnd2);
+     DestroyWindow(hwnd);
+diff --git a/dlls/win32u/input.c b/dlls/win32u/input.c
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -1823,7 +1823,7 @@ static HWND set_focus_window( HWND hwnd )
+ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+ {
+     HWND previous = get_active_window();
+-    BOOL ret;
++    BOOL ret = TRUE;
+     DWORD old_thread, new_thread;
+     CBTACTIVATESTRUCT cbt;
+ 
+@@ -1833,6 +1833,9 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+         goto done;
+     }
+ 
++    if (prev) *prev = previous;
++    if (win_set_flags( hwnd, WIN_IS_ACTIVATING, 0 ) & WIN_IS_ACTIVATING) return TRUE;
++
+     /* call CBT hook chain */
+     cbt.fMouse     = mouse;
+     cbt.hWndActive = previous;
+@@ -1852,7 +1855,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+             previous = wine_server_ptr_handle( reply->previous );
+     }
+     SERVER_END_REQ;
+-    if (!ret) return FALSE;
++    if (!ret) goto done;
+     if (prev) *prev = previous;
+     if (previous == hwnd) goto done;
+ 
+@@ -1862,7 +1865,7 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+         if (send_message( hwnd, WM_QUERYNEWPALETTE, 0, 0 ))
+             send_message_timeout( HWND_BROADCAST, WM_PALETTEISCHANGING, (WPARAM)hwnd, 0,
+                                   SMTO_ABORTIFHUNG, 2000, FALSE );
+-        if (!is_window(hwnd)) return FALSE;
++        if (!(ret = is_window( hwnd ))) goto done;
+     }
+ 
+     old_thread = previous ? get_window_thread( previous, NULL ) : 0;
+@@ -1896,7 +1899,9 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+ 
+     if (is_window(hwnd))
+     {
+-        send_message( hwnd, WM_NCACTIVATE, hwnd == NtUserGetForegroundWindow(), (LPARAM)previous );
++        send_message( hwnd, WM_NCACTIVATE,
++                      (hwnd == NtUserGetForegroundWindow()) && !(win_get_flags(previous) & WIN_IS_ACTIVATING),
++                      (LPARAM)previous );
+         send_message( hwnd, WM_ACTIVATE,
+                       MAKEWPARAM( mouse ? WA_CLICKACTIVE : WA_ACTIVE, is_iconic(hwnd) ),
+                       (LPARAM)previous );
+@@ -1928,7 +1933,8 @@ static BOOL set_active_window( HWND hwnd, HWND *prev, BOOL mouse, BOOL focus )
+ 
+ done:
+     if (hwnd) clip_fullscreen_window( hwnd, FALSE );
+-    return TRUE;
++    win_set_flags( hwnd, 0, WIN_IS_ACTIVATING );
++    return ret;
+ }
+ 
+ /**********************************************************************
+diff --git a/dlls/win32u/ntuser_private.h b/dlls/win32u/ntuser_private.h
+index 11111111111..11111111111 100644
+--- a/dlls/win32u/ntuser_private.h
++++ b/dlls/win32u/ntuser_private.h
+@@ -100,6 +100,7 @@ typedef struct tagWND
+ #define WIN_NEEDS_SHOW_OWNEDPOPUP 0x0020 /* WM_SHOWWINDOW:SC_SHOW must be sent in the next ShowOwnedPopup call */
+ #define WIN_CHILDREN_MOVED        0x0040 /* children may have moved, ignore stored positions */
+ #define WIN_HAS_IME_WIN           0x0080 /* the window has been registered with imm32 */
++#define WIN_IS_ACTIVATING         0x0100 /* the window is being activated */
+ 
+ #define WND_OTHER_PROCESS ((WND *)1)  /* returned by get_win_ptr on unknown window handles */
+ #define WND_DESKTOP       ((WND *)2)  /* returned by get_win_ptr on the desktop window */
+-- 
+0.0.0
+

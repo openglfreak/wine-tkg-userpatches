@@ -1,20 +1,20 @@
-From ae06f12836cabcde908734a907351e98a8327bfa Mon Sep 17 00:00:00 2001
+From bba70563e68579c1a61ee2b2b3155c11e0bdaa3c Mon Sep 17 00:00:00 2001
 From: Huw Davies <huw@codeweavers.com>
 Date: Tue, 30 Jun 2020 14:12:52 +0100
-Subject: [PATCH 07/44] server: Store the cursor clip rect in the shared data.
+Subject: [PATCH 07/40] server: Store the cursor clip rect in the shared data.
 
 Signed-off-by: Huw Davies <huw@codeweavers.com>
 ---
  server/protocol.def |  1 +
- server/queue.c      | 21 ++++++++++++---------
+ server/queue.c      | 23 +++++++++++++----------
  server/user.h       |  1 -
- 3 files changed, 13 insertions(+), 10 deletions(-)
+ 3 files changed, 14 insertions(+), 11 deletions(-)
 
 diff --git a/server/protocol.def b/server/protocol.def
 index 11111111111..11111111111 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -877,6 +877,7 @@ struct shared_cursor
+@@ -903,6 +903,7 @@ struct shared_cursor
      int                  x;                /* cursor position */
      int                  y;
      unsigned int         last_change;      /* time of last position change */
@@ -26,7 +26,16 @@ diff --git a/server/queue.c b/server/queue.c
 index 11111111111..11111111111 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -479,8 +479,8 @@ static int update_desktop_cursor_pos( struct desktop *desktop, int x, int y )
+@@ -430,7 +430,7 @@ static struct message *alloc_hardware_message( lparam_t info, struct hw_msg_sour
+ 
+ static int is_cursor_clipped( struct desktop *desktop )
+ {
+-    rectangle_t top_rect, clip_rect = desktop->cursor.clip;
++    rectangle_t top_rect, clip_rect = desktop->shared->cursor.clip;
+     get_top_window_rectangle( desktop, &top_rect );
+     return !is_rect_equal( &clip_rect, &top_rect );
+ }
+@@ -522,8 +522,8 @@ static int update_desktop_cursor_pos( struct desktop *desktop, user_handle_t win
      int updated;
      unsigned int time = get_tick_count();
  
@@ -37,9 +46,9 @@ index 11111111111..11111111111 100644
      updated = (desktop->shared->cursor.x != x || desktop->shared->cursor.y != y);
  
      SHARED_WRITE_BEGIN( &desktop->shared->seq );
-@@ -526,29 +526,32 @@ static void get_message_defaults( struct msg_queue *queue, int *x, int *y, unsig
+@@ -587,26 +587,29 @@ static void get_message_defaults( struct msg_queue *queue, int *x, int *y, unsig
  /* set the cursor clip rectangle */
- void set_clip_rectangle( struct desktop *desktop, const rectangle_t *rect, int send_clip_msg )
+ void set_clip_rectangle( struct desktop *desktop, const rectangle_t *rect, unsigned int flags, int reset )
  {
 -    rectangle_t top_rect;
 +    rectangle_t top_rect, new_rect;
@@ -63,9 +72,6 @@ index 11111111111..11111111111 100644
 +    SHARED_WRITE_BEGIN( &desktop->shared->seq );
 +    desktop->shared->cursor.clip = new_rect;
  
-     if (desktop->cursor.clip_msg && send_clip_msg)
-         post_desktop_message( desktop, desktop->cursor.clip_msg, rect != NULL, 0 );
- 
      /* warp the mouse to be inside the clip rect */
 -    x = max( min( desktop->shared->cursor.x, desktop->cursor.clip.right - 1 ), desktop->cursor.clip.left );
 -    y = max( min( desktop->shared->cursor.y, desktop->cursor.clip.bottom - 1 ), desktop->cursor.clip.top );
@@ -73,16 +79,16 @@ index 11111111111..11111111111 100644
 +    y = max( min( desktop->shared->cursor.y, desktop->shared->cursor.clip.bottom - 1 ), desktop->shared->cursor.clip.top );
      if (x != desktop->shared->cursor.x || y != desktop->shared->cursor.y) set_cursor_pos( desktop, x, y );
 +    SHARED_WRITE_END( &desktop->shared->seq );
- }
  
- /* change the foreground input and reset the cursor clip rect */
-@@ -3499,7 +3502,7 @@ DECL_HANDLER(set_cursor)
+     /* request clip cursor rectangle reset to the desktop thread */
+     if (reset) post_desktop_message( desktop, WM_WINE_CLIPCURSOR, flags, FALSE );
+@@ -3607,7 +3610,7 @@ DECL_HANDLER(set_cursor)
  
-     reply->new_x       = input->desktop->shared->cursor.x;
-     reply->new_y       = input->desktop->shared->cursor.y;
--    reply->new_clip    = input->desktop->cursor.clip;
-+    reply->new_clip    = input->desktop->shared->cursor.clip;
-     reply->last_change = input->desktop->shared->cursor.last_change;
+     reply->new_x       = desktop->shared->cursor.x;
+     reply->new_y       = desktop->shared->cursor.y;
+-    reply->new_clip    = desktop->cursor.clip;
++    reply->new_clip    = desktop->shared->cursor.clip;
+     reply->last_change = desktop->shared->cursor.last_change;
  }
  
 diff --git a/server/user.h b/server/user.h
@@ -94,7 +100,9 @@ index 11111111111..11111111111 100644
  struct global_cursor
  {
 -    rectangle_t          clip;             /* cursor clip rectangle */
-     unsigned int         clip_msg;         /* message to post for cursor clip changes */
      user_handle_t        win;              /* window that contains the cursor */
+     user_handle_t        handle;           /* last set cursor handle */
  };
+-- 
+0.0.0
 

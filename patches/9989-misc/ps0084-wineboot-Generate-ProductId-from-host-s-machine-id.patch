@@ -21,7 +21,7 @@ diff --git a/loader/wine.inf.in b/loader/wine.inf.in
 index 11111111111..11111111111 100644
 --- a/loader/wine.inf.in
 +++ b/loader/wine.inf.in
-@@ -383,7 +383,6 @@ HKCU,%CurrentVersion%\Run,,16
+@@ -369,7 +369,6 @@ HKCU,%CurrentVersion%\Run,,16
  HKCU,%CurrentVersionNT%\Winlogon,,16
  HKLM,%CurrentVersion%,"CommonFilesDir",,"%16427%"
  HKLM,%CurrentVersion%,"FirstInstallDateTime",1,21,81,7c,23
@@ -29,7 +29,7 @@ index 11111111111..11111111111 100644
  HKLM,%CurrentVersion%,"ProgramFilesDir",,"%16422%"
  HKLM,%CurrentVersion%,"ProgramFilesPath",0x20000,"%%ProgramFiles%%"
  HKLM,%CurrentVersion%,"RegisteredOrganization",2,""
-@@ -408,7 +407,6 @@ HKLM,%CurrentVersion%\Shell Extensions\Approved,,16
+@@ -394,7 +393,6 @@ HKLM,%CurrentVersion%\Shell Extensions\Approved,,16
  HKLM,%CurrentVersion%\Time Zones,"SymbolicLinkValue",0x60000,"\Registry\Machine\%CurrentVersionNT%\Time Zones"
  HKLM,%CurrentVersion%\Uninstall,,16
  HKLM,%CurrentVersionNT%,"InstallDate",0x10003,1273299354
@@ -44,8 +44,8 @@ index 11111111111..11111111111 100644
 @@ -1,6 +1,6 @@
  MODULE    = wineboot.exe
  IMPORTS   = uuid advapi32 ws2_32 kernelbase setupapi
--DELAYIMPORTS = shell32 shlwapi version user32 newdev wininet
-+DELAYIMPORTS = shell32 shlwapi version user32 newdev wininet bcrypt
+-DELAYIMPORTS = shell32 shlwapi version user32 newdev wininet wintrust crypt32
++DELAYIMPORTS = shell32 shlwapi version user32 newdev wininet wintrust crypt32 bcrypt
  
  EXTRADLLFLAGS = -mconsole
  
@@ -53,7 +53,7 @@ diff --git a/programs/wineboot/wineboot.c b/programs/wineboot/wineboot.c
 index 11111111111..11111111111 100644
 --- a/programs/wineboot/wineboot.c
 +++ b/programs/wineboot/wineboot.c
-@@ -72,6 +72,7 @@
+@@ -75,6 +75,7 @@
  #include <wine/svcctl.h>
  #include <wine/asm.h>
  #include <wine/debug.h>
@@ -61,7 +61,7 @@ index 11111111111..11111111111 100644
  
  #include <shlobj.h>
  #include <shobjidl.h>
-@@ -1110,6 +1111,164 @@ static void add_dynamic_enum_keys(HKEY key, struct dyndata_enum_key *entry)
+@@ -1126,6 +1127,164 @@ static void add_dynamic_enum_keys(HKEY key, struct dyndata_enum_key *entry)
      RegCloseKey( subkey );
  }
  
@@ -91,7 +91,7 @@ index 11111111111..11111111111 100644
 +        file = CreateFileA( dbus_machineid_path, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL );
 +    if (file == INVALID_HANDLE_VALUE)
 +    {
-+        WARN( "Could not open machine id file: error %d\n", GetLastError() );
++        WARN( "Could not open machine id file: error %ld\n", GetLastError() );
 +        goto error;
 +    }
 +
@@ -99,13 +99,13 @@ index 11111111111..11111111111 100644
 +    CloseHandle( file );
 +    if (!status)
 +    {
-+        WARN( "Could not read machine id file: error %d\n", GetLastError() );
++        WARN( "Could not read machine id file: error %ld\n", GetLastError() );
 +        goto error;
 +    }
 +
 +    if (!(bytes_read == 32 || (bytes_read == 33 && buffer[32] == '\n')))
 +    {
-+        WARN( "Wrong machine id file size: %d != 32 or 33\n", bytes_read );
++        WARN( "Wrong machine id file size: %ld != 32 or 33\n", bytes_read );
 +        goto error;
 +    }
 +
@@ -146,7 +146,7 @@ index 11111111111..11111111111 100644
 +
 +    if (!NT_SUCCESS(status = BCryptOpenAlgorithmProvider( &alg, MACHINEID_HASH_ALG, NULL, 0 )))
 +    {
-+        WARN( "Couldn't open crypto provider for machine id hashing: error %u\n", status );
++        WARN( "Couldn't open crypto provider for machine id hashing: error %lx\n", status );
 +        goto error;
 +    }
 +
@@ -154,7 +154,7 @@ index 11111111111..11111111111 100644
 +    BCryptCloseAlgorithmProvider( alg, 0 );
 +    if (!NT_SUCCESS(status))
 +    {
-+        WARN( "Couldn't hash machine id: error %u\n", status );
++        WARN( "Couldn't hash machine id: error %lx\n", status );
 +        goto error;
 +    }
 +
@@ -226,14 +226,14 @@ index 11111111111..11111111111 100644
  /* create the DynData registry keys */
  static void create_dynamic_registry_keys(void)
  {
-@@ -2161,6 +2320,7 @@ int __cdecl main( int argc, char *argv[] )
-     create_user_shared_data( &tsc_frequency );
-     create_hypervisor_shared_data( tsc_frequency );
+@@ -2691,6 +2850,7 @@ int __cdecl main( int argc, char *argv[] )
+     create_user_shared_data( &tsc_frequency, &tsc_offset );
+     create_hypervisor_shared_data( tsc_frequency, tsc_offset );
      create_hardware_registry_keys( tsc_frequency );
 +    create_software_registry_keys();
      create_dynamic_registry_keys();
      create_environment_registry_keys();
      create_computer_name_keys();
 -- 
-2.40.0
+0.0.0
 

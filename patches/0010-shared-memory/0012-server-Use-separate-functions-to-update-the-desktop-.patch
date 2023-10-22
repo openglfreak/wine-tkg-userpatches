@@ -1,7 +1,7 @@
-From a7d607a25d72c77a56e3f158502d1e34b3f1b6e9 Mon Sep 17 00:00:00 2001
+From cbbf59a115ba2f5a21ceb41370f7e48e1ad16eb9 Mon Sep 17 00:00:00 2001
 From: Huw Davies <huw@codeweavers.com>
 Date: Wed, 8 Jul 2020 13:39:49 +0100
-Subject: [PATCH 12/44] server: Use separate functions to update the desktop
+Subject: [PATCH 12/40] server: Use separate functions to update the desktop
  and input keystates.
 
 Signed-off-by: Huw Davies <huw@codeweavers.com>
@@ -13,7 +13,7 @@ diff --git a/server/queue.c b/server/queue.c
 index 11111111111..11111111111 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -1481,10 +1481,10 @@ static void set_input_key_state( unsigned char *keystate, unsigned char key, uns
+@@ -1591,10 +1591,10 @@ static void set_input_key_state( unsigned char *keystate, unsigned char key, uns
  }
  
  /* update the input key state for a keyboard message */
@@ -27,7 +27,7 @@ index 11111111111..11111111111 100644
  
      switch (msg)
      {
-@@ -1543,6 +1543,16 @@ static void update_input_key_state( struct desktop *desktop, unsigned char *keys
+@@ -1653,25 +1653,35 @@ static void update_input_key_state( struct desktop *desktop, unsigned char *keys
      }
  }
  
@@ -42,11 +42,8 @@ index 11111111111..11111111111 100644
 +}
 +
  /* update the desktop key state according to a mouse message flags */
- static void update_desktop_mouse_state( struct desktop *desktop, unsigned int flags,
-                                         int x, int y, lparam_t wparam )
-@@ -1550,21 +1560,21 @@ static void update_desktop_mouse_state( struct desktop *desktop, unsigned int fl
-     if (flags & MOUSEEVENTF_MOVE)
-         update_desktop_cursor_pos( desktop, x, y );
+ static void update_desktop_mouse_state( struct desktop *desktop, unsigned int flags, lparam_t wparam )
+ {
      if (flags & MOUSEEVENTF_LEFTDOWN)
 -        update_input_key_state( desktop, desktop->keystate, WM_LBUTTONDOWN, wparam );
 +        update_desktop_key_state( desktop, WM_LBUTTONDOWN, wparam );
@@ -74,7 +71,7 @@ index 11111111111..11111111111 100644
  }
  
  /* release the hardware message currently being processed by the given thread */
-@@ -1592,7 +1602,7 @@ static void release_hardware_message( struct msg_queue *queue, unsigned int hw_i
+@@ -1699,7 +1709,7 @@ static void release_hardware_message( struct msg_queue *queue, unsigned int hw_i
      }
      if (clr_bit) clear_queue_bits( queue, clr_bit );
  
@@ -83,7 +80,7 @@ index 11111111111..11111111111 100644
      list_remove( &msg->entry );
      free_message( msg );
  }
-@@ -1701,7 +1711,7 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
+@@ -1811,7 +1821,7 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
      struct hardware_msg_data *msg_data = msg->data;
      unsigned int msg_code;
  
@@ -92,7 +89,7 @@ index 11111111111..11111111111 100644
      last_input_time = get_tick_count();
      if (msg->msg != WM_MOUSEMOVE) always_queue = 1;
  
-@@ -1740,7 +1750,7 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
+@@ -1850,7 +1860,7 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
      win = find_hardware_message_window( desktop, input, msg, &msg_code, &thread );
      if (!win || !thread)
      {
@@ -101,7 +98,7 @@ index 11111111111..11111111111 100644
          free_message( msg );
          return;
      }
-@@ -2107,7 +2117,7 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
+@@ -2215,7 +2225,7 @@ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, c
  
      if ((device = current->process->rawinput_kbd) && (device->flags & RIDEV_NOLEGACY))
      {
@@ -110,7 +107,7 @@ index 11111111111..11111111111 100644
          return 0;
      }
  
-@@ -2271,7 +2281,7 @@ static int get_hardware_message( struct thread *thread, unsigned int hw_id, user
+@@ -2382,7 +2392,7 @@ static int get_hardware_message( struct thread *thread, unsigned int hw_id, user
          if (!win || !win_thread)
          {
              /* no window at all, remove it */
@@ -119,7 +116,7 @@ index 11111111111..11111111111 100644
              list_remove( &msg->entry );
              free_message( msg );
              continue;
-@@ -2287,7 +2297,7 @@ static int get_hardware_message( struct thread *thread, unsigned int hw_id, user
+@@ -2398,7 +2408,7 @@ static int get_hardware_message( struct thread *thread, unsigned int hw_id, user
              else
              {
                  /* for another thread input, drop it */
@@ -128,4 +125,6 @@ index 11111111111..11111111111 100644
                  list_remove( &msg->entry );
                  free_message( msg );
              }
+-- 
+0.0.0
 
